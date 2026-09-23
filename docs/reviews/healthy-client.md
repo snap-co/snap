@@ -205,3 +205,59 @@ Recorded before dispatch. Both existing reviewers will validate only STD-1/SPEC-
 and regressions from the small HEAD-route/test delta against their reviewed
 `acd20733ec5a9e9d49b393ba09b588bceef75d39`. The complete round-1 reports and the
 accepted duplicate finding remain above. This is the only fix-validation round.
+
+Validated repair: `d1d6330cdf97ccc18319fb5a974e4965431bc2f7`.
+
+### Standards validation report
+
+Session: `ses_f2f956dd1ffeuPO790z8hOk4TA`.
+
+**Axis: CLEAR. STD-1 is resolved.** No concrete regression was found in the bounded fix.
+
+Reviewed previous `acd20733ec5a9e9d49b393ba09b588bceef75d39` against fixed
+`d1d6330cdf97ccc18319fb5a974e4965431bc2f7`, including the exact diff and finding
+ledger. Confirmed HEAD matches the fixed revision and the working tree was clean.
+
+`platforms/native/src/lib.rs:105–106` now registers an explicit HEAD handler
+returning 405 on Query routes. It overrides implicit HEAD-through-GET handling
+and prevents HEAD from invoking the health query. The matching-Build regression
+assertion at `tests/protocol/healthy.contract.ts:42–48` exercises the public HTTP
+Protocol interface, consistent with the testing standards.
+
+Actually run: repair `git diff --check` passed; the complete healthyProtocol
+contract passed against an ephemeral native host, including HEAD rejection and
+existing GET, invalid-input, POST, unknown-route, and Build assertions. Host cleaned
+up. The complete post-repair bin/check pass was supplied evidence, not rerun.
+Review was limited to STD-1 and fix regressions. No edits, commits, publication,
+or delegation occurred. The sole fix-validation round is complete.
+
+### Spec validation report
+
+Session: `ses_f2f9520ddffeMqbVwjABodLy3Y`.
+
+**Axis: CLEAR. SPEC-1 is resolved.** No concrete regressions were found in the bounded fix.
+
+Reviewed previous `acd20733ec5a9e9d49b393ba09b588bceef75d39` against repair
+`d1d6330cdf97ccc18319fb5a974e4965431bc2f7`. Confirmed HEAD matches the repair
+and the working tree was clean. Scope was SPEC-1 and route/test-change regressions.
+
+`platforms/native/src/lib.rs:104–107` explicitly returns 405 for HEAD on Query
+routes, overriding automatic HEAD-to-GET handling and preventing health dispatch.
+`tests/protocol/healthy.contract.ts:42–48` adds the matching-Build HTTP assertion.
+This matches the reference behavior established in round 1. STD-1 is the same finding.
+
+Actually run: inspected committed delta and ledger; complete Healthy Protocol
+contract passed against both target/debug/examples/healthy and dist/healthy on
+owned ephemeral hosts; independently confirmed matching-Build HEAD returns 405
+with empty body on both artifacts, and subsequent GET returns 200 with correctly
+correlated success. Both hosts were cleaned up. Post-repair bin/check and diff
+checks were supplied evidence, not rerun in full. No remaining Spec blockers or
+decisions. No edits, commits, publication, or delegation. The sole validation round
+is complete.
+
+## Final readiness
+
+**READY.** Both axes are CLEAR on `d1d6330cdf97ccc18319fb5a974e4965431bc2f7`.
+STD-1/SPEC-1 are resolved. Required checks passed for that code. No follow-up issues
+or advisory findings remain. Two review rounds were used; no third review occurred.
+The subsequent documentation commit only records these final reports.
