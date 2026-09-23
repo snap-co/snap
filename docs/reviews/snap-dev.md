@@ -33,7 +33,9 @@ failed builds/hooks, process interruption, and missing tools are supported failu
 ## Revisions and evidence
 
 Base: `82ffd387b1f945caf02cbc0c4ada23400953ebdd`.
-Implementation SHA recorded after committing this contract.
+Implementation: `a4996d75ed289d55132f9b84ca0b25dc07f45ea3`.
+Commit: `Add Rust snap dev with project config and local PATH selection`.
+Diff: `git diff 82ffd387b1f945caf02cbc0c4ada23400953ebdd...a4996d75ed289d55132f9b84ca0b25dc07f45ea3`.
 
 `./bin/check` passed before review: Rust formatting, strict Clippy, no_std bare-WASM
 gate, native and CLI builds, six CLI black-box tests, four native SDK contracts,
@@ -61,12 +63,158 @@ a subagent model without a user selection, so reviewers use the configured defau
 
 ## Standards report
 
-Pending.
+Round 1 session: `ses_f2f6fdb93ffeWIsiT2mtLVM6A2`.
+
+### Complete report
+
+**Axis: BLOCKED.** One confirmed test-process cleanup violation. No additional
+architectural or consumer-test-seam violations found.
+
+Revisions: base `82ffd387b1f945caf02cbc0c4ada23400953ebdd`, HEAD
+`a4996d75ed289d55132f9b84ca0b25dc07f45ea3`, commit `Add Rust snap dev with project
+config and local PATH selection`. Reviewed the complete diff and log against
+AGENTS, README, TESTING, and this record. A concurrent working-tree change appeared
+in the review document; findings concern the committed implementation.
+
+**STD-1 — BLOCKER — CLI contract timeout leaves build processes running**
+
+Location: `tests/cli/dev.py:39–41`; cleanup at `:36–37`.
+Requirement: TESTING.md:45–49 requires fixtures to own and release processes.
+The accepted milestone includes ownership of build/preparation commands.
+
+`run_cli` uses `subprocess.run(..., timeout=30)`. Python kills and waits for only
+the immediate snap process on timeout. Its active command has a separate process
+group established at `tools/cli/src/process.rs:75–89`. Killing snap prevents Rust
+cleanup, so commands and descendants can survive. tearDown only deletes the fixture.
+
+Reproduced through the existing DevContract.run_cli helper by supplying a temporary
+cargo executable opening an ephemeral listener and stalling, shortening the helper
+timeout to two seconds, observing TimeoutExpired, and confirming the Cargo stand-in
+still listened afterward. Probe result:
+`{"run_cli_timed_out":true,"cargo_descendant_still_listening":true}`.
+The probe killed the surviving group and removed its temporary fixture afterward.
+
+Bounded remedy: explicitly manage the subprocess. On timeout send SIGTERM and allow
+more than the CLI's six-second grace before escalation. Collect output and reap it.
+Forced fallback must account for owned command groups. Verify with a stalled-command
+fixture at the CLI interface.
+
+Coverage:
+
+- Independent CLI crate justified by executable/IO dependencies; concerns use modules.
+- Application/runtime/client/binding execution seams unchanged; no new std dependency
+  in their source-level dependency graph.
+- Declarative config, literal command arguments, project-root cwd.
+- Native target selection uses config and Cargo artifact messages.
+- Browser retains documented React/WASM conventions, Bun, pinned wasm-bindgen.
+- Behavior tests use actual executables, independent Cargo projects, browser, or HTTP;
+  they do not import private runtime details.
+- SDK contracts remain shared; launcher changes stay in adapters.
+- Mise PATH is checkout-relative and leaves the global launcher unchanged.
+- Listener replacement follows successful builds and targets current-user listeners.
+
+No FOLLOW_UP, ADVISORY, or DECISION findings.
+
+Actually run: diff --check passed; all six Python CLI contracts passed both through
+mise exec and directly; targeted timeout probe reproduced STD-1. Full bin/check,
+including compiler/portability gates, native/CLI/release builds, SDK/protocol,
+Chromium, listener lifecycle and PATH verification, was supplied, not rerun.
+Probe used a stalled Cargo stand-in, not an actual compiler hang, and the existing
+helper with only a shorter timeout. No product edits, development-port/global
+launcher changes, commits, publication, or delegation.
 
 ## Spec report
 
-Pending.
+Round 1 session: `ses_f2f6f87b7ffeEY7uoG1izpwS1l`.
+
+### Complete report
+
+**Axis: BLOCKED.** One confirmed launcher regression requires revision. No other
+accepted-behavior violations confirmed. Source report:
+`/tmp/opencode/snap-dev-spec-round1.md`.
+
+Base `82ffd387b1f945caf02cbc0c4ada23400953ebdd`, implementation
+`a4996d75ed289d55132f9b84ca0b25dc07f45ea3`, one commit `Add Rust snap dev with
+project config and local PATH selection`. Reviewed three-dot diff, log, AGENTS,
+README, TESTING, this record, changed CLI/config/build-driver/launcher/tests, and
+necessary native host/reference TypeScript discovery/dev interactions. Coordinator
+review-document edits were left intact; no product changes.
+
+**SPEC-1 · BLOCKER · The checkout launcher loses mise's toolchain environment**
+
+Location: `bin/dev:5–11`, especially the direct exec on line 11. Subsequent Cargo
+lookup at `tools/cli/src/build.rs:23–24`.
+
+Requirement: preserve the supported local launch flow. AGENTS directs development
+through bin/dev; README retains that command with mise-managed Rust. Previously
+the wrapper and browser-build helper ran Cargo through mise when installed.
+
+Scenario: mise and Bun are on PATH, configured Rust is installed through mise,
+but neither mise activation/shims nor rustup's Cargo is on PATH. The wrapper builds
+the CLI through mise, then executes it in the original environment. Snap cannot
+find Cargo. Reproduced from checkout root on an ephemeral port:
+
+```sh
+env PATH=/usr/bin:/bin:/home/cc444/.local/share/mise/installs/bun/latest/bin \
+  SNAP_ADDR=127.0.0.1:0 TMPDIR=/tmp/opencode ./bin/dev
+```
+
+Initial Cargo build succeeded, Bun checked dependencies, then startup exited 1 with
+`snap: Could not launch "cargo": No such file or directory (os error 2)`.
+
+Bounded remedy: use `exec mise exec -- "$root/target/debug/snap" dev ...` when mise
+is selected, retain direct execution otherwise, and verify on an ephemeral port
+with Cargo available only through mise. No FOLLOW_UP, ADVISORY, or DECISION findings.
+
+Coverage:
+
+- Scope, declarative parsing, nearest-config discovery, invalid-config precedence,
+  and config-relative paths match the slice.
+- Preparation has ordered argv, project cwd, inherited environment/output, failure stop.
+- Configured Cargo packages/targets and artifact paths work; independent fixture
+  covers non-Healthy target and custom target directory.
+- Browser remains Bun/pinned bindgen and documented React/WASM conventions; CLI
+  uses std without changing portable application/client code.
+- Groups cover hooks/builds/probes/host; shutdown and exit paths match contract;
+  executed tests cover forced descendant cleanup and SIGINT forwarding.
+- Builds precede replacement; fresh Build and override exercised; listener policy
+  retains current-user/original-PID selection.
+- Mise selects local Rust inside Healthy and global TypeScript outside checkout.
+
+Actually run: commit/diff inspection and diff --check passed; six CLI contracts
+passed in 6.217s; restricted-PATH probe reproduced SPEC-1; two independent fixture
+runs gave distinct Build tokens; failed compilation with reviewer-owned ephemeral
+listener returned 101 with compiler diagnostic and left listener usable; prep hook
+received SIGINT and its exit 23 propagated; failed-compile diagnostic/source matched
+direct Cargo; mise command selection was verified inside/outside checkout.
+
+Full bin/check was supplied, not rerun, including compiler/portability, builds,
+SDK/protocol/journey, two Chromium tests and listener lifecycle. Browser/live
+replacement also rely on code inspection. Cold bindgen install was not exercised.
+All probes used .tmp or /tmp/opencode and ephemeral ports. No port3846/global
+launcher changes, edits, commits, publication, or delegation. SPEC-1 is the only
+requested revision.
 
 ## Ledger and readiness
 
-Pending round 1.
+STD-1 accepted. Repair batch changes the test launcher to allow cooperative shutdown,
+then cleans its dedicated Linux process session if forced shutdown is necessary.
+A stalled-hook regression covers responsive and frozen CLI cases, including an
+ephemeral listener proving descendants stop. Existing manual signal tests now use
+the same cleanup fallback.
+
+SPEC-1 accepted. The wrapper now uses mise for both compilation and CLI execution.
+A regression starts the real wrapper with Cargo absent from PATH but mise/Bun
+available, waits for an ephemeral listener, and verifies graceful shutdown.
+
+All eight CLI tests pass after both fixes. Full `./bin/check` and `git diff --check`
+also passed after the repair batch. The warmed gate now takes about 40 seconds due
+to deliberate timeout/forced-cleanup checks. No production Rust code changed in
+this batch; the only production delta is the wrapper's execution environment.
+
+## Round 2: fix validation
+
+Recorded before dispatch. Resume the same reviewers against the committed repair,
+bounded to STD-1/SPEC-1 and regressions introduced by the launcher/fixture changes.
+This is the sole permitted validation round. No broader review or additional
+repair round is planned.

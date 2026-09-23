@@ -94,6 +94,10 @@ It covers discovery from nested/explicit directories, invalid nearest config,
 literal hook arguments/order/cwd, failure exit codes, Cargo target selection, and
 signal cleanup of hook descendants. Its small Rust fixture is an independent CLI
 consumer, not an internal runtime test. Run through mise if Cargo is not on PATH.
+The fixture launcher requests shutdown on timeout before forced session cleanup;
+stalled-command checks verify both paths release their listeners. A wrapper test
+also verifies mise-only Cargo availability, when mise and Bun are installed and
+Cargo is absent from the system default PATH.
 
 `scripts/dev-smoke.py` starts two real `snap dev` processes from Healthy's root on
 the same dynamically selected port. It proves replacement, HTML/WASM serving, and
