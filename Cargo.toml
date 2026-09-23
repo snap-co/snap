@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/protocol",
+    "crates/runtime",
+    "crates/client",
+    "bindings/wasm",
+    "platforms/native",
+    "platforms/browser",
+    "apps/healthy",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+snap-protocol = { path = "crates/protocol" }
+snap-runtime = { path = "crates/runtime" }
+snap-client = { path = "crates/client" }
+snap-browser = { path = "platforms/browser" }
+healthy = { path = "apps/healthy" }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+cargo_cmd=(cargo)
+if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
+"${cargo_cmd[@]}" fmt --all -- --check
+"${cargo_cmd[@]}" clippy --workspace --all-targets -- -D warnings
+"${cargo_cmd[@]}" check -p healthy -p snap-client --target wasm32v1-none
+"${cargo_cmd[@]}" build -p snap-native --examples
+"${cargo_cmd[@]}" test -p snap-native --test client-contract
+./bin/build
+bun scripts/check-client.ts
+bun test tests/sdk/browser-runtime.test.ts
+bun scripts/healthy-smoke.ts
+bunx playwright test
+python3 scripts/dev-smoke.py

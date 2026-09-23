@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Produces a self-contained native executable + browser assets in dist/.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+./bin/build-web
+if command -v mise >/dev/null; then
+  mise exec -- cargo build --release --target-dir "$root/target" -p snap-native --example healthy
+else
+  cargo build --release --target-dir "$root/target" -p snap-native --example healthy
+fi
+cp target/release/examples/healthy dist/healthy
+echo "Run ./dist/healthy; it serves the adjacent web/ directory."

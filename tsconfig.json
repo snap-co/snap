@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "ESNext.Disposable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "skipLibCheck": true
+  },
+  "include": [
+    "clients/**/*.ts",
+    "clients/**/*.tsx",
+    "apps/healthy/web/**/*.tsx",
+    "scripts/build-web.ts",
+    "tests/browser/**/*.ts"
+  ]
+}

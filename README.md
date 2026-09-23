@@ -1,0 +1,257 @@
+# Snap Rust spike
+
+An experiment in a host-driven, IO-free Snap runtime. The first question is whether
+an application library can receive normalized inputs and return actions while a
+reusable host owns execution and all external work.
+
+## Run Healthy
+
+The Linux development runner builds Healthy, replaces any current-user listener on
+the selected port, and becomes the server process. It builds the browser client too:
+
+```sh
+./bin/dev
+```
+
+Open **http://127.0.0.1:3846**. The React screen observes a resident Rust client
+application through WASM bindings. Rust owns polling, health status, and the last
+60 samples. React owns rendering only. Polls are single-flight, with a two-second
+wait after each completion and a five-second request deadline.
+
+For a mise-managed setup, run `mise trust` and `mise install` first. `mise run dev`
+also launches this runner. It requires `lsof`. With rustup on PATH, `./bin/dev`
+also works without mise. Browser builds need Bun. `bin/dev` installs the locked JS
+dependencies and the matching local wasm-bindgen tool on first use. Restart it to
+rebuild changes; there is no hot-reload watcher yet.
+
+```sh
+curl -H 'x-snap-operation-id: example-1' http://127.0.0.1:3846/health/up
+```
+
+The response uses the existing Snap completion envelope:
+
+```json
+{
+  "key": "transport.complete",
+  "target": "example-1",
+  "payload": { "ok": true, "payload": { "status": "OK" } }
+}
+```
+
+`SNAP_ADDR` selects the listen address, defaulting to `127.0.0.1:3846`.
+`SNAP_BUILD` defaults to `rust-spike`. `GET /__snap/build` exposes the Build document.
+Ctrl-C or SIGTERM stops the host. The runner sends SIGTERM to an existing listener
+and escalates to SIGKILL after a short grace period if it still holds the port.
+Port 3000 is already used by local Grafana.
+
+`cargo run -p snap-native --example healthy` also uses port 3846, but only `bin/dev`
+performs development-port replacement. The ordinary server does not kill processes.
+
+### Headless journey
+
+With the server running, execute the same client application without a renderer:
+
+```sh
+mise exec -- cargo run -p snap-native --example healthy-journey
+```
+
+`SNAP_BASE_URL` selects another server. The journey waits for an OK observation,
+then closes the client. A failed health result or a ten-second journey deadline
+exits unsuccessfully. The scenario lives in `tests/journeys/healthy.rs`; platform
+construction and cleanup live in `platforms/native/examples/healthy-journey.rs`.
+
+### Release artifact
+
+```sh
+./bin/build
+./dist/healthy
+```
+
+The `dist/` directory contains the native executable and its adjacent `web/`
+assets. Copy that directory to a compatible host to run it without the checkout,
+Node, Bun, or a Rust toolchain. `SNAP_ADDR=0.0.0.0:3846` binds beyond loopback.
+`SNAP_WEB_DIR` overrides the asset directory. TLS and process supervision belong
+to the deployment environment; no deployment provider is configured here.
+
+## Crates follow dependency constraints
+
+```text
+crates/
+  protocol/       snap-protocol   Normalized invocation and wire vocabulary
+  runtime/        snap-runtime    Module entry point, Transport dispatch, Doctor
+  client/         snap-client     IO-free client behavior
+bindings/
+  wasm/           snap-client-wasm  Rust-to-JavaScript marshalling
+clients/
+  typescript/                    Promise/observation facade over Rust bindings
+  react/                         Shared browser entrypoint and rendering host
+platforms/
+  browser/        snap-browser    Browser Fetch, deadlines, timers, task lifetime
+  native/         snap-native     Server host and native client runtime
+    examples/
+      healthy.rs                 Native composition root
+apps/
+  healthy/        healthy         IO-free server and client application definitions
+    web/                         React application definition and renderer
+```
+
+The library dependency graph is:
+
+```text
+healthy ──────────► snap-runtime ───────► snap-protocol
+    └─────────────────────────────────► snap-protocol
+
+snap-native ──────► snap-runtime
+    └────────────► snap-protocol
+
+native Healthy executable composes healthy + snap-native
+
+React → TypeScript facade → WASM binding → Healthy client application
+                                              │
+Native journey → native client runtime ────────┘
+
+Both runtimes drive the same synchronous client application.
+Native runtime → reqwest / Tokio
+Browser runtime → browser Fetch / timers through Rust bindings
+```
+
+Protocol, runtime, client, and application crates are `no_std` with `alloc`. The native
+host supplies allocation and process lifetime. Workspace source forbids unsafe
+Rust. Application dependencies contain no Tokio, Axum, filesystem, or SQL client.
+The bare-WASM compilation gate catches accidental standard-library dependencies
+in the application graph. This is architectural discipline, not plugin sandboxing.
+
+The executable sits with the host so adding native IO dependencies cannot silently
+turn the application crate into a platform binding. It is an example binary for
+now; deployment packaging can change independently of application composition.
+
+### Why these crates?
+
+Rust modules organize behavior. Crates establish independently compiled dependency
+and portability constraints. More crates do not automatically make compilation
+faster: changes to a shared interface still rebuild dependants, and generic code
+can be instantiated downstream.
+
+The broad TypeScript `core` package does not become a miscellaneous Rust crate.
+Protocol is the first shared vocabulary we actually need. Runtime contains the
+portable implementation and the small host/module interface. Doctor is currently
+one module, not a crate pair named Health and Doctor.
+
+The client core is independently consumed by native clients and language bindings.
+The browser runtime has WASM/browser dependencies, and the WASM binding exports
+language-facing handles. Neither belongs in the portable client. Swift/Kotlin
+bindings can later consume the native SDK without introducing one runtime per language.
+
+Use the same rule when Document arrives. Begin with named document and snapshot
+modules. Extract a `snap-document` contract crate when an independent consumer
+needs it without the controller. Extract `snap-snapshot` when its implementation
+has a useful independent dependency or compilation lifetime. Platform-specific
+storage code remains outside that portable implementation.
+
+## One execution turn
+
+```text
+HTTP adapter strips method/path/headers/query framing
+  → host queues a normalized Invocation
+  → host calls Module::update(input, actions)
+  → Transport dispatches health.up to Doctor
+  → Doctor computes its result in memory
+  → Transport appends a Complete action
+  → host projects it into an HTTP completion Event
+```
+
+One host-owned task owns the application instance. Request tasks enqueue inputs;
+they never invoke application code directly. The host reuses and drains the action
+buffer. A host Delivery id addresses a response slot independently of the caller's
+operation id, so equal operation ids cannot steal each other's HTTP responses.
+
+`Module::operations` supplies startup route metadata. `Module::update` is the
+execution entry point. `Transport<State>` holds opaque-to-the-host application
+state. The interface is an ordinary statically linked Rust interface, not a stable
+DLL ABI or a contiguous-memory checkpoint format.
+
+This first slice performs synchronous dispatch. It has no async handler interface.
+It also does not establish a universal one-input/one-output rule: that behavior
+belongs to this Query slice. Document controllers will need inputs for IO
+completions, readiness, and connection lifetimes, and actions for reconciliation.
+Healthy does not yet validate those interfaces, so they are not invented here.
+
+## Direction under investigation
+
+Applications declare desired state, such as the documents a client should observe.
+Shared Snap controllers compare that with resident state. Platform adapters perform
+loads and delivery; their completions become new observations. The reusable
+controller owns shared loads, residency, and authorized interest. The application
+does not perform a SQL query or balance retain/release calls itself.
+
+The next meaningful experiment is a session-backed document flow with delayed
+loads, shared interests, and interest removal during a load. Preserve the SDK and
+Protocol contracts while iterating on both client and server implementations.
+Native language bindings, plugin loading, and raw memory snapshots remain separate
+design decisions.
+
+## Client SDK spike
+
+Build the Rust client into a browser-loadable WASM module and generated JS/types:
+
+```sh
+./bin/build-client
+```
+
+The script installs the matching wasm-bindgen CLI into `.tools` on first use.
+Generated bindings live in `clients/typescript/wasm` and are ignored by Git.
+
+The TypeScript facade is what React or another JS application calls:
+
+```ts
+import { createClient } from "./clients/typescript/src";
+
+const client = await createClient({ baseUrl: location.origin, build: "rust-spike" });
+const report = await client.health.up();
+console.log(report.status);
+await client.close();
+```
+
+Rust constructs invocations, correlates completions, interprets Protocol errors,
+and validates the health result. The Rust browser runtime owns HTTP, deadlines,
+and cancellation. TypeScript converts results to Promises and adapts observations
+to `subscribe` / `getSnapshot`. Snapshots are immutable JS values with stable
+identity between notifications, suitable for React's `useSyncExternalStore`.
+
+`startHealthy` boots the resident client application, returning an initial loading
+snapshot before networking completes. It owns status and sample history in Rust.
+Closing it cancels IO and timers and releases subscriptions. The native runtime
+offers the same application's snapshots through a Rust watch handle.
+
+`apps/healthy/web/app.tsx` selects `startHealthy` and `HealthMonitor`. The build
+resolves that definition into `clients/react/main.tsx`; there is no application-owned
+init file. The reusable host loads Build metadata and WASM, starts the client,
+mounts React, and unmounts before closing the SDK on page exit.
+
+The client application seam currently executes one external step at a time:
+Query, Wait, or Stop. This is enough for Healthy's polling policy, not a claim that
+future document or command clients are single-flight. A simulation host can drive
+the same synchronous inputs and steps, but no simulation runtime is implemented.
+Swift/Kotlin bindings are also future work.
+
+## Compatibility target
+
+Reference checkout: `~/code/bod/snap`, revision
+`9689a8ed3108f58233721c2000d2b9ea96259fe7`.
+
+The implemented slice covers Healthy's anonymous `health.up` Query, its completion
+envelope, query input rejection, route/method rejection, and Build discovery.
+Doctor retains the existing readiness exception to exact Build matching.
+
+Healthy includes its browser monitor and asset hosting. There is no Hooky callback.
+Passport/cookie semantics, WebSockets, and full Protocol compatibility remain future
+slices. The reference TypeScript SDK, native Rust SDK, and Rust/WASM SDK all
+exercise Doctor over the same HTTP host.
+
+## Verification and the testing line
+
+See [TESTING.md](TESTING.md) for contract ownership and commands. The behavior suite
+uses consumer interfaces so it can survive a complete implementation rewrite.
+The current checks include native journeys, SDK edge contracts, a shared health
+contract through three client adapters, Protocol checks, host CLI checks, and a
+real-browser check against the release artifact.

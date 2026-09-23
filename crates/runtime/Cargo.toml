@@ -1,0 +1,11 @@
+[package]
+name = "snap-runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+snap-protocol.workspace = true
+
+[lints]
+workspace = true
