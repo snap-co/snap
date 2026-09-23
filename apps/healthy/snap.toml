@@ -1,0 +1,17 @@
+version = 1
+application = "healthy"
+
+[server]
+manifest = "../../platforms/native/Cargo.toml"
+example = "healthy"
+
+[web]
+package-dir = "../.."
+application = "web/app.tsx"
+host = "../../clients/react/main.tsx"
+html = "../../clients/react/index.html"
+wasm-manifest = "../../bindings/wasm/Cargo.toml"
+bindings = "../../clients/typescript/wasm"
+
+[dev]
+address = "127.0.0.1:3846"

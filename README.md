@@ -6,8 +6,28 @@ reusable host owns execution and all external work.
 
 ## Run Healthy
 
-The Linux development runner builds Healthy, replaces any current-user listener on
-the selected port, and becomes the server process. It builds the browser client too:
+Build the Rust CLI once from the checkout root:
+
+```sh
+mise trust
+mise run cli
+```
+
+With mise activated in your shell, this checkout's `target/debug` directory takes
+precedence on PATH here and in subdirectories. The existing global `snap` remains
+unchanged outside the checkout. Re-enter the directory if your shell has not yet
+refreshed its environment. Check the selection with `command -v snap`.
+
+Then run from the application root:
+
+```sh
+cd apps/healthy
+snap dev
+```
+
+Without shell activation, `mise exec -- snap dev` selects the same local binary.
+From the checkout root, `snap dev apps/healthy` selects it explicitly. The optional
+checkout convenience command rebuilds the CLI before launching Healthy:
 
 ```sh
 ./bin/dev
@@ -18,11 +38,12 @@ application through WASM bindings. Rust owns polling, health status, and the las
 60 samples. React owns rendering only. Polls are single-flight, with a two-second
 wait after each completion and a five-second request deadline.
 
-For a mise-managed setup, run `mise trust` and `mise install` first. `mise run dev`
-also launches this runner. It requires `lsof`. With rustup on PATH, `./bin/dev`
-also works without mise. Browser builds need Bun. `bin/dev` installs the locked JS
-dependencies and the matching local wasm-bindgen tool on first use. Restart it to
-rebuild changes; there is no hot-reload watcher yet.
+The CLI currently supports Linux. It needs Cargo and `lsof`; browser builds also
+need Bun and the `wasm32-unknown-unknown` Rust target. `mise install` installs the
+pinned Rust toolchain. `mise run dev` invokes the checkout convenience command.
+With rustup on PATH, `./bin/dev` also works without mise. The CLI installs locked JS
+dependencies and its pinned wasm-bindgen tool on first use. Restart `snap dev` to
+rebuild changes; there is no file watcher or hot reload yet.
 
 ```sh
 curl -H 'x-snap-operation-id: example-1' http://127.0.0.1:3846/health/up
@@ -38,14 +59,72 @@ The response uses the existing Snap completion envelope:
 }
 ```
 
-`SNAP_ADDR` selects the listen address, defaulting to `127.0.0.1:3846`.
-`SNAP_BUILD` defaults to `rust-spike`. `GET /__snap/build` exposes the Build document.
-Ctrl-C or SIGTERM stops the host. The runner sends SIGTERM to an existing listener
-and escalates to SIGKILL after a short grace period if it still holds the port.
+`SNAP_ADDR` overrides the configured listen address, defaulting to `127.0.0.1:3846`.
+`snap dev` creates one fresh Build token per invocation unless `SNAP_BUILD` is set.
+The standalone host defaults to `rust-spike`. `GET /__snap/build` exposes the Build
+document. Ctrl-C or SIGTERM stops the CLI's active process group, including hooks
+and builds, with a six-second grace period. The CLI propagates child exit codes.
+It builds before replacing an existing current-user listener, sends SIGTERM, and
+escalates to SIGKILL if the original listener still holds the port after three seconds.
 Port 3000 is already used by local Grafana.
 
-`cargo run -p snap-native --example healthy` also uses port 3846, but only `bin/dev`
+`cargo run -p snap-native --example healthy` also uses port 3846, but only `snap dev`
 performs development-port replacement. The ordinary server does not kill processes.
+
+### Project configuration
+
+`snap dev [directory]` searches upward from the selected directory for the nearest
+`snap.toml`. It never skips an invalid config to launch a parent application.
+All configured paths resolve relative to that file. Healthy's config lives at
+`apps/healthy/snap.toml`; the complete fields for this milestone are:
+
+```toml
+version = 1
+application = "healthy"
+
+[server]
+manifest = "../../platforms/native/Cargo.toml"
+example = "healthy" # Select exactly one example or bin target.
+
+[web] # Omit this table for a server-only application.
+package-dir = "../.."
+application = "web/app.tsx"
+host = "../../clients/react/main.tsx"
+html = "../../clients/react/index.html"
+wasm-manifest = "../../bindings/wasm/Cargo.toml"
+bindings = "../../clients/typescript/wasm"
+
+[dev]
+address = "127.0.0.1:3846"
+
+[prepare]
+dev = [] # Optional arrays of executable + literal arguments, in order.
+```
+
+Cargo manifests select packages; Cargo artifact messages identify their build
+outputs even with a custom target directory. The global/local `snap` executable
+does not link or dynamically import the application's Rust code. It builds the
+configured host and launches that executable from the project root.
+
+The optional browser build installs dependencies in `web.package-dir`, builds the
+configured WASM crate, generates JS bindings, and bundles the configured application
+with the reusable host. The Bun build driver is embedded in the Rust CLI; the app
+does not need to reference a checkout script. This spike pins wasm-bindgen 0.2.128.
+The selected browser host uses `main.js`, `main.css`, and
+`snap_client_wasm_bg.wasm`; the supplied HTML and binding facade must match it.
+Assets and CLI build tools live under the application's ignored `.snap/dev/`.
+Bindings go to the explicit location imported by its TypeScript facade.
+
+Preparation hooks run once before the build, with the config directory as cwd and
+inherited environment/output. Each command is an argument array, not a shell
+string. The first failure stops startup. Config loading itself executes no hooks.
+`SNAP_ENV` defaults to `development` for the launched host; the CLI supplies
+`SNAP_ADDR`, `SNAP_APPLICATION`, `SNAP_BUILD`, and its own `SNAP_WEB_DIR`.
+
+Only `dev`, help, and version are implemented. CLI-client composition, deploy,
+infrastructure operations, project creation, and project-pinned CLI dispatch remain
+later slices. For installation outside this checkout, `cargo install --path tools/cli`
+builds a standalone `snap`; the development toolchain is still needed to build apps.
 
 ### Headless journey
 
@@ -93,6 +172,8 @@ platforms/
 apps/
   healthy/        healthy         IO-free server and client application definitions
     web/                         React application definition and renderer
+tools/
+  cli/            snap-cli       Local snap executable, config, builds, process ownership
 ```
 
 The library dependency graph is:

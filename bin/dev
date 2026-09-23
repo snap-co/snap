@@ -1,62 +1,11 @@
 #!/usr/bin/env bash
-# Linux development runner. Build first, replace the selected listener, then become the server.
+# Checkout convenience. The installed `snap dev` needs no wrapper.
 set -euo pipefail
-
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-export SNAP_ADDR=${SNAP_ADDR:-127.0.0.1:3846}
-port=${SNAP_ADDR##*:}
-if [[ ! $port =~ ^[0-9]{1,5}$ ]] || (( 10#$port > 65535 )); then
-  echo "SNAP_ADDR must end in a TCP port: $SNAP_ADDR" >&2
-  exit 1
-fi
-port=$((10#$port))
-command -v lsof >/dev/null || { echo "bin/dev requires lsof" >&2; exit 1; }
-
-./bin/build-web
-export SNAP_WEB_DIR="$root/dist/web"
-
 if command -v mise >/dev/null; then
-  mise exec -- cargo build --target-dir "$root/target" -p snap-native --example healthy
+  mise exec -- cargo build --target-dir "$root/target" -p snap-cli
 else
-  cargo build --target-dir "$root/target" -p snap-native --example healthy
+  cargo build --target-dir "$root/target" -p snap-cli
 fi
-
-listeners() {
-  lsof -nP -t -a -u "$(id -u)" -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
-}
-
-wait_for_release() {
-  remaining=()
-  for ((attempt = 0; attempt < 30; attempt++)); do
-    remaining=()
-    mapfile -t current < <(listeners)
-    for pid in "${previous[@]}"; do
-      for active in "${current[@]}"; do
-        [[ $pid != "$active" ]] || remaining+=("$pid")
-      done
-    done
-    (( ${#remaining[@]} != 0 )) || return 0
-    sleep 0.1
-  done
-  return 1
-}
-
-if (( port != 0 )); then
-  mapfile -t previous < <(listeners)
-  if (( ${#previous[@]} != 0 )); then
-    echo "Replacing listener on port $port: ${previous[*]}" >&2
-    kill -TERM "${previous[@]}" 2>/dev/null || true
-    # Only escalate against the original PIDs while they still own the listener.
-    if ! wait_for_release; then
-      kill -KILL "${remaining[@]}" 2>/dev/null || true
-      if ! wait_for_release; then
-        echo "Listener did not release port $port" >&2
-        exit 1
-      fi
-    fi
-  fi
-fi
-
-# No launcher parent remains that an agent could kill while leaving the server behind.
-exec "$root/target/debug/examples/healthy"
+exec "$root/target/debug/snap" dev "$root/apps/healthy" "$@"

@@ -1,11 +1,17 @@
 import { mkdir, copyFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const root = resolve(import.meta.dir, "..");
-const outdir = resolve(root, "dist/web");
+// Called by both the Rust CLI and the release build. Every input is explicit.
+const [application, host, html, wasm, output] = process.argv.slice(2);
+if (!application || !host || !html || !wasm || !output)
+  throw new Error(
+    "Usage: build-web.ts <application> <host> <html> <wasm> <output>",
+  );
+const outdir = resolve(output);
 await mkdir(outdir, { recursive: true });
 const result = await Bun.build({
-  entrypoints: [resolve(root, "clients/react/main.tsx")],
+  entrypoints: [resolve(host)],
+  naming: "main.[ext]",
   outdir,
   target: "browser",
   minify: true,
@@ -15,7 +21,7 @@ const result = await Bun.build({
       name: "application",
       setup(build) {
         build.onResolve({ filter: /^snap:application$/ }, () => ({
-          path: resolve(root, "apps/healthy/web/app.tsx"),
+          path: resolve(application),
         }));
       },
     },
@@ -23,12 +29,6 @@ const result = await Bun.build({
 });
 if (!result.success)
   throw new AggregateError(result.logs, "Browser build failed");
-await copyFile(
-  resolve(root, "clients/react/index.html"),
-  resolve(outdir, "index.html"),
-);
-await copyFile(
-  resolve(root, "clients/typescript/wasm/snap_client_wasm_bg.wasm"),
-  resolve(outdir, "snap_client_wasm_bg.wasm"),
-);
-console.log(`Built Healthy browser application in ${outdir}`);
+await copyFile(resolve(html), resolve(outdir, "index.html"));
+await copyFile(resolve(wasm), resolve(outdir, "snap_client_wasm_bg.wasm"));
+console.log(`Built browser application in ${outdir}`);

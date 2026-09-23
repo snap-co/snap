@@ -57,6 +57,7 @@ tests/
   protocol/       Wire promises the SDK hides
   browser/        Packaged application, bindings, and rendered observations
   adapters/       Process ownership, client construction, controlled wire peers
+  cli/            Local snap command contracts against independent project fixtures
 ```
 
 `tests/journeys/healthy.rs` waits for a successful observation through the native
@@ -88,15 +89,25 @@ Chromium loads the real HTML/JS/WASM and verifies OK, failed polling, history, a
 recovery. This catches packaging and rendering faults beyond the headless SDK
 contracts. Playwright interception supplies a network failure at the browser edge.
 
-`scripts/dev-smoke.py` starts two real development runners on the same dynamically
-selected port. It proves replacement and that terminating the runner releases the
-listener. It uses only Python's standard library.
+`tests/cli/dev.py` runs the real Rust `snap` executable against temporary projects.
+It covers discovery from nested/explicit directories, invalid nearest config,
+literal hook arguments/order/cwd, failure exit codes, Cargo target selection, and
+signal cleanup of hook descendants. Its small Rust fixture is an independent CLI
+consumer, not an internal runtime test. Run through mise if Cargo is not on PATH.
+
+`scripts/dev-smoke.py` starts two real `snap dev` processes from Healthy's root on
+the same dynamically selected port. It proves replacement, HTML/WASM serving, and
+that terminating the CLI releases the listener. Both scripts use Python's standard
+library. `tests/browser/dev.spec.ts` verifies the development assets boot in Chromium;
+the release browser test separately verifies portable artifact packaging and recovery.
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p healthy -p snap-client --target wasm32v1-none
 cargo build -p snap-native --examples
+cargo build -p snap-cli
+python3 tests/cli/dev.py
 cargo test -p snap-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts

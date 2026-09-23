@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 /** Owns one real host on an ephemeral port; never replaces development listeners. */
 export async function startServer(
-  options: { executable?: string; web?: boolean } = {},
+  options: { executable?: string; web?: boolean; dev?: boolean } = {},
 ) {
   const root = resolve(import.meta.dirname, "../..");
   const env: NodeJS.ProcessEnv = {
@@ -14,9 +14,17 @@ export async function startServer(
   delete env.SNAP_WEB_DIR;
   if (options.web) env.SNAP_WEB_DIR = resolve(root, "dist/web");
   const child = spawn(
-    options.executable ?? resolve(root, "target/debug/examples/healthy"),
-    [],
-    { env, stdio: ["ignore", "ignore", "pipe"] },
+    options.executable ??
+      resolve(
+        root,
+        options.dev ? "target/debug/snap" : "target/debug/examples/healthy",
+      ),
+    options.dev ? ["dev"] : [],
+    {
+      env,
+      cwd: options.dev ? resolve(root, "apps/healthy") : root,
+      stdio: ["ignore", "ignore", "pipe"],
+    },
   );
   const exited = new Promise<void>((done) => {
     child.once("exit", () => done());
@@ -30,7 +38,10 @@ export async function startServer(
     )
       return;
     child.kill("SIGTERM");
-    const kill = setTimeout(() => child.kill("SIGKILL"), 3_000);
+    const kill = setTimeout(
+      () => child.kill("SIGKILL"),
+      options.dev ? 8_000 : 3_000,
+    );
     try {
       await exited;
     } finally {
@@ -43,7 +54,7 @@ export async function startServer(
       let settled = false;
       const timeout = setTimeout(
         () => finish(new Error(`Host readiness timeout: ${logs}`)),
-        10_000,
+        options.dev ? 120_000 : 10_000,
       );
       function finish(error?: Error, url?: string) {
         if (settled) return;

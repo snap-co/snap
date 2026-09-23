@@ -13,21 +13,21 @@ import urllib.request
 
 
 ROOT = Path(__file__).resolve().parent.parent
-COMMAND = shlex.split(os.environ.get("SNAP_DEV_COMMAND", "./bin/dev"))
+COMMAND = shlex.split(os.environ.get("SNAP_DEV_COMMAND", str(ROOT / "target/debug/snap") + " dev"))
 children = []
 
 
 def start(address):
     process = subprocess.Popen(
         COMMAND,
-        cwd=ROOT,
+        cwd=ROOT / "apps/healthy",
         env={**os.environ, "SNAP_ADDR": address},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
     children.append(process)
     output = b""
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 120
     with selectors.DefaultSelector() as selector:
         selector.register(process.stderr, selectors.EVENT_READ)
         while time.monotonic() < deadline:
@@ -51,6 +51,10 @@ try:
     first.wait(timeout=5)
     with urllib.request.urlopen(f"http://{address}/health/up", timeout=5) as response:
         assert json.load(response)["payload"]["payload"] == {"status": "OK"}
+    with urllib.request.urlopen(f"http://{address}/", timeout=5) as response:
+        assert '<div id="root">' in response.read().decode()
+    with urllib.request.urlopen(f"http://{address}/snap_client_wasm_bg.wasm", timeout=5) as response:
+        assert response.read(4) == b"\0asm"
     second.terminate()
     assert second.wait(timeout=5) == 0, "Runner should handle SIGTERM gracefully"
     host, port = address.rsplit(":", 1)

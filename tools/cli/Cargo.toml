@@ -1,0 +1,21 @@
+[package]
+name = "snap-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "snap"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "io-util", "time", "sync"] }
+nix = { version = "0.30", features = ["signal", "user"] }
+
+[lints]
+workspace = true

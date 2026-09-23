@@ -8,6 +8,8 @@ if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
 "${cargo_cmd[@]}" clippy --workspace --all-targets -- -D warnings
 "${cargo_cmd[@]}" check -p healthy -p snap-client --target wasm32v1-none
 "${cargo_cmd[@]}" build -p snap-native --examples
+"${cargo_cmd[@]}" build -p snap-cli
+python3 tests/cli/dev.py
 "${cargo_cmd[@]}" test -p snap-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts
