@@ -218,3 +218,79 @@ Recorded before dispatch. Resume the same reviewers against the committed repair
 bounded to STD-1/SPEC-1 and regressions introduced by the launcher/fixture changes.
 This is the sole permitted validation round. No broader review or additional
 repair round is planned.
+
+Validated repair: `c5bdea85e0d46c2fb17ec30c4e6acb9916f68d86`, commit
+`Preserve mise launch environment and clean up timed-out CLI tests`.
+
+### Standards validation report
+
+Session: `ses_f2f6fdb93ffeWIsiT2mtLVM6A2`.
+
+**Axis: CLEAR. STD-1 is resolved.** No fix-induced standards regression within this
+bounded validation. Previous revision `a4996d75ed289d55132f9b84ca0b25dc07f45ea3`;
+repair `c5bdea85e0d46c2fb17ec30c4e6acb9916f68d86`. Reviewed complete repair diff
+and accepted ledger, covering STD-1, revised fixture cleanup, and SPEC-1 interaction.
+
+STD-1 satisfies TESTING.md:45–49:
+
+- `tests/cli/dev.py:64–80` explicitly launches Popen in a dedicated session, requests
+  cleanup before re-raising timeout, closes streams and removes session survivors.
+- `:31–39` sends TERM and allows eight seconds, exceeding the CLI's six-second grace,
+  while draining output and waiting for the process.
+- `:18–28` supplies Linux session-wide forced cleanup, including separate groups.
+- `:184–202` verifies listener release with responsive and SIGSTOP-frozen CLI.
+- Existing descendant-interruption fixture `:164–182` uses the same cleanup.
+
+All cases passed. Both cooperative shutdown and fallback address the original
+failure. SPEC-1 interaction also passed: bin/dev:6–11 executes through mise, and
+`:204–235` verifies initial Cargo absence, real wrapper readiness and shutdown on
+an ephemeral port. The test did not skip and no standards issue was found.
+
+Actually run: repair diff --check passed; `mise exec -- python3 tests/cli/dev.py -v`
+passed all eight tests without skips in 24.429s, including both timeout paths,
+descendants, and restricted-PATH wrapper. Full post-repair bin/check was supplied,
+not rerun, including compiler/portability, builds, SDK/types, protocol/journey,
+Chromium, and listener lifecycle.
+
+This sole fix-validation did not reopen the full review. No production Rust changed.
+No further Standards revision requested. No product edits, commits, publication,
+delegation, development-port use, or global-launcher changes occurred.
+
+### Spec validation report
+
+Session: `ses_f2f6f87b7ffeEY7uoG1izpwS1l`.
+
+**Axis: CLEAR. SPEC-1 is resolved.** No concrete regressions in repair batch or
+affected interactions. Previous `a4996d75ed289d55132f9b84ca0b25dc07f45ea3`; repair
+`c5bdea85e0d46c2fb17ec30c4e6acb9916f68d86`. Inspected repair diff, log, reports,
+ledger. Scope was SPEC-1 and wrapper/test-cleanup changes, with no production Rust.
+
+SPEC-1 resolved: bin/dev:6–11 compiles and executes through mise when available;
+the other branch retains direct execution. Cargo installed through mise remains
+available to application builds. `tests/cli/dev.py:204–231` restricts PATH to system
+tools plus mise/Bun, asserts initial Cargo absence, starts real wrapper, waits for
+Healthy's ephemeral listener, terminates it and verifies exit 0. Passed without skip.
+
+STD-1 interaction resolved in exercised cases: `:64–80` starts dedicated sessions
+and requests shutdown on timeout; `:31–39` allows eight seconds vs CLI's six;
+`:18–28` kills session survivors including separate groups. `:184–202` passed with
+responsive/frozen CLI and verified stalled listener release in both cases. Existing
+forced-descendant cleanup also passed.
+
+No partial/unresolved findings or new BLOCKER/FOLLOW_UP/ADVISORY/DECISION findings.
+Actually run: repair diff/log/ledger inspection; diff --check passed; direct
+`python3 tests/cli/dev.py -v` passed all eight without skips in 24.467s. Coverage
+included restricted PATH, both timeouts, descendants, help/version, discovery,
+invalid config, literal hooks/failure ordering, real Cargo target/environment/exit.
+
+Full post-repair bin/check was supplied, not rerun. Non-mise branch was inspected
+rather than separately executed. Cold tool install was not exercised. Tests used
+temporary projects and ephemeral ports; port3846/global launcher untouched. No
+product edits, commits, publication, or delegation. No further Spec revision required.
+
+## Final readiness
+
+**READY** on code revision `c5bdea85e0d46c2fb17ec30c4e6acb9916f68d86`.
+Both axes are CLEAR; STD-1 and SPEC-1 resolved. Required verification passed.
+No remaining blockers, decisions, advisory findings, or independent follow-ups.
+Two rounds used. This documentation-only update records their final results.
