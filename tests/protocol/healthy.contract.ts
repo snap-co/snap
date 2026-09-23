@@ -39,6 +39,13 @@ export async function healthyProtocol(baseUrl: string) {
   assert.equal(rejection.payload.ok, false);
   assert.equal(rejection.payload.error._tag, "InvalidInputError");
   assert.equal((await request("/health/up", { method: "POST" })).status, 405);
+  assert.equal(
+    (await request("/health/up", {
+      method: "HEAD",
+      headers: { "x-snap-build": build.build },
+    })).status,
+    405,
+  );
   assert.equal((await request("/unknown/operation")).status, 404);
   return build as { contract: 1; application: string; build: string };
 }

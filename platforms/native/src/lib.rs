@@ -102,7 +102,8 @@ async fn serve(module: impl Module + Send + 'static, config: Config) -> io::Resu
     for operation in module.operations() {
         let path = format!("/{}", operation.key.replace('.', "/"));
         let route = match operation.lane {
-            Lane::Query => get(query),
+            Lane::Query => get(query)
+                .head(|| async { problem(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed") }),
         }
         .fallback(|| async { problem(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed") })
         .layer(Extension(operation));
