@@ -6,6 +6,7 @@ use nix::{
 };
 use std::{
     collections::BTreeSet,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::process::Command;
@@ -30,7 +31,7 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
     command
         .current_dir(&project.root)
         .env("SNAP_ADDR", address.to_string())
-        .env("SNAP_BUILD", build)
+        .env("SNAP_BUILD", &build)
         .env("SNAP_APPLICATION", &project.config.application)
         .env(
             "SNAP_ENV",
@@ -39,16 +40,34 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
     // Never inherit another app's development assets.
     command.env_remove("SNAP_WEB_DIR");
     if let (Some(web), Some(assets)) = (&project.config.web, &artifacts.web) {
-        // Only the frontend owns the public address; application HTTP stays private.
+        let backend_address = project.backend_address()?;
+        ensure!(
+            address.port() == 0 || address.port() != backend_address.port(),
+            "Frontend and backend must use different ports"
+        );
+        // Snap prescribes both addresses. Reserve port-zero requests here, never in
+        // the child, and retain the public reservation until its launcher is ready.
+        let (public, private) = if address.port() == 0 {
+            let private = reserve(runner, backend_address).await?;
+            (reserve(runner, address).await?, private)
+        } else {
+            let public = reserve(runner, address).await?;
+            (public, reserve(runner, backend_address).await?)
+        };
+        let backend_address = private.local_addr()?;
+        let address = public.local_addr()?;
+        let backend_url = url(backend_address);
+        let public_url = url(address);
         command
-            .env("SNAP_ADDR", "127.0.0.1:0")
+            .env("SNAP_ADDR", backend_address.to_string())
             .env("SNAP_WEB_DIR", assets);
-        let (mut backend, backend_url) = runner.service(&mut command, "listening on ").await?;
+        drop(private);
+        let mut backend = runner.service(&mut command, &backend_url, &build).await?;
         eprintln!("Backend ready at {backend_url}");
         let driver = project.root.join(".snap/dev-web.ts");
         std::fs::write(&driver, include_str!("../../../scripts/dev-web.ts"))?;
-        replace_listener(runner, address.port()).await?;
-        let (mut frontend, url) = runner
+        drop(public);
+        let mut frontend = runner
             .service(
                 Command::new("bun")
                     .current_dir(&project.root)
@@ -61,10 +80,11 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
                     .arg(assets.join("snap_client_wasm_bg.wasm"))
                     .arg(&backend_url)
                     .arg(address.to_string()),
-                "snap-web-ready ",
+                &public_url,
+                &build,
             )
             .await?;
-        eprintln!("listening on {url}");
+        eprintln!("listening on {public_url}");
         let result = tokio::select! {
             result = backend.wait(runner) => result,
             result = frontend.wait(runner) => result,
@@ -74,10 +94,30 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
         back?;
         front?;
     } else {
-        replace_listener(runner, address.port()).await?;
+        let listener = reserve(runner, address).await?;
+        command.env("SNAP_ADDR", listener.local_addr()?.to_string());
+        drop(listener);
         runner.run(&mut command, false).await?;
     }
     Ok(())
+}
+
+// Binding remains the final authority: another process can race the release and
+// child bind. A failed child reports its error and exits; it never selects a port.
+async fn reserve(runner: &Runner, address: SocketAddr) -> Result<TcpListener> {
+    replace_listener(runner, address.port()).await?;
+    TcpListener::bind(address)
+        .with_context(|| format!("Cannot reserve development address {address}"))
+}
+
+fn url(mut address: SocketAddr) -> String {
+    if address.ip().is_unspecified() {
+        address.set_ip(match address.ip() {
+            IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+            IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+        });
+    }
+    format!("http://{address}")
 }
 
 async fn listeners(runner: &Runner, port: u16) -> Result<BTreeSet<i32>> {

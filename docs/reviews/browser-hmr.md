@@ -1,5 +1,29 @@
 # Browser HMR review
 
+## Human-authorized recovery checkpoint
+
+On 2026-09-23 the user reviewed STD-2 / SPEC-5 and changed the startup design.
+Snap dictates both addresses, kills existing current-user listeners by default,
+and probes HTTP readiness. The server binds its supplied port or exits; it does
+not choose a replacement. Stderr is diagnostic output only. The user authorized
+recording this ruling and continuing implementation and the remaining plan.
+
+Recovery starts from `6389c52`. Original rounds 1 and 2 below remain valid history.
+One additional recovery validation will inspect this explicit contract amendment,
+the resolved startup blocker, and affected port/process/proxy behavior. It is not
+a reset of the milestone's review counter. The initial failed repair confused pipe
+closure with process exit. Removing that coupling gives readiness one HTTP deadline,
+with independent child-exit and interruption handling. Regression cases cover both
+orderings, plus a working server with redirected stderr and prescribed-port replacement.
+Recovery implemented. `mise exec -- ./bin/check` passed, including all 11 dev,
+7 build, 4 check, 5 architecture CLI cases, three Chromium scenarios, SDK/protocol/
+journey, portability, dependency policy, docs, and both-port listener replacement.
+The first gate exposed two old launcher assertions: expecting port zero in the child
+and treating a forwarded host log as public readiness. They now assert Snap selects
+a nonzero port and wait for the CLI's own ready line. No test was skipped.
+The reqwest dependency reuses the workspace's existing version; CLI role is tool.
+Recovery validation, round 3 authorized by the human, recorded before dispatch.
+
 Slice 05 of `docs/plans/project-tooling-and-authy.md`. Base
 `629c46944d1dd79ded7c272b2574798202e77ba5`. Linux, trusted projects, main branch.
 Vite 8.3.0 and React plugin 6.1.1 are pinned JS development tools. Snap embeds its

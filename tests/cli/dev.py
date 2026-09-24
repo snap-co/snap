@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 SNAP = ROOT / "target/debug/snap"
@@ -51,11 +52,11 @@ class ProjectContract(unittest.TestCase):
         self.config = (
             'version=1\napplication="fixture"\n'
             '[server]\nmanifest="Cargo.toml"\nbin="cli-fixture"\n'
-            '[dev]\naddress="127.0.0.1:0"\n'
+            '[dev]\naddress="127.0.0.1:0"\nbackend-address="127.0.0.1:0"\n'
         )
         (self.root / "snap.toml").write_text(self.config)
         self.env = {**os.environ, "CARGO_TARGET_DIR": str(self.root / "target")}
-        for key in ["SNAP_ADDR", "SNAP_BUILD", "SNAP_WEB_DIR"]:
+        for key in ["SNAP_ADDR", "SNAP_BACKEND_ADDR", "SNAP_BUILD", "SNAP_WEB_DIR"]:
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -80,12 +81,7 @@ class ProjectContract(unittest.TestCase):
             process.stderr.close()
 
 class DevContract(ProjectContract):
-    def test_web_host_startup_failure_preserves_exit_code(self):
-        (self.root / "src/main.rs").write_text('''fn main() {
-    std::process::Command::new("sleep").arg("60").spawn().unwrap();
-    std::process::exit(37);
-}
-''')
+    def web_config(self):
         (self.root / "app.ts").write_text("export default {};\n")
         (self.root / "host.ts").write_text('import app from "snap:application"; console.log(app);\n')
         (self.root / "index.html").write_text('<script type="module" src="/main.js"></script>')
@@ -95,8 +91,71 @@ class DevContract(ProjectContract):
         self.env["CARGO_TARGET_DIR"] = str(ROOT / "target")
         tools = sorted((ROOT / "apps/healthy/.snap/tools").glob("wasm-bindgen-*/bin"))
         self.env["PATH"] = os.pathsep.join([*(str(path) for path in tools), self.env["PATH"]])
+
+    def test_web_host_startup_failure_preserves_exit_code(self):
+        self.web_config()
+        (self.root / "src/main.rs").write_text('''fn main() {
+    std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    std::process::exit(37);
+}
+''')
         result = self.run_cli("dev", timeout=120)
         self.assertEqual(result.returncode, 37, result.stderr)
+
+    def quiet_host(self, body):
+        self.web_config()
+        (self.root / "src/main.rs").write_text('''use std::os::unix::process::CommandExt;
+fn main() { panic!("{}", std::process::Command::new("python3").arg("host.py").exec()); }
+''')
+        (self.root / "host.py").write_text('''import os, time, json
+from pathlib import Path
+os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+Path("started").write_text(json.dumps([os.getpid(), time.monotonic(), os.environ["SNAP_ADDR"]]))
+''' + body)
+
+    def test_closed_stderr_live_host_still_times_out(self):
+        self.quiet_host("time.sleep(60)\n")
+        result = self.run_cli("dev", timeout=120)
+        pid, started, address = json.loads((self.root / "started").read_text())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Service readiness timed out", result.stderr)
+        self.assertLess(time.monotonic() - started, 26)
+        self.assertNotEqual(address.rsplit(":", 1)[1], "0")
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_http_readiness_with_closed_stderr(self):
+        self.quiet_host('''from http.server import HTTPServer, BaseHTTPRequestHandler
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        data = json.dumps({"build": os.environ["SNAP_BUILD"]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+host, port = os.environ["SNAP_ADDR"].rsplit(":", 1)
+HTTPServer((host, int(port)), Handler).serve_forever()
+''')
+        process = subprocess.Popen([str(SNAP), "dev"], cwd=self.root, env=self.env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                   start_new_session=True)
+        logs = b""
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stderr, selectors.EVENT_READ)
+                deadline = time.monotonic() + 120
+                while b"\nlistening on " not in logs and time.monotonic() < deadline:
+                    self.assertTrue(selector.select(max(0, deadline - time.monotonic())), logs.decode())
+                    chunk = os.read(process.stderr.fileno(), 65536)
+                    self.assertTrue(chunk, logs.decode())
+                    logs += chunk
+            url = logs.split(b"\nlistening on ")[1].splitlines()[0].decode()
+            with urllib.request.urlopen(url + "/__snap/build", timeout=3) as reply:
+                self.assertTrue(json.load(reply)["build"])
+        finally:
+            stop_cli(process)
+            kill_session(process.pid)
+            process.stderr.close()
 
     def test_help_and_version_without_project(self):
         (self.root / "snap.toml").unlink()
@@ -163,7 +222,7 @@ class DevContract(ProjectContract):
         self.assertEqual(nested.returncode, 37, nested.stderr)
         self.assertIn(f"cwd={self.root}", nested.stdout)
         self.assertIn("SNAP_APPLICATION=fixture", nested.stdout)
-        self.assertIn("SNAP_ADDR=127.0.0.1:0", nested.stdout)
+        self.assertRegex(nested.stdout, r"SNAP_ADDR=127\.0\.0\.1:[1-9][0-9]*\n")
         self.env["SNAP_BUILD"] = "explicit-build"
         explicit = self.run_cli("dev", str(self.root), cwd=ROOT)
         self.assertEqual(explicit.returncode, 37, explicit.stderr)
@@ -229,7 +288,7 @@ class DevContract(ProjectContract):
         (tools / "mise").symlink_to(mise)
         (tools / "bun").symlink_to(bun)
         env = {**self.env, "PATH": str(tools) + os.pathsep + os.defpath,
-               "SNAP_ADDR": "127.0.0.1:0"}
+               "SNAP_ADDR": "127.0.0.1:0", "SNAP_BACKEND_ADDR": "127.0.0.1:0"}
         env.pop("CARGO_TARGET_DIR", None)
         self.assertIsNone(shutil.which("cargo", path=env["PATH"]))
         process = subprocess.Popen([str(ROOT / "bin/dev")], cwd=self.root, env=env,
@@ -240,7 +299,7 @@ class DevContract(ProjectContract):
             deadline = time.monotonic() + 120
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stderr, selectors.EVENT_READ)
-                while b"listening on http://127.0.0.1:" not in logs:
+                while b"\nlistening on http://127.0.0.1:" not in logs:
                     self.assertTrue(selector.select(max(0, deadline - time.monotonic())), logs.decode())
                     chunk = os.read(process.stderr.fileno(), 65536)
                     self.assertTrue(chunk, logs.decode())

@@ -98,6 +98,7 @@ bindings = ".snap/bindings"
 
 [dev]
 address = "127.0.0.1:3846"
+backend-address = "127.0.0.1:3847" # Browser development's private native host.
 
 [prepare]
 build = [] # Executable + literal arguments; runs before every build or dev invocation.
@@ -141,8 +142,19 @@ Healthy pins these development dependencies in the root JS package. The Rust CLI
 embeds the development driver and selects the configured app/host/HTML, just as the
 static builder does. Applications still provide a definition, not a boot script.
 
-The configured public address belongs to the frontend. Snap starts the native host
-on an OS-assigned loopback port, then serves modules and HMR at the public origin.
+The configured public address belongs to the frontend. Snap prescribes both ports,
+replacing existing current-user listeners by default after the build succeeds.
+`dev.backend-address` defaults to `127.0.0.1:3847`; `SNAP_BACKEND_ADDR` overrides it.
+The backend must use loopback and a different port from the frontend. Port zero
+requests an available port selected by Snap before launching the child, useful for
+isolated tests. Children bind exactly where told and report binding errors; they
+never silently switch ports. Production launchers likewise supply `SNAP_ADDR`.
+
+Snap probes `GET /__snap/build` for the expected Build token before exposing the
+browser address. Readiness has a 20-second deadline, independent of logs or stderr
+closure. Early child exit preserves its status and releases descendants. There is
+a short reservation-to-bind race; a competing bind fails startup rather than
+redirecting the proxy to another port. Snap serves modules and HMR at the public origin.
 Unmatched application HTTP requests proxy to the native host with the public Host,
 Origin, and cookies preserved. Build discovery and health calls keep their original
 URLs. Native and frontend readiness are reported separately; stopping either service

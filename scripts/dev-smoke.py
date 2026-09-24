@@ -17,11 +17,11 @@ COMMAND = shlex.split(os.environ.get("SNAP_DEV_COMMAND", str(ROOT / "target/debu
 children = []
 
 
-def start(address):
+def start(address, backend="127.0.0.1:0"):
     process = subprocess.Popen(
         COMMAND,
         cwd=ROOT / "apps/healthy",
-        env={**os.environ, "SNAP_ADDR": address},
+        env={**os.environ, "SNAP_ADDR": address, "SNAP_BACKEND_ADDR": backend},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
@@ -38,16 +38,19 @@ def start(address):
             if not chunk:
                 raise AssertionError(f"Runner exited before listening:\n{output.decode()}")
             output += chunk
-            match = re.search(rb"listening on http://(127\.0\.0\.1:\d+)\r?\n", output)
+            match = re.search(rb"^listening on http://(127\.0\.0\.1:\d+)\r?\n", output, re.M)
             if match:
-                return process, match[1].decode()
+                backend = re.search(rb"Backend ready at http://(127\.0\.0\.1:\d+)", output)
+                assert backend, output.decode()
+                return process, match[1].decode(), backend[1].decode()
     raise AssertionError(f"Runner never became ready:\n{output.decode()}")
 
 
 try:
-    first, address = start("127.0.0.1:0")
-    second, replaced_address = start(address)
+    first, address, backend = start("127.0.0.1:0")
+    second, replaced_address, replaced_backend = start(address, backend)
     assert replaced_address == address
+    assert replaced_backend == backend
     first.wait(timeout=5)
     with urllib.request.urlopen(f"http://{address}/health/up", timeout=5) as response:
         assert json.load(response)["payload"]["payload"] == {"status": "OK"}
@@ -57,10 +60,11 @@ try:
         assert response.read(4) == b"\0asm"
     second.terminate()
     assert second.wait(timeout=5) == 0, "Runner should handle SIGTERM gracefully"
-    host, port = address.rsplit(":", 1)
-    with socket.socket() as probe:
-        probe.settimeout(1)
-        assert probe.connect_ex((host, int(port))) != 0, "Runner left its listener behind"
+    for endpoint in [address, backend]:
+        host, port = endpoint.rsplit(":", 1)
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            assert probe.connect_ex((host, int(port))) != 0, "Runner left its listener behind"
     print("PASS: second dev run replaces the listener; stopping it releases the port")
 finally:
     for process in children:

@@ -66,14 +66,20 @@ pub struct Check {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Dev {
     pub address: SocketAddr,
+    #[serde(default = "default_backend_address")]
+    pub backend_address: SocketAddr,
+}
+fn default_backend_address() -> SocketAddr {
+    "127.0.0.1:3847".parse().expect("default backend address")
 }
 impl Default for Dev {
     fn default() -> Self {
         Self {
             address: "127.0.0.1:3846".parse().expect("default address"),
+            backend_address: default_backend_address(),
         }
     }
 }
@@ -187,6 +193,20 @@ impl Project {
             Err(std::env::VarError::NotPresent) => Ok(self.config.dev.address),
             Err(error) => Err(error.into()),
         }
+    }
+    pub fn backend_address(&self) -> Result<SocketAddr> {
+        let address = match std::env::var("SNAP_BACKEND_ADDR") {
+            Ok(value) => value
+                .parse()
+                .context("SNAP_BACKEND_ADDR must be an IP address and port")?,
+            Err(std::env::VarError::NotPresent) => self.config.dev.backend_address,
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            address.ip().is_loopback(),
+            "Development backend address must be loopback"
+        );
+        Ok(address)
     }
     pub fn file(&self, path: &Path) -> Result<PathBuf> {
         ensure!(

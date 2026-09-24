@@ -43,7 +43,7 @@ const server = createServer(async (req, res) => {
       // Preserve the public Host/Origin and Set-Cookie headers. Browser SDK calls
       // stay on one origin while the native host owns all application HTTP routes.
       const upstream = request({
-        hostname: backendUrl.hostname, port: backendUrl.port, path: req.url,
+        hostname: backendUrl.hostname.replace(/^\[|\]$/g, ""), port: backendUrl.port || "80", path: req.url,
         method: req.method, headers: req.headers,
       }, (reply) => {
         res.writeHead(reply.statusCode ?? 502, reply.headers);
@@ -83,9 +83,6 @@ await new Promise<void>((done, fail) => {
   server.once("error", fail);
   server.listen(Number(listen.port || "80"), listen.hostname.replace(/^\[|\]$/g, ""), done);
 });
-const bound = server.address();
-if (!bound || typeof bound === "string") throw new Error("Missing browser listen address");
-process.stderr.write(`snap-web-ready http://${bound.family === "IPv6" ? `[${bound.address}]` : bound.address}:${bound.port}\n`);
 let closing = false;
 async function close() {
   if (closing) return;

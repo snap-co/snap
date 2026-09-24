@@ -10,6 +10,7 @@ export async function startServer(
     ...process.env,
     ...options.env,
     SNAP_ADDR: "127.0.0.1:0",
+    SNAP_BACKEND_ADDR: "127.0.0.1:0",
     SNAP_BUILD: "healthy-smoke",
   };
   delete env.SNAP_WEB_DIR;
@@ -73,7 +74,7 @@ export async function startServer(
       child.stderr.on("data", (chunk: Buffer) => {
         logs += chunk.toString();
         backendUrl = logs.match(/Backend ready at (http:\/\/[^\s]+)/)?.[1] ?? backendUrl;
-        const match = logs.match(/listening on (http:\/\/[^\s]+)\r?\n/);
+        const match = logs.match(/^listening on (http:\/\/[^\s]+)\r?\n/m);
         if (match) finish(undefined, match[1]);
       });
     });

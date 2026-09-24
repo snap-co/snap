@@ -99,6 +99,11 @@ The fixture launcher requests shutdown on timeout before forced session cleanup;
 stalled-command checks verify both paths release their listeners. A wrapper test
 also verifies mise-only Cargo availability, when mise and Bun are installed and
 Cargo is absent from the system default PATH.
+Startup contracts also cover a host that closes stderr and stalls, a healthy HTTP
+host with closed stderr, and an early-exiting host whose descendant retains stderr.
+Snap must enforce its readiness deadline independently of all three logging cases.
+Port-zero fixtures verify Snap passes a concrete port to the child. The lifecycle
+smoke test reuses both prescribed addresses to verify replacement and cleanup.
 
 `tests/cli/build.py` uses the same process fixture for the build command. It runs
 packaged native binaries and an independent generated WASM/browser application to

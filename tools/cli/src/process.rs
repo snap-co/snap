@@ -13,7 +13,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::{Child, Command},
     signal::unix::{SignalKind, signal},
-    sync::{oneshot, watch},
+    sync::watch,
 };
 
 #[derive(Debug)]
@@ -30,13 +30,10 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// Start a resident service and consume its readiness line before exposing it.
+    /// Readiness is HTTP Build discovery, independent of the service's logging.
+    /// One deadline bounds all probes; child exit and interruption remain observable.
     /// Dropping a partially started service releases its entire process group.
-    pub async fn service(
-        &self,
-        command: &mut Command,
-        prefix: &'static str,
-    ) -> Result<(Service, String)> {
+    pub async fn service(&self, command: &mut Command, url: &str, build: &str) -> Result<Service> {
         self.check()?;
         let mut child = command
             .stdin(Stdio::piped())
@@ -49,19 +46,11 @@ impl Runner {
         let group = Group(Pid::from_raw(
             child.id().context("Missing service PID")? as i32
         ));
-        let (ready, receiving) = oneshot::channel();
         let stderr = child.stderr.take().context("Missing service stderr")?;
         let logs = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
-            let mut ready = Some(ready);
             while let Some(line) = lines.next_line().await? {
-                if let Some(value) = line.strip_prefix(prefix) {
-                    if let Some(ready) = ready.take() {
-                        let _ = ready.send(value.to_owned());
-                    }
-                } else {
-                    eprintln!("{line}");
-                }
+                eprintln!("[service] {line}");
             }
             Ok::<_, std::io::Error>(())
         });
@@ -71,16 +60,28 @@ impl Runner {
             logs: Some(logs),
         };
         let mut stopped = self.stopped.clone();
-        let ready = tokio::select! {
-            value = tokio::time::timeout(Duration::from_secs(20), receiving) => {
-                match value.context("Service readiness timed out")? {
-                    Ok(ready) => ready,
-                    Err(_) => {
-                        service.wait(self).await?;
-                        anyhow::bail!("Service exited before readiness");
-                    }
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(1))
+            .build()?;
+        let readiness = async {
+            loop {
+                if let Ok(reply) = client.get(format!("{url}/__snap/build")).send().await
+                    && reply.status().is_success()
+                    && let Ok(body) = reply.bytes().await
+                    && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body)
+                    && value["build"].as_str() == Some(build)
+                {
+                    return;
                 }
-            },
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        };
+        tokio::select! {
+            value = tokio::time::timeout(Duration::from_secs(20), readiness) => {
+                value.context("Service readiness timed out")?;
+            }
             status = service.child.wait() => {
                 let status = status?;
                 service.finish().await?;
@@ -89,7 +90,7 @@ impl Runner {
             }
             _ = stopped.changed() => { service.stop().await?; return Err(Failed(*stopped.borrow()).into()); }
         };
-        Ok((service, ready))
+        Ok(service)
     }
     pub fn new() -> Result<Self> {
         let mut interrupt = signal(SignalKind::interrupt())?;

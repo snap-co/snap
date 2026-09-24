@@ -211,6 +211,15 @@ checks explicitly rather than making them an implicit prerequisite of every edit
 
 ### 05. React and CSS HMR under snap dev
 
+Human recovery ruling, 2026-09-23: Snap owns port selection and conflict handling.
+It prescribes the frontend and backend addresses, replaces existing current-user
+listeners by default, and checks readiness over HTTP instead of a log handshake.
+Servers bind the supplied address or fail. The public default remains 3846; private
+loopback defaults to 3847 with `dev.backend-address` / `SNAP_BACKEND_ADDR` overrides.
+Port zero is resolved by Snap for isolated tests. User explicitly authorized this
+repair and resuming the remaining plan. Keep the original review history and run
+one additional, bounded recovery validation on the changed lifecycle contract.
+
 **Blocked by:** 02. Recommended after 04; checks are useful but not a technical blocker.
 
 **Delivers:** Editing Healthy's renderer or stylesheet updates the running browser
@@ -357,6 +366,6 @@ proxy/port/exit-status findings are fixed and validated. STD-2 / SPEC-5 remain; 
 `docs/reviews/browser-hmr.md` for reports, evidence, and the requested human decision.
 Vite/React serves the public development origin and proxies to an owned loopback
 native host. Chromium proves state-preserving React/CSS updates and shutdown.
-Slice 06 is unstarted. The user authorized continuing through the full list, but the
-bounded review workflow now requires explicit authorization for further repair and
-validation before this dependent milestone can begin.
+Human recovery is implemented under the port-ownership ruling above. Full checks
+pass; one authorized recovery validation is pending. Slice 06 remains unstarted
+until that validation closes slice 05.
