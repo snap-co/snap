@@ -17,6 +17,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync",
 [[bin]]
 name = "healthy"
 path = "src/main.rs"
+# The CLI is documented in README; its target name would overwrite Healthy library docs.
+doc = false
 
 [[test]]
 name = "client-contract"
@@ -24,3 +26,6 @@ path = "../../../tests/sdk/native.rs"
 
 [lints]
 workspace = true
+
+[package.metadata.snap]
+role = "composition"

@@ -194,15 +194,15 @@ of what to change, while newly declared portable applications receive target che
 
 Acceptance:
 
-- [ ] Project/package declarations identify portable and platform roles explicitly.
-- [ ] Cargo metadata checks enforce allowed dependency directions, distinguishing
+- [x] Project/package declarations identify portable and platform roles explicitly.
+- [x] Cargo metadata checks enforce allowed dependency directions, distinguishing
   normal, development, and build dependencies and relevant target/feature contexts.
-- [ ] Portable target checks derive from declarations instead of a Healthy-only list.
-- [ ] Diagnostics identify the offending package/edge, rule, and bounded remedy.
-- [ ] Rustdoc checks, cargo-machete, and a minimal cargo-deny policy are integrated
+- [x] Portable target checks derive from declarations instead of a Healthy-only list.
+- [x] Diagnostics identify the offending package/edge, rule, and bounded remedy.
+- [x] Rustdoc checks, cargo-machete, and a minimal cargo-deny policy are integrated
   at the appropriate project/repository scope, with reproducible tool setup.
-- [ ] Broken project fixtures prove the important check diagnostics and exit status.
-- [ ] Brief agent guidance explains interface comments and points to commands that
+- [x] Broken project fixtures prove the important check diagnostics and exit status.
+- [x] Brief agent guidance explains interface comments and points to commands that
   enforce architecture; current architecture/run documentation reflects the layout.
 
 Keep policies specific to this repository's real constraints. Do not enable every
@@ -342,4 +342,9 @@ Slice 03 is READY at `ae7f22e6f214025c4c6a9e71808b3922a2ea685a`, both reviews CL
 in round 1 without findings. Reports are in `docs/reviews/snap-check.md`.
 Project checks select Rust manifests, optional build prerequisites, and literal
 commands. Healthy runs its SDK/browser checks independently of the reference suite.
-Slices 04–06 are unstarted. The user authorized continuing through the full list.
+Slice 04 is implemented and verified; independent review is pending in
+`docs/reviews/structural-checks.md`. Package roles, host/browser all-feature dependency
+graphs, and automatic bare-WASM compilation run through snap check. Repository
+gates add pinned dependency tools; network advisory checking is explicit. Agent
+guidance now points to structural diagnostics and meaningful interface comments.
+Slices 05–06 are unstarted. The user authorized continuing through the full list.

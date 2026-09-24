@@ -11,6 +11,12 @@ contracts and the verification gates; internal rewrites must preserve the suite.
   work as host actions and completion inputs when a real tracer requires it.
 - Use Rust modules for new concerns. Extract crates when a dependency constraint,
   independent consumer, or portability requirement justifies the split.
+- When adding a package or dependency, declare its `package.metadata.snap.role` and
+  run `snap check apps/healthy --structure-only --workspace`. See README's structural
+  checks section for dependency kinds and target/feature coverage.
+- Document ownership, ordering, cancellation, recovery, and compatibility exceptions
+  beside the interface that promises them. Comments should explain constraints a
+  caller cannot infer from the types; compiler/check diagnostics enforce structure.
 - Preserve the selected TypeScript wire behavior before proposing protocol changes.
   Inspect `~/code/bod/snap` as the reference implementation.
 - Default behavior tests to the Client SDK or wire Protocol. Rust functions and

@@ -17,6 +17,7 @@ bindings = ".snap/bindings"
 address = "127.0.0.1:3846"
 
 [check]
+architecture = true
 rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
 build = true
 commands = [

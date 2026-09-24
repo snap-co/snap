@@ -19,3 +19,6 @@ nix = { version = "0.30", features = ["signal", "user"] }
 
 [lints]
 workspace = true
+
+[package.metadata.snap]
+role = "tool"

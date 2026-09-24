@@ -1,11 +1,16 @@
-use crate::{build, cargo, config::Project, process::Runner};
+use crate::{architecture, build, cargo, config::Project, process::Runner};
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use tokio::process::Command;
 
-pub async fn run(project: Project, runner: &Runner) -> Result<()> {
+pub async fn run(
+    project: Project,
+    runner: &Runner,
+    structure_only: bool,
+    workspace: bool,
+) -> Result<()> {
     // Build preparation may generate Rust inputs needed by formatting/lint/tests.
-    let artifacts = if project.config.check.build {
+    let artifacts = if project.config.check.build && !structure_only {
         Some(build::run(&project, runner, build::Mode::Build(build::Profile::Debug)).await?)
     } else {
         None
@@ -19,6 +24,13 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
     } else {
         project.config.check.rust.clone()
     };
+    if project.config.check.architecture || structure_only {
+        architecture::check(&project, runner, &manifests, workspace).await?;
+    }
+    if structure_only {
+        println!("Structural checks passed: {}", project.config.application);
+        return Ok(());
+    }
     let mut selected = BTreeSet::new();
     for manifest in manifests {
         let (manifest, metadata) = cargo::metadata(&project, runner, &manifest, false).await?;
@@ -33,26 +45,27 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
             ("fmt", vec!["--", "--check"]),
             ("clippy", vec!["--all-targets", "--", "-D", "warnings"]),
             ("test", vec!["--all-targets"]),
+            ("doc", vec!["--no-deps"]),
         ] {
             eprintln!("Checking {name}: cargo {task}");
-            runner
-                .run(
-                    Command::new("cargo")
-                        .current_dir(&project.root)
-                        .arg(task)
-                        .arg("--manifest-path")
-                        .arg(&manifest)
-                        .args(["--package", name])
-                        .args(args),
-                    false,
+            let mut command = Command::new("cargo");
+            command
+                .current_dir(&project.root)
+                .arg(task)
+                .arg("--manifest-path")
+                .arg(&manifest)
+                .args(["--package", name])
+                .args(args);
+            if task == "doc" {
+                let flags = std::env::var("RUSTDOCFLAGS").unwrap_or_default();
+                command.env("RUSTDOCFLAGS", format!("{flags} -D warnings"));
+            }
+            runner.run(&mut command, false).await.with_context(|| {
+                format!(
+                    "{name}: cargo {task} failed; run it with --manifest-path {}",
+                    manifest.display()
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "{name}: cargo {task} failed; run it with --manifest-path {}",
-                        manifest.display()
-                    )
-                })?;
+            })?;
         }
     }
     for args in &project.config.check.commands {

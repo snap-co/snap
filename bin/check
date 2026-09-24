@@ -6,13 +6,15 @@ cargo_cmd=(cargo)
 if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
 "${cargo_cmd[@]}" fmt --all -- --check
 "${cargo_cmd[@]}" clippy --workspace --all-targets -- -D warnings
-"${cargo_cmd[@]}" check -p healthy -p snap-client --target wasm32v1-none
 "${cargo_cmd[@]}" build -p snap-native --examples
 "${cargo_cmd[@]}" build -p healthy-native --bins --examples
-"${cargo_cmd[@]}" build -p snap-cli
+./bin/snap check apps/healthy --structure-only --workspace
+RUSTDOCFLAGS="-D warnings" "${cargo_cmd[@]}" doc --workspace --no-deps
+./bin/check-deps
 python3 tests/cli/dev.py
 python3 tests/cli/build.py
 python3 tests/cli/check.py
+python3 tests/cli/architecture.py
 "${cargo_cmd[@]}" test -p healthy-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts

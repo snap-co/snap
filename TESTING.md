@@ -113,6 +113,14 @@ arguments, sibling isolation, failure/missing-tool reporting, and descendant cle
 checks without the reference checkout. The full repository gate adds CLI and
 cross-implementation compatibility assertions.
 
+`tests/cli/architecture.py` verifies actionable errors for forbidden dependencies,
+including feature/target-specific and development edges, missing role declarations,
+and automatic portability checking of a newly declared workspace package. Assertions
+use `snap check --structure-only`; they do not import the metadata implementation.
+Project checks include warnings-denied Rustdoc. The repository gate also checks all
+workspace documentation and pinned dependency tools. `bin/check-deps --audit` opts
+into network advisory checks separately.
+
 `scripts/dev-smoke.py` starts two real `snap dev` processes from Healthy's root on
 the same dynamically selected port. It proves replacement, HTML/WASM serving, and
 that terminating the CLI releases the listener. Both scripts use Python's standard
@@ -122,13 +130,16 @@ the release browser test separately verifies portable artifact packaging and rec
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo check -p healthy -p snap-client --target wasm32v1-none
+snap check apps/healthy --structure-only --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+./bin/check-deps
 cargo build -p snap-native --examples
 cargo build -p healthy-native --bins --examples
 cargo build -p snap-cli
 python3 tests/cli/dev.py
 python3 tests/cli/build.py
 python3 tests/cli/check.py
+python3 tests/cli/architecture.py
 cargo test -p healthy-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts

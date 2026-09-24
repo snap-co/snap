@@ -18,3 +18,10 @@ js-sys = "0.3"
 
 [lints]
 workspace = true
+
+[package.metadata.snap]
+role = "composition"
+
+[package.metadata.cargo-machete]
+# wasm_bindgen expands async exports into calls to this crate.
+ignored = ["wasm-bindgen-futures"]

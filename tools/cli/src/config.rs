@@ -54,6 +54,8 @@ pub struct Prepare {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
+    #[serde(default)]
+    pub architecture: bool,
     /// Empty means the server and optional WASM packages selected above.
     #[serde(default)]
     pub rust: Vec<PathBuf>,

@@ -1,4 +1,5 @@
 //! Local developer tooling. Application execution stays in the selected host executable.
+mod architecture;
 mod build;
 mod cargo;
 mod check;
@@ -26,6 +27,12 @@ enum Command {
     Check {
         /// Start discovery here instead of the current directory
         project: Option<PathBuf>,
+        /// Only dependency-direction and portable-target checks
+        #[arg(long)]
+        structure_only: bool,
+        /// Include all workspace packages in structural checks (repository gate)
+        #[arg(long, requires = "structure_only")]
+        workspace: bool,
     },
     /// Build a runnable package for the nearest snap.toml project
     Build {
@@ -48,8 +55,18 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
-            Command::Check { project } => {
-                check::run(config::Project::discover(project)?, &runner).await
+            Command::Check {
+                project,
+                structure_only,
+                workspace,
+            } => {
+                check::run(
+                    config::Project::discover(project)?,
+                    &runner,
+                    structure_only,
+                    workspace,
+                )
+                .await
             }
             Command::Build { project, release } => {
                 let project = config::Project::discover(project)?;

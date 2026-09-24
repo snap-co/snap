@@ -1,0 +1,12 @@
+[graph]
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown", "wasm32v1-none"]
+all-features = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

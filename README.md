@@ -136,13 +136,14 @@ builds a standalone `snap`; the development toolchain is still needed to build a
 ### Project verification
 
 `snap check [directory]` uses the same discovery rules. It optionally builds first,
-then runs formatting, Clippy with warnings denied, tests for selected Rust packages,
+then runs formatting, Clippy with warnings denied, tests and Rustdoc for selected packages,
 and ordered project commands. Build preparation can generate inputs for the Rust
 checks. It never starts a persistent development
 server or replaces a listener. Test commands own their servers on ephemeral ports.
 
 ```toml
 [check]
+architecture = true
 rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
 build = true
 commands = [["bun", "../../scripts/check-client.ts"]]
@@ -160,6 +161,44 @@ Healthy declares native/WASM SDK contracts, TypeScript checking, and its package
 Chromium scenario. Its project check needs Chromium, but not the reference checkout.
 `./bin/check` remains the repository gate for framework, CLI, release packaging,
 and reference-TypeScript compatibility contracts.
+
+### Structural checks
+
+Opt in with `check.architecture = true`, as Healthy does. All reachable local/path
+packages must declare `[package.metadata.snap] role = "..."`. Registry and git
+dependencies do not need project-specific roles. The roles constrain normal
+dependencies:
+
+| Role | Allowed local dependencies | Bare-WASM checked |
+| --- | --- | --- |
+| core | core | yes |
+| application | core, application | yes |
+| platform | core, platform | no |
+| binding | core, platform, binding | no |
+| tool | core, platform, binding, tool | no |
+| composition | all roles | no |
+
+Development and build dependencies may use host code. Shared core/platform/binding/tool
+packages still cannot select application/composition packages through any dependency
+kind. Structural checking follows Cargo's resolved graph for the current host and
+`wasm32-unknown-unknown`, with all features enabled. Each reachable core/application
+library also compiles for `wasm32v1-none` with all features. All declared features in
+a portable package must remain portable; put platform features in a platform package.
+Diagnostics identify the package, edge, dependency kind, target, and remedy.
+
+`snap check apps/healthy --structure-only` runs just these checks. Add `--workspace`
+to include every workspace member, including newly added portable applications.
+`bin/check` uses that repository scope instead of a hardcoded portable-package list.
+Ordinary project checks cover the selected packages' dependency closure.
+
+`mise install` installs pinned cargo-machete and cargo-deny tools. `bin/check-deps`
+verifies their versions and runs repository-wide unused-dependency and source/version
+policy checks. Python 3.11+ reads the tool pins from `mise.toml`. The two documented
+machete exceptions are dependencies used by wasm-bindgen's generated async exports.
+Cargo-deny permits duplicate versions and private path dependencies, and rejects
+unrestricted registry versions and unapproved git/registry sources. Network-backed
+advisory checking is explicit: `bin/check-deps --audit`. It is not a build or ordinary
+check prerequisite. No license policy is inferred for this unpublished spike.
 
 ### Headless journey
 
