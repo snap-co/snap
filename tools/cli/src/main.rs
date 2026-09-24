@@ -76,7 +76,7 @@ async fn main() -> ExitCode {
                 } else {
                     build::Profile::Debug
                 };
-                let artifacts = build::run(&project, &runner, build::Mode::Build(profile)).await?;
+                let artifacts = build::run(&project, &runner, profile).await?;
                 println!("Package: {}", artifacts.directory.display());
                 println!("Executable: {}", artifacts.executable.display());
                 if let Some(web) = artifacts.web {

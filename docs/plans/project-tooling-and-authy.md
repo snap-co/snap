@@ -15,7 +15,8 @@ Work directly on this repository's `main`, without Factory or worktrees.
 
 All six slices are complete and reviewed as of 2026-09-23. Latest reviewed code:
 `e9f64499daad0b9e1790e38a6a3d4bedcf84076c`. The full repository gate passes.
-Authy's first password/session flow is the next separately scoped piece of work.
+A bounded private-dev-output follow-on was accepted on 2026-09-24 and is recorded
+below. Authy's first password/session flow follows that work as a separate scope.
 
 ## Accepted decisions
 
@@ -272,6 +273,35 @@ Acceptance:
 Reuse file-watching machinery. State-preserving native/WASM hot replacement is
 explicitly out of scope. Define recovery after a successful build whose replacement
 process fails to start; do not imply that retaining old artifacts guarantees uptime.
+
+## Follow-on: private development outputs
+
+Accepted on 2026-09-24 after the architecture sanity review at `9cec7d3`. The review
+confirmed shared writable output paths; it did not reproduce a browser failure.
+The user chose private dev ownership before Authy. This is a new bounded change;
+the six completed slices and their review histories remain closed.
+
+- Each dev session and candidate owns worktree-local executable, generated JS,
+  WASM, and browser files from initial startup onward.
+- Dev resolves facade imports to its own bindings. Ordinary build/check publication
+  stays under `.snap/build/{debug,release}` and the configured binding directory.
+- Cargo caches and existing per-project build serialization remain shared.
+- An internal development version groups accepted configuration, Build identity,
+  artifact paths and cleanup ownership. Named activation/restoration operations
+  preserve compilation-failure retention, supersession and startup rollback.
+- A running native host retains its package across WASM-only edits. Vite retains
+  exposed versions until it stops to support older browser module requests. Normal
+  shutdown removes the session directory; unused candidates clean up immediately.
+- A real browser contract must observe different standalone/dev binding ABIs,
+  then prove later Rust edits still reload. Run the repository gate and a new
+  bounded Standards/Spec review before completion.
+
+Authy, protocol expansion, generic Cargo metadata refactoring, and broad client or
+dispatch redesign remain outside this follow-on. Work stays on the authorized
+branch/worktree, with local commits and no remote or issue-tracker setup.
+
+Implementation and verification are in progress. Review evidence will be recorded
+in `docs/reviews/private-dev-outputs.md`.
 
 ## Sequence and Authy entry point
 

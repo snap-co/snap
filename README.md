@@ -123,7 +123,8 @@ The selected browser host uses `main.js`, `main.css`, and
 `snap_client_wasm_bg.wasm`; the supplied HTML and binding facade must match it.
 Packages live under the application's ignored `.snap/build/debug/` or
 `.snap/build/release/`.
-Bindings go to the explicit location imported by its TypeScript facade.
+Standalone builds publish bindings at the explicit location imported by the
+TypeScript facade. Dev resolves that same import to its private version instead.
 
 Initial preparation runs once per invocation; watched rebuilds rerun `prepare.build`.
 Hooks use the config directory as cwd and
@@ -183,7 +184,16 @@ WASM-only changes rebuild bindings/assets; shared dependencies invalidate both.
 `prepare.dev` runs once at startup, after `prepare.build`. Rebuilds rerun only
 `prepare.build`. Hook-generated outputs should live outside watched source trees.
 
-Reload candidates own private files under `.snap/dev/`. Compilation failures leave
+Every dev invocation owns `.snap/dev/<session>/<version>/`, from initial startup
+onward. Each version contains a private executable, generated JS bindings, WASM,
+and browser package. Vite resolves the facade's configured binding import to that
+version's JS and serves its matching WASM. Standalone `snap build` and build-enabled
+`snap check` publish under `.snap/build/{debug,release}` and the configured binding
+directory; a running dev session never consumes those files. Compilation caches
+and the per-project build lock remain shared within the worktree. A separate build
+can run while dev serves; overlapping compilation still fails with a retry message.
+
+Compilation failures leave
 the running executable, bindings, browser assets, and Build token intact. A later
 edit retries all outstanding changes. A native replacement uses its prescribed
 port, so restarting has a short outage. If it fails startup, Snap restores the last
@@ -191,11 +201,17 @@ working executable and Build token. If restoration also fails, Snap exits with t
 error and releases its processes. A configuration edit can restart both services;
 explicit address changes require opening the newly reported public URL.
 
-After readiness, Snap publishes bindings and asks Vite to invalidate modules and
+After readiness, Snap switches Vite's private binding and WASM paths, invalidates modules and
 reload the page. Native changes also reload the page so clients discover the new
 Build token. WASM-only edits preserve the native process. Vite acknowledges its
-accepted asset generation on development Build responses before Snap removes old
-files. React/CSS-only edits keep their existing state-preserving HMR behavior.
+accepted asset generation on development Build responses before Snap accepts the
+version. The accepted configuration, Build token, and owned artifacts form one
+development-version value used for restoration. A WASM-only rebuild keeps the
+native host's original package alive. Vite retains exposed versions until its
+process stops because browser module requests can still name those files. This
+uses more disk during a long dev session; stopping dev removes its session directory.
+Failed or superseded candidates that were never exposed are removed immediately.
+React/CSS-only edits keep their existing state-preserving HMR behavior.
 Ctrl-C/SIGTERM cancels active compilation/hooks, releases watchers, and stops both
 services. Standalone build/release packages stay static.
 

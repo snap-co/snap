@@ -11,7 +11,7 @@ pub async fn run(
 ) -> Result<()> {
     // Build preparation may generate Rust inputs needed by formatting/lint/tests.
     let artifacts = if project.config.check.build && !structure_only {
-        Some(build::run(&project, runner, build::Mode::Build(build::Profile::Debug)).await?)
+        Some(build::run(&project, runner, build::Profile::Debug).await?)
     } else {
         None
     };

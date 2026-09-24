@@ -2,13 +2,14 @@ import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
-import { dirname, resolve } from "node:path";
-import type { ViteDevServer } from "vite";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import type { Plugin, ViteDevServer } from "vite";
 
-const [project, packageDir, application, host, html, initialWasm, backend, address] = process.argv.slice(2);
+const [project, packageDir, application, host, html, initialWasm, backend, address, bindingSource, initialBindings] = process.argv.slice(2);
 let wasm = initialWasm;
-let generation = "initial";
-if (![project, packageDir, application, host, html, wasm, backend, address].every(Boolean))
+let bindings = initialBindings;
+let generation = basename(dirname(initialBindings));
+if (![project, packageDir, application, host, html, wasm, backend, address, bindingSource, bindings].every(Boolean))
   throw new Error("Missing Snap development server inputs");
 // Resolve browser tooling from the configured JS package, not the embedded driver.
 const require = createRequire(resolve(packageDir, "package.json"));
@@ -69,8 +70,18 @@ vite = await createViteServer({
   clearScreen: false,
   root: project,
   appType: "custom",
-  cacheDir: resolve(project, ".snap/vite"),
-  plugins: [react()],
+  cacheDir: resolve(dirname(initialBindings), "vite"),
+  plugins: [{
+    name: "snap-private-bindings",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (!importer || !source.startsWith(".")) return;
+      const path = resolve(dirname(importer.split("?")[0]), source);
+      const suffix = relative(bindingSource, path);
+      if (!suffix.startsWith("..") && !isAbsolute(suffix))
+        return resolve(bindings, suffix);
+    },
+  } satisfies Plugin, react()],
   resolve: { alias: { "snap:application": application }, dedupe: ["react", "react-dom"] },
   optimizeDeps: { include: ["react", "react-dom/client", "react/jsx-runtime"] },
   server: {
@@ -91,8 +102,9 @@ let closing = false;
 // Snap sends only complete accepted generations. Vite owns the browser channel.
 const control = createInterface({ input: process.stdin });
 control.on("line", (line) => {
-  const update = JSON.parse(line) as { wasm: string; generation: string };
+  const update = JSON.parse(line) as { wasm: string; bindings: string; generation: string };
   wasm = update.wasm;
+  bindings = update.bindings;
   generation = update.generation;
   vite.moduleGraph.invalidateAll();
   vite.ws.send({ type: "full-reload" });

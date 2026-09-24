@@ -13,12 +13,6 @@ pub enum Profile {
     Release,
 }
 
-pub enum Mode {
-    Build(Profile),
-    /// Dev has already run its hooks before discovering watch inputs.
-    PreparedDev(std::fs::File),
-}
-
 impl Profile {
     fn name(self) -> &'static str {
         match self {
@@ -35,15 +29,9 @@ pub struct Artifacts {
 }
 
 /// Both build and dev consume a complete package, never subprocess output text.
-pub async fn run(project: &Project, runner: &Runner, mode: Mode) -> Result<Artifacts> {
-    let (profile, _lock) = match mode {
-        Mode::Build(profile) => {
-            let lock = lock(project)?;
-            hooks(project, runner, &project.config.prepare.build).await?;
-            (profile, lock)
-        }
-        Mode::PreparedDev(lock) => (Profile::Debug, lock),
-    };
+pub async fn run(project: &Project, runner: &Runner, profile: Profile) -> Result<Artifacts> {
+    let _lock = lock(project)?;
+    hooks(project, runner, &project.config.prepare.build).await?;
     let work = project.root.join(".snap/build");
     let staging = Staging(work.join("staging"));
     if staging.0.exists() {
@@ -120,46 +108,49 @@ async fn native_build(project: &Project, runner: &Runner, profile: Profile) -> R
     )
 }
 
-/// A reload candidate has private bindings/assets until the coordinator has
-/// checked for newer edits and started its native host. Dropping it removes only
-/// that generation; the previous service and browser keep their working files.
+/// Each invocation owns a worktree-local directory, including initial startup.
+/// Declare this before versions/services so their owners release files first.
+pub struct DevSession(Staging);
+
+impl DevSession {
+    pub fn new(project: &Project) -> Result<Self> {
+        let directory = project.root.join(".snap/dev").join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory)?;
+        Ok(Self(Staging(directory)))
+    }
+}
+
+/// Completed dev files never publish into build/check outputs. Services retain
+/// shared ownership while executing or serving them; unused candidates clean up.
 pub struct Generation {
     pub artifacts: Artifacts,
-    bindings: Option<PathBuf>,
+    pub bindings: Option<PathBuf>,
     _cleanup: Staging,
 }
 
-impl Generation {
-    pub fn publish_bindings(&self, project: &Project) -> Result<()> {
-        if let (Some(from), Some(web)) = (&self.bindings, &project.config.web) {
-            let to = project.path(&web.bindings);
-            if to.exists() {
-                std::fs::remove_dir_all(&to)?;
-            }
-            copy_tree(from, &to)?;
-        }
-        Ok(())
-    }
-}
-
-pub async fn reload(
+pub async fn development(
+    session: &DevSession,
     project: &Project,
     runner: &Runner,
     changes: crate::watch::Changes,
-    previous: &Artifacts,
+    previous: Option<&Generation>,
+    preparation: Option<std::fs::File>,
 ) -> Result<Generation> {
-    let _lock = lock(project)?;
-    for command in &project.config.prepare.build {
-        runner
-            .run(
-                Command::new(&command[0])
-                    .args(&command[1..])
-                    .current_dir(&project.root),
-                false,
-            )
-            .await?;
-    }
-    let directory = project.root.join(".snap/dev").join(format!(
+    let _lock = match preparation {
+        Some(lock) => lock,
+        None => {
+            let lock = lock(project)?;
+            hooks(project, runner, &project.config.prepare.build).await?;
+            lock
+        }
+    };
+    let directory = session.0.0.join(format!(
         "generation-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -167,13 +158,13 @@ pub async fn reload(
     ));
     std::fs::create_dir_all(&directory)?;
     let cleanup = Staging(directory.clone());
-    let bindings = if changes.web && project.config.web.is_some() {
-        Some(directory.join(".bindings"))
-    } else {
-        None
-    };
+    let bindings = project
+        .config
+        .web
+        .as_ref()
+        .map(|_| directory.join("bindings"));
     let web = if let Some(web) = &project.config.web {
-        if changes.web {
+        if changes.web || previous.is_none() {
             Some(
                 web_build(
                     project,
@@ -186,9 +177,18 @@ pub async fn reload(
                 .await?,
             )
         } else {
+            let previous = previous.context("Missing previous generation")?;
+            copy_tree(
+                previous
+                    .bindings
+                    .as_deref()
+                    .context("Missing previous bindings")?,
+                bindings.as_deref().context("Missing binding destination")?,
+            )?;
             let target = directory.join("web");
             copy_tree(
                 previous
+                    .artifacts
                     .web
                     .as_ref()
                     .context("Missing previous browser assets")?,
@@ -199,10 +199,14 @@ pub async fn reload(
     } else {
         None
     };
-    let executable = if changes.native {
+    let executable = if changes.native || previous.is_none() {
         native_build(project, runner, Profile::Debug).await?
     } else {
-        previous.executable.clone()
+        previous
+            .context("Missing previous generation")?
+            .artifacts
+            .executable
+            .clone()
     };
     let executable_copy =
         directory.join(executable.file_name().context("Missing executable name")?);

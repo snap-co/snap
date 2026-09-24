@@ -12,29 +12,41 @@ use nix::{
 use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::process::Command;
 
-pub async fn run(mut project: Project, runner: &Runner) -> Result<()> {
+pub async fn run(project: Project, runner: &Runner) -> Result<()> {
     eprintln!(
         "Developing {} ({})",
         project.config.application,
         project.root.display()
     );
+    let session = build::DevSession::new(&project)?;
     let preparation = build::prepare_dev(&project, runner).await?;
     let mut sources = Sources::new(&project, runner).await?;
-    let artifacts = build::run(&project, runner, build::Mode::PreparedDev(preparation)).await?;
-    let mut generation: Option<build::Generation> = None;
+    let files = build::development(
+        &session,
+        &project,
+        runner,
+        Changes::default(),
+        None,
+        Some(preparation),
+    )
+    .await?;
+    let mut version = Version::new(project, files, None)?;
     let mut initial_changes = sources.settle(Changes::default()).await?;
     while initial_changes.native || initial_changes.web {
-        project = Project::discover(Some(project.root.clone()))?;
+        let project = Project::discover(Some(version.project.root.clone()))?;
         let mut next_sources = Sources::new(&project, runner).await?;
-        let candidate = build::reload(
+        let candidate = build::development(
+            &session,
             &project,
             runner,
             initial_changes,
-            generation.as_ref().map_or(&artifacts, |g| &g.artifacts),
+            Some(&version.files),
+            None,
         )
         .await?;
         let mut newer = sources.settle(Changes::default()).await?;
@@ -44,20 +56,11 @@ pub async fn run(mut project: Project, runner: &Runner) -> Result<()> {
             initial_changes.merge(newer);
             eprintln!("Discarding superseded initial Rust generation");
         } else {
-            candidate.publish_bindings(&project)?;
-            generation = Some(candidate);
+            version = Version::new(project, candidate, None)?;
             break;
         }
     }
-    let mut build = build_token(&project)?;
-    let mut running = launch(
-        &project,
-        generation.as_ref().map_or(&artifacts, |g| &g.artifacts),
-        runner,
-        &build,
-        None,
-    )
-    .await?;
+    let mut running = launch(&version, runner, None).await?;
     let mut pending = None;
     let mut dirty = Changes::default();
     loop {
@@ -72,7 +75,7 @@ pub async fn run(mut project: Project, runner: &Runner) -> Result<()> {
         changes.merge(dirty);
         dirty = changes;
         runner.check()?;
-        let candidate_project = match Project::discover(Some(project.root.clone())) {
+        let candidate_project = match Project::discover(Some(version.project.root.clone())) {
             Ok(project) => project,
             Err(error) => {
                 eprintln!("Configuration failed; previous generation retained: {error:#}");
@@ -89,14 +92,13 @@ pub async fn run(mut project: Project, runner: &Runner) -> Result<()> {
         };
         changes.merge(sources.settle(Changes::default()).await?);
         dirty = changes;
-        let previous = generation.as_ref().map_or(&artifacts, |g| &g.artifacts);
         eprintln!(
             "Rebuilding Rust: native={}, wasm={}",
             changes.native, changes.web
         );
         let candidate = tokio::select! {
             result = running.wait(runner) => { running.stop().await?; return result; }
-            result = build::reload(&candidate_project, runner, changes, previous) => result,
+            result = build::development(&session, &candidate_project, runner, changes, Some(&version.files), None) => result,
         };
         let mut newer = sources.settle(Changes::default()).await?;
         newer.merge(next_sources.settle(Changes::default()).await?);
@@ -119,29 +121,20 @@ pub async fn run(mut project: Project, runner: &Runner) -> Result<()> {
             pending = Some(changes);
             continue;
         }
-        let next_build = if changes.native || changes.config {
-            build_token(&candidate_project)?
-        } else {
-            build.clone()
-        };
+        let candidate = Version::new(
+            candidate_project,
+            candidate,
+            (!(changes.native || changes.config)).then(|| version.build.clone()),
+        )?;
         // Native replacement uses the same prescribed port. It necessarily has a
         // short outage. On startup failure restore the old executable and identity;
         // if restoration also fails, exit rather than claiming continued service.
         let addresses = (running.address, running.backend_address);
-        if let Err(error) = running
-            .switch(
-                &candidate_project,
-                &candidate.artifacts,
-                runner,
-                &next_build,
-                changes,
-            )
-            .await
-        {
+        if let Err(error) = running.activate(&candidate, runner, changes).await {
             runner.check()?;
             eprintln!("Replacement failed; restoring previous generation: {error:#}");
-            running.stop().await?;
-            running = launch(&project, previous, runner, &build, Some(addresses))
+            running
+                .restore(&version, runner, addresses)
                 .await
                 .context("Previous generation could not be restored")?;
             continue;
@@ -149,21 +142,40 @@ pub async fn run(mut project: Project, runner: &Runner) -> Result<()> {
         let newer = sources.settle(Changes::default()).await?;
         if newer.native || newer.web {
             if changes.native || changes.config {
-                running.stop().await?;
-                running = launch(&project, previous, runner, &build, Some(addresses)).await?;
+                running.restore(&version, runner, addresses).await?;
             }
             changes.merge(newer);
             pending = Some(changes);
             eprintln!("Discarding superseded Rust generation");
             continue;
         }
-        candidate.publish_bindings(&candidate_project)?;
-        running.reload_browser(&candidate.artifacts, runner).await?;
-        eprintln!("Rust generation ready: {next_build}");
-        generation = Some(candidate);
-        project = candidate_project;
-        build = next_build;
+        running.reload_browser(&candidate, runner).await?;
+        eprintln!("Rust generation ready: {}", candidate.build);
+        version = candidate;
         dirty = Changes::default();
+    }
+}
+
+/// The accepted configuration and identity always travel with their owned files.
+/// A replacement becomes accepted only after readiness, supersession checking,
+/// and the frontend acknowledgement. Until then this value can restore service.
+struct Version {
+    project: Project,
+    build: String,
+    files: Arc<build::Generation>,
+}
+
+impl Version {
+    fn new(project: Project, files: build::Generation, build: Option<String>) -> Result<Self> {
+        let build = match build {
+            Some(build) => build,
+            None => build_token(&project)?,
+        };
+        Ok(Self {
+            project,
+            build,
+            files: Arc::new(files),
+        })
     }
 }
 
@@ -207,21 +219,25 @@ struct Running {
     frontend: Option<Service>,
     address: SocketAddr,
     backend_address: SocketAddr,
+    // Field order drops services before their files. A WASM-only activation keeps
+    // the native host's original package alive, including SNAP_WEB_DIR.
+    host_files: Arc<build::Generation>,
+    // Vite/browser module URLs can refer to earlier private bindings. Retain exposed
+    // versions until this frontend stops, rather than guessing when requests finish.
+    browser_files: Vec<Arc<build::Generation>>,
 }
 
 impl Running {
-    async fn reload_browser(
-        &mut self,
-        artifacts: &build::Artifacts,
-        runner: &Runner,
-    ) -> Result<()> {
+    async fn reload_browser(&mut self, version: &Version, runner: &Runner) -> Result<()> {
+        let artifacts = &version.files.artifacts;
         if let (Some(frontend), Some(web)) = (&mut self.frontend, &artifacts.web) {
             let generation = artifacts
                 .directory
                 .file_name()
                 .context("Missing generation name")?
                 .to_string_lossy();
-            frontend.send(&serde_json::json!({"wasm": web.join("snap_client_wasm_bg.wasm"), "generation": generation}).to_string()).await?;
+            self.browser_files.push(version.files.clone());
+            frontend.send(&serde_json::json!({"wasm": web.join("snap_client_wasm_bg.wasm"), "bindings": version.files.bindings, "generation": generation}).to_string()).await?;
             let client = reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
@@ -269,28 +285,44 @@ impl Running {
         Ok(())
     }
 
-    async fn switch(
+    async fn restore(
         &mut self,
-        project: &Project,
-        artifacts: &build::Artifacts,
+        version: &Version,
         runner: &Runner,
-        build: &str,
+        addresses: (SocketAddr, SocketAddr),
+    ) -> Result<()> {
+        self.stop().await?;
+        *self = launch(version, runner, Some(addresses)).await?;
+        Ok(())
+    }
+
+    async fn activate(
+        &mut self,
+        version: &Version,
+        runner: &Runner,
         changes: Changes,
     ) -> Result<()> {
+        let project = &version.project;
         if changes.config {
             self.stop().await?;
             let address = retain_port(project.address()?, self.address);
             let backend = retain_port(project.backend_address()?, self.backend_address);
-            *self = launch(project, artifacts, runner, build, Some((address, backend))).await?;
+            *self = launch(version, runner, Some((address, backend))).await?;
         } else if changes.native {
             self.backend.stop().await?;
             self.backend = runner
                 .service(
-                    &mut host_command(project, artifacts, self.backend_address, build),
+                    &mut host_command(
+                        project,
+                        &version.files.artifacts,
+                        self.backend_address,
+                        &version.build,
+                    ),
                     &url(self.backend_address),
-                    build,
+                    &version.build,
                 )
                 .await?;
+            self.host_files = version.files.clone();
         }
         Ok(())
     }
@@ -304,12 +336,13 @@ fn retain_port(mut requested: SocketAddr, previous: SocketAddr) -> SocketAddr {
 }
 
 async fn launch(
-    project: &Project,
-    artifacts: &build::Artifacts,
+    version: &Version,
     runner: &Runner,
-    build: &str,
     addresses: Option<(SocketAddr, SocketAddr)>,
 ) -> Result<Running> {
+    let project = &version.project;
+    let artifacts = &version.files.artifacts;
+    let build = &version.build;
     let address = addresses.map_or_else(|| project.address(), |a| Ok(a.0))?;
     let mut command = host_command(project, artifacts, address, build);
     if let (Some(web), Some(assets)) = (&project.config.web, &artifacts.web) {
@@ -337,7 +370,7 @@ async fn launch(
         drop(private);
         let backend = runner.service(&mut command, &backend_url, build).await?;
         eprintln!("Backend ready at {backend_url}");
-        let driver = project.root.join(".snap/dev-web.ts");
+        let driver = artifacts.directory.join("dev-web.ts");
         std::fs::write(&driver, include_str!("../../../scripts/dev-web.ts"))?;
         drop(public);
         let frontend = runner
@@ -352,7 +385,15 @@ async fn launch(
                     .arg(project.file(&web.html)?)
                     .arg(assets.join("snap_client_wasm_bg.wasm"))
                     .arg(&backend_url)
-                    .arg(address.to_string()),
+                    .arg(address.to_string())
+                    .arg(project.path(&web.bindings))
+                    .arg(
+                        version
+                            .files
+                            .bindings
+                            .as_ref()
+                            .context("Missing dev bindings")?,
+                    ),
                 &public_url,
                 build,
             )
@@ -363,6 +404,8 @@ async fn launch(
             frontend: Some(frontend),
             address,
             backend_address,
+            host_files: version.files.clone(),
+            browser_files: vec![version.files.clone()],
         })
     } else {
         let listener = reserve(runner, address).await?;
@@ -376,6 +419,8 @@ async fn launch(
             frontend: None,
             address,
             backend_address: address,
+            host_files: version.files.clone(),
+            browser_files: Vec::new(),
         })
     }
 }

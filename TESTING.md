@@ -147,6 +147,13 @@ build, startup-failure rollback, configuration recovery, and interruption during
 manifest-triggered rebuild. Assertions use rendered bindings, HTTP Build discovery,
 CLI diagnostics and process lifecycle. Generated output never drives source edits.
 
+`tests/browser/dev-outputs.spec.ts` keeps dev live while a separate `snap build`
+publishes a different generated binding ABI, selected by a command-local build-script
+environment variable. The packaged browser observes its numeric result while fresh
+dev pages retain their string result. Subsequent WASM and native edits still reload
+correctly. This covers initial and watched dev output ownership through the CLI and
+real browser, including JS/WASM pairing rather than identical-file publication.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

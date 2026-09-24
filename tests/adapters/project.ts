@@ -1,5 +1,14 @@
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+/** A separate CLI invocation publishes the fixture's ordinary debug package. */
+export async function buildProject(project: { directory: string; env: NodeJS.ProcessEnv }, env: NodeJS.ProcessEnv = {}) {
+  return promisify(execFile)(resolve(import.meta.dirname, "../../target/debug/snap"), ["build", project.directory], {
+    env: { ...process.env, ...project.env, ...env }, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+  });
+}
 
 /** Each editing contract owns its source copy, bindings, outputs, and processes. */
 export async function healthyProject(rust = false) {
