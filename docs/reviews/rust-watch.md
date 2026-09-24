@@ -59,3 +59,28 @@ retaining ChildStdin separately fixed it. No lower-seam behavioral tests were ad
 Round 1 recorded before dispatch. Standards and Spec reviewers inherit Astra under
 the harness model-override policy. Review covers the fixed implementation delta and
 required interactions, not a fresh audit of closed prior milestones.
+
+## Round 1 findings and repair batch
+
+Reviewed SHA `f195eae50a78c1d02e79b04328a0dcc49a1ec205`. Both axes BLOCKED.
+Standards session `ses_f2e528dd8ffegDXGF6LAkPuLja`, complete report
+`/tmp/opencode/rust-watch-standards-r1.md`. Spec session
+`ses_f2e528da5ffez54Tc84n5yqUKm`, complete report
+`/tmp/opencode/rust-watch-spec-r1.md`. The original unabridged reports and their
+real-CLI reproduction scripts/logs remain at the reported paths.
+
+| Finding | Accepted remedy |
+| --- | --- |
+| SPEC-1 | Ask Cargo for the workspace manifest of every reachable local/path package, including separate workspaces. Watch its parent for replacement saves. |
+| STD-1 / SPEC-2 | Record ancestor `.cargo` and expected config paths even before they exist. Creation/replacement of the directory invalidates config and refreshes its watch. |
+
+One repair batch complete. The added real-CLI regression serves a dependency's
+inherited version and a compile-time Cargo-config environment value over HTTP. It
+edits only the separate workspace manifest, then creates an absent ancestor config
+directory and edits that config again. Source files stay untouched throughout.
+
+Targeted CLI regression passed in 4.9s. `mise exec -- ./bin/check` passed after the
+repair, now 12 dev CLI cases and all prior gates/four Chromium scenarios, no skips.
+`git diff --check` passed. Round 2 recorded before dispatch; validate these findings
+and repair-induced interactions only. This is the final authorized review round
+for slice 06; unresolved or new blockers require human intervention.

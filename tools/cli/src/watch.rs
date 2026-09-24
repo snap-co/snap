@@ -128,6 +128,27 @@ impl Sources {
                 }
             }
         }
+        // A path dependency may inherit package/dependency settings from another
+        // workspace. Ask Cargo rather than assuming its package directory is the
+        // workspace, or that the workspace sits above the selected project.
+        for root in sources.roots.keys() {
+            let output = runner
+                .run(
+                    Command::new("cargo")
+                        .current_dir(&project.root)
+                        .args(["locate-project", "--workspace", "--manifest-path"])
+                        .arg(root.join("Cargo.toml")),
+                    true,
+                )
+                .await?;
+            let located: Value = serde_json::from_slice(&output)?;
+            let manifest = PathBuf::from(
+                located["root"]
+                    .as_str()
+                    .context("Missing dependency workspace manifest")?,
+            );
+            sources.manifests.insert(manifest);
+        }
         let mut directories = BTreeSet::new();
         for root in sources.roots.keys() {
             sources.directories(root, &mut directories)?;
@@ -148,10 +169,13 @@ impl Sources {
                 sources.manifests.insert(ancestor.join(name));
             }
             let cargo = ancestor.join(".cargo");
+            // The parent's nonrecursive watch observes creation/replacement even
+            // if this directory did not exist when the graph was discovered.
+            sources.manifests.insert(cargo.clone());
+            sources.manifests.insert(cargo.join("config"));
+            sources.manifests.insert(cargo.join("config.toml"));
             if cargo.is_dir() {
                 directories.insert(cargo.clone());
-                sources.manifests.insert(cargo.join("config"));
-                sources.manifests.insert(cargo.join("config.toml"));
             }
         }
         for directory in directories {

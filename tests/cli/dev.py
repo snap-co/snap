@@ -1,6 +1,7 @@
 """CLI consumer contracts. Fixtures are independent projects, not Snap internals."""
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import shutil
@@ -81,6 +82,70 @@ class ProjectContract(unittest.TestCase):
             process.stderr.close()
 
 class DevContract(ProjectContract):
+    def test_dependency_workspace_and_new_ancestor_config_rebuild(self):
+        project = self.root / "project"
+        dependency = self.root / "depworkspace"
+        (project / "src").mkdir(parents=True)
+        (dependency / "member/src").mkdir(parents=True)
+        workspace = '[workspace]\nmembers=["member"]\nresolver="3"\n[workspace.package]\nversion="0.1.0"\n'
+        (dependency / "Cargo.toml").write_text(workspace)
+        (dependency / "member/Cargo.toml").write_text(
+            '[package]\nname="watch-dependency"\nversion.workspace=true\nedition="2024"\n')
+        (dependency / "member/src/lib.rs").write_text('pub fn version() -> &\'static str { env!("CARGO_PKG_VERSION") }\n')
+        (project / "Cargo.toml").write_text((self.root / "Cargo.toml").read_text() +
+            '\n[dependencies]\nwatch-dependency={path="../depworkspace/member"}\n')
+        (project / "snap.toml").write_text(self.config)
+        (project / "src/main.rs").write_text(r'''use std::{io::{Read, Write}, net::TcpListener};
+fn main() {
+    let listener = TcpListener::bind(std::env::var("SNAP_ADDR").unwrap()).unwrap();
+    let build = std::env::var("SNAP_BUILD").unwrap();
+    for stream in listener.incoming() {
+        let mut stream = stream.unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request);
+        let body = format!("{{\"build\":\"{}\",\"dep\":\"{}\",\"config\":\"{}\"}}",
+            build, watch_dependency::version(), option_env!("SNAP_WATCH_CONFIG").unwrap_or("old"));
+        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+    }
+}
+''')
+        log_path = self.root / "cli.log"
+        with log_path.open("w") as log:
+            process = subprocess.Popen([str(SNAP), "dev", str(project)], cwd=self.root, env=self.env,
+                                       stdout=log, stderr=log, start_new_session=True)
+            def until(predicate):
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    try:
+                        value = predicate()
+                        if value:
+                            return value
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(0.05)
+                self.fail(log_path.read_text())
+            try:
+                ready = until(lambda: re.search(r"^listening on (http://[^\s]+)", log_path.read_text(), re.M))
+                def request():
+                    with urllib.request.urlopen(ready[1] + "/__snap/build", timeout=1) as reply:
+                        return json.load(reply)
+                initial = request()
+                self.assertEqual(initial["dep"], "0.1.0")
+                # Replacement-save the separate workspace manifest, no source edit.
+                (dependency / "next.toml").write_text(workspace.replace("0.1.0", "0.2.0"))
+                (dependency / "next.toml").replace(dependency / "Cargo.toml")
+                until(lambda: request()["dep"] == "0.2.0")
+                self.assertNotEqual(request()["build"], initial["build"])
+                (self.root / ".cargo").mkdir()
+                config = self.root / ".cargo/config.toml"
+                config.write_text('[env]\nSNAP_WATCH_CONFIG="new"\n')
+                until(lambda: request()["config"] == "new")
+                config.write_text('[env]\nSNAP_WATCH_CONFIG="updated"\n')
+                until(lambda: request()["config"] == "updated")
+            finally:
+                stop_cli(process)
+                kill_session(process.pid)
+
     def web_config(self):
         (self.root / "app.ts").write_text("export default {};\n")
         (self.root / "host.ts").write_text('import app from "snap:application"; console.log(app);\n')

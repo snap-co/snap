@@ -104,6 +104,9 @@ host with closed stderr, and an early-exiting host whose descendant retains stde
 Snap must enforce its readiness deadline independently of all three logging cases.
 Port-zero fixtures verify Snap passes a concrete port to the child. The lifecycle
 smoke test reuses both prescribed addresses to verify replacement and cleanup.
+The watcher CLI contract edits a dependency's separate workspace manifest and
+creates an initially absent ancestor Cargo config. HTTP responses expose the
+changed compiled values, without a Rust source edit to trigger recovery.
 
 `tests/cli/build.py` uses the same process fixture for the build command. It runs
 packaged native binaries and an independent generated WASM/browser application to
