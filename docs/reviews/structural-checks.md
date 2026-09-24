@@ -53,6 +53,93 @@ also covers an optional bare-target-only edge. `git diff --check` passed.
 Round 2 is recorded before dispatch and will validate these fixes and affected
 interactions only; no third review or additional repair batch is authorized.
 
+Round 2 revision: `ab74cb9d05147c6732feaf1c070e6ad18f2b8624`. Status: READY.
+Both reviewers validated fixes CLEAR. All findings resolved. Two rounds used; this
+milestone is closed. Subsequent record/progress changes are documentary.
+
+## Round 2 Standards report
+
+## Standards axis: CLEAR
+
+Final fix-validation round reviewed `64715c08fcf4c6625b135b99dac15c915f4665e6` → `ab74cb9d05147c6732feaf1c070e6ad18f2b8624`, commit `ab74cb9`. Read the finding ledger and both complete round-1 reports.
+
+### Finding status
+
+**STD-1 / SPEC-2: resolved.**
+`tools/cli/src/architecture.rs:136–149` now recognizes ordinary Cargo library kinds, including explicit `rlib`. The actual `cargo check --lib --all-features --target wasm32v1-none` remains at lines 191–196.
+
+The unchanged round-1 reproduction at `/tmp/opencode/slice04-standards-rlib` now exits successfully and performs its bare-WASM compilation. The added CLI regression also passes.
+
+**SPEC-1 repair interactions: validated.**
+Inspected recursive portable-manifest discovery, manifest deduplication, the added bare-WASM metadata graph, and workspace expansion restricted to initial roots. A targeted independent probe confirmed:
+
+- `--workspace` does not require roles from unrelated members of a discovered external workspace.
+- Recursive discovery reaches an optional dependency in a second external workspace.
+- A forbidden optional edge enabled only for `wasm32v1-none` fails with the owning package, dependency, kind, target, and remedy.
+
+No fix-induced standards violations or regressions were found in the affected scope.
+
+### Verification
+
+Independently ran under `mise exec`:
+
+- `cargo build -p snap-cli`: passed.
+- Original STD-1 CLI reproduction: passed.
+- `python3 tests/cli/architecture.py`: all five tests passed.
+- Recursive external-workspace/isolation probe: expected success and rejection observed.
+- Revision-range `git diff --check`: passed.
+
+Probe script: `/tmp/opencode/slice04-round2-standards.py`.
+
+Accepted the supplied post-fix full repository gate result: 8 dev, 7 build, 4 check, and 5 architecture CLI tests, plus all compiler, documentation, dependency-tool, SDK, protocol, journey, browser, and lifecycle gates, with no skips.
+
+Review was limited to the repairs and their affected interactions. The full suite and optional network audit were not rerun. No product edits, commits, publication, or delegation occurred. No remaining Standards findings or decisions.
+
+## Round 2 Spec report
+
+## Spec axis: CLEAR
+
+Final fix-validation round reviewed:
+
+- Prior revision: `64715c08fcf4c6625b135b99dac15c915f4665e6`
+- Repaired revision: `ab74cb9d05147c6732feaf1c070e6ad18f2b8624`
+
+Read the finding ledger and both complete round-1 reports. Review was limited to the repair delta and affected interactions.
+
+### Finding disposition
+
+| Finding | Status | Validation |
+|---|---|---|
+| **SPEC-1** | **Resolved** | Each discovered portable manifest receives its own all-feature metadata inspection for host, browser WASM, and bare WASM. Newly discovered portable packages are inspected recursively before compilation. The original false-success reproduction now exits 1 with the forbidden dependency diagnostic. |
+| **SPEC-2 / STD-1** | **Resolved** | Library detection recognizes ordinary Cargo library kinds, including explicit `rlib`. The original `rlib` reproduction now passes through the real CLI, including the retained bare-WASM `cargo check --lib --all-features`. |
+
+No new blockers or regressions were found in the affected scope.
+
+### Independent checks
+
+All checks ran through `mise exec` where applicable:
+
+- Built the repaired CLI successfully.
+- Reran both original reproduction scripts and confirmed the corrected outcomes.
+- Passed the targeted separate-workspace optional-feature regression, including its bare-target-only case.
+- Passed the existing selected-versus-workspace portability test.
+- Additional public-CLI probes confirmed:
+  - Both selected and `--workspace` checks exclude unrelated members of a dependency's separate workspace.
+  - Recursive inspection catches a forbidden bare-target-only edge enabled by a newly discovered portable package's own nondefault feature.
+- Fixed-diff `git diff --check` passed.
+- HEAD remained at the reviewed revision; working tree remained clean.
+
+Evidence:
+- SPEC-1: `/tmp/opencode/slice04-spec-1b55zul3/`
+- SPEC-2: `/tmp/opencode/slice04-library-yt_4dopf/`
+- Scope and recursion: `/tmp/opencode/slice04-round2-scope-of2wuvqg/`
+
+### Supplied checks and limits
+
+Accepted the supplied post-fix full `mise exec -- ./bin/check` pass: 8 dev, 7 build, 4 check, 5 architecture CLI tests, no skips, plus all documentation, dependency-tool, compiler, SDK, protocol, journey, browser, and lifecycle gates.
+
+The full suite and optional network audit were not rerun. No product edits, commits, publication, or delegation occurred. No unresolved findings or decisions remain on the Spec axis.
+
 ## Round 1 Standards report
 
 ## Standards axis: BLOCKED

@@ -342,8 +342,10 @@ Slice 03 is READY at `ae7f22e6f214025c4c6a9e71808b3922a2ea685a`, both reviews CL
 in round 1 without findings. Reports are in `docs/reviews/snap-check.md`.
 Project checks select Rust manifests, optional build prerequisites, and literal
 commands. Healthy runs its SDK/browser checks independently of the reference suite.
-Slice 04 is implemented and verified; independent review is pending in
-`docs/reviews/structural-checks.md`. Package roles, host/browser all-feature dependency
+Slice 04 is READY at `ab74cb9d05147c6732feaf1c070e6ad18f2b8624`. Round 1 found an
+explicit-rlib rejection and separate-workspace optional-feature gap. Both are fixed,
+with regressions and CLEAR round 2 validation. Reports are in
+`docs/reviews/structural-checks.md`. Package roles, host/browser/bare-WASM dependency
 graphs, and automatic bare-WASM compilation run through snap check. Repository
 gates add pinned dependency tools; network advisory checking is explicit. Agent
 guidance now points to structural diagnostics and meaningful interface comments.
