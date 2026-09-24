@@ -2,13 +2,16 @@
 
 This is a local architecture experiment, not a complete Snap port.
 Read [README.md](README.md) before changing crate seams or execution flow.
+When porting a module or changing provider composition, carrier handling, or storage,
+follow [the module pattern](docs/architecture/module-pattern.md). It records the
+accepted architecture and the pending Authy reference refactor.
 Before adding or changing tests, read [TESTING.md](TESTING.md). It defines consumer
 contracts and the verification gates; internal rewrites must preserve the suite.
 
 - Keep application, shared runtime, and client core code `no_std` with `alloc`. Platform crates
   own concrete IO, clocks, randomness, task execution, and environment access.
-- Application execution is synchronous input/state/action processing. Add external
-  work as host actions and completion inputs when a real tracer requires it.
+- Keep portable behavior IO-free. Hosts drive synchronous turns or poll portable
+  futures and execute external work; lifecycle guarantees belong at the interface.
 - Use Rust modules for new concerns. Extract crates when a dependency constraint,
   independent consumer, or portability requirement justifies the split.
 - When adding a package or dependency, declare its `package.metadata.snap.role` and

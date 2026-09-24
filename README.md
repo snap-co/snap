@@ -4,6 +4,20 @@ An experiment in a host-driven, IO-free Snap runtime. The first question is whet
 an application library can receive normalized inputs and return actions while a
 reusable host owns execution and all external work.
 
+## Architecture direction
+
+The accepted next step keeps capability contracts independent of their providers
+and uses host-driven continuations plus a shared, local Store. Applications select
+providers and explicitly publish remote operations; carrier envelopes and IO stay
+with host implementations. See the [decision](docs/adr/0001-host-driven-capability-providers.md)
+and [module porting guide](docs/architecture/module-pattern.md).
+
+The current Healthy/Authy implementation below still uses synchronous input/action
+stages. The [Authy reference refactor](docs/plans/host-driven-module-pattern.md)
+tracks its migration. A [standalone experiment](crates/runtime/prototypes/store-continuation/README.md)
+demonstrates portable futures with host-driven Memory/SQLite storage and optional
+record caching; it is not integrated into Authy.
+
 ## Run Authy
 
 ```sh
@@ -413,10 +427,11 @@ and portability constraints. More crates do not automatically make compilation
 faster: changes to a shared interface still rebuild dependants, and generic code
 can be instantiated downstream.
 
-The broad TypeScript `core` package does not become a miscellaneous Rust crate.
-Protocol is the first shared vocabulary we actually need. Runtime contains the
-portable implementation and the small host/module interface. Doctor is currently
-one module, not a crate pair named Health and Doctor.
+The current runtime contains portable implementations and the host/module interface.
+Doctor is one module, not a crate pair named Health and Doctor. The current
+`snap-protocol::identity` placement and Passport-specific runtime inputs/actions
+are ownership debt addressed by the reference refactor above. Protocol is one
+capability's contract; it is not the container for every capability's vocabulary.
 
 The client core is independently consumed by native clients and language bindings.
 The browser runtime has WASM/browser dependencies, and the WASM binding exports
