@@ -1,7 +1,8 @@
 # Private dev output review
 
-Status: repair batch complete and repository gate passing. Round 2 recorded before
-dispatch for bounded fix validation.
+Status: **READY** at `53ae50d17e84254f79a2454876e6dcf5b7861cbb`. Both final axes are
+CLEAR after two rounds. `SPEC-1` is resolved. The repository gate passes; no blockers,
+advisories, independent follow-ups, or missing verification remain.
 
 This is the bounded follow-on accepted on 2026-09-24, based on
 `9cec7d36203424e057edb28d8ef9d9020d7dbbc1`. The six tooling slices are closed and
@@ -68,31 +69,29 @@ repair evidence are recorded below.
 
 ## Review budget
 
-This follow-on has its own two-round limit. Round 1 independently reviews
-Standards and Spec at the same committed revision. A second round is available only
-for validation of one repair batch. Closed milestone reviews are not reopened.
+This follow-on used its two-round limit: independent Standards and Spec reviews,
+then one repair-batch validation. Closed milestone reviews were not reopened.
 
 Model discovery confirms GPT-6 Astra is available. Reviewers inherit Astra under the
 harness restriction on model overrides. The review assignment calls for close
 attention to file lifetime, frontend switching, failure restoration, and interaction
 with standalone publication.
 
-Round 1 reviews `fb1f33e37502f6499feb452fd41c157dd00268b9` against the base above.
+Round 1 reviewed `fb1f33e37502f6499feb452fd41c157dd00268b9` against the base above.
 Standards session: `ses_f2b083a55ffeJK7KTECHHFpQMV`.
 Spec session: `ses_f2b0839bdffe1NR3RFDmDmbLih`.
 Both received the same fixed contract and supplied verification evidence. Full-gate
-results were pending and identified as such in both assignments. Complete
-reports and the reconciled finding ledger will be added after delivery.
+results were pending and identified as such in both assignments.
 
 Round 1 delivered Standards CLEAR and Spec BLOCKED. `SPEC-1` is accepted: private
 remapping bypasses normal extension resolution in the static builder and Vite.
 Extensionless generated-binding imports worked at baseline initial startup but
-fail at this revision. Repair both resolvers and exercise an extensionless facade
-import in the real output-ownership browser contract. This and the gate repairs
-below are the single round-1 repair batch; round 2 will validate only that delta
-and affected interactions.
+failed at that revision. Both resolvers were repaired and the real output-ownership
+browser contract now uses an extensionless facade import. This and the gate repairs
+below formed the single round-1 repair batch. Round 2 validated only that delta and
+affected interactions.
 
-The complete round-1 reports are archived in
+The complete reports from both rounds are archived in
 [`private-dev-outputs-reports.md`](private-dev-outputs-reports.md). No independent
 follow-ups or advisories were reported; no tracker was needed or created.
 
@@ -115,7 +114,7 @@ pattern. Both now use Playwright's navigation-tolerant `waitForFunction` for the
 page-identity promise. Cleanup closes the page and uses nested `finally` blocks so
 page errors cannot skip server/source cleanup. The failed full gate is the red
 evidence; its precise trace makes speculative hypotheses or a test of Playwright
-internals unnecessary. Focused repeat and the full gate will verify this repair.
+internals unnecessary. Focused repeats and the full gate verified the repairs below.
 
 The first focused repeat passed five of six cases, then exposed another test-ordering
 race. The gated native edit had reached HTTP readiness but had not logged acceptance
@@ -142,6 +141,15 @@ three-client contract, protocol and journey; all five Chromium scenarios; Clippy
 formatting, portability, Rustdoc, dependency checks and listener replacement/cleanup.
 No skips or known environment limits remain.
 
-Round 2 is the only fix-validation round. Validate `SPEC-1`, the browser wait/cleanup
-and acceptance-signal repairs, and affected interactions. The original ownership
-implementation has no further Rust changes. Do not repeat a whole-diff review.
+Round 2 was recorded before dispatch and reviewed
+`53ae50d17e84254f79a2454876e6dcf5b7861cbb` against `fb1f33e`. Both original reviewer
+sessions returned CLEAR. Standards confirmed the test synchronization and cleanup
+preserve consumer promises, and independently checked the failure trace. Spec
+repeated isolated static/Vite probes for extensionless and explicit `.js` imports,
+publication isolation, switching, prior-version access, and missing-private-module
+rejection. Both marked `SPEC-1` resolved with no new findings. Complete original
+reports remain at `/tmp/opencode/private-dev-outputs-{standards,spec}-r2.md` and are
+archived beside this record.
+
+Final disposition is READY. Product/test code matches the fully checked and reviewed
+repair commit; subsequent closure changes are documentation only. Nothing was pushed.

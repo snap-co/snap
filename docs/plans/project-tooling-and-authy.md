@@ -15,8 +15,9 @@ Work directly on this repository's `main`, without Factory or worktrees.
 
 All six slices are complete and reviewed as of 2026-09-23. Latest reviewed code:
 `e9f64499daad0b9e1790e38a6a3d4bedcf84076c`. The full repository gate passes.
-A bounded private-dev-output follow-on was accepted on 2026-09-24 and is recorded
-below. Authy's first password/session flow follows that work as a separate scope.
+The private-dev-output follow-on is also READY as of 2026-09-24 at
+`53ae50d17e84254f79a2454876e6dcf5b7861cbb`, with full checks passing and both final
+review axes CLEAR. Authy's first password/session flow is the next separate scope.
 
 ## Accepted decisions
 
@@ -300,8 +301,12 @@ Authy, protocol expansion, generic Cargo metadata refactoring, and broad client 
 dispatch redesign remain outside this follow-on. Work stays on the authorized
 branch/worktree, with local commits and no remote or issue-tracker setup.
 
-Implementation and verification are in progress. Review evidence will be recorded
-in `docs/reviews/private-dev-outputs.md`.
+Complete and READY at `53ae50d17e84254f79a2454876e6dcf5b7861cbb`. The full repository
+gate passes, including five Chromium scenarios and 28 CLI cases. Both final review
+axes are CLEAR after two rounds. The extensionless-import regression found in
+round 1 is fixed; reload-test timing/cleanup repairs also passed repeated scenarios
+and the full gate. Review evidence and complete reports are in
+`docs/reviews/private-dev-outputs.md` and `docs/reviews/private-dev-outputs-reports.md`.
 
 ## Sequence and Authy entry point
 
