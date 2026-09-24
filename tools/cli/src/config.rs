@@ -16,6 +16,8 @@ pub struct Config {
     pub prepare: Prepare,
     #[serde(default)]
     pub dev: Dev,
+    #[serde(default)]
+    pub check: Check,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +49,18 @@ pub struct Prepare {
     pub build: Vec<Vec<String>>,
     #[serde(default)]
     pub dev: Vec<Vec<String>>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Check {
+    /// Empty means the server and optional WASM packages selected above.
+    #[serde(default)]
+    pub rust: Vec<PathBuf>,
+    #[serde(default)]
+    pub build: bool,
+    #[serde(default)]
+    pub commands: Vec<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -121,11 +135,20 @@ impl Project {
                             );
                         }
                     }
+                    for command in &config.check.commands {
+                        ensure!(
+                            command.first().is_some_and(|s| !s.trim().is_empty()),
+                            "check.commands must contain a nonempty executable"
+                        );
+                    }
                     let project = Self {
                         root: root.to_owned(),
                         config,
                     };
                     project.file(&project.config.server.manifest)?;
+                    for manifest in &project.config.check.rust {
+                        project.file(manifest)?;
+                    }
                     if let Some(web) = &project.config.web {
                         for path in [&web.application, &web.host, &web.html, &web.wasm_manifest] {
                             project.file(path)?;
@@ -146,7 +169,7 @@ impl Project {
             }
         }
         bail!(
-            "No snap.toml found from {}. Create one at the application root or pass its directory to snap build or snap dev.",
+            "No snap.toml found from {}. Create one at the application root or pass its directory to snap build, snap check, or snap dev.",
             start.display()
         )
     }

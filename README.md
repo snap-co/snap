@@ -128,10 +128,38 @@ string. The first failure stops startup. Config loading itself executes no hooks
 `SNAP_ENV` defaults to `development` for the launched host; the CLI supplies
 `SNAP_ADDR`, `SNAP_APPLICATION`, `SNAP_BUILD`, and its own `SNAP_WEB_DIR`.
 
-`build`, `dev`, help, and version are implemented. CLI-client composition, deploy,
+`build`, `check`, `dev`, help, and version are implemented. CLI-client composition, deploy,
 infrastructure operations, project creation, and project-pinned CLI dispatch remain
 later slices. For installation outside this checkout, `cargo install --path tools/cli`
 builds a standalone `snap`; the development toolchain is still needed to build apps.
+
+### Project verification
+
+`snap check [directory]` uses the same discovery rules. It optionally builds first,
+then runs formatting, Clippy with warnings denied, tests for selected Rust packages,
+and ordered project commands. Build preparation can generate inputs for the Rust
+checks. It never starts a persistent development
+server or replaces a listener. Test commands own their servers on ephemeral ports.
+
+```toml
+[check]
+rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+build = true
+commands = [["bun", "../../scripts/check-client.ts"]]
+```
+
+Without `check.rust`, the server and optional WASM packages are selected. Explicit
+manifests select packages, not entire workspaces. `check.build` defaults to false;
+when true it uses the shared debug builder and exposes `SNAP_CHECK_EXECUTABLE`,
+`SNAP_CHECK_PACKAGE`, and, for browser apps, `SNAP_CHECK_WEB_DIR` to check commands.
+These variables are cleared when inapplicable. Commands use literal argv and the
+config directory as cwd. The first failed or missing command stops checking with a
+nonzero exit status; interruption uses the same child-group cleanup as builds.
+
+Healthy declares native/WASM SDK contracts, TypeScript checking, and its packaged
+Chromium scenario. Its project check needs Chromium, but not the reference checkout.
+`./bin/check` remains the repository gate for framework, CLI, release packaging,
+and reference-TypeScript compatibility contracts.
 
 ### Headless journey
 

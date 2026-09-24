@@ -1,12 +1,11 @@
 use crate::{
+    cargo,
     config::{Project, Web},
     process::Runner,
 };
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
-
-mod cargo;
 
 #[derive(Clone, Copy)]
 pub enum Profile {

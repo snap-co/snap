@@ -107,6 +107,12 @@ ordering, failure recovery, listener preservation, concurrent-build rejection, a
 interruption cleanup. A relocated native package runs after its sources and Cargo
 outputs are removed. These are CLI/output contracts, not Rust helper tests.
 
+`tests/cli/check.py` verifies selected-project checks, artifact prerequisites, literal
+arguments, sibling isolation, failure/missing-tool reporting, and descendant cleanup.
+`snap check apps/healthy` runs application Rust, TypeScript, SDK, and packaged browser
+checks without the reference checkout. The full repository gate adds CLI and
+cross-implementation compatibility assertions.
+
 `scripts/dev-smoke.py` starts two real `snap dev` processes from Healthy's root on
 the same dynamically selected port. It proves replacement, HTML/WASM serving, and
 that terminating the CLI releases the listener. Both scripts use Python's standard
@@ -122,6 +128,7 @@ cargo build -p healthy-native --bins --examples
 cargo build -p snap-cli
 python3 tests/cli/dev.py
 python3 tests/cli/build.py
+python3 tests/cli/check.py
 cargo test -p healthy-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts

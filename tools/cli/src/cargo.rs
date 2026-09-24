@@ -20,29 +20,8 @@ pub async fn compile(
     options: &[&str],
     wasm: bool,
 ) -> Result<Artifact> {
-    let manifest = project.file(manifest)?;
-    let mut command = Command::new("cargo");
-    command
-        .current_dir(&project.root)
-        .args(["metadata", "--format-version=1", "--manifest-path"])
-        .arg(&manifest);
-    if wasm {
-        command.args(["--filter-platform", "wasm32-unknown-unknown"]);
-    } else {
-        command.arg("--no-deps");
-    }
-    let output = runner.run(&mut command, true).await?;
-    let metadata: Value = serde_json::from_slice(&output).context("Invalid Cargo metadata")?;
-    let package = metadata["packages"]
-        .as_array()
-        .context("Missing Cargo packages")?
-        .iter()
-        .find(|package| {
-            package["manifest_path"]
-                .as_str()
-                .is_some_and(|path| Path::new(path) == manifest)
-        })
-        .context("Manifest must select a Cargo package, not a virtual workspace")?;
+    let (manifest, metadata) = metadata(project, runner, manifest, wasm).await?;
+    let package = selected_package(&metadata, &manifest)?;
     let name = package["name"]
         .as_str()
         .context("Missing Cargo package name")?;
@@ -95,6 +74,41 @@ pub async fn compile(
         "Cargo did not produce the selected {} artifact",
         if wasm { "WASM" } else { "executable" }
     )
+}
+
+pub async fn metadata(
+    project: &Project,
+    runner: &Runner,
+    manifest: &Path,
+    wasm: bool,
+) -> Result<(PathBuf, Value)> {
+    let manifest = project.file(manifest)?;
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(&project.root)
+        .args(["metadata", "--format-version=1", "--manifest-path"])
+        .arg(&manifest);
+    if wasm {
+        command.args(["--filter-platform", "wasm32-unknown-unknown"]);
+    } else {
+        command.arg("--no-deps");
+    }
+    let output = runner.run(&mut command, true).await?;
+    let metadata: Value = serde_json::from_slice(&output).context("Invalid Cargo metadata")?;
+    Ok((manifest, metadata))
+}
+
+pub fn selected_package<'a>(metadata: &'a Value, manifest: &Path) -> Result<&'a Value> {
+    metadata["packages"]
+        .as_array()
+        .context("Missing Cargo packages")?
+        .iter()
+        .find(|package| {
+            package["manifest_path"]
+                .as_str()
+                .is_some_and(|path| Path::new(path) == manifest)
+        })
+        .context("Manifest must select a Cargo package, not a virtual workspace")
 }
 
 // Other workspace apps may resolve different versions. Only the selected WASM

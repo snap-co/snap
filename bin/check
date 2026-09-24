@@ -12,6 +12,7 @@ if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
 "${cargo_cmd[@]}" build -p snap-cli
 python3 tests/cli/dev.py
 python3 tests/cli/build.py
+python3 tests/cli/check.py
 "${cargo_cmd[@]}" test -p healthy-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts

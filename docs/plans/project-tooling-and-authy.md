@@ -170,17 +170,17 @@ verification, with useful diagnostics and a reliable exit status.
 
 Acceptance:
 
-- [ ] Independent sibling projects select their own checks and artifacts.
-- [ ] A documented declarative check configuration combines standard checks and
+- [x] Independent sibling projects select their own checks and artifacts.
+- [x] A documented declarative check configuration combines standard checks and
   exceptional project commands without hidden shell interpretation.
-- [ ] Check prepares required artifacts through the shared builder as needed.
-- [ ] Failure, missing tools, interruption, and process cleanup are CLI contracts.
-- [ ] A project check neither launches a persistent dev server nor replaces a
+- [x] Check prepares required artifacts through the shared builder as needed.
+- [x] Failure, missing tools, interruption, and process cleanup are CLI contracts.
+- [x] A project check neither launches a persistent dev server nor replaces a
   development listener. Network tests own their processes and ephemeral ports.
-- [ ] Healthy's relevant consumer contracts are available through project checking.
-- [ ] Repository-wide verification remains a clear entrypoint and does not become
+- [x] Healthy's relevant consumer contracts are available through project checking.
+- [x] Repository-wide verification remains a clear entrypoint and does not become
   an accidental dependency of an independent application's check command.
-- [ ] Known required checks cannot silently skip and still report full success.
+- [x] Known required checks cannot silently skip and still report full success.
 
 Define the first check selection and prerequisite model here. Do not build a generic
 task scheduler. Retain existing assertions and test ownership from TESTING.md.
@@ -338,4 +338,7 @@ copying the complete release package to the compatibility `dist/` location.
 The full `mise exec -- ./bin/check` gate and `git diff --check` passed. Review evidence
 lives in `docs/reviews/snap-build.md`.
 
-Slices 03–06 are unstarted. The user authorized continuing through the full list.
+Slice 03 is implemented and verified; review pending in `docs/reviews/snap-check.md`.
+Project checks select Rust manifests, optional build prerequisites, and literal
+commands. Healthy runs its SDK/browser checks independently of the reference suite.
+Slices 04–06 are unstarted. The user authorized continuing through the full list.

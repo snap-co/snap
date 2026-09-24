@@ -1,5 +1,7 @@
 //! Local developer tooling. Application execution stays in the selected host executable.
 mod build;
+mod cargo;
+mod check;
 mod config;
 mod dev;
 mod process;
@@ -20,6 +22,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Verify the selected project's Rust packages and declared consumer checks
+    Check {
+        /// Start discovery here instead of the current directory
+        project: Option<PathBuf>,
+    },
     /// Build a runnable package for the nearest snap.toml project
     Build {
         /// Start discovery here instead of the current directory
@@ -41,6 +48,9 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
+            Command::Check { project } => {
+                check::run(config::Project::discover(project)?, &runner).await
+            }
             Command::Build { project, release } => {
                 let project = config::Project::discover(project)?;
                 let profile = if release {

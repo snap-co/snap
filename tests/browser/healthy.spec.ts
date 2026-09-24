@@ -5,8 +5,10 @@ import { resolve } from "node:path";
 test("packaged Healthy renders Rust observations and recovers after a failed poll", async ({
   page,
 }) => {
-  // No asset path injection: the release binary must find its adjacent web directory.
-  const server = await startServer({ executable: resolve("dist/healthy") });
+  // No asset path injection: the packaged binary must find its adjacent web directory.
+  const server = await startServer({
+    executable: process.env.SNAP_CHECK_EXECUTABLE ?? resolve("dist/healthy"),
+  });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {

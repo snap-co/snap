@@ -15,3 +15,12 @@ bindings = ".snap/bindings"
 
 [dev]
 address = "127.0.0.1:3846"
+
+[check]
+rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+build = true
+commands = [
+    ["bun", "../../scripts/check-client.ts"],
+    ["bun", "test", "../../tests/sdk/browser-runtime.test.ts"],
+    ["bunx", "playwright", "test", "--config", "../../playwright.config.ts", "healthy.spec.ts"],
+]
