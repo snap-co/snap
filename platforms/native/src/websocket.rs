@@ -1,7 +1,7 @@
 //! Physical socket ownership. This slice admits read-only Identity Messages.
 //! A fresh physical attachment gets a fresh logical epoch; no mutation replay or
 //! detached result retention is promised. Reads can be explicitly issued again.
-use crate::{Host, execute, passport, problem};
+use crate::{Host, execute, problem};
 use axum::{
     extract::{
         Query, State, WebSocketUpgrade,
@@ -10,7 +10,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use snap_protocol::{Completion, Error, Invocation, json};
+use snap_protocol::{Error, Invocation, json};
+use snap_web::Completion;
 use std::{collections::HashMap, time::Duration};
 
 pub(super) async fn upgrade(
@@ -19,10 +20,10 @@ pub(super) async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let Some(passport) = &host.passport else {
+    let Some(session) = &host.session else {
         return problem(StatusCode::NOT_FOUND, "Not found");
     };
-    if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(passport.origin.as_str()) {
+    if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(session.origin.as_str()) {
         return problem(StatusCode::FORBIDDEN, "Origin not allowed");
     }
     if params
@@ -38,7 +39,7 @@ pub(super) async fn upgrade(
         );
     };
     let stale = params.get("build") != Some(&host.build.build);
-    let token = passport.read_cookie(&headers);
+    let token = session.cookie.read(&headers);
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_upgrade(move |mut socket| async move {
@@ -62,14 +63,19 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
         &host,
         Invocation {
             operation_id: "socket-auth".into(),
-            key: "identity.fetch".into(),
+            key: host
+                .session
+                .as_ref()
+                .expect("session carrier")
+                .identify
+                .into(),
             payload: None,
             traceparent: None,
         },
         Some(token.clone()),
     )
     .await;
-    let Some(session) = reply.session else {
+    let Some(session) = reply.lease else {
         close(
             &mut socket,
             if reply.outcome.is_err() { 1000 } else { 4001 },
@@ -89,7 +95,7 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
         return;
     }
     let expires = tokio::time::sleep(Duration::from_millis(
-        session.expires_at.saturating_sub(passport::now()),
+        session.expires_at.saturating_sub(crate::now()),
     ));
     tokio::pin!(expires);
     loop {
@@ -97,7 +103,7 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
             _ = &mut expires => { close(&mut socket, 4001, "session expired").await; break; }
             event = revoked.recv() => {
                 match event {
-                    Ok(ids) if !ids.contains(&session.session_id) => {},
+                    Ok(ids) if !ids.contains(&session.id) => {},
                     _ => { close(&mut socket, 4001, "session ended").await; break; }
                 }
             }
@@ -106,13 +112,14 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
                 let wire = match message { Message::Text(text) => text, Message::Close(_) => break, Message::Ping(bytes) => { if write(&mut socket, Message::Pong(bytes), Duration::from_secs(5)).await.is_err() { break; } continue; }, Message::Pong(_) => continue, _ => { close(&mut socket, 1003, "Text frames required").await; break; } };
                 let Ok(invocation) = serde_json::from_str::<Invocation>(&wire) else { close(&mut socket, 1007, "Invalid Invocation").await; break };
                 let target = invocation.operation_id.clone();
-                let lane = host.operations.iter().find(|op| op.key == invocation.key).map(|op| op.lane);
-                if let Err(error) = connection.admit(&invocation, lane) {
+                let eligible = host.bindings.iter().any(|binding| binding.key == invocation.key && binding.socket);
+                let admission = if eligible { connection.admit(snap_web::sequence(&invocation.operation_id)) } else { Err(Error::ContractViolationError { message: "Operation is not registered for this carrier".into() }) };
+                if let Err(error) = admission {
                     if send(&mut socket, serde_json::to_value(Completion::new(target, Err(error))).expect("completion")).await.is_err() { break; }
                     continue;
                 }
                 // Each frame is processed in receive order. The bounded host also
-                // bounds accepted storage work. No client mutation uses this lane.
+                // bounds accepted storage work. Authy's socket bindings expose reads.
                 let result = execute(&host, invocation, Some(token.clone())).await;
                 if matches!(result.outcome, Err(Error::IdentityRequiredError { .. })) { close(&mut socket, 4001, "session ended").await; break; }
                 if !matches!(result.outcome, Err(Error::InvalidInputError { .. } | Error::ContractViolationError { .. }))

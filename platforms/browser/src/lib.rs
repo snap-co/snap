@@ -22,22 +22,25 @@ impl Http {
         Self { base, build }
     }
 
-    pub async fn query(&self, invocation: &Invocation) -> Result<String, Error> {
-        self.request(invocation, snap_protocol::Lane::Query).await
+    pub async fn query(&self, invocation: &Invocation) -> snap_protocol::Outcome {
+        let wire = self.request(invocation, snap_web::Method::Get).await?;
+        snap_web::decode_completion(&wire, &invocation.operation_id)?
     }
 
     pub async fn request(
         &self,
         invocation: &Invocation,
-        lane: snap_protocol::Lane,
+        method: snap_web::Method,
     ) -> Result<String, Error> {
-        self.exchange(invocation, lane).await.map(|(_, body)| body)
+        self.exchange(invocation, method)
+            .await
+            .map(|(_, body)| body)
     }
 
     pub(crate) async fn exchange(
         &self,
         invocation: &Invocation,
-        lane: snap_protocol::Lane,
+        method: snap_web::Method,
     ) -> Result<(u16, String), Error> {
         let path = invocation
             .key
@@ -50,7 +53,7 @@ impl Http {
         let controller = web_sys::AbortController::new().map_err(unavailable)?;
         let _cancel_on_drop = Cancel(controller.clone());
         let options = web_sys::RequestInit::new();
-        if lane == snap_protocol::Lane::Submit {
+        if method == snap_web::Method::Post {
             options.set_method("POST");
             if let Some(payload) = &invocation.payload {
                 options.set_body(&JsValue::from_str(&payload.to_string()));
@@ -73,7 +76,7 @@ impl Http {
             .headers()
             .set("x-snap-build", &self.build)
             .map_err(unavailable)?;
-        if lane == snap_protocol::Lane::Submit {
+        if method == snap_web::Method::Post {
             request
                 .headers()
                 .set("content-type", "application/json")

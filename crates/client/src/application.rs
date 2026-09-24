@@ -1,15 +1,11 @@
 //! Resident client application seam for the current single-flight Query slice.
 //! The host executes the next external step, then supplies an input synchronously.
-use alloc::string::String;
-use snap_protocol::{Error, Invocation};
+use snap_protocol::{Invocation, Outcome};
 
 pub enum Input {
     Start,
     Wake,
-    Completed {
-        result: Result<String, Error>,
-        at: u64,
-    },
+    Completed { result: Outcome, at: u64 },
 }
 
 pub enum Step {

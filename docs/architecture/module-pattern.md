@@ -5,8 +5,20 @@ provider composition, carrier handling, or storage. The
 [decision](../adr/0001-host-driven-capability-providers.md) records why this pattern
 was chosen; [CONTEXT.md](../../CONTEXT.md) defines the names.
 
-Status: accepted pattern, reference implementation pending. Authy's
-[refactor plan](../plans/host-driven-module-pattern.md) tracks the transition.
+Reference implementation: Authy. Its [refactor plan](../plans/host-driven-module-pattern.md)
+tracks verification and review.
+
+## Working examples
+
+- Contract-only consumers: `crates/protocol`, `crates/identity`, `crates/store`.
+  The `contract` package role enforces independence from providers.
+- Immediate dispatch: `crates/runtime/src/transport.rs` and `doctor.rs`.
+- Suspending domain workflow: `crates/runtime/src/passport.rs`.
+- Store semantics and schema evolution: [Store reference](store.md).
+- Native executors: `platforms/native/src/store.rs` and `passport.rs`.
+- Carrier mapping/codecs: `platforms/web`; physical delivery: `platforms/native`
+  and `platforms/browser`. Shared clients consume normalized outcomes/events.
+- Application selection and output projection: `apps/authy/native/src/main.rs`.
 
 ## Assign ownership before choosing directories
 

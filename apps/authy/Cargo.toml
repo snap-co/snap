@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 snap-runtime.workspace = true
+snap-store.workspace = true
 snap-client.workspace = true
 
 [lints]

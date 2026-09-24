@@ -23,8 +23,11 @@ rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
 build = true
 commands = [
   ["cargo", "build", "-p", "authy-native", "--examples"],
+  ["cargo", "build", "-p", "snap-native", "--example", "carrier-contract"],
+  ["cargo", "test", "-p", "snap-native", "--test", "store-contract"],
   ["bun", "../../scripts/check-client.ts"],
   ["bun", "test", "../../tests/protocol/authy.test.ts"],
+  ["bun", "test", "../../tests/protocol/carriers.test.ts", "../../tests/protocol/migration.test.ts"],
   ["bun", "test", "../../tests/sdk/identity-recovery.test.ts"],
   ["bunx", "playwright", "test", "--config", "../../playwright.config.ts", "authy.spec.ts", "identity-sdk.spec.ts"],
 ]

@@ -1,9 +1,7 @@
 //! Shared dispatch behind the normalized host input. No HTTP or socket types.
 
 use alloc::{format, string::String, vec::Vec};
-use snap_protocol::{Error, Invocation, Lane, Operation, Outcome, Value};
-
-use crate::{Action, Input, Module};
+use snap_protocol::{Error, Invocation, Operation, Outcome, Provider, Value};
 
 pub struct Handler<State> {
     pub operation: Operation,
@@ -25,23 +23,7 @@ impl Connection {
     pub fn epoch(&self) -> &str {
         &self.epoch
     }
-    pub fn admit(&mut self, invocation: &Invocation, lane: Option<Lane>) -> Result<(), Error> {
-        if lane != Some(Lane::Message) {
-            return Err(Error::ContractViolationError {
-                message: "Operation is not registered for this carrier".into(),
-            });
-        }
-        let parsed = invocation
-            .operation_id
-            .rsplit_once(':')
-            .and_then(|(epoch, sequence)| {
-                sequence
-                    .split('#')
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-                    .map(|n| (epoch, n))
-            });
+    pub fn admit(&mut self, parsed: Option<(&str, u64)>) -> Result<(), Error> {
         match parsed {
             Some((epoch, n))
                 if epoch == self.epoch
@@ -98,20 +80,18 @@ impl<State> Transport<State> {
     }
 }
 
-impl<State> Module for Transport<State> {
+impl<State> Provider for Transport<State> {
+    type Context = ();
+    type Output = Outcome;
     fn operations(&self) -> impl Iterator<Item = Operation> {
         self.handlers.iter().map(|handler| handler.operation)
     }
 
-    fn update(&mut self, input: Input, actions: &mut Vec<Action>) {
-        let Input::Invocation {
-            delivery,
-            invocation,
-            ..
-        } = input
-        else {
-            return;
-        };
+    fn invoke(
+        &mut self,
+        invocation: Invocation,
+        _: (),
+    ) -> impl core::future::Future<Output = Outcome> + Send + 'static {
         let outcome = match self
             .handlers
             .iter()
@@ -122,10 +102,6 @@ impl<State> Module for Transport<State> {
                 message: format!("Unknown key: {}", invocation.key),
             }),
         };
-        actions.push(Action::Complete {
-            delivery,
-            operation_id: invocation.operation_id,
-            outcome,
-        });
+        core::future::ready(outcome)
     }
 }

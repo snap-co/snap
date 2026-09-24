@@ -1,8 +1,26 @@
 # Authy as the reference for the host-driven module pattern
 
-Status: planned. The architecture is [accepted](../adr/0001-host-driven-capability-providers.md);
-the continuation mechanism is [demonstrated](../../crates/runtime/prototypes/store-continuation/README.md).
-The current product still uses the original synchronous input/action interface.
+Status: implemented; final verification and review in progress. The architecture is
+[accepted](../adr/0001-host-driven-capability-providers.md); the original experiment
+is retained as [historical evidence](../../crates/runtime/prototypes/store-continuation/README.md).
+
+## Implemented shape
+
+- `snap-protocol`, `snap-identity`, and `snap-store` are independently consumable
+  contract crates. Structural checking enforces the new `contract` role.
+- `snap-runtime` groups Transport/Doctor/Passport providers. Protocol's `Provider`
+  interface creates owned futures with capability-specific context and output.
+- `snap-web` owns the selected web bindings, completion codecs, close-code mapping,
+  and sequence framing. No Lane remains in operation declarations. Both shared
+  client controllers consume normalized outcomes rather than wire strings.
+- `snap-native::store` implements the shared Store for Memory and SQLite. Schemas
+  register atomically with namespace collision checks and legacy-name migration.
+  [Store semantics](../architecture/store.md) records the bounded interface.
+- Authy composition selects Store, NoCache, crypto, and signed-cookie projection.
+  Native crypto work has no storage queries. The general host polls provider
+  continuations without Passport-specific actions or startup functions.
+- Existing wire/SDK contracts remain. New Store, carrier/lifecycle, migration, and
+  structural contracts cover the newly established promises.
 
 ## Goal
 

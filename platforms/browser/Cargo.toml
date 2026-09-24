@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+snap-web.workspace = true
 snap-client.workspace = true
 snap-protocol.workspace = true
 wasm-bindgen.workspace = true

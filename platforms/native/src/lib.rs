@@ -1,20 +1,10 @@
-//! Native execution and HTTP IO. All Tokio, Axum, OS, and environment access lives here.
-
+//! Native host execution and web carriers. Composition supplies a Protocol provider.
 pub mod client;
+pub mod cookie;
 pub mod passport;
+pub mod store;
 mod websocket;
-
-use std::{
-    collections::BTreeMap,
-    io,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+pub use snap_web as web;
 
 use axum::{
     Extension, Json, Router,
@@ -24,13 +14,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use serde::Serialize;
-use snap_protocol::{Completion, Error, Invocation, Lane, Operation, Outcome, Value, json};
-use snap_runtime::{Action, Delivery, Input, Module};
+use snap_protocol::{Error, Invocation, Operation, Outcome, Provider, Value, json};
+use snap_web::{Binding, Completion, Method};
+use std::{io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
     sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot},
-    task::JoinSet,
 };
 
 const CAPACITY: usize = 64;
@@ -42,26 +33,24 @@ pub struct Config {
     pub build: String,
     pub web_dir: Option<PathBuf>,
 }
-
 impl Config {
     pub fn from_env(application: &str) -> io::Result<Self> {
         let address = std::env::var("SNAP_ADDR").unwrap_or_else(|_| "127.0.0.1:3846".into());
         Ok(Self {
             address: address
                 .parse()
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
             application: application.into(),
             build: std::env::var("SNAP_BUILD").unwrap_or_else(|_| "rust-spike".into()),
             web_dir: std::env::var_os("SNAP_WEB_DIR")
                 .map(PathBuf::from)
                 .or_else(|| {
-                    let beside_binary = std::env::current_exe().ok()?.parent()?.join("web");
-                    beside_binary.is_dir().then_some(beside_binary)
+                    let path = std::env::current_exe().ok()?.parent()?.join("web");
+                    path.is_dir().then_some(path)
                 }),
         })
     }
 }
-
 #[derive(Clone, Serialize)]
 struct Build {
     contract: u8,
@@ -69,101 +58,160 @@ struct Build {
     build: String,
 }
 
+/// Web projection selected by application composition. The core provider need
+/// not use cookies, or expose any of these bindings through another carrier.
+pub struct Web {
+    pub bindings: Vec<Binding>,
+    pub session: Option<SessionCarrier>,
+}
+#[derive(Clone)]
+pub struct SessionCarrier {
+    pub origin: String,
+    pub cookie: cookie::Cookie,
+    pub identify: &'static str,
+}
+pub struct Lease {
+    pub id: String,
+    pub expires_at: u64,
+}
+pub struct Reply {
+    pub outcome: Outcome,
+    pub empty: bool,
+    pub lease: Option<Lease>,
+    pub cookie: Option<Option<String>>,
+    pub terminate: Vec<String>,
+}
+impl Reply {
+    pub fn new(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            empty: false,
+            lease: None,
+            cookie: None,
+            terminate: Vec::new(),
+        }
+    }
+}
 struct Work {
-    delivery: Delivery,
     invocation: Invocation,
-    context: snap_runtime::passport::Context,
+    token: Option<String>,
     reply: oneshot::Sender<Reply>,
     permit: OwnedSemaphorePermit,
 }
-
-struct Reply {
-    outcome: Outcome,
-    empty: bool,
-    session: Option<snap_protocol::identity::Session>,
-    cookie: Option<Option<String>>,
-}
-
-struct Pending {
-    reply: oneshot::Sender<Reply>,
-    session: Option<snap_protocol::identity::Session>,
-    cookie: Option<Option<String>>,
-    _permit: OwnedSemaphorePermit,
-}
-
 #[derive(Clone)]
 struct Host {
     inbox: mpsc::Sender<Work>,
-    next_delivery: Arc<AtomicU64>,
     capacity: Arc<Semaphore>,
     build: Build,
-    passport: Option<passport::Passport>,
+    session: Option<SessionCarrier>,
     revoked: broadcast::Sender<Vec<String>>,
-    operations: Arc<Vec<Operation>>,
+    bindings: Arc<Vec<Binding>>,
     connections: Arc<Semaphore>,
 }
 
-pub fn run(module: impl Module + Send + 'static, config: Config) -> io::Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(serve(module, config, None))
+struct Plain<M>(M);
+impl<M: Provider<Context = (), Output = Outcome>> Provider for Plain<M> {
+    type Context = Option<String>;
+    type Output = Reply;
+    fn operations(&self) -> impl Iterator<Item = Operation> {
+        self.0.operations()
+    }
+    fn invoke(
+        &mut self,
+        invocation: Invocation,
+        _: Option<String>,
+    ) -> impl core::future::Future<Output = Reply> + Send + 'static {
+        let future = self.0.invoke(invocation, ());
+        async move { Reply::new(future.await) }
+    }
 }
-
-pub fn run_with_passport(
-    module: impl Module + Send + 'static,
+/// Convenience composition for the existing HTTP-only Healthy consumers.
+pub fn run(
+    module: impl Provider<Context = (), Output = Outcome> + Send + 'static,
     config: Config,
-    passport: passport::Passport,
+) -> io::Result<()> {
+    let bindings = module.operations().map(|op| Binding::get(op.key)).collect();
+    run_application(
+        Plain(module),
+        config,
+        Web {
+            bindings,
+            session: None,
+        },
+    )
+}
+pub fn run_application(
+    module: impl Provider<Context = Option<String>, Output = Reply> + Send + 'static,
+    config: Config,
+    web: Web,
 ) -> io::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(serve(module, config, Some(passport)))
+        .block_on(serve(module, config, web))
 }
-
 async fn serve(
-    module: impl Module + Send + 'static,
+    module: impl Provider<Context = Option<String>, Output = Reply> + Send + 'static,
     config: Config,
-    mut passport: Option<passport::Passport>,
+    mut web: Web,
 ) -> io::Result<()> {
+    let operations: Vec<_> = module.operations().map(|op| op.key).collect();
+    for (i, binding) in web.bindings.iter().enumerate() {
+        if !operations.contains(&binding.key)
+            || web.bindings[..i].iter().any(|b| b.key == binding.key)
+        {
+            return Err(io::Error::other("Invalid or duplicate carrier binding"));
+        }
+    }
     let listener = TcpListener::bind(config.address).await?;
-    if let Some(passport) = &mut passport {
-        let mut origin = reqwest::Url::parse(&passport.origin).map_err(io::Error::other)?;
+    if let Some(session) = &mut web.session {
+        if !operations.contains(&session.identify) {
+            return Err(io::Error::other("Unknown session resolver"));
+        }
+        let mut origin = reqwest::Url::parse(&session.origin).map_err(io::Error::other)?;
+        if !matches!(origin.scheme(), "http" | "https")
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.host_str().is_none()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+        {
+            return Err(io::Error::other("SNAP_ORIGIN must be an HTTP(S) origin"));
+        }
         if origin.port() == Some(0) {
             let _ = origin.set_port(Some(listener.local_addr()?.port()));
-            passport.origin = origin.origin().ascii_serialization();
         }
+        session.origin = origin.origin().ascii_serialization();
     }
     let (inbox, receiver) = mpsc::channel(CAPACITY);
     let host = Host {
         inbox,
-        next_delivery: Arc::new(AtomicU64::new(1)),
         capacity: Arc::new(Semaphore::new(CAPACITY)),
         build: Build {
             contract: 1,
             application: config.application,
             build: config.build,
         },
-        passport,
+        session: web.session,
         revoked: broadcast::channel(64).0,
-        operations: Arc::new(module.operations().collect()),
+        bindings: Arc::new(web.bindings),
         connections: Arc::new(Semaphore::new(128)),
     };
     let mut router = Router::new().route("/__snap/build", get(build));
-    if host.passport.is_some() {
+    if host.session.is_some() && host.bindings.iter().any(|b| b.socket) {
         router = router.route("/_transport/ws", get(websocket::upgrade));
     }
-    for operation in host.operations.iter().copied() {
-        let path = format!("/{}", operation.key.replace('.', "/"));
-        let route = match operation.lane {
-            Lane::Query => get(request)
+    for binding in host.bindings.iter().copied() {
+        let Some(method) = binding.http else { continue };
+        let route = match method {
+            Method::Get => get(request)
                 .head(|| async { problem(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed") }),
-            Lane::Submit => post(request),
-            Lane::Message => continue,
+            Method::Post => post(request),
         }
         .fallback(|| async { problem(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed") })
-        .layer(Extension(operation));
-        router = router.route(&path, route);
+        .layer(Extension(binding));
+        router = router.route(&format!("/{}", binding.key.replace('.', "/")), route);
     }
     let router = if let Some(web_dir) = config.web_dir {
         if !web_dir.join("index.html").is_file() {
@@ -183,8 +231,6 @@ async fn serve(
     .layer(DefaultBodyLimit::max(64 * 1024))
     .with_state(host.clone());
     eprintln!("listening on http://{}", listener.local_addr()?);
-
-    // The application is moved into one host-owned loop. Request tasks only enqueue work.
     let worker = tokio::spawn(drive(module, receiver, host));
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
@@ -193,152 +239,88 @@ async fn serve(
     let _ = worker.await;
     result
 }
-
 async fn shutdown() {
     #[cfg(unix)]
     if let Ok(mut terminate) =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = terminate.recv() => {},
-        }
+        tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}};
         return;
     }
     let _ = tokio::signal::ctrl_c().await;
 }
 
-async fn drive(mut module: impl Module, mut inbox: mpsc::Receiver<Work>, host: Host) {
-    let mut pending = BTreeMap::<Delivery, Pending>::new();
-    let mut jobs = JoinSet::new();
-    let mut actions = Vec::new();
+/// One owner creates and polls continuations. Each admitted invocation retains
+/// its permit until completion, even after its observer times out or disconnects.
+/// Correlation uses private response slots rather than caller-chosen operation IDs.
+/// Domain output projection belongs to composition, not this scheduler.
+async fn drive(
+    mut module: impl Provider<Context = Option<String>, Output = Reply>,
+    mut inbox: mpsc::Receiver<Work>,
+    host: Host,
+) {
+    let mut jobs = FuturesUnordered::new();
     loop {
-        let input = tokio::select! {
-            work = inbox.recv() => {
-                let Some(work) = work else { break };
-                if work.reply.is_closed() { continue; }
-                pending.insert(work.delivery, Pending { reply: work.reply, session: None, cookie: None, _permit: work.permit });
-                Input::Invocation { delivery: work.delivery, invocation: work.invocation, context: work.context }
+        tokio::select! {
+            work=inbox.recv()=>{
+                let Some(work)=work else {break};
+                if work.reply.is_closed() {continue;}
+                let future=module.invoke(work.invocation,work.token);
+                jobs.push(async move {let _permit=work.permit;(work.reply,future.await)});
             }
-            completed = jobs.join_next(), if !jobs.is_empty() => {
-                let Some(Ok((delivery, result))) = completed else { continue };
-                Input::Completed { delivery, result }
-            }
-        };
-        module.update(input, &mut actions);
-        for action in actions.drain(..) {
-            match action {
-                Action::Complete {
-                    delivery,
-                    operation_id: _,
-                    outcome,
-                } => {
-                    if let Some(p) = pending.remove(&delivery) {
-                        let _ = p.reply.send(Reply {
-                            outcome,
-                            empty: false,
-                            session: p.session,
-                            cookie: p.cookie,
-                        });
-                    }
-                }
-                Action::CompleteEmpty { delivery, .. } => {
-                    if let Some(p) = pending.remove(&delivery) {
-                        let _ = p.reply.send(Reply {
-                            outcome: Ok(Value::Null),
-                            empty: true,
-                            session: p.session,
-                            cookie: p.cookie,
-                        });
-                    }
-                }
-                Action::Work { delivery, work } => {
-                    let passport = host.passport.clone();
-                    jobs.spawn(async move {
-                        let result = tokio::task::spawn_blocking(move || {
-                            passport
-                                .ok_or_else(|| {
-                                    snap_runtime::passport::domain(
-                                        "IdentityUnavailable",
-                                        "Passport adapter is not configured",
-                                    )
-                                })?
-                                .execute(work)
-                        })
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(snap_runtime::passport::domain(
-                                "IdentityUnavailable",
-                                "Identity work failed",
-                            ))
-                        });
-                        (delivery, result)
-                    });
-                }
-                Action::Session { delivery, token } => {
-                    if let Some(p) = pending.get_mut(&delivery) {
-                        p.cookie = Some(token);
-                    }
-                }
-                Action::Resolved { delivery, session } => {
-                    if let Some(p) = pending.get_mut(&delivery) {
-                        p.session = Some(session);
-                    }
-                }
-                Action::Revoke { sessions } => {
-                    let _ = host.revoked.send(sessions);
+            completed=jobs.next(),if !jobs.is_empty()=>{
+                if let Some((observer,reply))=completed {
+                    if !reply.terminate.is_empty() {let _=host.revoked.send(reply.terminate.clone());}
+                    let _=observer.send(reply);
                 }
             }
         }
     }
 }
-
 async fn build(State(host): State<Host>) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(host.build)).into_response()
 }
-
 async fn request(
     State(host): State<Host>,
-    Extension(operation): Extension<Operation>,
+    Extension(binding): Extension<Binding>,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    // Match the existing host-readiness exception for Doctor.
-    if operation.key != "health.up"
-        && headers
-            .get("x-snap-build")
-            .and_then(|value| value.to_str().ok())
+    if binding.key != "health.up"
+        && headers.get("x-snap-build").and_then(|v| v.to_str().ok())
             != Some(host.build.build.as_str())
     {
         return problem(StatusCode::CONFLICT, "Snap Build mismatch");
     }
     let operation_id = headers
         .get("x-snap-operation-id")
-        .and_then(|value| value.to_str().ok())
+        .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let fields = form_urlencoded::parse(query.as_deref().unwrap_or_default().as_bytes())
-        .map(|(key, value)| (key.into_owned(), Value::String(value.into_owned())))
-        .collect::<serde_json::Map<String, Value>>();
-    let payload = match operation.lane {
-        Lane::Query => (!fields.is_empty()).then_some(Value::Object(fields)),
-        Lane::Submit if body.is_empty() => None,
-        Lane::Submit => match serde_json::from_slice(&body) {
+    let payload = match binding.http {
+        Some(Method::Get) => {
+            let fields = form_urlencoded::parse(query.as_deref().unwrap_or_default().as_bytes())
+                .map(|(k, v)| (k.into_owned(), Value::String(v.into_owned())))
+                .collect::<serde_json::Map<_, _>>();
+            (!fields.is_empty()).then_some(Value::Object(fields))
+        }
+        Some(Method::Post) if body.is_empty() => None,
+        Some(Method::Post) => match serde_json::from_slice(&body) {
             Ok(value) => Some(value),
             Err(_) => return problem(StatusCode::BAD_REQUEST, "Malformed body"),
         },
-        Lane::Message => unreachable!(),
+        None => unreachable!(),
     };
-    let token = if let Some(passport) = &host.passport {
-        if operation.lane == Lane::Submit
+    let token = if let Some(session) = &host.session {
+        if binding.http == Some(Method::Post)
             && headers
                 .get("origin")
-                .is_some_and(|v| v.to_str().ok() != Some(passport.origin.as_str()))
+                .is_some_and(|v| v.to_str().ok() != Some(session.origin.as_str()))
         {
             return problem(StatusCode::FORBIDDEN, "Origin not allowed");
         }
-        match passport.read_cookie(&headers) {
+        match session.cookie.read(&headers) {
             Ok(token) => token,
             Err(error) => return completion(operation_id, Err(error)),
         }
@@ -347,11 +329,11 @@ async fn request(
     };
     let invocation = Invocation {
         operation_id: operation_id.clone(),
-        key: operation.key.into(),
+        key: binding.key.into(),
         payload,
         traceparent: headers
             .get("traceparent")
-            .and_then(|value| value.to_str().ok())
+            .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
     };
     let result = execute(&host, invocation, token).await;
@@ -369,38 +351,33 @@ async fn request(
         Json(event),
     )
         .into_response();
-    if let (Some(passport), Some(token)) = (&host.passport, result.cookie)
-        && let Ok(value) = passport.cookie(token.as_deref()).parse()
+    if let (Some(session), Some(token)) = (&host.session, result.cookie)
+        && let Ok(value) = session.cookie.encode(token.as_deref()).parse()
     {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
     response
 }
-
 async fn execute(host: &Host, invocation: Invocation, token: Option<String>) -> Reply {
-    let failed = |message: &str| Reply {
-        outcome: Err(Error::UnavailableError {
+    let failed = |message: &str| {
+        Reply::new(Err(Error::UnavailableError {
             message: message.into(),
-        }),
-        empty: false,
-        session: None,
-        cookie: None,
+        }))
     };
     let Ok(permit) = host.capacity.clone().try_acquire_owned() else {
         return failed("Host is at capacity");
     };
     let (reply, response) = oneshot::channel();
-    let work = Work {
-        delivery: Delivery(host.next_delivery.fetch_add(1, Ordering::Relaxed)),
-        invocation,
-        context: snap_runtime::passport::Context {
+    if host
+        .inbox
+        .try_send(Work {
+            invocation,
             token,
-            now: passport::now(),
-        },
-        reply,
-        permit,
-    };
-    if host.inbox.try_send(work).is_err() {
+            reply,
+            permit,
+        })
+        .is_err()
+    {
         return failed("Host is not accepting work");
     }
     match tokio::time::timeout(RESPONSE_TIMEOUT, response).await {
@@ -408,17 +385,14 @@ async fn execute(host: &Host, invocation: Invocation, token: Option<String>) -> 
         _ => failed("Host did not complete the operation"),
     }
 }
-
 fn completion(operation_id: String, outcome: Outcome) -> Response {
-    let status = status(&outcome);
     (
-        status,
+        status(&outcome),
         [(header::CACHE_CONTROL, "private, no-store")],
         Json(Completion::new(operation_id, outcome)),
     )
         .into_response()
 }
-
 fn status(outcome: &Outcome) -> StatusCode {
     match outcome {
         Ok(_) => StatusCode::OK,
@@ -436,12 +410,17 @@ fn status(outcome: &Outcome) -> StatusCode {
         }
     }
 }
-
 fn problem(status: StatusCode, message: &str) -> Response {
     (
         status,
         [(header::CACHE_CONTROL, "no-store")],
-        Json(json!({ "error": message })),
+        Json(json!({"error":message})),
     )
         .into_response()
+}
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

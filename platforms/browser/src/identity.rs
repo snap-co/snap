@@ -118,26 +118,29 @@ async fn drive(
         changed(&snapshot);
         for action in actions {
             match action {
-                Action::Http {
+                Action::Request {
                     generation,
                     invocation,
-                    lane,
                 } => {
                     let http = http.clone();
                     let sender = sender.clone();
                     jobs.push(
                         async move {
-                            let result = http.exchange(&invocation, lane).await;
+                            let result = http
+                                .exchange(&invocation, snap_web::identity_method(&invocation.key))
+                                .await;
                             if matches!(&result, Ok((409, _))) {
                                 let _ = sender.unbounded_send(Event::Input(Input::BuildMismatch {
                                     generation,
                                 }));
                                 return;
                             }
-                            let _ = sender.unbounded_send(Event::Input(Input::Http {
+                            let _ = sender.unbounded_send(Event::Input(Input::Completed {
                                 generation,
+                                result: result.and_then(|(_, body)| {
+                                    snap_web::decode_completion(&body, &invocation.operation_id)
+                                }),
                                 id: invocation.operation_id,
-                                result: result.map(|(_, body)| body),
                             }));
                         }
                         .boxed_local(),
@@ -166,9 +169,9 @@ async fn drive(
                                 Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
                                     if let Some(wire) = event.data().as_string() {
                                         ready.set(true);
-                                        let _ = tx.unbounded_send(Event::Input(Input::Frame {
+                                        let _ = tx.unbounded_send(Event::Input(Input::Event {
                                             generation,
-                                            wire,
+                                            event: snap_web::event(&wire),
                                         }));
                                     }
                                 })
@@ -177,7 +180,7 @@ async fn drive(
                             let close = Closure::wrap(Box::new(move |event: web_sys::CloseEvent| {
                                 let _ = tx.unbounded_send(Event::Input(Input::Disconnected {
                                     generation,
-                                    code: event.code(),
+                                    reason: snap_web::disconnect(event.code()),
                                 }));
                             })
                                 as Box<dyn FnMut(_)>);
@@ -202,7 +205,7 @@ async fn drive(
                         Err(_) => {
                             let _ = sender.unbounded_send(Event::Input(Input::Disconnected {
                                 generation,
-                                code: 1006,
+                                reason: snap_protocol::Disconnect::Interrupted,
                             }));
                         }
                     }
@@ -219,7 +222,7 @@ async fn drive(
                     if !sent {
                         let _ = sender.unbounded_send(Event::Input(Input::Disconnected {
                             generation,
-                            code: 1006,
+                            reason: snap_protocol::Disconnect::Interrupted,
                         }));
                     }
                 }

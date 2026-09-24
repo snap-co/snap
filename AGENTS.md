@@ -4,7 +4,7 @@ This is a local architecture experiment, not a complete Snap port.
 Read [README.md](README.md) before changing crate seams or execution flow.
 When porting a module or changing provider composition, carrier handling, or storage,
 follow [the module pattern](docs/architecture/module-pattern.md). It records the
-accepted architecture and the pending Authy reference refactor.
+architecture and Authy's reference composition.
 Before adding or changing tests, read [TESTING.md](TESTING.md). It defines consumer
 contracts and the verification gates; internal rewrites must preserve the suite.
 
@@ -23,7 +23,7 @@ contracts and the verification gates; internal rewrites must preserve the suite.
 - Preserve the selected TypeScript wire behavior before proposing protocol changes.
   Inspect `~/code/bod/snap` as the reference implementation.
 - Default behavior tests to the Client SDK or wire Protocol. Rust functions and
-  `Module::update` are implementation details for this purpose. Test a lower seam
+  `Provider::invoke` are implementation details for this purpose. Test a lower seam
   only after naming an observable promise the consumer interfaces cannot express.
 - Reuse SDK contracts across client implementations. Keep launchers and binding
   construction in adapters; assertions describe the application-facing behavior.

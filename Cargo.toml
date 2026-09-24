@@ -1,11 +1,14 @@
 [workspace]
 members = [
     "crates/protocol",
+    "crates/identity",
+    "crates/store",
     "crates/runtime",
     "crates/client",
     "bindings/wasm",
     "platforms/native",
     "platforms/browser",
+    "platforms/web",
     "apps/healthy",
     "apps/healthy/native",
     "apps/healthy/wasm",
@@ -23,9 +26,12 @@ publish = false
 
 [workspace.dependencies]
 snap-protocol = { path = "crates/protocol" }
+snap-identity = { path = "crates/identity" }
+snap-store = { path = "crates/store" }
 snap-runtime = { path = "crates/runtime" }
 snap-client = { path = "crates/client" }
 snap-browser = { path = "platforms/browser" }
+snap-web = { path = "platforms/web" }
 snap-native = { path = "platforms/native" }
 snap-client-wasm = { path = "bindings/wasm" }
 wasm-bindgen = "=0.2.128"

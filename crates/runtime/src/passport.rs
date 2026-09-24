@@ -1,383 +1,491 @@
-//! Password policy and session workflows. Every turn is IO-free.
-//!
-//! The host executes Work and returns exactly one completion for its Delivery.
-//! Accepted writes finish even if the caller disconnects. No mutation is retried
-//! implicitly. Enroll atomically claims a unique (kind, normalized email) and its
-//! first session; CreateSession must reference an existing credential. Revoke
-//! checks the caller's live session and identity in the same storage transaction.
-use crate::{Action, Delivery, Input, Module};
+//! Identity provider. Async workflows own domain policy; Store owns persistence.
+//! Continuations contain no IO handles or executor dependency. The host keeps
+//! admitted invocations alive after their observer leaves; mutations are not replayed.
 use alloc::{
-    collections::BTreeMap,
+    format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
-use snap_protocol::{
-    Error, Invocation, Lane, Operation, Outcome, Value,
-    identity::{Credential, Release, Session},
-    json,
+use core::future::Future;
+use snap_identity::{Release, Session};
+use snap_protocol::{Error, Invocation, Operation, Outcome, Provider, Value, json};
+use snap_store::{
+    Cache, Guard, Index, Kind, NoCache, Predicate as P, Query, Row, Schema, Statement as S, Store,
+    Table, Transaction,
 };
 
 pub const SESSION_SECONDS: u64 = 30 * 24 * 60 * 60;
+pub const CREDENTIALS: Table = Table {
+    namespace: "snap_identity",
+    name: "credentials",
+};
+pub const SESSIONS: Table = Table {
+    namespace: "snap_identity",
+    name: "sessions",
+};
+pub const SETTINGS: Table = Table {
+    namespace: "snap_identity",
+    name: "settings",
+};
+
+/// Schema and legacy names belong to Passport. Store executes their registration
+/// atomically. These shapes preserve the original Authy rows and signing key.
+pub fn schemas() -> [Schema; 3] {
+    [
+        Schema {
+            table: CREDENTIALS,
+            columns: &[
+                ("id", Kind::Text),
+                ("identity_id", Kind::Text),
+                ("kind", Kind::Text),
+                ("email", Kind::Text),
+                ("hash", Kind::Text),
+                ("created", Kind::Integer),
+            ],
+            primary: &["id"],
+            indexes: &[
+                Index {
+                    columns: &["kind", "email"],
+                    unique: true,
+                },
+                Index {
+                    columns: &["identity_id", "created", "id"],
+                    unique: false,
+                },
+            ],
+            foreign: &[],
+            legacy_name: Some("credentials"),
+        },
+        Schema {
+            table: SESSIONS,
+            columns: &[
+                ("id", Kind::Text),
+                ("identity_id", Kind::Text),
+                ("credential_id", Kind::Text),
+                ("digest", Kind::Text),
+                ("created", Kind::Integer),
+                ("expires", Kind::Integer),
+            ],
+            primary: &["id"],
+            indexes: &[
+                Index {
+                    columns: &["digest"],
+                    unique: true,
+                },
+                Index {
+                    columns: &["identity_id", "created", "id"],
+                    unique: false,
+                },
+            ],
+            foreign: &[snap_store::ForeignKey {
+                columns: &["credential_id"],
+                target: CREDENTIALS,
+                references: &["id"],
+            }],
+            legacy_name: Some("sessions"),
+        },
+        Schema {
+            table: SETTINGS,
+            columns: &[("key", Kind::Text), ("value", Kind::Text)],
+            primary: &["key"],
+            indexes: &[],
+            foreign: &[],
+            legacy_name: Some("settings"),
+        },
+    ]
+}
 
 #[derive(Default)]
 pub struct Context {
     pub token: Option<String>,
-    /// Host time in Unix milliseconds. Session expiry is checked on every request.
     pub now: u64,
 }
 
-pub enum Work {
-    Resolve {
-        token: String,
-        now: u64,
-    },
-    Credential {
-        kind: String,
-        email: String,
-    },
-    Hash {
-        password: String,
-    },
-    Verify {
+/// Host crypto work is separate from Store and its transactional lifetime.
+pub trait Crypto: Clone + Send + Sync + 'static {
+    fn hash(&self, password: String) -> impl Future<Output = Result<String, Error>> + Send;
+    fn verify(
+        &self,
         password: String,
         hash: String,
-    },
-    Enroll {
-        kind: String,
-        email: String,
-        hash: String,
-        now: u64,
-    },
-    CreateSession {
-        credential: Credential,
-        now: u64,
-    },
-    Credentials {
-        session: Session,
-        now: u64,
-    },
-    Sessions {
-        session: Session,
-        now: u64,
-    },
-    Revoke {
-        session: Session,
-        scope: Release,
-        now: u64,
-    },
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
+    fn generate(&self) -> impl Future<Output = Result<Material, Error>> + Send;
+    fn digest(&self, token: &str) -> String;
+}
+pub struct Material {
+    pub identity: String,
+    pub credential: String,
+    pub session: String,
+    pub token: String,
+    pub digest: String,
 }
 
-pub enum Result {
-    Session(Option<Session>),
-    Credential(Option<Credential>),
-    Hash(String),
-    Verified(bool),
-    Created { token: String },
-    Data(Value),
-    Revoked(Vec<String>),
+pub struct Response {
+    pub outcome: Outcome,
+    pub empty: bool,
+    pub session: Option<Session>,
+    pub token: Option<Option<String>>,
+    pub revoked: Vec<String>,
 }
 
-enum Stage {
-    Resolve,
-    Hash,
-    Credential,
-    Verify(Credential),
-    Create,
-    Read,
-    Revoke { clear: bool },
-}
-struct Pending {
-    invocation: Invocation,
-    context: Context,
-    stage: Stage,
-    email: String,
-    password: String,
-}
-
-/// The application selects its identity kind and account-registration operation.
-/// Passwords are consumed by work actions and never retained in public snapshots.
-pub struct Passport {
+#[derive(Clone)]
+pub struct Passport<S, C, K = NoCache> {
     kind: &'static str,
     register: &'static str,
-    pending: BTreeMap<Delivery, Pending>,
+    store: S,
+    crypto: C,
+    cache: K,
 }
-
-impl Passport {
-    pub fn new(kind: &'static str, register: &'static str) -> Self {
+impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
+    pub fn new(kind: &'static str, register: &'static str, store: D, crypto: C, cache: K) -> Self {
         Self {
             kind,
             register,
-            pending: BTreeMap::new(),
+            store,
+            crypto,
+            cache,
         }
     }
 
-    fn dispatch(
+    async fn transaction(
         &self,
-        delivery: Delivery,
-        p: &mut Pending,
-        session: Option<Session>,
-        actions: &mut Vec<Action>,
-    ) -> core::result::Result<Option<Work>, Error> {
-        let key = p.invocation.key.as_str();
-        if let Some(session) = &session {
-            actions.push(Action::Resolved {
-                delivery,
-                session: session.clone(),
-            });
-        } else if p.context.token.is_some() {
-            actions.push(Action::Session {
-                delivery,
-                token: None,
-            });
+        guards: Vec<Guard>,
+        statements: Vec<S>,
+    ) -> Result<Vec<snap_store::Rows>, Error> {
+        self.store
+            .transaction(Transaction { guards, statements })
+            .await
+            .map_err(storage_error)
+    }
+    async fn read(&self, query: Query) -> Result<snap_store::Rows, Error> {
+        Ok(self
+            .transaction(vec![], vec![S::Select(query)])
+            .await?
+            .remove(0))
+    }
+
+    /// Trusted server interface. The token has been obtained by the host; its
+    /// digest is still checked against live Store authority on every resolution.
+    pub async fn resolve(&self, token: &str, now: u64) -> Result<Option<Session>, Error> {
+        let rows = self
+            .read(
+                Query::new(SESSIONS)
+                    .matching(vec![
+                        P::eq("digest", self.crypto.digest(token)),
+                        P::gt("expires", now as i64),
+                    ])
+                    .limit(1),
+            )
+            .await?;
+        rows.first().map(session).transpose()
+    }
+
+    async fn dispatch(
+        &self,
+        invocation: Invocation,
+        context: Context,
+        reply: &mut Response,
+    ) -> Outcome {
+        let resolved = if let Some(token) = &context.token {
+            self.resolve(token, context.now).await?
+        } else {
+            None
+        };
+        reply.session = resolved.clone();
+        if context.token.is_some() && resolved.is_none() {
+            reply.token = Some(None);
         }
+        let key = invocation.key.as_str();
         if key == "identity.fetch" {
-            void(&p.invocation.payload)?;
-            finish(
-                delivery,
-                p,
-                Ok(json!({"identityId": session.map(|s| s.identity_id)})),
-                actions,
-            );
-            return Ok(None);
+            void(&invocation.payload)?;
+            return Ok(json!({"identityId":resolved.map(|s| s.identity_id)}));
         }
         if key == self.register || key == "identity.password.acquire" {
-            if key != self.register && session.is_some() {
+            if key != self.register && resolved.is_some() {
                 return Err(Error::IdentityForbiddenError {
                     message: "Identity forbidden".into(),
                 });
             }
-            let value = p.invocation.payload.as_ref().ok_or_else(invalid)?;
-            p.email = value
+            let value = invocation.payload.ok_or_else(invalid)?;
+            let email = value
                 .get("email")
                 .and_then(Value::as_str)
                 .ok_or_else(invalid)?
                 .trim()
                 .to_lowercase();
-            p.password = value
+            let password = value
                 .get("password")
                 .and_then(Value::as_str)
                 .ok_or_else(invalid)?
-                .into();
+                .to_string();
             if key == self.register {
-                // Match Identity.Password's JS string-length bounds.
-                if !(8..=256).contains(&p.password.encode_utf16().count()) {
+                if !(8..=256).contains(&password.encode_utf16().count()) {
                     return Err(invalid());
                 }
-                p.stage = Stage::Hash;
-                return Ok(Some(Work::Hash {
-                    password: core::mem::take(&mut p.password),
-                }));
+                let hash = self.crypto.hash(password).await?;
+                let fresh = self.crypto.generate().await?;
+                let credential = row(&[
+                    ("id", fresh.credential.clone().into()),
+                    ("identity_id", fresh.identity.clone().into()),
+                    ("kind", self.kind.into()),
+                    ("email", email.into()),
+                    ("hash", hash.into()),
+                    ("created", (context.now as i64).into()),
+                ]);
+                let statements = vec![
+                    S::Insert {
+                        table: CREDENTIALS,
+                        row: credential,
+                    },
+                    expired(context.now),
+                    S::Insert {
+                        table: SESSIONS,
+                        row: session_row(&fresh, &fresh.credential, &fresh.identity, context.now),
+                    },
+                ];
+                self.store
+                    .transaction(Transaction {
+                        guards: vec![],
+                        statements,
+                    })
+                    .await
+                    .map_err(|e| {
+                        if e == snap_store::Error::Constraint {
+                            domain("EnrollFailedError", "Duplicate credential")
+                        } else {
+                            storage_error(e)
+                        }
+                    })?;
+                reply.token = Some(Some(fresh.token));
+                return Ok(Value::Null);
             }
             if value.get("kind").and_then(Value::as_str) != Some(self.kind) {
-                return Err(domain("InvalidCredentialError", "Invalid credential"));
+                return Err(bad_credential());
             }
-            p.stage = Stage::Credential;
-            return Ok(Some(Work::Credential {
-                kind: self.kind.into(),
-                email: p.email.clone(),
-            }));
+            let query = Query::new(CREDENTIALS)
+                .matching(vec![P::eq("kind", self.kind), P::eq("email", email)])
+                .limit(1);
+            let mut rows = snap_store::snapshot(&self.store, &self.cache, query.clone())
+                .await
+                .map_err(storage_error)?;
+            let mut credential = rows.pop().ok_or_else(bad_credential)?;
+            // A stale cached hash must not reject a password that is valid now.
+            if !self
+                .crypto
+                .verify(password.clone(), text(&credential, "hash")?)
+                .await?
+            {
+                credential = self.read(query).await?.pop().ok_or_else(bad_credential)?;
+                if !self
+                    .crypto
+                    .verify(password, text(&credential, "hash")?)
+                    .await?
+                {
+                    return Err(bad_credential());
+                }
+            }
+            let id = text(&credential, "id")?;
+            let identity = text(&credential, "identity_id")?;
+            let fresh = self.crypto.generate().await?;
+            let guard = Guard {
+                query: Query::new(CREDENTIALS)
+                    .matching(vec![
+                        P::eq("id", id.clone()),
+                        P::eq("identity_id", identity.clone()),
+                        P::eq("hash", text(&credential, "hash")?),
+                    ])
+                    .limit(1),
+                exists: true,
+            };
+            self.transaction(
+                vec![guard],
+                vec![
+                    expired(context.now),
+                    S::Insert {
+                        table: SESSIONS,
+                        row: session_row(&fresh, &id, &identity, context.now),
+                    },
+                ],
+            )
+            .await?;
+            reply.token = Some(Some(fresh.token));
+            return Ok(json!({"_tag":"Approved"}));
         }
-        let session = session.ok_or_else(|| Error::IdentityRequiredError {
-            message: "Identity required".into(),
-        })?;
+        let session = resolved.ok_or_else(required)?;
+        let authority = Guard {
+            query: Query::new(SESSIONS)
+                .matching(vec![
+                    P::eq("id", session.session_id.clone()),
+                    P::eq("identity_id", session.identity_id.clone()),
+                    P::gt("expires", context.now as i64),
+                ])
+                .limit(1),
+            exists: true,
+        };
         match key {
             "identity.credentials" | "identity.sessions" => {
-                void(&p.invocation.payload)?;
-                p.stage = Stage::Read;
-                Ok(Some(if key == "identity.credentials" {
-                    Work::Credentials {
-                        session,
-                        now: p.context.now,
-                    }
+                void(&invocation.payload)?;
+                let table = if key == "identity.credentials" {
+                    CREDENTIALS
                 } else {
-                    Work::Sessions {
-                        session,
-                        now: p.context.now,
-                    }
-                }))
+                    SESSIONS
+                };
+                let mut filter = vec![P::eq("identity_id", session.identity_id.clone())];
+                if table == SESSIONS {
+                    filter.push(P::gt("expires", context.now as i64));
+                }
+                let mut results = self
+                    .transaction(
+                        vec![authority],
+                        vec![S::Select(
+                            Query::new(table)
+                                .matching(filter)
+                                .ordered(&["created", "id"])
+                                .limit(10001),
+                        )],
+                    )
+                    .await?;
+                let rows = results.remove(0);
+                if rows.len() > 10000 {
+                    return Err(unavailable());
+                }
+                let values = rows.iter().map(|r| if table == CREDENTIALS {
+                    Ok(json!({"credentialId":text(r,"id")?,"method":"password","label":text(r,"email")?,"createdAt":timestamp(integer(r,"created")?),"removable":false}))
+                } else {
+                    let id = text(r,"id")?;
+                    Ok(json!({"current":id==session.session_id,"sessionId":id,"createdAt":timestamp(integer(r,"created")?),"expiresAt":timestamp(integer(r,"expires")?)}))
+                }).collect::<Result<Vec<Value>,Error>>()?;
+                Ok(if table == CREDENTIALS {
+                    json!({"credentials":values})
+                } else {
+                    json!({"sessions":values})
+                })
             }
             "identity.release" => {
                 let scope: Release =
-                    serde_json::from_value(p.invocation.payload.clone().ok_or_else(invalid)?)
+                    serde_json::from_value(invocation.payload.ok_or_else(invalid)?)
                         .map_err(|_| invalid())?;
-                let clear = match &scope {
-                    Release::Current | Release::All => true,
-                    Release::Session { session_id } => *session_id == session.session_id,
-                    Release::Others => false,
+                let mut filter = vec![P::eq("identity_id", session.identity_id.clone())];
+                let clear = match scope {
+                    Release::Current => {
+                        filter.push(P::eq("id", session.session_id.clone()));
+                        true
+                    }
+                    Release::All => true,
+                    Release::Others => {
+                        filter.push(snap_store::Predicate {
+                            column: "id",
+                            compare: snap_store::Compare::Ne,
+                            value: session.session_id.clone().into(),
+                        });
+                        false
+                    }
+                    Release::Session { session_id } => {
+                        let clear = session_id == session.session_id;
+                        filter.push(P::eq("id", session_id));
+                        clear
+                    }
                 };
-                p.stage = Stage::Revoke { clear };
-                Ok(Some(Work::Revoke {
-                    session,
-                    scope,
-                    now: p.context.now,
-                }))
+                // The returned IDs and deletion share the authority-check transaction.
+                let mut results = self
+                    .transaction(
+                        vec![authority],
+                        vec![
+                            S::Select(
+                                Query::new(SESSIONS)
+                                    .matching(filter.clone())
+                                    .limit(u32::MAX),
+                            ),
+                            S::Delete {
+                                table: SESSIONS,
+                                filter,
+                            },
+                        ],
+                    )
+                    .await?;
+                reply.revoked = results
+                    .remove(0)
+                    .iter()
+                    .map(|r| text(r, "id"))
+                    .collect::<Result<_, _>>()?;
+                if clear {
+                    reply.token = Some(None);
+                }
+                Ok(Value::Null)
             }
             _ => Err(Error::ContractViolationError {
-                message: "Unknown operation".into(),
+                message: format!("Unknown key: {key}"),
             }),
         }
     }
 }
-
-impl Module for Passport {
+impl<S: Store, C: Crypto, K: Cache> Provider for Passport<S, C, K> {
+    type Context = Context;
+    type Output = Response;
     fn operations(&self) -> impl Iterator<Item = Operation> {
-        [
-            Operation {
-                key: self.register,
-                lane: Lane::Submit,
-            },
-            Operation {
-                key: "identity.fetch",
-                lane: Lane::Query,
-            },
-            Operation {
-                key: "identity.password.acquire",
-                lane: Lane::Submit,
-            },
-            Operation {
-                key: "identity.release",
-                lane: Lane::Submit,
-            },
-            Operation {
-                key: "identity.credentials",
-                lane: Lane::Message,
-            },
-            Operation {
-                key: "identity.sessions",
-                lane: Lane::Message,
-            },
-        ]
-        .into_iter()
+        core::iter::once(Operation { key: self.register }).chain(snap_identity::OPERATIONS)
     }
-
-    fn update(&mut self, input: Input, actions: &mut Vec<Action>) {
-        let (delivery, mut p, result) = match input {
-            Input::Invocation {
-                delivery,
-                invocation,
-                context,
-            } => {
-                let p = Pending {
-                    invocation,
-                    context,
-                    stage: Stage::Resolve,
-                    email: String::new(),
-                    password: String::new(),
-                };
-                if let Some(token) = &p.context.token {
-                    actions.push(Action::Work {
-                        delivery,
-                        work: Work::Resolve {
-                            token: token.clone(),
-                            now: p.context.now,
-                        },
-                    });
-                    self.pending.insert(delivery, p);
-                    return;
-                }
-                (delivery, p, Ok(Result::Session(None)))
-            }
-            Input::Completed { delivery, result } => {
-                let Some(p) = self.pending.remove(&delivery) else {
-                    return;
-                };
-                (delivery, p, result)
-            }
-        };
-        let next = (|| {
-            let result = result?;
-            match (&p.stage, result) {
-                (Stage::Resolve, Result::Session(session)) => {
-                    self.dispatch(delivery, &mut p, session, actions)
-                }
-                (Stage::Hash, Result::Hash(hash)) => {
-                    p.stage = Stage::Create;
-                    Ok(Some(Work::Enroll {
-                        kind: self.kind.into(),
-                        email: p.email.clone(),
-                        hash,
-                        now: p.context.now,
-                    }))
-                }
-                (Stage::Credential, Result::Credential(credential)) => {
-                    let credential = credential
-                        .ok_or_else(|| domain("InvalidCredentialError", "Invalid credential"))?;
-                    let work = Work::Verify {
-                        password: core::mem::take(&mut p.password),
-                        hash: credential.hash.clone(),
-                    };
-                    p.stage = Stage::Verify(credential);
-                    Ok(Some(work))
-                }
-                (Stage::Verify(credential), Result::Verified(valid)) => {
-                    if !valid {
-                        return Err(domain("InvalidCredentialError", "Invalid credential"));
-                    }
-                    let work = Work::CreateSession {
-                        credential: credential.clone(),
-                        now: p.context.now,
-                    };
-                    p.stage = Stage::Create;
-                    Ok(Some(work))
-                }
-                (Stage::Create, Result::Created { token }) => {
-                    actions.push(Action::Session {
-                        delivery,
-                        token: Some(token),
-                    });
-                    finish(
-                        delivery,
-                        &p,
-                        Ok(if p.invocation.key == self.register {
-                            Value::Null
-                        } else {
-                            json!({"_tag":"Approved"})
-                        }),
-                        actions,
-                    );
-                    Ok(None)
-                }
-                (Stage::Read, Result::Data(value)) => {
-                    finish(delivery, &p, Ok(value), actions);
-                    Ok(None)
-                }
-                (Stage::Revoke { clear }, Result::Revoked(sessions)) => {
-                    if *clear {
-                        actions.push(Action::Session {
-                            delivery,
-                            token: None,
-                        });
-                    }
-                    actions.push(Action::Revoke { sessions });
-                    finish(delivery, &p, Ok(Value::Null), actions);
-                    Ok(None)
-                }
-                _ => Err(domain("IdentityUnavailable", "Unexpected work completion")),
-            }
-        })();
-        match next {
-            Ok(Some(work)) => {
-                self.pending.insert(delivery, p);
-                actions.push(Action::Work { delivery, work });
-            }
-            Ok(None) => {}
-            Err(error) => finish(delivery, &p, Err(error), actions),
+    fn invoke(
+        &mut self,
+        invocation: Invocation,
+        context: Context,
+    ) -> impl Future<Output = Response> + Send + 'static {
+        let provider = self.clone();
+        async move {
+            let mut reply = Response {
+                outcome: Ok(Value::Null),
+                empty: false,
+                session: None,
+                token: None,
+                revoked: Vec::new(),
+            };
+            reply.outcome = provider.dispatch(invocation, context, &mut reply).await;
+            reply.empty = matches!(reply.outcome, Ok(Value::Null));
+            reply
         }
     }
 }
 
-fn finish(delivery: Delivery, p: &Pending, outcome: Outcome, actions: &mut Vec<Action>) {
-    if matches!(outcome, Ok(Value::Null)) {
-        actions.push(Action::CompleteEmpty {
-            delivery,
-            operation_id: p.invocation.operation_id.clone(),
-        });
-    } else {
-        actions.push(Action::Complete {
-            delivery,
-            operation_id: p.invocation.operation_id.clone(),
-            outcome,
-        });
+fn row(fields: &[(&str, snap_store::Value)]) -> Row {
+    fields
+        .iter()
+        .map(|(k, v)| ((*k).into(), v.clone()))
+        .collect()
+}
+fn text(row: &Row, key: &str) -> Result<String, Error> {
+    match row.get(key) {
+        Some(snap_store::Value::Text(s)) => Ok(s.clone()),
+        _ => Err(unavailable()),
+    }
+}
+fn integer(row: &Row, key: &str) -> Result<i64, Error> {
+    match row.get(key) {
+        Some(snap_store::Value::Integer(n)) => Ok(*n),
+        _ => Err(unavailable()),
+    }
+}
+fn session(row: &Row) -> Result<Session, Error> {
+    Ok(Session {
+        session_id: text(row, "id")?,
+        identity_id: text(row, "identity_id")?,
+        expires_at: integer(row, "expires")? as u64,
+    })
+}
+fn session_row(fresh: &Material, credential: &str, identity: &str, now: u64) -> Row {
+    row(&[
+        ("id", fresh.session.clone().into()),
+        ("identity_id", identity.into()),
+        ("credential_id", credential.into()),
+        ("digest", fresh.digest.clone().into()),
+        ("created", (now as i64).into()),
+        ("expires", ((now + SESSION_SECONDS * 1000) as i64).into()),
+    ])
+}
+fn expired(now: u64) -> S {
+    S::Delete {
+        table: SESSIONS,
+        filter: vec![P::le("expires", now as i64)],
     }
 }
 fn invalid() -> Error {
@@ -385,7 +493,25 @@ fn invalid() -> Error {
         message: "Invalid input".into(),
     }
 }
-fn void(value: &Option<Value>) -> core::result::Result<(), Error> {
+fn required() -> Error {
+    Error::IdentityRequiredError {
+        message: "Session ended".into(),
+    }
+}
+fn bad_credential() -> Error {
+    domain("InvalidCredentialError", "Invalid credential")
+}
+pub fn unavailable() -> Error {
+    domain("IdentityUnavailable", "Identity is temporarily unavailable")
+}
+fn storage_error(error: snap_store::Error) -> Error {
+    if error == snap_store::Error::Conflict {
+        required()
+    } else {
+        unavailable()
+    }
+}
+fn void(value: &Option<Value>) -> Result<(), Error> {
     if value.is_none() || matches!(value, Some(Value::Null)) {
         Ok(())
     } else {
@@ -394,6 +520,30 @@ fn void(value: &Option<Value>) -> core::result::Result<(), Error> {
 }
 pub fn domain(tag: &str, message: &str) -> Error {
     Error::OperationError {
-        failure: json!({"_tag":tag,"message":message.to_string()}),
+        failure: json!({"_tag":tag,"message":message}),
     }
+}
+
+// Gregorian civil date from Unix days. Millisecond precision matches the selected
+// TypeScript wire contract without asking a SQL dialect to format domain output.
+fn timestamp(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    let time = ms.rem_euclid(86_400_000);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        time / 3_600_000,
+        time / 60_000 % 60,
+        time / 1000 % 60,
+        time % 1000
+    )
 }

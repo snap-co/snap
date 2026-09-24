@@ -6,8 +6,8 @@ extern crate alloc;
 pub mod application;
 pub mod identity;
 
-use alloc::{format, string::String};
-use serde::{Deserialize, Serialize};
+use alloc::format;
+use serde::Serialize;
 use snap_protocol::{Error, Invocation, Value};
 
 #[derive(Default)]
@@ -23,14 +23,6 @@ pub struct HealthReport {
 /// One owned query. Dropping it releases observation without retaining a pending map.
 pub struct HealthQuery {
     invocation: Invocation,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Event {
-    key: String,
-    target: Option<String>,
-    payload: Option<Value>,
 }
 
 impl Client {
@@ -55,39 +47,11 @@ impl HealthQuery {
         &self.invocation
     }
 
-    pub fn complete(&self, wire: &str) -> Result<HealthReport, Error> {
-        let event: Event = serde_json::from_str(wire)
-            .map_err(|_| invalid("Invalid Transport completion Event"))?;
-        if event.key != "transport.complete"
-            || event.target.as_deref() != Some(self.invocation.operation_id.as_str())
-        {
-            return Err(invalid("Invalid Transport completion Event"));
+    pub fn complete(&self, payload: &Value) -> Result<HealthReport, Error> {
+        if payload.get("status").and_then(Value::as_str) != Some("OK") {
+            return Err(invalid("Invalid health.up result"));
         }
-        let payload = event
-            .payload
-            .ok_or_else(|| invalid("Missing Transport result"))?;
-        match payload.get("ok").and_then(Value::as_bool) {
-            Some(true) => {
-                if payload
-                    .get("payload")
-                    .and_then(|report| report.get("status"))
-                    .and_then(Value::as_str)
-                    != Some("OK")
-                {
-                    return Err(invalid("Invalid health.up result"));
-                }
-                Ok(HealthReport { status: "OK" })
-            }
-            Some(false) => {
-                let error = payload
-                    .get("error")
-                    .cloned()
-                    .ok_or_else(|| invalid("Missing Transport error"))?;
-                Err(serde_json::from_value(error)
-                    .map_err(|_| invalid("Invalid Transport error"))?)
-            }
-            None => Err(invalid("Invalid Transport result outcome")),
-        }
+        Ok(HealthReport { status: "OK" })
     }
 }
 

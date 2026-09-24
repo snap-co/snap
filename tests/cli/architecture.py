@@ -5,6 +5,23 @@ from dev import ProjectContract, ROOT
 
 
 class ArchitectureContract(ProjectContract):
+    def test_contracts_cannot_select_even_portable_providers(self):
+        self.dependency("provider", "core")
+        (self.root / "Cargo.toml").write_text(self.manifest + '''
+[package.metadata.snap]
+role="contract"
+[dependencies]
+provider={path="provider"}
+''')
+        result = self.run_cli("check", "--structure-only")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("keep contracts independent of providers", result.stderr)
+        self.assertIn("normal", result.stderr)
+        provider = self.root / "provider/Cargo.toml"
+        provider.write_text(provider.read_text().replace('role="core"', 'role="contract"'))
+        result = self.run_cli("check", "--structure-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_explicit_rlib_is_a_portable_library(self):
         with (self.root / "Cargo.toml").open("a") as manifest:
             manifest.write('\n[lib]\ncrate-type=["rlib"]\n')

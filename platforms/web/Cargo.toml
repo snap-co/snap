@@ -1,10 +1,11 @@
 [package]
-name = "snap-protocol"
+name = "snap-web"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+snap-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
@@ -12,4 +13,4 @@ serde_json.workspace = true
 workspace = true
 
 [package.metadata.snap]
-role = "contract"
+role = "platform"

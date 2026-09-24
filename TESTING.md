@@ -22,7 +22,7 @@ The main behavior suite runs outside the implementation:
 Keep one primary assertion of each promise. A raw-protocol case complements an SDK
 case only when it proves something different. A Rust function being public does
 not make it an application contract. Tests should not import dispatchers,
-controllers, private stores, or call `Module::update` to retest client behavior.
+controllers, private stores, or call `Provider::invoke` to retest client behavior.
 
 Use a platform-interface contract only for a promise that cannot be expressed at
 these consumer interfaces. State the uncovered promise before adding it. Keep its
@@ -49,6 +49,22 @@ Network tests use OS-assigned ports. Development-port replacement is reserved fo
 the development runner and its lifecycle contract.
 
 ## Current checks
+
+`tests/store/contract.rs` checks the application-facing local Store contract through
+Memory and SQLite adapters in `tests/adapters/store.rs`. This lower seam expresses
+promises absent from Identity's SDK: coherent cross-namespace reads, atomic guarded
+writes, uniqueness, foreign keys, rollback, and advisory cache versus authoritative
+reads. SQLite contention uses separate connections to the same fixture database.
+
+`tests/protocol/carriers.test.ts` uses an independent Protocol provider to verify
+one operation exposed through both HTTP and WebSocket, and accepted continuation
+completion after its HTTP observer disconnects. `tests/protocol/migration.test.ts`
+starts Authy with an independently declared legacy database and checks old cookies,
+password login, uniqueness, and restart through published operations. All fixtures
+own their temporary databases, ports, and processes.
+
+The structural CLI contract verifies that a `contract` package cannot depend on a
+portable provider. Existing portability gates cover all new contract crates.
 
 Authy's password/session contract runs through native and browser SDK adapters in
 `tests/browser/identity-sdk.spec.ts`, using the same assertions in

@@ -6,7 +6,7 @@
 //! Host clocks, IO, timers and task cancellation do not enter this module.
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use serde::Serialize;
-use snap_protocol::{Error, Invocation, Lane, Outcome, Value};
+use snap_protocol::{ConnectionEvent, Disconnect, Error, Invocation, Outcome, Value};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,21 +27,21 @@ pub enum Input {
         key: String,
         payload: Option<Value>,
     },
-    Http {
+    Completed {
         generation: u64,
         id: String,
-        result: Result<String, Error>,
+        result: Result<Outcome, Error>,
     },
     BuildMismatch {
         generation: u64,
     },
-    Frame {
+    Event {
         generation: u64,
-        wire: String,
+        event: Result<ConnectionEvent, Error>,
     },
     Disconnected {
         generation: u64,
-        code: u16,
+        reason: Disconnect,
     },
     Retry {
         generation: u64,
@@ -54,10 +54,9 @@ pub enum Input {
 }
 
 pub enum Action {
-    Http {
+    Request {
         generation: u64,
         invocation: Invocation,
-        lane: Lane,
     },
     Connect {
         generation: u64,
@@ -132,7 +131,7 @@ impl Client {
         self.state.clone()
     }
 
-    fn http(
+    fn request(
         &mut self,
         key: &str,
         payload: Option<Value>,
@@ -148,18 +147,13 @@ impl Client {
                 command,
             },
         );
-        out.push(Action::Http {
+        out.push(Action::Request {
             generation: self.generation,
             invocation: Invocation {
                 operation_id: id,
                 key: key.into(),
                 payload,
                 traceparent: None,
-            },
-            lane: if key == "identity.fetch" {
-                Lane::Query
-            } else {
-                Lane::Submit
             },
         });
     }
@@ -228,7 +222,7 @@ impl Client {
             return;
         }
         match input {
-            Input::Start => self.http("identity.fetch", None, None, out),
+            Input::Start => self.request("identity.fetch", None, None, out),
             Input::Command { id, key, payload } => {
                 if self.state.pending || self.state.phase == "loading" {
                     out.push(Action::Complete {
@@ -243,7 +237,7 @@ impl Client {
                         self.read("identity.credentials", out);
                         self.read("identity.sessions", out);
                     } else if self.state.phase == "error" {
-                        self.http("identity.fetch", None, None, out);
+                        self.request("identity.fetch", None, None, out);
                     }
                     out.push(Action::Complete {
                         id,
@@ -256,7 +250,7 @@ impl Client {
                     )
                 {
                     self.state.pending = true;
-                    self.http(&key, payload, Some(id), out);
+                    self.request(&key, payload, Some(id), out);
                 } else {
                     out.push(Action::Complete {
                         id,
@@ -264,7 +258,7 @@ impl Client {
                     });
                 }
             }
-            Input::Http {
+            Input::Completed {
                 generation,
                 id,
                 result,
@@ -277,11 +271,10 @@ impl Client {
                 };
                 // Failure to obtain a validated, correlated outcome is different
                 // from a server-declared refusal: the mutation may have committed.
-                let (decoded, untrusted) =
-                    match result.and_then(|wire| decode_completion(&wire, &id)) {
-                        Ok(outcome) => (outcome, false),
-                        Err(error) => (Err(error), true),
-                    };
+                let (decoded, untrusted) = match result {
+                    Ok(outcome) => (outcome, false),
+                    Err(error) => (Err(error), true),
+                };
                 if let Some(command) = p.command {
                     self.state.pending = false;
                     self.state.error = decoded.as_ref().err().cloned();
@@ -296,7 +289,7 @@ impl Client {
                     });
                     if success || uncertain || self.session_ended {
                         self.reset(out);
-                        self.http("identity.fetch", None, None, out);
+                        self.request("identity.fetch", None, None, out);
                     }
                 } else if p.key == "identity.fetch" {
                     match decoded {
@@ -336,20 +329,17 @@ impl Client {
                     out.push(Action::Reload);
                 }
             }
-            Input::Frame { generation, wire } => {
+            Input::Event { generation, event } => {
                 if generation != self.socket_generation {
                     return;
                 }
-                let Ok(event) = serde_json::from_str::<Value>(&wire) else {
+                let Ok(event) = event else {
                     self.state.error = Some(invalid("Invalid socket event"));
                     return;
                 };
-                match event["key"].as_str() {
-                    Some("transport.epoch") => {
-                        let Some(epoch) = event["payload"]["epoch"].as_str() else {
-                            return;
-                        };
-                        self.epoch = Some(epoch.into());
+                match event {
+                    ConnectionEvent::Attached { epoch } => {
+                        self.epoch = Some(epoch);
                         self.message_sequence = 0;
                         self.retry = 250;
                         self.state.connection = "connected";
@@ -357,14 +347,11 @@ impl Client {
                         self.read("identity.credentials", out);
                         self.read("identity.sessions", out);
                     }
-                    Some("transport.complete") => {
-                        let Some(id) = event["target"].as_str() else {
+                    ConnectionEvent::Completed { id, outcome } => {
+                        let Some(p) = self.pending.remove(&id) else {
                             return;
                         };
-                        let Some(p) = self.pending.remove(id) else {
-                            return;
-                        };
-                        match completion(&wire, id) {
+                        match outcome {
                             Ok(value) => {
                                 let field = if p.key == "identity.credentials" {
                                     "credentials"
@@ -384,21 +371,27 @@ impl Client {
                             Err(error) => self.state.error = Some(error),
                         }
                     }
-                    Some("identity.sessions.changed") => self.read("identity.sessions", out),
-                    Some("identity.credentials.changed") => self.read("identity.credentials", out),
+                    ConnectionEvent::Notification { key } if key == "identity.sessions.changed" => {
+                        self.read("identity.sessions", out)
+                    }
+                    ConnectionEvent::Notification { key }
+                        if key == "identity.credentials.changed" =>
+                    {
+                        self.read("identity.credentials", out)
+                    }
                     _ => {}
                 }
             }
-            Input::Disconnected { generation, code } => {
+            Input::Disconnected { generation, reason } => {
                 if generation != self.socket_generation {
                     return;
                 }
-                if code == 4003 {
+                if reason == Disconnect::BuildChanged {
                     self.reset(out);
                     out.push(Action::Reload);
                     return;
                 }
-                if code == 4001 {
+                if reason == Disconnect::AuthorityEnded {
                     // A release can terminate its socket before its HTTP response
                     // arrives. Clear authority immediately, but preserve that
                     // command's result observation until the HTTP carrier settles.
@@ -416,7 +409,7 @@ impl Client {
                         return;
                     }
                     self.reset(out);
-                    self.http("identity.fetch", None, None, out);
+                    self.request("identity.fetch", None, None, out);
                     return;
                 }
                 self.epoch = None;
@@ -448,7 +441,7 @@ impl Client {
                     self.update(
                         Input::Disconnected {
                             generation,
-                            code: 1006,
+                            reason: Disconnect::Interrupted,
                         },
                         out,
                     );
@@ -463,24 +456,6 @@ impl Client {
     }
 }
 
-pub fn completion(wire: &str, id: &str) -> Outcome {
-    decode_completion(wire, id)?
-}
-
-fn decode_completion(wire: &str, id: &str) -> Result<Outcome, Error> {
-    let event: Value = serde_json::from_str(wire).map_err(|_| invalid("Invalid completion"))?;
-    if event["key"] != "transport.complete" || event["target"] != id {
-        return Err(invalid("Mismatched completion"));
-    }
-    match event["payload"]["ok"].as_bool() {
-        Some(true) => Ok(Ok(event["payload"]["payload"].clone())),
-        Some(false) => Ok(Err(serde_json::from_value(
-            event["payload"]["error"].clone(),
-        )
-        .map_err(|_| invalid("Invalid error"))?)),
-        None => Err(invalid("Invalid outcome")),
-    }
-}
 fn invalid(message: &str) -> Error {
     Error::ContractViolationError {
         message: message.into(),

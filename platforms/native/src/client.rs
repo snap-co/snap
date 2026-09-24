@@ -34,22 +34,25 @@ impl Http {
         })
     }
 
-    pub async fn query(&self, invocation: &Invocation) -> Result<String, Error> {
-        self.request(invocation, snap_protocol::Lane::Query).await
+    pub async fn query(&self, invocation: &Invocation) -> snap_protocol::Outcome {
+        let wire = self.request(invocation, snap_web::Method::Get).await?;
+        snap_web::decode_completion(&wire, &invocation.operation_id)?
     }
 
     pub async fn request(
         &self,
         invocation: &Invocation,
-        lane: snap_protocol::Lane,
+        method: snap_web::Method,
     ) -> Result<String, Error> {
-        self.exchange(invocation, lane).await.map(|(_, body)| body)
+        self.exchange(invocation, method)
+            .await
+            .map(|(_, body)| body)
     }
 
     pub(crate) async fn exchange(
         &self,
         invocation: &Invocation,
-        lane: snap_protocol::Lane,
+        method: snap_web::Method,
     ) -> Result<(u16, String), Error> {
         let mut url = self.base.clone();
         url.set_query(None);
@@ -58,7 +61,7 @@ impl Http {
             .map_err(|_| unavailable("Base URL cannot carry paths"))?
             .clear()
             .extend(invocation.key.split('.'));
-        let mut request = if lane == snap_protocol::Lane::Submit {
+        let mut request = if method == snap_web::Method::Post {
             let request = self.client.post(url);
             if let Some(payload) = &invocation.payload {
                 request.json(payload)

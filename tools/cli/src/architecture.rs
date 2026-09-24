@@ -12,6 +12,7 @@ use tokio::process::Command;
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum Role {
+    Contract,
     Core,
     Application,
     Platform,
@@ -22,12 +23,12 @@ enum Role {
 
 impl Role {
     fn portable(self) -> bool {
-        matches!(self, Self::Core | Self::Application)
+        matches!(self, Self::Contract | Self::Core | Self::Application)
     }
     fn allows(self, target: Self, kind: &str) -> bool {
         use Role::*;
         // Reusable code never selects an app, including through tests/build scripts.
-        if matches!(self, Core | Platform | Binding | Tool)
+        if matches!(self, Contract | Core | Platform | Binding | Tool)
             && matches!(target, Application | Composition)
         {
             return false;
@@ -37,11 +38,12 @@ impl Role {
             return true;
         }
         match self {
-            Core => target == Core,
-            Application => matches!(target, Core | Application),
-            Platform => matches!(target, Core | Platform),
-            Binding => matches!(target, Core | Platform | Binding),
-            Tool => matches!(target, Core | Platform | Binding | Tool),
+            Contract => target == Contract,
+            Core => matches!(target, Contract | Core),
+            Application => matches!(target, Contract | Core | Application),
+            Platform => matches!(target, Contract | Core | Platform),
+            Binding => matches!(target, Contract | Core | Platform | Binding),
+            Tool => matches!(target, Contract | Core | Platform | Binding | Tool),
             Composition => true,
         }
     }
@@ -54,7 +56,7 @@ fn role(package: &Value) -> Result<Option<Role>> {
     let name = package["name"].as_str().unwrap_or("unknown package");
     serde_json::from_value(package["metadata"]["snap"]["role"].clone())
         .map(Some)
-        .with_context(|| format!("{name}: declare package.metadata.snap.role as core, application, platform, binding, composition, or tool in {}", package["manifest_path"]))
+        .with_context(|| format!("{name}: declare package.metadata.snap.role as contract, core, application, platform, binding, composition, or tool in {}", package["manifest_path"]))
 }
 
 pub async fn check(
@@ -174,7 +176,7 @@ pub async fn check(
                         {
                             let kind = kind["kind"].as_str().unwrap_or("normal");
                             if !source_role.allows(target_role, kind) {
-                                violations.insert(format!("{} ({source_role:?}) -> {} ({target_role:?}), {kind} dependency on {target}: move app/platform selection to an app-owned composition package or move portable behavior into core. Declared in {}",
+                                violations.insert(format!("{} ({source_role:?}) -> {} ({target_role:?}), {kind} dependency on {target}: keep contracts independent of providers; move app/platform selection to an app-owned composition package or move portable behavior into core. Declared in {}",
                                     package["name"], dependency["name"], package["manifest_path"]));
                             }
                         }

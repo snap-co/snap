@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { startServer } from "./server";
 
 /** A consumer-owned database and process; restart preserves the public address. */
-export async function authyServer(dev = false) {
+export async function authyServer(dev = false, setup?: (database: string) => Promise<void>) {
   const root = resolve(import.meta.dirname, "../..");
   const directory = await mkdtemp("/tmp/opencode/authy-");
   const options = {
@@ -12,6 +12,7 @@ export async function authyServer(dev = false) {
     env: { SNAP_DATABASE: resolve(directory, "passport.sqlite") },
   };
   try {
+    await setup?.(options.env.SNAP_DATABASE);
     let server = await startServer(options);
     const baseUrl = server.baseUrl;
     return {

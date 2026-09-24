@@ -17,12 +17,14 @@ python3 tests/cli/build.py
 python3 tests/cli/check.py
 python3 tests/cli/architecture.py
 "${cargo_cmd[@]}" test -p healthy-native --test client-contract
+"${cargo_cmd[@]}" test -p snap-native --test store-contract
 ./bin/build
 ./bin/snap build apps/authy
 bun scripts/check-client.ts
 bun test tests/sdk/browser-runtime.test.ts
 bun scripts/healthy-smoke.ts
 bun test tests/protocol/authy.test.ts
+bun test tests/protocol/carriers.test.ts tests/protocol/migration.test.ts
 bun test tests/sdk/identity-recovery.test.ts
 bun scripts/authy-reference.ts
 bunx playwright test

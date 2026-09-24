@@ -82,6 +82,7 @@ version = "0.0.0"
 dependencies = [
  "snap-client",
  "snap-runtime",
+ "snap-store",
 ]
 
 [[package]]
@@ -91,6 +92,8 @@ dependencies = [
  "authy",
  "serde_json",
  "snap-native",
+ "snap-protocol",
+ "snap-runtime",
  "tokio",
 ]
 
@@ -1582,6 +1585,7 @@ dependencies = [
  "serde_json",
  "snap-client",
  "snap-protocol",
+ "snap-web",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -1607,7 +1611,6 @@ name = "snap-client"
 version = "0.0.0"
 dependencies = [
  "serde",
- "serde_json",
  "snap-protocol",
 ]
 
@@ -1622,6 +1625,14 @@ dependencies = [
  "snap-protocol",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "snap-identity"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "snap-protocol",
 ]
 
 [[package]]
@@ -1641,8 +1652,11 @@ dependencies = [
  "serde_json",
  "sha2",
  "snap-client",
+ "snap-identity",
  "snap-protocol",
  "snap-runtime",
+ "snap-store",
+ "snap-web",
  "tokio",
  "tokio-tungstenite",
  "tower-http",
@@ -1661,6 +1675,21 @@ dependencies = [
 name = "snap-runtime"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
+ "snap-identity",
+ "snap-protocol",
+ "snap-store",
+]
+
+[[package]]
+name = "snap-store"
+version = "0.0.0"
+
+[[package]]
+name = "snap-web"
+version = "0.0.0"
+dependencies = [
+ "serde",
  "serde_json",
  "snap-protocol",
 ]

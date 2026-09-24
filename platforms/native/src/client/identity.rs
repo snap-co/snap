@@ -76,7 +76,7 @@ impl Client {
         )
         .await
     }
-    pub async fn release(&self, scope: snap_protocol::identity::Release) -> Outcome {
+    pub async fn release(&self, scope: snap_identity::Release) -> Outcome {
         self.command(
             "identity.release",
             Some(serde_json::to_value(scope).map_err(unavailable)?),
@@ -116,15 +116,16 @@ async fn drive(
         state.send_replace(core.snapshot());
         for action in actions {
             match action {
-                Action::Http {
+                Action::Request {
                     generation,
                     invocation,
-                    lane,
                 } => {
                     let http = http.clone();
                     let sender = sender.clone();
                     jobs.spawn(async move {
-                        let result = http.exchange(&invocation, lane).await;
+                        let result = http
+                            .exchange(&invocation, snap_web::identity_method(&invocation.key))
+                            .await;
                         if matches!(&result, Ok((409, _))) {
                             let _ = sender
                                 .send(Event::Input(Input::BuildMismatch { generation }))
@@ -132,10 +133,12 @@ async fn drive(
                             return;
                         }
                         let _ = sender
-                            .send(Event::Input(Input::Http {
+                            .send(Event::Input(Input::Completed {
                                 generation,
+                                result: result.and_then(|(_, body)| {
+                                    snap_web::decode_completion(&body, &invocation.operation_id)
+                                }),
                                 id: invocation.operation_id,
-                                result: result.map(|(_, body)| body),
                             }))
                             .await;
                     });
@@ -165,7 +168,7 @@ async fn drive(
                     if !sent {
                         let _ = sender.try_send(Event::Input(Input::Disconnected {
                             generation,
-                            code: 1006,
+                            reason: snap_protocol::Disconnect::Interrupted,
                         }));
                     }
                 }
@@ -240,7 +243,7 @@ async fn connection(
         let (mut ws, _) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request)).await.map_err(unavailable)?.map_err(unavailable)?;
         let first = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.map_err(unavailable)?;
         match first {
-            Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Frame { generation, wire: wire.to_string() })).await.map_err(unavailable)?; }
+            Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Event { generation, event: snap_web::event(&wire) })).await.map_err(unavailable)?; }
             Some(Ok(Message::Close(detail))) => return Ok(detail.map(|d| u16::from(d.code)).unwrap_or(1000)),
             _ => return Ok(1006),
         }
@@ -248,7 +251,7 @@ async fn connection(
             tokio::select! {
                 wire = outbound.recv() => { let Some(wire) = wire else { let _ = ws.close(None).await; return Ok(1000) }; ws.send(Message::Text(wire.into())).await.map_err(unavailable)?; }
                 frame = ws.next() => match frame {
-                    Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Frame { generation, wire: wire.to_string() })).await.map_err(unavailable)?; }
+                    Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Event { generation, event: snap_web::event(&wire) })).await.map_err(unavailable)?; }
                     Some(Ok(Message::Close(detail))) => return Ok(detail.map(|d| u16::from(d.code)).unwrap_or(1000)),
                     Some(Ok(_)) => {},
                     _ => return Ok(1006),
@@ -259,7 +262,7 @@ async fn connection(
     let _ = sender
         .send(Event::Input(Input::Disconnected {
             generation,
-            code: result.unwrap_or(1006),
+            reason: snap_web::disconnect(result.unwrap_or(1006)),
         }))
         .await;
 }

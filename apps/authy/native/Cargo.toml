@@ -12,6 +12,8 @@ doc = false
 [dependencies]
 authy.workspace = true
 snap-native.workspace = true
+snap-protocol.workspace = true
+snap-runtime.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

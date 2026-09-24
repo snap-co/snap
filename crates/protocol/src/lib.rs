@@ -7,19 +7,24 @@ use alloc::string::String;
 use serde::{Deserialize, Serialize};
 
 pub use serde_json::{Value, json};
-pub mod identity;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lane {
-    Query,
-    Submit,
-    Message,
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Operation {
     pub key: &'static str,
-    pub lane: Lane,
+}
+
+/// A statically composed provider. Invocation creates an owned continuation;
+/// the host owns polling, admission, cancellation, and external work execution.
+/// Context and output belong to the capability/composition, not the scheduler.
+pub trait Provider {
+    type Context;
+    type Output;
+    fn operations(&self) -> impl Iterator<Item = Operation>;
+    fn invoke(
+        &mut self,
+        invocation: Invocation,
+        context: Self::Context,
+    ) -> impl core::future::Future<Output = Self::Output> + Send + 'static;
 }
 
 /// Carrier framing has already been removed. Missing payload differs from JSON null.
@@ -49,36 +54,14 @@ pub enum Error {
 
 pub type Outcome = Result<Value, Error>;
 
-/// The existing TypeScript SDK expects a completion Event, even over HTTP.
-#[derive(Debug, Serialize)]
-pub struct Completion {
-    key: &'static str,
-    target: String,
-    payload: Value,
+pub enum ConnectionEvent {
+    Attached { epoch: String },
+    Completed { id: String, outcome: Outcome },
+    Notification { key: String },
 }
-
-impl Completion {
-    pub fn new(operation_id: String, outcome: Outcome) -> Self {
-        let payload = match outcome {
-            Ok(payload) => json!({ "ok": true, "payload": payload }),
-            Err(error) => json!({ "ok": false, "error": error }),
-        };
-        Self {
-            key: "transport.complete",
-            target: operation_id,
-            payload,
-        }
-    }
-
-    pub fn session_changed(mut self) -> Self {
-        self.payload["sessionChanged"] = Value::Bool(true);
-        self
-    }
-
-    pub fn empty(mut self) -> Self {
-        if let Some(payload) = self.payload.as_object_mut() {
-            payload.remove("payload");
-        }
-        self
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Disconnect {
+    Interrupted,
+    AuthorityEnded,
+    BuildChanged,
 }

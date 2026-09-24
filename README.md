@@ -1,22 +1,22 @@
 # Snap Rust spike
 
-An experiment in a host-driven, IO-free Snap runtime. The first question is whether
-an application library can receive normalized inputs and return actions while a
-reusable host owns execution and all external work.
+An experiment in host-driven, IO-free Snap providers. Applications select capability
+implementations; reusable hosts own execution and all external work.
 
 ## Architecture direction
 
-The accepted next step keeps capability contracts independent of their providers
+The module pattern keeps capability contracts independent of their providers
 and uses host-driven continuations plus a shared, local Store. Applications select
 providers and explicitly publish remote operations; carrier envelopes and IO stay
 with host implementations. See the [decision](docs/adr/0001-host-driven-capability-providers.md)
 and [module porting guide](docs/architecture/module-pattern.md).
 
-The current Healthy/Authy implementation below still uses synchronous input/action
-stages. The [Authy reference refactor](docs/plans/host-driven-module-pattern.md)
-tracks its migration. A [standalone experiment](crates/runtime/prototypes/store-continuation/README.md)
-demonstrates portable futures with host-driven Memory/SQLite storage and optional
-record caching; it is not integrated into Authy.
+Healthy returns an immediate result; Passport uses portable async continuations.
+Both implement the carrier-independent Protocol provider interface. Authy selects
+SQLite Store and authoritative reads with NoCache. See the
+[reference refactor](docs/plans/host-driven-module-pattern.md),
+[Store interface](docs/architecture/store.md), and the
+[original experiment](crates/runtime/prototypes/store-continuation/README.md).
 
 ## Run Authy
 
@@ -290,17 +290,18 @@ dependencies:
 
 | Role | Allowed local dependencies | Bare-WASM checked |
 | --- | --- | --- |
-| core | core | yes |
-| application | core, application | yes |
-| platform | core, platform | no |
-| binding | core, platform, binding | no |
-| tool | core, platform, binding, tool | no |
+| contract | contract | yes |
+| core | contract, core | yes |
+| application | contract, core, application | yes |
+| platform | contract, core, platform | no |
+| binding | contract, core, platform, binding | no |
+| tool | contract, core, platform, binding, tool | no |
 | composition | all roles | no |
 
-Development and build dependencies may use host code. Shared core/platform/binding/tool
+Development and build dependencies may use host code. Shared contract/core/platform/binding/tool
 packages still cannot select application/composition packages through any dependency
 kind. Structural checking follows Cargo's resolved graph for the current host and
-`wasm32-unknown-unknown` and `wasm32v1-none`, with all features enabled. Each reachable core/application
+`wasm32-unknown-unknown` and `wasm32v1-none`, with all features enabled. Each reachable contract/core/application
 library's own manifest is inspected with all features, including across separate
 path-dependency workspaces, before it compiles for `wasm32v1-none`. All declared features in
 a portable package must remain portable; put platform features in a platform package.
@@ -366,8 +367,10 @@ to the deployment environment; no deployment provider is configured here.
 
 ```text
 crates/
-  protocol/       snap-protocol   Normalized invocation and wire vocabulary
-  runtime/        snap-runtime    Module entry point, Transport dispatch, Doctor
+  protocol/       snap-protocol   Operations, normalized inputs/results, provider contract
+  identity/       snap-identity   Identity operation declarations and public schemas
+  store/          snap-store      Local schemas, queries, transactions, advisory cache contract
+  runtime/        snap-runtime    Transport, Doctor, and async Passport providers
   client/         snap-client     IO-free client behavior
 bindings/
   wasm/           snap-client-wasm  Shared query marshalling, linked by app WASM crates
@@ -375,6 +378,7 @@ clients/
   typescript/                    Shared Promise/observation and initialization support
   react/                         Shared browser entrypoint and rendering host
 platforms/
+  web/            snap-web        Selected HTTP/WebSocket bindings and wire codecs
   browser/        snap-browser    Browser Fetch, deadlines, timers, task lifetime
   native/         snap-native     Server host and native client runtime
 apps/
@@ -408,7 +412,7 @@ Native runtime → reqwest / Tokio
 Browser runtime → browser Fetch / timers through Rust bindings
 ```
 
-Protocol, runtime, client, and application crates are `no_std` with `alloc`. The native
+Protocol, Identity, Store, runtime, client, and application crates are `no_std` with `alloc`. The native
 host supplies allocation and process lifetime. Workspace source forbids unsafe
 Rust. Application dependencies contain no Tokio, Axum, filesystem, or SQL client.
 The bare-WASM compilation gate catches accidental standard-library dependencies
@@ -427,11 +431,11 @@ and portability constraints. More crates do not automatically make compilation
 faster: changes to a shared interface still rebuild dependants, and generic code
 can be instantiated downstream.
 
-The current runtime contains portable implementations and the host/module interface.
-Doctor is one module, not a crate pair named Health and Doctor. The current
-`snap-protocol::identity` placement and Passport-specific runtime inputs/actions
-are ownership debt addressed by the reference refactor above. Protocol is one
-capability's contract; it is not the container for every capability's vocabulary.
+Protocol, Identity, and Store are independently consumable contract crates.
+Their `contract` role prevents normal dependencies on providers, including portable
+ones. Runtime groups portable providers; Doctor remains a module. The web binding
+crate is shared by native and browser hosts and is a platform dependency, preventing
+portable provider/client code from importing carrier policy.
 
 The client core is independently consumed by native clients and language bindings.
 The browser runtime has WASM/browser dependencies, and the WASM binding exports
@@ -444,33 +448,36 @@ needs it without the controller. Extract `snap-snapshot` when its implementation
 has a useful independent dependency or compilation lifetime. Platform-specific
 storage code remains outside that portable implementation.
 
-## One execution turn
+## Host-driven execution
 
 ```text
 HTTP adapter strips method/path/headers/query framing
   → host queues a normalized Invocation
-  → host calls Module::update(input, actions)
-  → Transport dispatches health.up to Doctor
-  → Doctor computes its result in memory
-  → Transport appends a Complete action
+  → host calls Provider::invoke with composition-owned context
+  → host polls the owned continuation
+  → immediate work completes; external work suspends until its host result arrives
+  → provider returns its result and composition projects delivery effects
   → host projects it into an HTTP completion Event
 ```
 
-One host-owned task owns the application instance. Request tasks enqueue inputs;
-they never invoke application code directly. The host reuses and drains the action
-buffer. A host Delivery id addresses a response slot independently of the caller's
-operation id, so equal operation ids cannot steal each other's HTTP responses.
+One host task owns invocation creation and polls active continuations. Private
+response slots isolate caller operation IDs. Accepted invocations retain admission
+capacity and continue after an HTTP observer leaves. Host shutdown drops remaining
+continuations; an already-started blocking Store transaction still completes. This
+is an in-process lifetime promise, not crash recovery or durable continuations.
 
-`Module::operations` supplies startup route metadata. `Module::update` is the
-execution entry point. `Transport<State>` holds opaque-to-the-host application
-state. The interface is an ordinary statically linked Rust interface, not a stable
-DLL ABI or a contiguous-memory checkpoint format.
+`Provider::operations` declares operations without carrier eligibility. Application
+composition supplies web bindings separately; a single operation can be enabled
+for both HTTP and WebSocket. `Provider::Context` and `Output` belong to the selected
+capability/composition, so the scheduler has no Passport-specific work variants.
+`apps/authy/native/src/main.rs` selects Store/crypto/cookie implementations and
+projects Passport results into web delivery effects.
 
-This first slice performs synchronous dispatch. It has no async handler interface.
-It also does not establish a universal one-input/one-output rule: that behavior
-belongs to this Query slice. Document controllers will need inputs for IO
-completions, readiness, and connection lifetimes, and actions for reconciliation.
-Healthy does not yet validate those interfaces, so they are not invented here.
+Passport uses namespaced Store tables and transactions from portable Rust. The
+native Store executes Memory or SQLite work on host blocking workers. SQLite startup
+atomically migrates the original Authy table names, preserving accounts, hashes,
+sessions and signing keys. Public operation registration is independent of storage
+registration; a declared table is never automatically exposed to clients.
 
 ## Direction under investigation
 
