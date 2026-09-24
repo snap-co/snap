@@ -13,6 +13,10 @@ on 2026-09-23. This is a local plan, not an issue tracker or a new publication w
 Starting code revision: `ec2b34bd7bcc2bacb377da89943dcc0fcdda86b8`.
 Work directly on this repository's `main`, without Factory or worktrees.
 
+All six slices are complete and reviewed as of 2026-09-23. Latest reviewed code:
+`e9f64499daad0b9e1790e38a6a3d4bedcf84076c`. The full repository gate passes.
+Authy's first password/session flow is the next separately scoped piece of work.
+
 ## Accepted decisions
 
 ### Project commands
@@ -358,18 +362,20 @@ with regressions and CLEAR round 2 validation. Reports are in
 graphs, and automatic bare-WASM compilation run through snap check. Repository
 gates add pinned dependency tools; network advisory checking is explicit. Agent
 guidance now points to structural diagnostics and meaningful interface comments.
-Slice 05 is BLOCKED at `da14da4e0fbcbda99da3d8b312913a8a7c17e714` after two review
-rounds. Full repository checks pass, but both final reviewers reproduced an uncovered
-startup timeout regression when a live host closes stderr before readiness. Initial
-proxy/port/exit-status findings are fixed and validated. STD-2 / SPEC-5 remain; see
-`docs/reviews/browser-hmr.md` for reports, evidence, and the requested human decision.
+Slice 05 was blocked at `da14da4e0fbcbda99da3d8b312913a8a7c17e714` after two review
+rounds by an uncovered startup timeout regression. The user resolved the design
+decision by assigning port selection/replacement and HTTP readiness to Snap. See
+`docs/reviews/browser-hmr.md` for the preserved history and recovery evidence.
 Vite/React serves the public development origin and proxies to an owned loopback
 native host. Chromium proves state-preserving React/CSS updates and shutdown.
 Human recovery is READY at `313bda57312803eff58e43ec185808f405f13861` under the
 port-ownership ruling above. Full checks passed and both authorized recovery
 validators returned CLEAR. STD-2 / SPEC-5 are resolved.
 
-Slice 06 is implemented and verified, pending review in `docs/reviews/rust-watch.md`.
+Slice 06 is READY at `e9f64499daad0b9e1790e38a6a3d4bedcf84076c`. Both final review
+axes are CLEAR. Round 1 found missed separate-workspace manifests and newly created
+ancestor Cargo configuration. Both were repaired and validated through a real CLI
+contract without source edits. Reports are in `docs/reviews/rust-watch.md`.
 Native/WASM dependency watching, private generation staging, Vite reload, compilation
 failure retention and startup-failure restoration pass the real browser editing
 contract. Full repository checks pass, including four Chromium scenarios. Native
