@@ -25,6 +25,7 @@ test("standalone builds cannot replace a live dev session's JS/WASM pair", async
 `);
   const facade = resolve(project.directory, "client.ts");
   await writeFile(facade, (await readFile(facade, "utf8"))
+    .replace("./.snap/bindings/healthy_wasm.js", "./.snap/bindings/healthy_wasm")
     .replace("Client as WasmClient,", "ownership_marker, Client as WasmClient,")
     .replace("  return observeClient(", '  document.body.dataset.owner = String(ownership_marker());\n  return observeClient('));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
@@ -55,7 +56,7 @@ test("standalone builds cannot replace a live dev session's JS/WASM pair", async
       await page.evaluate(() => { (window as any).lifetime = "before-edit"; });
       if (phase === "initial") await writeFile(wasm, `${source}\n// WASM edit\n`);
       else await writeFile(native, `${await readFile(native, "utf8")}\n// native edit\n`);
-      await expect.poll(() => page.evaluate(() => (window as any).lifetime), { timeout: 30_000 }).toBeUndefined();
+      await page.waitForFunction(() => (window as any).lifetime === undefined, undefined, { timeout: 30_000 });
       await expect(page.getByRole("status")).toHaveText("OK");
       await expect(page.locator("body")).toHaveAttribute("data-owner", "dev-owned");
       if (phase === "initial") expect(await build()).toBe(initial);
@@ -65,8 +66,10 @@ test("standalone builds cannot replace a live dev session's JS/WASM pair", async
     console.error(server?.logs());
     throw error;
   } finally {
-    await page.goto("about:blank");
-    await server?.close();
-    await project.close();
+    try {
+      await page.close();
+    } finally {
+      try { await server?.close(); } finally { await project.close(); }
+    }
   }
 });

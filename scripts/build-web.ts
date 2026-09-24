@@ -25,7 +25,7 @@ const result = await Bun.build({
             const path = resolve(dirname(args.importer), args.path);
             const suffix = relative(bindingSource, path);
             if (!suffix.startsWith("..") && !isAbsolute(suffix))
-              return { path: resolve(bindingOutput, suffix) };
+              return { path: Bun.resolveSync(resolve(bindingOutput, suffix), bindingOutput) };
           });
         }
         build.onResolve({ filter: /^snap:application$/ }, () => ({

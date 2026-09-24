@@ -40,7 +40,9 @@ test("Rust edits restart/reload, retain failed builds, and recover without stale
     await page.evaluate(() => { (window as any).lifetime = "old"; });
     await writeFile(native, `${nativeSource}\n// native edit\n`);
     await expect.poll(build, { timeout: 30_000 }).not.toBe(initial);
-    await expect.poll(() => page.evaluate(() => (window as any).lifetime)).toBeUndefined();
+    // This assertion intentionally crosses a navigation. Playwright retries the
+    // function in the new document if reload destroys the old execution context.
+    await page.waitForFunction(() => (window as any).lifetime === undefined, undefined, { timeout: 30_000 });
     await expect(page.getByRole("status")).toHaveText("OK");
     expect(await starts()).toBe(initialStarts + 1);
     const nativeBuild = await build();
@@ -71,6 +73,9 @@ test("Rust edits restart/reload, retain failed builds, and recover without stale
     await expect(page.getByRole("status")).toHaveText("OK");
 
     const beforeFailure = await build();
+    // HTTP readiness precedes acceptance while Snap checks for superseding edits.
+    // Do not inject the next failure into that still-provisional version.
+    await expect.poll(() => server!.logs(), { timeout: 30_000 }).toContain(`Rust generation ready: ${beforeFailure}`);
     await writeFile(native, nativeSource.replace("    use std::io::Write;", "    std::process::exit(37);\n    use std::io::Write;"));
     await expect.poll(() => server!.logs(), { timeout: 30_000 }).toContain("Replacement failed; restoring previous generation");
     await expect.poll(build, { timeout: 30_000 }).toBe(beforeFailure);
@@ -100,9 +105,11 @@ test("Rust edits restart/reload, retain failed builds, and recover without stale
     console.error(server?.logs());
     throw error;
   } finally {
-    await page.goto("about:blank");
-    await server?.close();
-    await project.close();
+    try {
+      await page.close();
+    } finally {
+      try { await server?.close(); } finally { await project.close(); }
+    }
   }
   await expect(fetch(`${server!.baseUrl}/health/up`)).rejects.toThrow();
   await expect(fetch(`${server!.backendUrl}/health/up`)).rejects.toThrow();

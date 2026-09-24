@@ -74,12 +74,18 @@ vite = await createViteServer({
   plugins: [{
     name: "snap-private-bindings",
     enforce: "pre",
-    resolveId(source, importer) {
+    async resolveId(source, importer) {
       if (!importer || !source.startsWith(".")) return;
       const path = resolve(dirname(importer.split("?")[0]), source);
       const suffix = relative(bindingSource, path);
-      if (!suffix.startsWith("..") && !isAbsolute(suffix))
-        return resolve(bindings, suffix);
+      if (!suffix.startsWith("..") && !isAbsolute(suffix)) {
+        // Let Vite resolve extensions in the private directory. A missing private
+        // module must fail here instead of falling back to published bindings.
+        const target = resolve(bindings, suffix);
+        const resolved = await this.resolve(target, importer, { skipSelf: true });
+        if (!resolved) this.error(`Private binding module not found: ${target}`);
+        return resolved;
+      }
     },
   } satisfies Plugin, react()],
   resolve: { alias: { "snap:application": application }, dedupe: ["react", "react-dom"] },

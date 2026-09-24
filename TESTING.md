@@ -153,6 +153,8 @@ environment variable. The packaged browser observes its numeric result while fre
 dev pages retain their string result. Subsequent WASM and native edits still reload
 correctly. This covers initial and watched dev output ownership through the CLI and
 real browser, including JS/WASM pairing rather than identical-file publication.
+The facade uses an extensionless binding import to cover ordinary module resolution
+after redirection into private outputs.
 
 ```sh
 cargo fmt --all -- --check
