@@ -338,7 +338,8 @@ copying the complete release package to the compatibility `dist/` location.
 The full `mise exec -- ./bin/check` gate and `git diff --check` passed. Review evidence
 lives in `docs/reviews/snap-build.md`.
 
-Slice 03 is implemented and verified; review pending in `docs/reviews/snap-check.md`.
+Slice 03 is READY at `ae7f22e6f214025c4c6a9e71808b3922a2ea685a`, both reviews CLEAR
+in round 1 without findings. Reports are in `docs/reviews/snap-check.md`.
 Project checks select Rust manifests, optional build prerequisites, and literal
 commands. Healthy runs its SDK/browser checks independently of the reference suite.
 Slices 04–06 are unstarted. The user authorized continuing through the full list.
