@@ -181,8 +181,9 @@ dependencies:
 Development and build dependencies may use host code. Shared core/platform/binding/tool
 packages still cannot select application/composition packages through any dependency
 kind. Structural checking follows Cargo's resolved graph for the current host and
-`wasm32-unknown-unknown`, with all features enabled. Each reachable core/application
-library also compiles for `wasm32v1-none` with all features. All declared features in
+`wasm32-unknown-unknown` and `wasm32v1-none`, with all features enabled. Each reachable core/application
+library's own manifest is inspected with all features, including across separate
+path-dependency workspaces, before it compiles for `wasm32v1-none`. All declared features in
 a portable package must remain portable; put platform features in a platform package.
 Diagnostics identify the package, edge, dependency kind, target, and remedy.
 

@@ -71,10 +71,17 @@ pub async fn check(
         .context("rustc did not report its host target")?;
     let mut portable = BTreeMap::new();
     let mut violations = BTreeSet::new();
-    let mut visited_workspaces = BTreeSet::new();
-    for manifest in manifests {
-        let manifest = project.file(manifest)?;
-        for target in [host, "wasm32-unknown-unknown"] {
+    let roots: BTreeSet<_> = manifests
+        .iter()
+        .map(|path| project.file(path))
+        .collect::<Result<_>>()?;
+    let mut pending_manifests: Vec<_> = roots.iter().cloned().collect();
+    let mut checked_manifests = BTreeSet::new();
+    while let Some(manifest) = pending_manifests.pop() {
+        if !checked_manifests.insert(manifest.clone()) {
+            continue;
+        }
+        for target in [host, "wasm32-unknown-unknown", "wasm32v1-none"] {
             let output = runner
                 .run(
                     Command::new("cargo")
@@ -92,14 +99,6 @@ pub async fn check(
                 )
                 .await?;
             let metadata: Value = serde_json::from_slice(&output)?;
-            if workspace
-                && !visited_workspaces.insert((
-                    metadata["workspace_root"].clone().to_string(),
-                    target.to_owned(),
-                ))
-            {
-                continue;
-            }
             let packages: BTreeMap<_, _> = metadata["packages"]
                 .as_array()
                 .context("Missing Cargo packages")?
@@ -112,7 +111,7 @@ pub async fn check(
                 .iter()
                 .map(|p| Ok((p["id"].as_str().context("Missing node id")?, p)))
                 .collect::<Result<_>>()?;
-            let mut pending: Vec<&str> = if workspace {
+            let mut pending: Vec<&str> = if workspace && roots.contains(&manifest) {
                 metadata["workspace_members"]
                     .as_array()
                     .context("Missing workspace members")?
@@ -139,18 +138,26 @@ pub async fn check(
                             .as_array()
                             .context("Missing Cargo targets")?
                             .iter()
-                            .any(|t| t["kind"]
-                                .as_array()
-                                .is_some_and(|k| k.iter().any(|v| v == "lib"))),
+                            .any(|t| t["kind"].as_array().is_some_and(|k| k.iter().any(
+                                |v| matches!(
+                                    v.as_str(),
+                                    Some("lib" | "rlib" | "dylib" | "staticlib" | "cdylib")
+                                )
+                            ))),
                         "{}: portable packages need a library target; move host binaries into composition packages",
                         package["name"]
                     );
+                    let portable_manifest = PathBuf::from(
+                        package["manifest_path"]
+                            .as_str()
+                            .context("Missing manifest")?,
+                    );
+                    // --all-features on an app does not enable every feature of a
+                    // path dependency in another workspace. Inspect the same package
+                    // selection that its later portable compilation will use.
+                    pending_manifests.push(portable_manifest.clone());
                     portable.insert(
-                        PathBuf::from(
-                            package["manifest_path"]
-                                .as_str()
-                                .context("Missing manifest")?,
-                        ),
+                        portable_manifest,
                         package["name"].as_str().context("Missing name")?.to_owned(),
                     );
                 }

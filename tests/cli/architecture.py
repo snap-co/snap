@@ -5,6 +5,46 @@ from dev import ProjectContract, ROOT
 
 
 class ArchitectureContract(ProjectContract):
+    def test_explicit_rlib_is_a_portable_library(self):
+        with (self.root / "Cargo.toml").open("a") as manifest:
+            manifest.write('\n[lib]\ncrate-type=["rlib"]\n')
+        result = self.run_cli("check", "--structure-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_portable_path_dependency_features_are_validated_in_its_workspace(self):
+        self.dependency("external", "core")
+        self.dependency("external/platform", "platform")
+        # A separate workspace's optional dependency is enabled by its own
+        # all-feature portability check, not the consuming app's metadata call.
+        (self.root / "external/platform/Cargo.toml").write_text(
+            '[package]\nname="fixture-platform"\nversion="0.0.0"\nedition="2024"\n'
+            '[package.metadata.snap]\nrole="platform"\n')
+        with (self.root / "external/Cargo.toml").open("a") as manifest:
+            manifest.write('''
+[workspace]
+[features]
+host=["dep:fixture-platform"]
+[dependencies]
+fixture-platform={path="platform",optional=true}
+''')
+        (self.root / "Cargo.toml").write_text(self.manifest.replace('[workspace]',
+            '[workspace]\nexclude=["external"]') + '''
+[package.metadata.snap]
+role="application"
+[dependencies]
+external={path="external"}
+''')
+        external = self.root / "external/Cargo.toml"
+        text = external.read_text()
+        for header in ["dependencies", 'target.\'cfg(target_os="none")\'.dependencies']:
+            with self.subTest(header=header):
+                external.write_text(text.replace("[dependencies]", f"[{header}]"))
+                result = self.run_cli("check", "--structure-only")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fixture-platform", result.stderr)
+                self.assertIn("normal", result.stderr)
+                self.assertIn("composition", result.stderr)
+
     def setUp(self):
         super().setUp()
         self.manifest = (self.root / "Cargo.toml").read_text()
