@@ -17,6 +17,7 @@ export async function startAuthy(options: Options) {
   await ready(options.wasm);
   const listeners = new Set<() => void>();
   let closed = false;
+  let closing: Promise<void> | undefined;
   let snapshot: Snapshot;
   const decode = (wire: string): Snapshot => {
     const value: Snapshot = JSON.parse(wire);
@@ -47,7 +48,17 @@ export async function startAuthy(options: Options) {
     signIn: (email: string, password: string) => command("identity.password.acquire", { kind: "user", email, password }),
     release: (scope: Release) => command("identity.release", scope),
     refresh: () => command("refresh"),
-    async close() { if (closed) return; closed = true; listeners.clear(); await client.close(); client.free(); },
+    close() {
+      if (closing) return closing;
+      closed = true;
+      return closing = (async () => {
+        try {
+          await client.close();
+          snapshot = decode(client.snapshot());
+          for (const listener of listeners) listener();
+        } finally { listeners.clear(); client.free(); }
+      })();
+    },
   };
 }
 export type AuthyClient = Awaited<ReturnType<typeof startAuthy>>;

@@ -26,7 +26,7 @@ async fn main() {
                 calls.spawn(async move {
                     let id = &value["id"];
                     let key = value["key"].as_str().unwrap();
-                    if key == "close" { client.close().await; println!("{}", json!({"id":id,"ok":true,"value":null})); return; }
+                    if key == "close" { client.close().await; println!("{}", json!({"snapshot":client.snapshot()})); println!("{}", json!({"id":id,"ok":true,"value":null})); return; }
                     match client.command(key, value.get("payload").cloned()).await {
                         Ok(value) => println!("{}", json!({"id":id,"ok":true,"value":value})),
                         Err(error) => println!("{}", json!({"id":id,"ok":false,"error":error})),

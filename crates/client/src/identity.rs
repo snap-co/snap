@@ -32,6 +32,9 @@ pub enum Input {
         id: String,
         result: Result<String, Error>,
     },
+    BuildMismatch {
+        generation: u64,
+    },
     Frame {
         generation: u64,
         wire: String,
@@ -272,14 +275,21 @@ impl Client {
                 let Some(p) = self.pending.remove(&id) else {
                     return;
                 };
-                let decoded = result.and_then(|wire| completion(&wire, &id));
+                // Failure to obtain a validated, correlated outcome is different
+                // from a server-declared refusal: the mutation may have committed.
+                let (decoded, untrusted) =
+                    match result.and_then(|wire| decode_completion(&wire, &id)) {
+                        Ok(outcome) => (outcome, false),
+                        Err(error) => (Err(error), true),
+                    };
                 if let Some(command) = p.command {
                     self.state.pending = false;
                     self.state.error = decoded.as_ref().err().cloned();
                     let success = decoded.is_ok();
                     // A lost response has unknown mutation outcome. Refetch identity,
                     // never resend a password or release command.
-                    let uncertain = matches!(&decoded, Err(Error::UnavailableError { .. }));
+                    let uncertain =
+                        untrusted || matches!(&decoded, Err(Error::UnavailableError { .. }));
                     out.push(Action::Complete {
                         id: command,
                         outcome: decoded,
@@ -318,6 +328,12 @@ impl Client {
                             );
                         }
                     }
+                }
+            }
+            Input::BuildMismatch { generation } => {
+                if generation == self.generation {
+                    self.reset(out);
+                    out.push(Action::Reload);
                 }
             }
             Input::Frame { generation, wire } => {
@@ -448,14 +464,20 @@ impl Client {
 }
 
 pub fn completion(wire: &str, id: &str) -> Outcome {
+    decode_completion(wire, id)?
+}
+
+fn decode_completion(wire: &str, id: &str) -> Result<Outcome, Error> {
     let event: Value = serde_json::from_str(wire).map_err(|_| invalid("Invalid completion"))?;
     if event["key"] != "transport.complete" || event["target"] != id {
         return Err(invalid("Mismatched completion"));
     }
     match event["payload"]["ok"].as_bool() {
-        Some(true) => Ok(event["payload"]["payload"].clone()),
-        Some(false) => Err(serde_json::from_value(event["payload"]["error"].clone())
-            .map_err(|_| invalid("Invalid error"))?),
+        Some(true) => Ok(Ok(event["payload"]["payload"].clone())),
+        Some(false) => Ok(Err(serde_json::from_value(
+            event["payload"]["error"].clone(),
+        )
+        .map_err(|_| invalid("Invalid error"))?)),
         None => Err(invalid("Invalid outcome")),
     }
 }

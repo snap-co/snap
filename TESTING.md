@@ -58,6 +58,11 @@ only. The browser adapter loads the real WASM facade without a renderer.
 session authority across a restart. `tests/browser/authy.spec.ts` exercises the real
 UI against both packaged files and the development WebSocket proxy.
 `scripts/authy-reference.ts` checks the TypeScript SDK against the Rust host.
+`tests/sdk/identity-recovery.test.ts` runs shared native/browser recovery assertions
+against a real Authy authority through a controlled HTTP carrier. It checks HTTP
+Build replacement, malformed/uncorrelated mutation outcomes, and pending-command
+close through the public SDK. Fixture disposal is separate from SDK close so the
+final closed observation remains inspectable.
 
 Build Authy with `./bin/snap build apps/authy` and the SDK adapter with
 `cargo build -p authy-native --examples` before running these cases individually.

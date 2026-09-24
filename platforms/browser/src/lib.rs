@@ -31,6 +31,14 @@ impl Http {
         invocation: &Invocation,
         lane: snap_protocol::Lane,
     ) -> Result<String, Error> {
+        self.exchange(invocation, lane).await.map(|(_, body)| body)
+    }
+
+    pub(crate) async fn exchange(
+        &self,
+        invocation: &Invocation,
+        lane: snap_protocol::Lane,
+    ) -> Result<(u16, String), Error> {
         let path = invocation
             .key
             .split('.')
@@ -93,10 +101,14 @@ impl Http {
                 .map_err(unavailable)?
                 .dyn_into()
                 .map_err(unavailable)?;
+            if response.status() == 409 {
+                return Ok((409, String::new()));
+            }
             let text = JsFuture::from(response.text().map_err(unavailable)?)
                 .await
                 .map_err(unavailable)?;
             text.as_string()
+                .map(|body| (response.status(), body))
                 .ok_or_else(|| failure("Response is not text"))
         };
         let timeout = TimeoutFuture::new(5_000);

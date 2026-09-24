@@ -43,6 +43,14 @@ impl Http {
         invocation: &Invocation,
         lane: snap_protocol::Lane,
     ) -> Result<String, Error> {
+        self.exchange(invocation, lane).await.map(|(_, body)| body)
+    }
+
+    pub(crate) async fn exchange(
+        &self,
+        invocation: &Invocation,
+        lane: snap_protocol::Lane,
+    ) -> Result<(u16, String), Error> {
         let mut url = self.base.clone();
         url.set_query(None);
         url.set_fragment(None);
@@ -69,15 +77,18 @@ impl Http {
         if let Some(trace) = &invocation.traceparent {
             request = request.header("traceparent", trace);
         }
-        request
+        let response = request
             .header("x-snap-operation-id", &invocation.operation_id)
             .header("x-snap-build", &self.build)
             .send()
             .await
-            .map_err(unavailable)?
-            .text()
-            .await
-            .map_err(unavailable)
+            .map_err(unavailable)?;
+        let status = response.status().as_u16();
+        if status == 409 {
+            return Ok((409, String::new()));
+        }
+        let body = response.text().await.map_err(unavailable)?;
+        Ok((status, body))
     }
 }
 

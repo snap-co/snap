@@ -25,5 +25,6 @@ commands = [
   ["cargo", "build", "-p", "authy-native", "--examples"],
   ["bun", "../../scripts/check-client.ts"],
   ["bun", "test", "../../tests/protocol/authy.test.ts"],
+  ["bun", "test", "../../tests/sdk/identity-recovery.test.ts"],
   ["bunx", "playwright", "test", "--config", "../../playwright.config.ts", "authy.spec.ts", "identity-sdk.spec.ts"],
 ]

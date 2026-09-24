@@ -71,7 +71,7 @@ impl Client {
         result.await.map_err(|_| failure("Client is closed"))?
     }
     pub async fn close(&self) {
-        self.abort.abort();
+        let _ = self.sender.unbounded_send(Event::Input(Input::Close));
         let done = self.finished.borrow_mut().take();
         if let Some(done) = done {
             let _ = done.await;
@@ -110,6 +110,7 @@ async fn drive(
     let mut socket: Option<Socket> = None;
     let mut input = Input::Start;
     loop {
+        let closing = matches!(input, Input::Close);
         let mut actions = Vec::new();
         core.update(input, &mut actions);
         let snapshot = core.snapshot();
@@ -126,11 +127,17 @@ async fn drive(
                     let sender = sender.clone();
                     jobs.push(
                         async move {
-                            let result = http.request(&invocation, lane).await;
+                            let result = http.exchange(&invocation, lane).await;
+                            if matches!(&result, Ok((409, _))) {
+                                let _ = sender.unbounded_send(Event::Input(Input::BuildMismatch {
+                                    generation,
+                                }));
+                                return;
+                            }
                             let _ = sender.unbounded_send(Event::Input(Input::Http {
                                 generation,
                                 id: invocation.operation_id,
-                                result,
+                                result: result.map(|(_, body)| body),
                             }));
                         }
                         .boxed_local(),
@@ -256,6 +263,11 @@ async fn drive(
                     }
                 }
             }
+        }
+        // Dropping the owner futures cancels HTTP and timers after the portable
+        // closed observation and pending-command failures have been published.
+        if closing {
+            return;
         }
         input = loop {
             futures_util::select! {

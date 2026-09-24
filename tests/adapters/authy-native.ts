@@ -5,9 +5,9 @@ import type { IdentityClient } from "../sdk/identity.contract";
 import type { Snapshot } from "../../apps/authy/client";
 import { deadline } from "./server";
 
-export async function nativeIdentity(baseUrl: string): Promise<IdentityClient> {
+export async function nativeIdentity(baseUrl: string, options: { build?: string } = {}): Promise<IdentityClient> {
   const build = await (await fetch(`${baseUrl}/__snap/build`)).json();
-  const child = spawn(resolve(import.meta.dirname, "../../target/debug/examples/authy-sdk"), [], { env: { ...process.env, SNAP_BASE_URL: baseUrl, SNAP_BUILD: build.build }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(resolve(import.meta.dirname, "../../target/debug/examples/authy-sdk"), [], { env: { ...process.env, SNAP_BASE_URL: baseUrl, SNAP_BUILD: options.build ?? build.build }, stdio: ["pipe", "pipe", "pipe"] });
   let snapshot: Snapshot | undefined;
   let closed = false, sequence = 0, logs = "";
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void }>();
@@ -30,13 +30,15 @@ export async function nativeIdentity(baseUrl: string): Promise<IdentityClient> {
   try {
     const started = Date.now();
     while (!snapshot) { if (child.exitCode !== null || Date.now() - started > 10_000) throw new Error(`SDK startup failed: ${logs}`); await new Promise(done => setTimeout(done, 10)); }
-    return {
+    const client: IdentityClient = {
       command,
       snapshot: async () => snapshot!,
       async close() {
         if (closed) return;
-        try { await command("close"); } finally { closed = true; child.stdin.end(); try { await deadline(exited, 2_000); } catch { child.kill("SIGKILL"); await exited; } lines.close(); }
+        try { await command("close"); } finally { closed = true; }
       },
+      async dispose() { try { await client.close(); } finally { child.stdin.end(); try { await deadline(exited, 2_000); } catch { child.kill("SIGKILL"); await exited; } lines.close(); } },
     };
+    return client;
   } catch (error) { child.kill("SIGKILL"); await exited; throw error; }
 }

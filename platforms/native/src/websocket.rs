@@ -103,7 +103,7 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
             }
             message = socket.recv() => {
                 let Some(Ok(message)) = message else { break };
-                let wire = match message { Message::Text(text) => text, Message::Close(_) => break, Message::Ping(bytes) => { if socket.send(Message::Pong(bytes)).await.is_err() { break; } continue; }, Message::Pong(_) => continue, _ => { close(&mut socket, 1003, "Text frames required").await; break; } };
+                let wire = match message { Message::Text(text) => text, Message::Close(_) => break, Message::Ping(bytes) => { if write(&mut socket, Message::Pong(bytes), Duration::from_secs(5)).await.is_err() { break; } continue; }, Message::Pong(_) => continue, _ => { close(&mut socket, 1003, "Text frames required").await; break; } };
                 let Ok(invocation) = serde_json::from_str::<Invocation>(&wire) else { close(&mut socket, 1007, "Invalid Invocation").await; break };
                 let target = invocation.operation_id.clone();
                 let lane = host.operations.iter().find(|op| op.key == invocation.key).map(|op| op.lane);
@@ -124,13 +124,20 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
 }
 
 async fn send(socket: &mut WebSocket, value: serde_json::Value) -> Result<(), ()> {
-    tokio::time::timeout(
+    write(
+        socket,
+        Message::Text(value.to_string().into()),
         Duration::from_secs(5),
-        socket.send(Message::Text(value.to_string().into())),
     )
     .await
-    .map_err(|_| ())?
-    .map_err(|_| ())
+}
+
+// Every frame, including control frames, shares bounded physical delivery.
+async fn write(socket: &mut WebSocket, message: Message, timeout: Duration) -> Result<(), ()> {
+    tokio::time::timeout(timeout, socket.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
 }
 async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
     let mut end = reason.len().min(123);
@@ -138,12 +145,13 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
         end -= 1;
     }
     let reason = reason[..end].to_owned();
-    let _ = tokio::time::timeout(
-        Duration::from_secs(1),
-        socket.send(Message::Close(Some(CloseFrame {
+    let _ = write(
+        socket,
+        Message::Close(Some(CloseFrame {
             code,
             reason: reason.into(),
-        }))),
+        })),
+        Duration::from_secs(1),
     )
     .await;
 }

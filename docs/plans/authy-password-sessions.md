@@ -108,6 +108,11 @@ notifications. Closing the SDK does not sign out its persisted server session.
 - `tests/sdk/identity.contract.ts` runs one password/session journey through native
   and browser Rust SDK adapters. It covers duplicate enrollment, invalid password,
   collections, session identity, revocation, sign-in again, and close.
+- `tests/sdk/identity-recovery.test.ts` runs the same HTTP failure and close cases
+  through native and browser SDKs. Its carrier retains the real server's cookies
+  while corrupting completion bodies, and holds responses to exercise cancellation.
+  It covers stale initial/Submit Builds, uncertain mutation recovery without replay,
+  and final closed observations with a command pending.
 - `tests/protocol/authy.test.ts` asserts independent wire examples, cookie projection,
   identity modes, malformed input, Build close codes, sequence admission, and restart
   persistence through real IO.

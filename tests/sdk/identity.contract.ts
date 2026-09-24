@@ -5,6 +5,8 @@ export interface IdentityClient {
   command(key: string, payload?: unknown): Promise<unknown>;
   snapshot(): Promise<Snapshot>;
   close(): Promise<void>;
+  /** Fixture ownership only, outside the application-facing assertions. */
+  dispose(): Promise<void>;
 }
 
 export async function observed(client: IdentityClient, predicate: (snapshot: Snapshot) => boolean): Promise<Snapshot> {
@@ -51,6 +53,8 @@ export async function passwordSessions(create: () => Promise<IdentityClient>) {
     await observed(first, s => s.phase === "anonymous");
     await observed(second, s => s.phase === "anonymous");
     await first.close();
+    assert.equal((await first.snapshot()).phase, "closed");
+    assert.equal((await first.snapshot()).pending, false);
     await assert.rejects(first.command("refresh"));
-  } finally { await Promise.all(clients.map(client => client.close())); }
+  } finally { await Promise.all(clients.map(client => client.dispose())); }
 }

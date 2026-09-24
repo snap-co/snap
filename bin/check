@@ -23,6 +23,7 @@ bun scripts/check-client.ts
 bun test tests/sdk/browser-runtime.test.ts
 bun scripts/healthy-smoke.ts
 bun test tests/protocol/authy.test.ts
+bun test tests/sdk/identity-recovery.test.ts
 bun scripts/authy-reference.ts
 bunx playwright test
 python3 scripts/dev-smoke.py

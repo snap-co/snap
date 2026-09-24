@@ -124,12 +124,18 @@ async fn drive(
                     let http = http.clone();
                     let sender = sender.clone();
                     jobs.spawn(async move {
-                        let result = http.request(&invocation, lane).await;
+                        let result = http.exchange(&invocation, lane).await;
+                        if matches!(&result, Ok((409, _))) {
+                            let _ = sender
+                                .send(Event::Input(Input::BuildMismatch { generation }))
+                                .await;
+                            return;
+                        }
                         let _ = sender
                             .send(Event::Input(Input::Http {
                                 generation,
                                 id: invocation.operation_id,
-                                result,
+                                result: result.map(|(_, body)| body),
                             }))
                             .await;
                     });
