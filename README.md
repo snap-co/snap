@@ -43,8 +43,9 @@ Browser builds
 need Bun and the `wasm32-unknown-unknown` Rust target. `mise install` installs the
 pinned Rust toolchain. `mise run dev` invokes the checkout convenience command.
 With rustup on PATH, `./bin/dev` also works without mise. The CLI installs locked JS
-dependencies and the application's matching wasm-bindgen tool on first use. Restart `snap dev` to
-rebuild changes; there is no file watcher or hot reload yet.
+dependencies and the application's matching wasm-bindgen tool on first use.
+React and CSS edits update through Vite HMR. Restart `snap dev` for Rust changes
+until the Rust watching milestone is implemented.
 
 ```sh
 curl -H 'x-snap-operation-id: example-1' http://127.0.0.1:3846/health/up
@@ -132,6 +133,26 @@ string. The first failure stops startup. Config loading itself executes no hooks
 infrastructure operations, project creation, and project-pinned CLI dispatch remain
 later slices. For installation outside this checkout, `cargo install --path tools/cli`
 builds a standalone `snap`; the development toolchain is still needed to build apps.
+
+### Browser development
+
+Browser-enabled `snap dev` uses Vite and `@vitejs/plugin-react` from `web.package-dir`.
+Healthy pins these development dependencies in the root JS package. The Rust CLI
+embeds the development driver and selects the configured app/host/HTML, just as the
+static builder does. Applications still provide a definition, not a boot script.
+
+The configured public address belongs to the frontend. Snap starts the native host
+on an OS-assigned loopback port, then serves modules and HMR at the public origin.
+Unmatched application HTTP requests proxy to the native host with the public Host,
+Origin, and cookies preserved. Build discovery and health calls keep their original
+URLs. Native and frontend readiness are reported separately; stopping either service
+stops its peer, and CLI interruption shuts down both owned process groups.
+
+Compatible React component edits use Fast Refresh and preserve local state; CSS
+updates in place. Vite may reload the page for incompatible module exports. Rust
+client state survives compatible renderer/CSS updates. Generated `.snap` output and
+Cargo targets are excluded from Vite's watcher. Release packages use the static
+builder and need no Vite process at runtime.
 
 ### Project verification
 

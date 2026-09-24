@@ -26,8 +26,7 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         ),
     };
-    replace_listener(runner, address.port()).await?;
-    let mut command = Command::new(artifacts.executable);
+    let mut command = Command::new(&artifacts.executable);
     command
         .current_dir(&project.root)
         .env("SNAP_ADDR", address.to_string())
@@ -39,10 +38,45 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
         );
     // Never inherit another app's development assets.
     command.env_remove("SNAP_WEB_DIR");
-    if let Some(web) = artifacts.web {
-        command.env("SNAP_WEB_DIR", web);
+    if let (Some(web), Some(assets)) = (&project.config.web, &artifacts.web) {
+        // Only the frontend owns the public address; application HTTP stays private.
+        command
+            .env("SNAP_ADDR", "127.0.0.1:0")
+            .env("SNAP_WEB_DIR", assets);
+        let (mut backend, backend_url) = runner.service(&mut command, "listening on ").await?;
+        eprintln!("Backend ready at {backend_url}");
+        let driver = project.root.join(".snap/dev-web.ts");
+        std::fs::write(&driver, include_str!("../../../scripts/dev-web.ts"))?;
+        replace_listener(runner, address.port()).await?;
+        let (mut frontend, url) = runner
+            .service(
+                Command::new("bun")
+                    .current_dir(&project.root)
+                    .arg(&driver)
+                    .arg(&project.root)
+                    .arg(project.path(&web.package_dir))
+                    .arg(project.file(&web.application)?)
+                    .arg(project.file(&web.host)?)
+                    .arg(project.file(&web.html)?)
+                    .arg(assets.join("snap_client_wasm_bg.wasm"))
+                    .arg(&backend_url)
+                    .arg(address.to_string()),
+                "snap-web-ready ",
+            )
+            .await?;
+        eprintln!("listening on {url}");
+        let result = tokio::select! {
+            result = backend.wait(runner) => result,
+            result = frontend.wait(runner) => result,
+        };
+        let (back, front) = tokio::join!(backend.stop(), frontend.stop());
+        result?;
+        back?;
+        front?;
+    } else {
+        replace_listener(runner, address.port()).await?;
+        runner.run(&mut command, false).await?;
     }
-    runner.run(&mut command, false).await?;
     Ok(())
 }
 

@@ -3,15 +3,17 @@ import { resolve } from "node:path";
 
 /** Owns one real host on an ephemeral port; never replaces development listeners. */
 export async function startServer(
-  options: { executable?: string; web?: boolean; dev?: boolean } = {},
+  options: { executable?: string; web?: boolean; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv } = {},
 ) {
   const root = resolve(import.meta.dirname, "../..");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ...options.env,
     SNAP_ADDR: "127.0.0.1:0",
     SNAP_BUILD: "healthy-smoke",
   };
   delete env.SNAP_WEB_DIR;
+  let backendUrl: string | undefined;
   if (options.web) env.SNAP_WEB_DIR = resolve(root, "dist/web");
   const child = spawn(
     options.executable ??
@@ -19,10 +21,10 @@ export async function startServer(
         root,
         options.dev ? "target/debug/snap" : "target/debug/healthy",
       ),
-    options.dev ? ["dev"] : [],
+    options.dev ? ["dev", ...(options.project ? [options.project] : [])] : [],
     {
       env,
-      cwd: options.dev ? resolve(root, "apps/healthy") : root,
+      cwd: options.dev && !options.project ? resolve(root, "apps/healthy") : root,
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
@@ -70,11 +72,12 @@ export async function startServer(
       child.once("exit", earlyExit);
       child.stderr.on("data", (chunk: Buffer) => {
         logs += chunk.toString();
+        backendUrl = logs.match(/Backend ready at (http:\/\/[^\s]+)/)?.[1] ?? backendUrl;
         const match = logs.match(/listening on (http:\/\/[^\s]+)\r?\n/);
         if (match) finish(undefined, match[1]);
       });
     });
-    return { baseUrl, close };
+    return { baseUrl, backendUrl, close };
   } catch (error) {
     await close();
     throw error;

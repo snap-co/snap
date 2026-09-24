@@ -17,6 +17,7 @@
     "apps/healthy/web/**/*.ts",
     "apps/healthy/client.ts",
     "scripts/build-web.ts",
+    "scripts/dev-web.ts",
     "tests/browser/**/*.ts"
   ]
 }

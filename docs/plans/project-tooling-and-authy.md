@@ -218,15 +218,15 @@ through established HMR tooling, without restarting its native server.
 
 Acceptance:
 
-- [ ] Snap launches and cleans up the browser development server and native host.
-- [ ] Compatible React edits use Fast Refresh; CSS edits update without full reload.
+- [x] Snap launches and cleans up the browser development server and native host.
+- [x] Compatible React edits use Fast Refresh; CSS edits update without full reload.
   Tool-documented refresh fallbacks remain allowed.
-- [ ] Native server and Rust client lifetime survive representative renderer/CSS edits.
-- [ ] Browser requests and future session cookies retain coherent origin semantics.
+- [x] Native server and Rust client lifetime survive representative renderer/CSS edits.
+- [x] Browser requests and future session cookies retain coherent origin semantics.
   Define public address/proxy ownership before introducing a second listener.
-- [ ] Release artifacts remain static and do not require the development server.
-- [ ] HMR wiring works from both app-root and explicit-project invocation.
-- [ ] Browser/lifecycle contracts verify actual updates and shutdown on owned ports.
+- [x] Release artifacts remain static and do not require the development server.
+- [x] HMR wiring works from both app-root and explicit-project invocation.
+- [x] Browser/lifecycle contracts verify actual updates and shutdown on owned ports.
 
 Choose the established browser tool here, starting with Vite/React evaluation. Keep
 the app definition and reusable browser host model. A separate throwaway UI is not
@@ -349,4 +349,7 @@ with regressions and CLEAR round 2 validation. Reports are in
 graphs, and automatic bare-WASM compilation run through snap check. Repository
 gates add pinned dependency tools; network advisory checking is explicit. Agent
 guidance now points to structural diagnostics and meaningful interface comments.
-Slices 05–06 are unstarted. The user authorized continuing through the full list.
+Slice 05 is implemented and verified, awaiting review in `docs/reviews/browser-hmr.md`.
+Vite/React serves the public development origin and proxies to an owned loopback
+native host. Chromium proves state-preserving React/CSS updates and shutdown.
+Slice 06 is unstarted. The user authorized continuing through the full list.

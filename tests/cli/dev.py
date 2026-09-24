@@ -80,6 +80,19 @@ class ProjectContract(unittest.TestCase):
             process.stderr.close()
 
 class DevContract(ProjectContract):
+    def test_web_host_startup_failure_preserves_exit_code(self):
+        (self.root / "app.ts").write_text("export default {};\n")
+        (self.root / "host.ts").write_text('import app from "snap:application"; console.log(app);\n')
+        (self.root / "index.html").write_text('<script type="module" src="/main.js"></script>')
+        (self.root / "snap.toml").write_text(self.config + '\n[web]\n' +
+            f'package-dir={json.dumps(str(ROOT))}\napplication="app.ts"\nhost="host.ts"\nhtml="index.html"\n' +
+            f'wasm-manifest={json.dumps(str(ROOT / "apps/healthy/wasm/Cargo.toml"))}\nbindings=".snap/bindings"\n')
+        self.env["CARGO_TARGET_DIR"] = str(ROOT / "target")
+        tools = sorted((ROOT / "apps/healthy/.snap/tools").glob("wasm-bindgen-*/bin"))
+        self.env["PATH"] = os.pathsep.join([*(str(path) for path in tools), self.env["PATH"]])
+        result = self.run_cli("dev", timeout=120)
+        self.assertEqual(result.returncode, 37, result.stderr)
+
     def test_help_and_version_without_project(self):
         (self.root / "snap.toml").unlink()
         self.assertEqual(self.run_cli("--help").returncode, 0)

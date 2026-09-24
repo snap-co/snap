@@ -127,6 +127,11 @@ that terminating the CLI releases the listener. Both scripts use Python's standa
 library. `tests/browser/dev.spec.ts` verifies the development assets boot in Chromium;
 the release browser test separately verifies portable artifact packaging and recovery.
 
+`tests/browser/hmr.spec.ts` edits an owned copy of Healthy's renderer/CSS. It checks
+Fast Refresh preserves component state, page identity, Rust sample history, and Build
+identity. CSS updates without navigation. Shutdown checks both public frontend and
+private backend listeners. Fixture sources and outputs are removed afterward.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

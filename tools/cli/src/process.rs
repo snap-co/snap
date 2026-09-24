@@ -10,10 +10,10 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncReadExt,
-    process::Command,
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::{Child, Command},
     signal::unix::{SignalKind, signal},
-    sync::watch,
+    sync::{oneshot, watch},
 };
 
 #[derive(Debug)]
@@ -30,6 +30,64 @@ pub struct Runner {
 }
 
 impl Runner {
+    /// Start a resident service and consume its readiness line before exposing it.
+    /// Dropping a partially started service releases its entire process group.
+    pub async fn service(
+        &self,
+        command: &mut Command,
+        prefix: &'static str,
+    ) -> Result<(Service, String)> {
+        self.check()?;
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("Could not launch {:?}", command.as_std().get_program()))?;
+        let group = Group(Pid::from_raw(
+            child.id().context("Missing service PID")? as i32
+        ));
+        let (ready, receiving) = oneshot::channel();
+        let stderr = child.stderr.take().context("Missing service stderr")?;
+        let logs = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            let mut ready = Some(ready);
+            while let Some(line) = lines.next_line().await? {
+                if let Some(value) = line.strip_prefix(prefix) {
+                    if let Some(ready) = ready.take() {
+                        let _ = ready.send(value.to_owned());
+                    }
+                } else {
+                    eprintln!("{line}");
+                }
+            }
+            Ok::<_, std::io::Error>(())
+        });
+        let mut service = Service {
+            child,
+            group: Some(group),
+            logs: Some(logs),
+        };
+        let mut stopped = self.stopped.clone();
+        let readiness = async {
+            match receiving.await {
+                Ok(ready) => Ok(ready),
+                Err(_) => {
+                    service.wait(self).await?;
+                    anyhow::bail!("Service exited before readiness");
+                }
+            }
+        };
+        let ready = tokio::select! {
+            value = tokio::time::timeout(Duration::from_secs(20), readiness) => {
+                value.context("Service readiness timed out")??
+            },
+            _ = stopped.changed() => { service.stop().await?; return Err(Failed(*stopped.borrow()).into()); }
+        };
+        Ok((service, ready))
+    }
     pub fn new() -> Result<Self> {
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut terminate = signal(SignalKind::terminate())?;
@@ -120,6 +178,68 @@ impl Runner {
             _ = tokio::time::sleep(Duration::from_millis(100)) => Ok(()),
             _ = stopped.changed() => bail!(Failed(*stopped.borrow())),
         }
+    }
+}
+
+pub struct Service {
+    child: Child,
+    group: Option<Group>,
+    logs: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+}
+
+impl Service {
+    pub async fn wait(&mut self, runner: &Runner) -> Result<()> {
+        let mut stopped = runner.stopped.clone();
+        let status = if *stopped.borrow() != 0 {
+            self.terminate().await?
+        } else {
+            tokio::select! {
+                status = self.child.wait() => status?,
+                _ = stopped.changed() => self.terminate().await?,
+            }
+        };
+        self.finish().await?;
+        if !status.success() {
+            use std::os::unix::process::ExitStatusExt;
+            return Err(Failed(
+                status
+                    .code()
+                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)) as u8,
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    pub async fn stop(&mut self) -> Result<()> {
+        self.terminate().await?;
+        self.finish().await
+    }
+
+    async fn terminate(&mut self) -> Result<ExitStatus> {
+        if let Some(status) = self.child.try_wait()? {
+            return Ok(status);
+        }
+        if let Some(group) = &self.group {
+            let _ = killpg(group.0, Signal::SIGTERM);
+        }
+        match tokio::time::timeout(Duration::from_secs(6), self.child.wait()).await {
+            Ok(status) => Ok(status?),
+            Err(_) => {
+                if let Some(group) = &self.group {
+                    let _ = killpg(group.0, Signal::SIGKILL);
+                }
+                Ok(self.child.wait().await?)
+            }
+        }
+    }
+
+    async fn finish(&mut self) -> Result<()> {
+        self.group.take();
+        if let Some(logs) = self.logs.take() {
+            logs.await??;
+        }
+        Ok(())
     }
 }
 
