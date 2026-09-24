@@ -25,4 +25,22 @@ first reproduced lost exit status, then passed after repair. TypeScript passed.
 
 Round 1 recorded before dispatch. Standards and Spec reviewers inherit Astra under
 the harness's model override policy. Two-round limit applies to this milestone;
-earlier milestone reviews are closed. Status: awaiting implementation SHA and reports.
+earlier milestone reviews are closed.
+
+Round 1 SHA: `9389e4367d13d5d9fa09b41867a4af4b0629d4a3`.
+Standards session `ses_f2ee90e5bffelGkK22kapMipz5`, BLOCKED; complete report retained
+at `/tmp/opencode/hmr-standards-r1.md`. Spec session
+`ses_f2ee90e1dffeX2BCfe4Q7vxjGb`, BLOCKED; complete report retained at
+`/tmp/opencode/hmr-spec-r1.md`. These are the original unabridged reviewer artifacts.
+
+| Finding | Disposition and repair |
+| --- | --- |
+| STD-1 / SPEC-3 | Accepted. Race service readiness with direct child exit, release the process group before draining logs, preserve exit status. CLI regression now spawns an inherited-stderr descendant before exiting 37. |
+| SPEC-1 | Accepted. Disable Vite CORS so OPTIONS reaches native method handling. Browser launch test compares public/private method rejection. |
+| SPEC-2 | Accepted. Preserve native hostname acceptance with allowedHosts=true in this trusted local development driver. Check custom-host health and frontend module requests. |
+| SPEC-4 | Accepted. Interpret URL's normalized empty HTTP port as 80, retaining explicit port zero. Reviewer confirmed original URL normalization through Bun; no existing port-80 listener was replaced. |
+
+One repair batch complete. Full `mise exec -- ./bin/check` passed again, including
+the extended descendant and proxy regressions; `git diff --check` passed.
+Round 2 recorded before dispatch. It will validate this delta and affected
+interactions only. No third round or second autonomous repair batch is authorized.

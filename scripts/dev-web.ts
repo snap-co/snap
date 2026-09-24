@@ -70,6 +70,9 @@ vite = await createViteServer({
   resolve: { alias: { "snap:application": application }, dedupe: ["react", "react-dom"] },
   optimizeDeps: { include: ["react", "react-dom/client", "react/jsx-runtime"] },
   server: {
+    // Application HTTP keeps the native host's method and hostname policy.
+    cors: false,
+    allowedHosts: true,
     middlewareMode: true,
     hmr: { server },
     fs: { allow: [project, packageDir, dirname(host)] },
@@ -78,7 +81,7 @@ vite = await createViteServer({
 });
 await new Promise<void>((done, fail) => {
   server.once("error", fail);
-  server.listen(Number(listen.port), listen.hostname.replace(/^\[|\]$/g, ""), done);
+  server.listen(Number(listen.port || "80"), listen.hostname.replace(/^\[|\]$/g, ""), done);
 });
 const bound = server.address();
 if (!bound || typeof bound === "string") throw new Error("Missing browser listen address");

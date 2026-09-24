@@ -71,19 +71,22 @@ impl Runner {
             logs: Some(logs),
         };
         let mut stopped = self.stopped.clone();
-        let readiness = async {
-            match receiving.await {
-                Ok(ready) => Ok(ready),
-                Err(_) => {
-                    service.wait(self).await?;
-                    anyhow::bail!("Service exited before readiness");
-                }
-            }
-        };
         let ready = tokio::select! {
-            value = tokio::time::timeout(Duration::from_secs(20), readiness) => {
-                value.context("Service readiness timed out")??
+            value = tokio::time::timeout(Duration::from_secs(20), receiving) => {
+                match value.context("Service readiness timed out")? {
+                    Ok(ready) => ready,
+                    Err(_) => {
+                        service.wait(self).await?;
+                        anyhow::bail!("Service exited before readiness");
+                    }
+                }
             },
+            status = service.child.wait() => {
+                let status = status?;
+                service.finish().await?;
+                successful(status)?;
+                anyhow::bail!("Service exited before readiness");
+            }
             _ = stopped.changed() => { service.stop().await?; return Err(Failed(*stopped.borrow()).into()); }
         };
         Ok((service, ready))
@@ -111,15 +114,7 @@ impl Runner {
 
     pub async fn run(&self, command: &mut Command, capture: bool) -> Result<Vec<u8>> {
         let (status, output) = self.status(command, capture).await?;
-        if !status.success() {
-            use std::os::unix::process::ExitStatusExt;
-            return Err(Failed(
-                status
-                    .code()
-                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)) as u8,
-            )
-            .into());
-        }
+        successful(status)?;
         Ok(output)
     }
 
@@ -199,16 +194,7 @@ impl Service {
             }
         };
         self.finish().await?;
-        if !status.success() {
-            use std::os::unix::process::ExitStatusExt;
-            return Err(Failed(
-                status
-                    .code()
-                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)) as u8,
-            )
-            .into());
-        }
-        Ok(())
+        successful(status)
     }
 
     pub async fn stop(&mut self) -> Result<()> {
@@ -244,6 +230,18 @@ impl Service {
 }
 
 struct Group(Pid);
+fn successful(status: ExitStatus) -> Result<()> {
+    use std::os::unix::process::ExitStatusExt;
+    if !status.success() {
+        return Err(Failed(
+            status
+                .code()
+                .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)) as u8,
+        )
+        .into());
+    }
+    Ok(())
+}
 impl Drop for Group {
     fn drop(&mut self) {
         let _ = killpg(self.0, Signal::SIGKILL);

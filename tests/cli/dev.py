@@ -81,6 +81,11 @@ class ProjectContract(unittest.TestCase):
 
 class DevContract(ProjectContract):
     def test_web_host_startup_failure_preserves_exit_code(self):
+        (self.root / "src/main.rs").write_text('''fn main() {
+    std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    std::process::exit(37);
+}
+''')
         (self.root / "app.ts").write_text("export default {};\n")
         (self.root / "host.ts").write_text('import app from "snap:application"; console.log(app);\n')
         (self.root / "index.html").write_text('<script type="module" src="/main.js"></script>')
