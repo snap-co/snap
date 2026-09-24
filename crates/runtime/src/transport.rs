@@ -1,13 +1,69 @@
 //! Shared dispatch behind the normalized host input. No HTTP or socket types.
 
-use alloc::{format, vec::Vec};
-use snap_protocol::{Error, Operation, Outcome, Value};
+use alloc::{format, string::String, vec::Vec};
+use snap_protocol::{Error, Invocation, Lane, Operation, Outcome, Value};
 
 use crate::{Action, Input, Module};
 
 pub struct Handler<State> {
     pub operation: Operation,
     pub run: fn(&mut State, Option<Value>) -> Outcome,
+}
+
+/// Read-only Message admission for one logical lifetime. Reattachment currently
+/// creates a new lifetime. Accepted IDs are never executed twice in that lifetime;
+/// callers receive Indeterminate rather than an invented cached completion.
+pub struct Connection {
+    epoch: String,
+    sequence: u64,
+}
+
+impl Connection {
+    pub fn new(epoch: String) -> Self {
+        Self { epoch, sequence: 0 }
+    }
+    pub fn epoch(&self) -> &str {
+        &self.epoch
+    }
+    pub fn admit(&mut self, invocation: &Invocation, lane: Option<Lane>) -> Result<(), Error> {
+        if lane != Some(Lane::Message) {
+            return Err(Error::ContractViolationError {
+                message: "Operation is not registered for this carrier".into(),
+            });
+        }
+        let parsed = invocation
+            .operation_id
+            .rsplit_once(':')
+            .and_then(|(epoch, sequence)| {
+                sequence
+                    .split('#')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+                    .map(|n| (epoch, n))
+            });
+        match parsed {
+            Some((epoch, n))
+                if epoch == self.epoch
+                    && n > 0
+                    && n <= 9_007_199_254_740_991
+                    && n == self.sequence + 1 =>
+            {
+                self.sequence = n;
+                Ok(())
+            }
+            Some((epoch, n)) if epoch == self.epoch && n > 0 && n <= self.sequence => {
+                Err(Error::IndeterminateError {
+                    admission: "accepted".into(),
+                    message: "Invocation was already received".into(),
+                })
+            }
+            _ => Err(Error::IndeterminateError {
+                admission: "unknown".into(),
+                message: "Invocation is outside the receive fence".into(),
+            }),
+        }
+    }
 }
 
 /// Resident application state lives here. The host need not know its shape.
@@ -51,7 +107,11 @@ impl<State> Module for Transport<State> {
         let Input::Invocation {
             delivery,
             invocation,
-        } = input;
+            ..
+        } = input
+        else {
+            return;
+        };
         let outcome = match self
             .handlers
             .iter()

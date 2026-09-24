@@ -1,4 +1,5 @@
 import { createServer, request } from "node:http";
+import { connect } from "node:net";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
@@ -65,6 +66,22 @@ const server = createServer(async (req, res) => {
     res.end("Development asset error");
   }
 });
+// Vite owns its HMR upgrade. Only the application WebSocket path tunnels to Rust.
+const tunnels = new Set<import("node:net").Socket>();
+server.on("upgrade", (req, socket, head) => {
+  if (new URL(req.url ?? "/", "http://snap.local").pathname !== "/_transport/ws") return;
+  const upstream = connect(Number(backendUrl.port || "80"), backendUrl.hostname.replace(/^\[|\]$/g, ""));
+  tunnels.add(upstream);
+  upstream.on("connect", () => {
+    upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n${req.rawHeaders.reduce((lines, item, i) => i % 2 === 0 ? `${lines}${item}: ` : `${lines}${item}\r\n`, "")}\r\n`);
+    if (head.length) upstream.write(head);
+    socket.pipe(upstream).pipe(socket);
+  });
+  upstream.on("error", () => socket.destroy());
+  socket.on("error", () => upstream.destroy());
+  socket.on("close", () => upstream.destroy());
+  upstream.on("close", () => { tunnels.delete(upstream); socket.destroy(); });
+});
 vite = await createViteServer({
   configFile: false,
   clearScreen: false,
@@ -119,6 +136,7 @@ async function close() {
   if (closing) return;
   closing = true;
   control.close();
+  for (const tunnel of tunnels) tunnel.destroy();
   await vite.close();
   server.closeAllConnections();
   await new Promise<void>((done) => server.close(() => done()));

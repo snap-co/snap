@@ -4,6 +4,7 @@
 extern crate alloc;
 
 pub mod application;
+pub mod identity;
 
 use alloc::{format, string::String};
 use serde::{Deserialize, Serialize};

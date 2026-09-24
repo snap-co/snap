@@ -50,6 +50,21 @@ the development runner and its lifecycle contract.
 
 ## Current checks
 
+Authy's password/session contract runs through native and browser SDK adapters in
+`tests/browser/identity-sdk.spec.ts`, using the same assertions in
+`tests/sdk/identity.contract.ts`. The native line-protocol bridge owns construction
+only. The browser adapter loads the real WASM facade without a renderer.
+`tests/protocol/authy.test.ts` owns cookie/envelope/sequence assertions and persistent
+session authority across a restart. `tests/browser/authy.spec.ts` exercises the real
+UI against both packaged files and the development WebSocket proxy.
+`scripts/authy-reference.ts` checks the TypeScript SDK against the Rust host.
+
+Build Authy with `./bin/snap build apps/authy` and the SDK adapter with
+`cargo build -p authy-native --examples` before running these cases individually.
+`snap check apps/authy` runs its project checks; `./bin/check` includes the reference
+interoperability case and the complete repository suite. Authy fixtures own
+temporary databases under `/tmp/opencode` and ephemeral listeners.
+
 ```text
 tests/
   journeys/       Native SDK scripts, driven by platform runners

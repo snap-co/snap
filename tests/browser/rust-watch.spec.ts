@@ -32,6 +32,11 @@ test("Rust edits restart/reload, retain failed builds, and recover without stale
   try {
     server = await startServer({ dev: true, project: project.directory, env: project.env, freshBuild: true });
     const build = async () => (await (await fetch(`${server!.baseUrl}/__snap/build`)).json()).build as string;
+    const waitForBuild = (accept: (build: string) => boolean) => expect.poll(async () => {
+      // Replacing/restoring a native generation can also restart the public proxy.
+      // A refused connection is provisional evidence, never an accepted Build.
+      try { return accept(await build()); } catch { return false; }
+    }, { timeout: 30_000 }).toBe(true);
     await page.goto(server.baseUrl);
     await expect(page.getByRole("status")).toHaveText("OK");
     await expect(page.locator("body")).toHaveAttribute("data-wasm", "wasm-one:shared-one");
@@ -39,7 +44,7 @@ test("Rust edits restart/reload, retain failed builds, and recover without stale
     const initialStarts = await starts();
     await page.evaluate(() => { (window as any).lifetime = "old"; });
     await writeFile(native, `${nativeSource}\n// native edit\n`);
-    await expect.poll(build, { timeout: 30_000 }).not.toBe(initial);
+    await waitForBuild(build => build !== initial);
     // This assertion intentionally crosses a navigation. Playwright retries the
     // function in the new document if reload destroys the old execution context.
     await page.waitForFunction(() => (window as any).lifetime === undefined, undefined, { timeout: 30_000 });
@@ -78,21 +83,20 @@ test("Rust edits restart/reload, retain failed builds, and recover without stale
     await expect.poll(() => server!.logs(), { timeout: 30_000 }).toContain(`Rust generation ready: ${beforeFailure}`);
     await writeFile(native, nativeSource.replace("    use std::io::Write;", "    std::process::exit(37);\n    use std::io::Write;"));
     await expect.poll(() => server!.logs(), { timeout: 30_000 }).toContain("Replacement failed; restoring previous generation");
-    await expect.poll(build, { timeout: 30_000 }).toBe(beforeFailure);
+    await waitForBuild(build => build === beforeFailure);
     await expect(page.getByRole("status")).toHaveText("OK");
     await writeFile(native, nativeSource);
-    await expect.poll(build, { timeout: 30_000 }).not.toBe(beforeFailure);
+    await waitForBuild(build => build !== beforeFailure);
     await expect(page.getByRole("status")).toHaveText("OK");
 
     const configBefore = await build();
+    await expect.poll(() => server!.logs(), { timeout: 30_000 }).toContain(`Rust generation ready: ${configBefore}`);
     const validConfig = await readFile(config, "utf8");
     await writeFile(config, "invalid config");
     await expect.poll(() => server!.logs()).toContain("Configuration failed; previous generation retained");
     expect(await build()).toBe(configBefore);
     await writeFile(config, `${validConfig}\n# corrected configuration\n`);
-    await expect.poll(async () => {
-      try { return await build(); } catch { return configBefore; }
-    }, { timeout: 30_000 }).not.toBe(configBefore);
+    await waitForBuild(build => build !== configBefore);
     await expect(page.getByRole("status")).toHaveText("OK");
 
     // Shutdown while a build hook is waiting must release it and both servers.

@@ -9,27 +9,40 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{sync::watch, task::JoinHandle};
+pub mod identity;
 
 #[derive(Clone)]
 pub struct Http {
     client: reqwest::Client,
     base: reqwest::Url,
     build: String,
+    jar: std::sync::Arc<reqwest::cookie::Jar>,
 }
 
 impl Http {
     pub fn new(base: &str, build: &str) -> Result<Self, Error> {
+        let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
         Ok(Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
+                .cookie_provider(jar.clone())
                 .build()
                 .map_err(unavailable)?,
             base: reqwest::Url::parse(base).map_err(unavailable)?,
             build: build.into(),
+            jar,
         })
     }
 
     pub async fn query(&self, invocation: &Invocation) -> Result<String, Error> {
+        self.request(invocation, snap_protocol::Lane::Query).await
+    }
+
+    pub async fn request(
+        &self,
+        invocation: &Invocation,
+        lane: snap_protocol::Lane,
+    ) -> Result<String, Error> {
         let mut url = self.base.clone();
         url.set_query(None);
         url.set_fragment(None);
@@ -37,8 +50,26 @@ impl Http {
             .map_err(|_| unavailable("Base URL cannot carry paths"))?
             .clear()
             .extend(invocation.key.split('.'));
-        self.client
-            .get(url)
+        let mut request = if lane == snap_protocol::Lane::Submit {
+            let request = self.client.post(url);
+            if let Some(payload) = &invocation.payload {
+                request.json(payload)
+            } else {
+                request
+            }
+        } else {
+            if let Some(snap_protocol::Value::Object(fields)) = &invocation.payload {
+                for (key, value) in fields {
+                    url.query_pairs_mut()
+                        .append_pair(key, value.as_str().unwrap_or(""));
+                }
+            }
+            self.client.get(url)
+        };
+        if let Some(trace) = &invocation.traceparent {
+            request = request.header("traceparent", trace);
+        }
+        request
             .header("x-snap-operation-id", &invocation.operation_id)
             .header("x-snap-build", &self.build)
             .send()

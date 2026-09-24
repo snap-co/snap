@@ -10,12 +10,20 @@ snap-runtime.workspace = true
 snap-client.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 form_urlencoded = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
-uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "json"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+argon2 = "0.5"
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
 [lints]
 workspace = true

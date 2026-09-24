@@ -9,6 +9,9 @@ members = [
     "apps/healthy",
     "apps/healthy/native",
     "apps/healthy/wasm",
+    "apps/authy",
+    "apps/authy/native",
+    "apps/authy/wasm",
     "tools/cli",
 ]
 resolver = "3"
@@ -27,6 +30,7 @@ snap-native = { path = "platforms/native" }
 snap-client-wasm = { path = "bindings/wasm" }
 wasm-bindgen = "=0.2.128"
 healthy = { path = "apps/healthy" }
+authy = { path = "apps/authy" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

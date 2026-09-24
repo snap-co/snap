@@ -3,13 +3,13 @@ import { resolve } from "node:path";
 
 /** Owns one real host on an ephemeral port; never replaces development listeners. */
 export async function startServer(
-  options: { executable?: string; web?: boolean; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv; freshBuild?: boolean } = {},
+  options: { executable?: string; web?: boolean; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv; freshBuild?: boolean; address?: string } = {},
 ) {
   const root = resolve(import.meta.dirname, "../..");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...options.env,
-    SNAP_ADDR: "127.0.0.1:0",
+    SNAP_ADDR: options.address ?? "127.0.0.1:0",
     SNAP_BACKEND_ADDR: "127.0.0.1:0",
     SNAP_BUILD: "healthy-smoke",
   };

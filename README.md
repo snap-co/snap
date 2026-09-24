@@ -4,6 +4,29 @@ An experiment in a host-driven, IO-free Snap runtime. The first question is whet
 an application library can receive normalized inputs and return actions while a
 reusable host owns execution and all external work.
 
+## Run Authy
+
+```sh
+mise exec -- ./bin/snap dev apps/authy
+```
+
+Open **http://127.0.0.1:3846**, create an account, and sign in with its password.
+The signed-in page lists credentials and sessions over an authenticated WebSocket.
+Use another browser profile to try remote sign-out. Accounts and sessions survive
+page reloads and native rebuilds in the app's `.snap/authy.sqlite` database.
+
+`snap build apps/authy --release` produces the native executable and static browser
+files. Set `SNAP_DATABASE` to a persistent writable database path and `SNAP_ORIGIN`
+to the public origin when deploying behind a proxy. The host defaults to its listen
+address; dev supplies the public frontend origin. HTTPS origins use Secure cookies.
+The signing key persists in SQLite unless `SNAP_SESSION_KEY` supplies an explicit
+key of at least 32 bytes. Session lifetime is 30 days.
+
+The first Authy slice includes account creation, password sign-in, sign-out,
+credential/session reads, and session revocation. See
+[the password/session contract](docs/plans/authy-password-sessions.md) for ownership,
+reconnection, persistence, and the selected TypeScript compatibility subset.
+
 ## Run Healthy
 
 Build the Rust CLI once from the checkout root:
@@ -276,7 +299,7 @@ Ordinary project checks cover the selected packages' dependency closure.
 
 `mise install` installs pinned cargo-machete and cargo-deny tools. `bin/check-deps`
 verifies their versions and runs repository-wide unused-dependency and source/version
-policy checks. Python 3.11+ reads the tool pins from `mise.toml`. The two documented
+policy checks. Python 3.11+ reads the tool pins from `mise.toml`. The documented
 machete exceptions are dependencies used by wasm-bindgen's generated async exports.
 Cargo-deny permits duplicate versions and private path dependencies, and rejects
 unrestricted registry versions and unapproved git/registry sources. Network-backed
@@ -512,8 +535,8 @@ envelope, query input rejection, route/method rejection, and Build discovery.
 Doctor retains the existing readiness exception to exact Build matching.
 
 Healthy includes its browser monitor and asset hosting. There is no Hooky callback.
-Passport/cookie semantics, WebSockets, and full Protocol compatibility remain future
-slices. The reference TypeScript SDK, native Rust SDK, and Rust/WASM SDK all
+Authy adds the selected password/session cookie and WebSocket behavior described
+above; full Protocol compatibility remains future work. The reference TypeScript SDK, native Rust SDK, and Rust/WASM SDK all
 exercise Doctor over the same HTTP host.
 
 ## Verification and the testing line

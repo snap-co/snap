@@ -16,6 +16,8 @@
     "apps/healthy/web/**/*.tsx",
     "apps/healthy/web/**/*.ts",
     "apps/healthy/client.ts",
+    "apps/authy/web/**/*.tsx",
+    "apps/authy/client.ts",
     "scripts/build-web.ts",
     "scripts/dev-web.ts",
     "tests/browser/**/*.ts"

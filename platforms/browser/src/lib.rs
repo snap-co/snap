@@ -9,6 +9,7 @@ use snap_protocol::{Error, Invocation};
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
+pub mod identity;
 
 #[derive(Clone)]
 pub struct Http {
@@ -22,6 +23,14 @@ impl Http {
     }
 
     pub async fn query(&self, invocation: &Invocation) -> Result<String, Error> {
+        self.request(invocation, snap_protocol::Lane::Query).await
+    }
+
+    pub async fn request(
+        &self,
+        invocation: &Invocation,
+        lane: snap_protocol::Lane,
+    ) -> Result<String, Error> {
         let path = invocation
             .key
             .split('.')
@@ -33,6 +42,17 @@ impl Http {
         let controller = web_sys::AbortController::new().map_err(unavailable)?;
         let _cancel_on_drop = Cancel(controller.clone());
         let options = web_sys::RequestInit::new();
+        if lane == snap_protocol::Lane::Submit {
+            options.set_method("POST");
+            if let Some(payload) = &invocation.payload {
+                options.set_body(&JsValue::from_str(&payload.to_string()));
+            }
+        } else if let Some(snap_protocol::Value::Object(fields)) = &invocation.payload {
+            for (key, value) in fields {
+                url.search_params()
+                    .append(key, value.as_str().unwrap_or(""));
+            }
+        }
         options.set_credentials(web_sys::RequestCredentials::Include);
         options.set_signal(Some(&controller.signal()));
         let request =
@@ -45,6 +65,18 @@ impl Http {
             .headers()
             .set("x-snap-build", &self.build)
             .map_err(unavailable)?;
+        if lane == snap_protocol::Lane::Submit {
+            request
+                .headers()
+                .set("content-type", "application/json")
+                .map_err(unavailable)?;
+        }
+        if let Some(trace) = &invocation.traceparent {
+            request
+                .headers()
+                .set("traceparent", trace)
+                .map_err(unavailable)?;
+        }
         let work = async {
             let global = js_sys::global();
             let fetch: js_sys::Function = js_sys::Reflect::get(&global, &"fetch".into())

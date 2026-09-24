@@ -366,6 +366,10 @@ async fn launch(
         let public_url = url(address);
         command
             .env("SNAP_ADDR", backend_address.to_string())
+            .env(
+                "SNAP_ORIGIN",
+                std::env::var("SNAP_ORIGIN").unwrap_or_else(|_| public_url.clone()),
+            )
             .env("SNAP_WEB_DIR", assets);
         drop(private);
         let backend = runner.service(&mut command, &backend_url, build).await?;

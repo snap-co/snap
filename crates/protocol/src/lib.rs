@@ -7,10 +7,13 @@ use alloc::string::String;
 use serde::{Deserialize, Serialize};
 
 pub use serde_json::{Value, json};
+pub mod identity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
     Query,
+    Submit,
+    Message,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -20,7 +23,7 @@ pub struct Operation {
 }
 
 /// Carrier framing has already been removed. Missing payload differs from JSON null.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Invocation {
     pub operation_id: String,
@@ -38,6 +41,10 @@ pub enum Error {
     InvalidInputError { message: String },
     ContractViolationError { message: String },
     UnavailableError { message: String },
+    IdentityRequiredError { message: String },
+    IdentityForbiddenError { message: String },
+    OperationError { failure: Value },
+    IndeterminateError { admission: String, message: String },
 }
 
 pub type Outcome = Result<Value, Error>;
@@ -61,5 +68,17 @@ impl Completion {
             target: operation_id,
             payload,
         }
+    }
+
+    pub fn session_changed(mut self) -> Self {
+        self.payload["sessionChanged"] = Value::Bool(true);
+        self
+    }
+
+    pub fn empty(mut self) -> Self {
+        if let Some(payload) = self.payload.as_object_mut() {
+            payload.remove("payload");
+        }
+        self
     }
 }
