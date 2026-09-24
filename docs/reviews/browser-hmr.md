@@ -24,6 +24,20 @@ a nonzero port and wait for the CLI's own ready line. No test was skipped.
 The reqwest dependency reuses the workspace's existing version; CLI role is tool.
 Recovery validation, round 3 authorized by the human, recorded before dispatch.
 
+Recovery reviewed SHA `313bda57312803eff58e43ec185808f405f13861`. Status: **READY**.
+Both axes CLEAR; STD-2 / SPEC-5 resolved and all earlier fixes retained. Standards
+session `ses_f2ee90e5bffelGkK22kapMipz5`, complete report
+`/tmp/opencode/hmr-standards-recovery.md`. Spec session
+`ses_f2ee90e1dffeX2BCfe4Q7vxjGb`, complete report
+`/tmp/opencode/hmr-spec-recovery.md`. These unabridged artifacts are retained with the
+earlier probe evidence. Standards independently reproduced the corrected timeout
+at 20.24s, exit 37 at 0.26s, and quiet HTTP readiness. Spec independently passed all
+three CLI cases, plus IPv6 backend proxying and replacement of both prescribed
+ports with keep-alive connections open. No findings, advisories, or follow-ups.
+Full-suite evidence was supplied, not repeated by reviewers. Neither injected the
+documented release-to-bind race or bound port 80. Historical BLOCKED sections below
+refer to their pinned older revisions, not the recovered implementation.
+
 Slice 05 of `docs/plans/project-tooling-and-authy.md`. Base
 `629c46944d1dd79ded7c272b2574798202e77ba5`. Linux, trusted projects, main branch.
 Vite 8.3.0 and React plugin 6.1.1 are pinned JS development tools. Snap embeds its

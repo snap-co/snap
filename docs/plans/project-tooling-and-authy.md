@@ -227,8 +227,7 @@ through established HMR tooling, without restarting its native server.
 
 Acceptance:
 
-- [ ] Snap launches and cleans up the browser development server and native host.
-  Review found an unresolved closed-stderr startup timeout regression; see progress.
+- [x] Snap launches and cleans up the browser development server and native host.
 - [x] Compatible React edits use Fast Refresh; CSS edits update without full reload.
   Tool-documented refresh fallbacks remain allowed.
 - [x] Native server and Rust client lifetime survive representative renderer/CSS edits.
@@ -366,6 +365,6 @@ proxy/port/exit-status findings are fixed and validated. STD-2 / SPEC-5 remain; 
 `docs/reviews/browser-hmr.md` for reports, evidence, and the requested human decision.
 Vite/React serves the public development origin and proxies to an owned loopback
 native host. Chromium proves state-preserving React/CSS updates and shutdown.
-Human recovery is implemented under the port-ownership ruling above. Full checks
-pass; one authorized recovery validation is pending. Slice 06 remains unstarted
-until that validation closes slice 05.
+Human recovery is READY at `313bda57312803eff58e43ec185808f405f13861` under the
+port-ownership ruling above. Full checks passed and both authorized recovery
+validators returned CLEAR. STD-2 / SPEC-5 are resolved. Slice 06 is next.
