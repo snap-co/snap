@@ -218,7 +218,8 @@ through established HMR tooling, without restarting its native server.
 
 Acceptance:
 
-- [x] Snap launches and cleans up the browser development server and native host.
+- [ ] Snap launches and cleans up the browser development server and native host.
+  Review found an unresolved closed-stderr startup timeout regression; see progress.
 - [x] Compatible React edits use Fast Refresh; CSS edits update without full reload.
   Tool-documented refresh fallbacks remain allowed.
 - [x] Native server and Rust client lifetime survive representative renderer/CSS edits.
@@ -349,7 +350,13 @@ with regressions and CLEAR round 2 validation. Reports are in
 graphs, and automatic bare-WASM compilation run through snap check. Repository
 gates add pinned dependency tools; network advisory checking is explicit. Agent
 guidance now points to structural diagnostics and meaningful interface comments.
-Slice 05 is implemented and verified, awaiting review in `docs/reviews/browser-hmr.md`.
+Slice 05 is BLOCKED at `da14da4e0fbcbda99da3d8b312913a8a7c17e714` after two review
+rounds. Full repository checks pass, but both final reviewers reproduced an uncovered
+startup timeout regression when a live host closes stderr before readiness. Initial
+proxy/port/exit-status findings are fixed and validated. STD-2 / SPEC-5 remain; see
+`docs/reviews/browser-hmr.md` for reports, evidence, and the requested human decision.
 Vite/React serves the public development origin and proxies to an owned loopback
 native host. Chromium proves state-preserving React/CSS updates and shutdown.
-Slice 06 is unstarted. The user authorized continuing through the full list.
+Slice 06 is unstarted. The user authorized continuing through the full list, but the
+bounded review workflow now requires explicit authorization for further repair and
+validation before this dependent milestone can begin.
