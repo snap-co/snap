@@ -14,6 +14,8 @@
     "clients/**/*.ts",
     "clients/**/*.tsx",
     "apps/healthy/web/**/*.tsx",
+    "apps/healthy/web/**/*.ts",
+    "apps/healthy/client.ts",
     "scripts/build-web.ts",
     "tests/browser/**/*.ts"
   ]

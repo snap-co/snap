@@ -1,4 +1,4 @@
-//! Language marshalling and application selection. Browser IO lives in snap-browser.
+//! Shared query marshalling. App-owned WASM crates select resident applications.
 use futures_util::future::{AbortHandle, Abortable};
 use std::{cell::RefCell, collections::BTreeMap};
 use wasm_bindgen::prelude::*;
@@ -53,37 +53,6 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         self.close();
-    }
-}
-
-#[wasm_bindgen]
-pub struct Healthy {
-    inner: snap_browser::Running<healthy::client::Snapshot>,
-}
-
-#[wasm_bindgen]
-impl Healthy {
-    #[wasm_bindgen(constructor)]
-    pub fn new(base: String, build: String, changed: js_sys::Function) -> Self {
-        Self {
-            inner: snap_browser::start(
-                healthy::client::application(),
-                snap_browser::Http::new(base, build),
-                move |snapshot| {
-                    if let Ok(wire) = serde_json::to_string(snapshot) {
-                        let _ = changed.call1(&JsValue::NULL, &JsValue::from_str(&wire));
-                    }
-                },
-            ),
-        }
-    }
-
-    pub fn snapshot(&self) -> Result<String, JsValue> {
-        serde_json::to_string(&self.inner.snapshot()).map_err(encoding_error)
-    }
-
-    pub async fn close(&mut self) {
-        self.inner.close().await;
     }
 }
 

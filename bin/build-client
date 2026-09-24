@@ -12,6 +12,6 @@ if [[ ! -x $tool ]] || [[ $($tool --version) != 'wasm-bindgen 0.2.128' ]]; then
   mkdir -p "$root/target/tmp"
   TMPDIR="$root/target/tmp" run_cargo install wasm-bindgen-cli --version 0.2.128 --locked --root "$root/.tools"
 fi
-run_cargo build --target-dir "$root/target" -p snap-client-wasm --target wasm32-unknown-unknown --release
-"$tool" --target web --out-dir clients/typescript/wasm \
-  target/wasm32-unknown-unknown/release/snap_client_wasm.wasm
+run_cargo build --target-dir "$root/target" -p healthy-wasm --target wasm32-unknown-unknown --release
+"$tool" --target web --out-dir apps/healthy/.snap/bindings \
+  target/wasm32-unknown-unknown/release/healthy_wasm.wasm

@@ -17,7 +17,7 @@ export async function startServer(
     options.executable ??
       resolve(
         root,
-        options.dev ? "target/debug/snap" : "target/debug/examples/healthy",
+        options.dev ? "target/debug/snap" : "target/debug/healthy",
       ),
     options.dev ? ["dev"] : [],
     {

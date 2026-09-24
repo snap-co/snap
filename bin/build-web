@@ -5,4 +5,4 @@ cd "$root"
 bun install --frozen-lockfile
 ./bin/build-client
 bun scripts/build-web.ts apps/healthy/web/app.tsx clients/react/main.tsx \
-  clients/react/index.html clients/typescript/wasm/snap_client_wasm_bg.wasm dist/web
+  clients/react/index.html apps/healthy/.snap/bindings/healthy_wasm_bg.wasm dist/web

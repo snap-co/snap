@@ -1,0 +1,26 @@
+[package]
+name = "healthy-native"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+healthy.workspace = true
+snap-native.workspace = true
+
+[dev-dependencies]
+snap-protocol.workspace = true
+serde_json.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[[bin]]
+name = "healthy"
+path = "src/main.rs"
+
+[[test]]
+name = "client-contract"
+path = "../../../tests/sdk/native.rs"
+
+[lints]
+workspace = true

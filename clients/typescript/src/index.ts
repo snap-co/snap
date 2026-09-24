@@ -1,8 +1,3 @@
-import initialize, {
-  Client as WasmClient,
-  Healthy as WasmHealthy,
-} from "../wasm/snap_client_wasm.js";
-
 export interface Options {
   baseUrl: string;
   build: string;
@@ -14,12 +9,7 @@ export interface Client {
   close(): Promise<void>;
 }
 
-export interface Snapshot {
-  readonly status: "loading" | "ok" | "error";
-  readonly samples: readonly { readonly ok: boolean; readonly at: number }[];
-}
-
-export interface HealthyClient {
+export interface ObservedClient<Snapshot> {
   getSnapshot(): Snapshot;
   subscribe(changed: () => void): () => void;
   close(): Promise<void>;
@@ -35,21 +25,30 @@ export class ClientError extends Error {
   }
 }
 
-let initialization: Promise<unknown> | undefined;
-async function ready(wasm: Options["wasm"]) {
-  initialization ??= initialize(
-    wasm === undefined ? undefined : { module_or_path: wasm },
-  ).catch((error: unknown) => {
-    initialization = undefined;
-    throw error;
-  });
-  await initialization;
+/** Each application keeps its own initialization cache for its generated module. */
+export function initializeBindings(
+  initialize: (input?: {
+    module_or_path: NonNullable<Options["wasm"]>;
+  }) => Promise<unknown>,
+) {
+  let initialization: Promise<unknown> | undefined;
+  return async (wasm: Options["wasm"]) => {
+    initialization ??= initialize(
+      wasm === undefined ? undefined : { module_or_path: wasm },
+    ).catch((error: unknown) => {
+      initialization = undefined;
+      throw error;
+    });
+    await initialization;
+  };
 }
 
 /** Language facade only. Rust's browser runtime owns HTTP, deadlines and cancellation. */
-export async function createClient(options: Options): Promise<Client> {
-  await ready(options.wasm);
-  const core = new WasmClient(options.baseUrl, options.build);
+export function queryClient(core: {
+  healthUp(): Promise<string>;
+  close(): void;
+  free(): void;
+}): Client {
   const pending = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
   return {
@@ -84,26 +83,31 @@ export async function createClient(options: Options): Promise<Client> {
   };
 }
 
-/** Healthy composition is selected in Rust; this adapts observations to JS subscribers. */
-export async function startHealthy(options: Options): Promise<HealthyClient> {
-  await ready(options.wasm);
+/**
+ * Owns subscriptions and binding lifetime. start returns before delivering changes;
+ * decodeSnapshot returns deeply immutable values, cached until the next change.
+ */
+export function observeClient<Snapshot>(
+  start: (changed: (wire: string) => void) => {
+    snapshot(): string;
+    close(): Promise<void>;
+    free(): void;
+  },
+  decodeSnapshot: (wire: string) => Snapshot,
+): ObservedClient<Snapshot> {
   const subscribers = new Set<() => void>();
   let closing: Promise<void> | undefined;
-  const core = new WasmHealthy(
-    options.baseUrl,
-    options.build,
-    (wire: string) => {
-      if (closing) return;
-      snapshot = decodeSnapshot(wire);
-      for (const changed of subscribers) {
-        try {
-          changed();
-        } catch (error) {
-          console.error("Snapshot subscriber failed", error);
-        }
+  const core = start((wire: string) => {
+    if (closing) return;
+    snapshot = decodeSnapshot(wire);
+    for (const changed of subscribers) {
+      try {
+        changed();
+      } catch (error) {
+        console.error("Snapshot subscriber failed", error);
       }
-    },
-  );
+    }
+  });
   let snapshot = decodeSnapshot(core.snapshot());
   return {
     getSnapshot: () => snapshot,
@@ -124,13 +128,6 @@ export async function startHealthy(options: Options): Promise<HealthyClient> {
       return closing;
     },
   };
-}
-
-function decodeSnapshot(wire: string): Snapshot {
-  const value: Snapshot = JSON.parse(wire);
-  value.samples.forEach(Object.freeze);
-  Object.freeze(value.samples);
-  return Object.freeze(value);
 }
 
 function clientError(cause: unknown): ClientError {

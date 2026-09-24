@@ -1,4 +1,4 @@
-//! The composition root belongs to the host, not the application library.
+//! App-owned native composition, separate from the portable application library.
 
 fn main() -> std::io::Result<()> {
     let application =

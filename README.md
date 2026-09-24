@@ -68,7 +68,7 @@ It builds before replacing an existing current-user listener, sends SIGTERM, and
 escalates to SIGKILL if the original listener still holds the port after three seconds.
 Port 3000 is already used by local Grafana.
 
-`cargo run -p snap-native --example healthy` also uses port 3846, but only `snap dev`
+`cargo run -p healthy-native --bin healthy` also uses port 3846, but only `snap dev`
 performs development-port replacement. The ordinary server does not kill processes.
 
 ### Project configuration
@@ -83,16 +83,16 @@ version = 1
 application = "healthy"
 
 [server]
-manifest = "../../platforms/native/Cargo.toml"
-example = "healthy" # Select exactly one example or bin target.
+manifest = "native/Cargo.toml"
+bin = "healthy" # Select exactly one example or bin target.
 
 [web] # Omit this table for a server-only application.
 package-dir = "../.."
 application = "web/app.tsx"
 host = "../../clients/react/main.tsx"
 html = "../../clients/react/index.html"
-wasm-manifest = "../../bindings/wasm/Cargo.toml"
-bindings = "../../clients/typescript/wasm"
+wasm-manifest = "wasm/Cargo.toml"
+bindings = ".snap/bindings"
 
 [dev]
 address = "127.0.0.1:3846"
@@ -131,13 +131,13 @@ builds a standalone `snap`; the development toolchain is still needed to build a
 With the server running, execute the same client application without a renderer:
 
 ```sh
-mise exec -- cargo run -p snap-native --example healthy-journey
+mise exec -- cargo run -p healthy-native --example healthy-journey
 ```
 
 `SNAP_BASE_URL` selects another server. The journey waits for an OK observation,
 then closes the client. A failed health result or a ten-second journey deadline
 exits unsuccessfully. The scenario lives in `tests/journeys/healthy.rs`; platform
-construction and cleanup live in `platforms/native/examples/healthy-journey.rs`.
+construction and cleanup live in `apps/healthy/native/examples/healthy-journey.rs`.
 
 ### Release artifact
 
@@ -160,18 +160,20 @@ crates/
   runtime/        snap-runtime    Module entry point, Transport dispatch, Doctor
   client/         snap-client     IO-free client behavior
 bindings/
-  wasm/           snap-client-wasm  Rust-to-JavaScript marshalling
+  wasm/           snap-client-wasm  Shared query marshalling, linked by app WASM crates
 clients/
-  typescript/                    Promise/observation facade over Rust bindings
+  typescript/                    Shared Promise/observation and initialization support
   react/                         Shared browser entrypoint and rendering host
 platforms/
   browser/        snap-browser    Browser Fetch, deadlines, timers, task lifetime
   native/         snap-native     Server host and native client runtime
-    examples/
-      healthy.rs                 Native composition root
 apps/
   healthy/        healthy         IO-free server and client application definitions
+    native/       healthy-native  Native server, journey runner, SDK contract target
+    wasm/         healthy-wasm    WASM composition and Healthy exports
+    client.ts                     App facade selecting generated WASM bindings
     web/                         React application definition and renderer
+    .snap/bindings/               Ignored application-owned generated bindings
 tools/
   cli/            snap-cli       Local snap executable, config, builds, process ownership
 ```
@@ -202,9 +204,11 @@ Rust. Application dependencies contain no Tokio, Axum, filesystem, or SQL client
 The bare-WASM compilation gate catches accidental standard-library dependencies
 in the application graph. This is architectural discipline, not plugin sandboxing.
 
-The executable sits with the host so adding native IO dependencies cannot silently
-turn the application crate into a platform binding. It is an example binary for
-now; deployment packaging can change independently of application composition.
+The native executable and WASM exports have separate app-owned packages. Their
+platform dependencies cannot silently turn the portable `healthy` package into a
+platform binding. Shared native/browser runtimes and binding support do not depend
+on Healthy, including through development dependencies. The native SDK contract
+target lives in `healthy-native`; its assertions remain in `tests/sdk/native.rs`.
 
 ### Why these crates?
 
@@ -280,12 +284,15 @@ Build the Rust client into a browser-loadable WASM module and generated JS/types
 ```
 
 The script installs the matching wasm-bindgen CLI into `.tools` on first use.
-Generated bindings live in `clients/typescript/wasm` and are ignored by Git.
+Generated bindings live in `apps/healthy/.snap/bindings` and are ignored by Git.
+The app-owned `healthy-wasm` crate links shared query exports and adds its resident
+Healthy application. Its TypeScript facade selects that generated module, so another
+application can own different exports and outputs without changing shared packages.
 
 The TypeScript facade is what React or another JS application calls:
 
 ```ts
-import { createClient } from "./clients/typescript/src";
+import { createClient } from "./apps/healthy/client";
 
 const client = await createClient({ baseUrl: location.origin, build: "rust-spike" });
 const report = await client.health.up();
@@ -299,10 +306,15 @@ and cancellation. TypeScript converts results to Promises and adapts observation
 to `subscribe` / `getSnapshot`. Snapshots are immutable JS values with stable
 identity between notifications, suitable for React's `useSyncExternalStore`.
 
-`startHealthy` boots the resident client application, returning an initial loading
-snapshot before networking completes. It owns status and sample history in Rust.
+`startHealthy` in `apps/healthy/client.ts` boots the resident client application,
+returning an initial loading snapshot before networking completes. It owns status
+and sample history in Rust.
 Closing it cancels IO and timers and releases subscriptions. The native runtime
 offers the same application's snapshots through a Rust watch handle.
+
+`clients/typescript/src` owns binding initialization, query shutdown, and observation
+subscriptions. It imports no generated WASM module. Each application facade owns an
+initialization cache and decodes its own immutable snapshot shape.
 
 `apps/healthy/web/app.tsx` selects `startHealthy` and `HealthMonitor`. The build
 resolves that definition into `clients/react/main.tsx`; there is no application-owned

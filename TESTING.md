@@ -61,7 +61,7 @@ tests/
 ```
 
 `tests/journeys/healthy.rs` waits for a successful observation through the native
-client SDK. Its runner in `platforms/native/examples/healthy-journey.rs` owns the
+client SDK. Its runner in `apps/healthy/native/examples/healthy-journey.rs` owns the
 runtime, configuration, deadline, and cleanup. It can run against a development
 server independently of the test suite.
 
@@ -69,8 +69,9 @@ server independently of the test suite.
 TypeScript adapter, native Rust process bridge, and Rust/WASM facade all run it.
 The bridge only translates calls/results; it contains no assertions.
 
-`tests/sdk/native.rs` runs Rust SDK contracts directly against a controlled HTTP
-peer: error propagation, correlation, concurrency, cancellation, deadline expiry,
+`tests/sdk/native.rs`, compiled by the `healthy-native` package, runs Rust SDK contracts
+directly against a controlled HTTP peer: error propagation, correlation, concurrency,
+cancellation, deadline expiry,
 and resident-client failure/recovery. `tests/sdk/browser-runtime.test.ts` checks
 the browser SDK's corresponding query behavior and the binding-specific promises
 of immutable snapshot identity and subscription cleanup. Neither suite uses React.
@@ -110,9 +111,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p healthy -p snap-client --target wasm32v1-none
 cargo build -p snap-native --examples
+cargo build -p healthy-native --bins --examples
 cargo build -p snap-cli
 python3 tests/cli/dev.py
-cargo test -p snap-native --test client-contract
+cargo test -p healthy-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts
 bun test tests/sdk/browser-runtime.test.ts

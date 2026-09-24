@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { HealthyClient } from "../../../clients/typescript/src";
+import type { HealthyClient } from "../client";
 
 export function HealthMonitor({ client }: { client: HealthyClient }) {
   const { status, samples } = useSyncExternalStore(

@@ -5,9 +5,9 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 ./bin/build-web
 if command -v mise >/dev/null; then
-  mise exec -- cargo build --release --target-dir "$root/target" -p snap-native --example healthy
+  mise exec -- cargo build --release --target-dir "$root/target" -p healthy-native --bin healthy
 else
-  cargo build --release --target-dir "$root/target" -p snap-native --example healthy
+  cargo build --release --target-dir "$root/target" -p healthy-native --bin healthy
 fi
-cp target/release/examples/healthy dist/healthy
+cp target/release/healthy dist/healthy
 echo "Run ./dist/healthy; it serves the adjacent web/ directory."

@@ -377,6 +377,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "healthy-native"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "healthy",
+ "serde_json",
+ "snap-native",
+ "snap-protocol",
+ "tokio",
+]
+
+[[package]]
+name = "healthy-wasm"
+version = "0.0.0"
+dependencies = [
+ "healthy",
+ "js-sys",
+ "serde_json",
+ "snap-browser",
+ "snap-client-wasm",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1100,8 +1125,6 @@ name = "snap-client-wasm"
 version = "0.0.0"
 dependencies = [
  "futures-util",
- "healthy",
- "js-sys",
  "serde_json",
  "snap-browser",
  "snap-client",
@@ -1116,7 +1139,6 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "form_urlencoded",
- "healthy",
  "reqwest",
  "serde",
  "serde_json",

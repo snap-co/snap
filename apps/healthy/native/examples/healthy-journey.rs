@@ -1,5 +1,5 @@
 //! Native platform entrypoint for scripted clients. The journey contains no host setup.
-#[path = "../../../tests/journeys/healthy.rs"]
+#[path = "../../../../tests/journeys/healthy.rs"]
 mod journey;
 
 #[tokio::main]
