@@ -329,7 +329,8 @@ Cargo metadata confirmed no shared package depends on Healthy in any dependency
 kind, and the portable Healthy dependency list is unchanged. `git diff --check`
 passed. Review evidence lives in `docs/reviews/app-owned-composition.md`.
 
-Slice 02 is implemented and verified; independent review is pending. Build packages live at
+Slice 02 is READY at `70ed65479bb6cdbcec806dc43025b85672c0b072`, with both reviews
+CLEAR in round 1 and no findings. Build packages live at
 `.snap/build/{debug,release}`; dev consumes the same debug builder. Shared preparation
 runs before dev-only preparation. The selected WASM dependency graph owns bindgen
 version selection. Shell build wrappers delegate to the CLI, with `bin/build`
