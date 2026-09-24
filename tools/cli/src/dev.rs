@@ -16,27 +16,8 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
         project.config.application,
         project.root.display()
     );
-    for command in &project.config.prepare.dev {
-        runner
-            .run(
-                Command::new(&command[0])
-                    .args(&command[1..])
-                    .current_dir(&project.root),
-                false,
-            )
-            .await?;
-    }
-    let web = match &project.config.web {
-        Some(web) => Some(build::web(&project, runner, web).await?),
-        None => None,
-    };
-    let server = &project.config.server;
-    let target = match (&server.bin, &server.example) {
-        (Some(name), _) => ["--bin", name.as_str()],
-        (_, Some(name)) => ["--example", name.as_str()],
-        _ => unreachable!("config validates target"),
-    };
-    let executable = build::cargo(&project, runner, &server.manifest, &target, false).await?;
+    let address = project.address()?;
+    let artifacts = build::run(&project, runner, build::Mode::Dev).await?;
     let build = match std::env::var("SNAP_BUILD") {
         Ok(value) => value,
         Err(_) => format!(
@@ -45,11 +26,11 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         ),
     };
-    replace_listener(runner, project.address.port()).await?;
-    let mut command = Command::new(executable);
+    replace_listener(runner, address.port()).await?;
+    let mut command = Command::new(artifacts.executable);
     command
         .current_dir(&project.root)
-        .env("SNAP_ADDR", project.address.to_string())
+        .env("SNAP_ADDR", address.to_string())
         .env("SNAP_BUILD", build)
         .env("SNAP_APPLICATION", &project.config.application)
         .env(
@@ -58,7 +39,7 @@ pub async fn run(project: Project, runner: &Runner) -> Result<()> {
         );
     // Never inherit another app's development assets.
     command.env_remove("SNAP_WEB_DIR");
-    if let Some(web) = web {
+    if let Some(web) = artifacts.web {
         command.env("SNAP_WEB_DIR", web);
     }
     runner.run(&mut command, false).await?;

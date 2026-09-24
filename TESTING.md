@@ -100,6 +100,13 @@ stalled-command checks verify both paths release their listeners. A wrapper test
 also verifies mise-only Cargo availability, when mise and Bun are installed and
 Cargo is absent from the system default PATH.
 
+`tests/cli/build.py` uses the same process fixture for the build command. It runs
+packaged native binaries and an independent generated WASM/browser application to
+verify debug/release profiles, directory selection, example targets, literal hook
+ordering, failure recovery, listener preservation, concurrent-build rejection, and
+interruption cleanup. A relocated native package runs after its sources and Cargo
+outputs are removed. These are CLI/output contracts, not Rust helper tests.
+
 `scripts/dev-smoke.py` starts two real `snap dev` processes from Healthy's root on
 the same dynamically selected port. It proves replacement, HTML/WASM serving, and
 that terminating the CLI releases the listener. Both scripts use Python's standard
@@ -114,6 +121,7 @@ cargo build -p snap-native --examples
 cargo build -p healthy-native --bins --examples
 cargo build -p snap-cli
 python3 tests/cli/dev.py
+python3 tests/cli/build.py
 cargo test -p healthy-native --test client-contract
 ./bin/build
 bun scripts/check-client.ts

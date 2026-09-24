@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Bootstrap the checkout CLI, preserving its toolchain environment at launch.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+if command -v mise >/dev/null; then
+  mise exec -- cargo build --target-dir "$root/target" -p snap-cli
+  exec mise exec -- "$root/target/debug/snap" "$@"
+else
+  cargo build --target-dir "$root/target" -p snap-cli
+  exec "$root/target/debug/snap" "$@"
+fi

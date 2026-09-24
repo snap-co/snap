@@ -1,11 +1,11 @@
 import { mkdir, copyFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-// Called by both the Rust CLI and the release build. Every input is explicit.
-const [application, host, html, wasm, output] = process.argv.slice(2);
-if (!application || !host || !html || !wasm || !output)
+// Embedded by the Rust builder. Every input is explicit.
+const [application, host, html, wasm, output, profile] = process.argv.slice(2);
+if (!application || !host || !html || !wasm || !output || !["debug", "release"].includes(profile))
   throw new Error(
-    "Usage: build-web.ts <application> <host> <html> <wasm> <output>",
+    "Usage: build-web.ts <application> <host> <html> <wasm> <output> <debug|release>",
   );
 const outdir = resolve(output);
 await mkdir(outdir, { recursive: true });
@@ -14,8 +14,8 @@ const result = await Bun.build({
   naming: "main.[ext]",
   outdir,
   target: "browser",
-  minify: true,
-  define: { "process.env.NODE_ENV": JSON.stringify("production") },
+  minify: profile === "release",
+  define: { "process.env.NODE_ENV": JSON.stringify(profile === "release" ? "production" : "development") },
   plugins: [
     {
       name: "application",

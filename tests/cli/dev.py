@@ -39,7 +39,7 @@ def stop_cli(process):
         return process.communicate(timeout=3)
 
 
-class DevContract(unittest.TestCase):
+class ProjectContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="snap-cli-", dir=ROOT / ".tmp")
         self.root = Path(self.temp.name)
@@ -79,6 +79,7 @@ class DevContract(unittest.TestCase):
             process.stdout.close()
             process.stderr.close()
 
+class DevContract(ProjectContract):
     def test_help_and_version_without_project(self):
         (self.root / "snap.toml").unlink()
         self.assertEqual(self.run_cli("--help").returncode, 0)

@@ -38,11 +38,12 @@ application through WASM bindings. Rust owns polling, health status, and the las
 60 samples. React owns rendering only. Polls are single-flight, with a two-second
 wait after each completion and a five-second request deadline.
 
-The CLI currently supports Linux. It needs Cargo and `lsof`; browser builds also
+The CLI currently supports Linux. Builds need Cargo; `snap dev` also needs `lsof`.
+Browser builds
 need Bun and the `wasm32-unknown-unknown` Rust target. `mise install` installs the
 pinned Rust toolchain. `mise run dev` invokes the checkout convenience command.
 With rustup on PATH, `./bin/dev` also works without mise. The CLI installs locked JS
-dependencies and its pinned wasm-bindgen tool on first use. Restart `snap dev` to
+dependencies and the application's matching wasm-bindgen tool on first use. Restart `snap dev` to
 rebuild changes; there is no file watcher or hot reload yet.
 
 ```sh
@@ -73,7 +74,7 @@ performs development-port replacement. The ordinary server does not kill process
 
 ### Project configuration
 
-`snap dev [directory]` searches upward from the selected directory for the nearest
+`snap build [directory]` and `snap dev [directory]` search upward from the selected directory for the nearest
 `snap.toml`. It never skips an invalid config to launch a parent application.
 All configured paths resolve relative to that file. Healthy's config lives at
 `apps/healthy/snap.toml`; the complete fields for this milestone are:
@@ -98,7 +99,8 @@ bindings = ".snap/bindings"
 address = "127.0.0.1:3846"
 
 [prepare]
-dev = [] # Optional arrays of executable + literal arguments, in order.
+build = [] # Executable + literal arguments; runs before every build or dev invocation.
+dev = [] # Runs after prepare.build, before compilation, for dev only.
 ```
 
 Cargo manifests select packages; Cargo artifact messages identify their build
@@ -109,19 +111,24 @@ configured host and launches that executable from the project root.
 The optional browser build installs dependencies in `web.package-dir`, builds the
 configured WASM crate, generates JS bindings, and bundles the configured application
 with the reusable host. The Bun build driver is embedded in the Rust CLI; the app
-does not need to reference a checkout script. This spike pins wasm-bindgen 0.2.128.
+does not need to reference a checkout script. This workspace pins wasm-bindgen once
+in `Cargo.toml`. The CLI reads the selected WASM package's resolved normal dependency
+graph and uses that exact tool version. It accepts a matching tool on PATH or installs
+it under `.snap/tools/wasm-bindgen-<version>/`. Other workspace applications and
+development/build-only dependencies do not select the binding tool.
 The selected browser host uses `main.js`, `main.css`, and
 `snap_client_wasm_bg.wasm`; the supplied HTML and binding facade must match it.
-Assets and CLI build tools live under the application's ignored `.snap/dev/`.
+Packages live under the application's ignored `.snap/build/debug/` or
+`.snap/build/release/`.
 Bindings go to the explicit location imported by its TypeScript facade.
 
-Preparation hooks run once before the build, with the config directory as cwd and
+Preparation hooks run once per invocation, with the config directory as cwd and
 inherited environment/output. Each command is an argument array, not a shell
 string. The first failure stops startup. Config loading itself executes no hooks.
 `SNAP_ENV` defaults to `development` for the launched host; the CLI supplies
 `SNAP_ADDR`, `SNAP_APPLICATION`, `SNAP_BUILD`, and its own `SNAP_WEB_DIR`.
 
-Only `dev`, help, and version are implemented. CLI-client composition, deploy,
+`build`, `dev`, help, and version are implemented. CLI-client composition, deploy,
 infrastructure operations, project creation, and project-pinned CLI dispatch remain
 later slices. For installation outside this checkout, `cargo install --path tools/cli`
 builds a standalone `snap`; the development toolchain is still needed to build apps.
@@ -142,12 +149,28 @@ construction and cleanup live in `apps/healthy/native/examples/healthy-journey.r
 ### Release artifact
 
 ```sh
+snap build apps/healthy           # Native + WASM debug, development JS
+snap build apps/healthy --release # Optimized native + WASM, minified production JS
+./apps/healthy/.snap/build/release/healthy
+
+# Checkout convenience, copies the same release package to dist/:
 ./bin/build
 ./dist/healthy
 ```
 
-The `dist/` directory contains the native executable and its adjacent `web/`
-assets. Copy that directory to a compatible host to run it without the checkout,
+Both profiles contain the selected native executable and its adjacent `web/`
+assets, if configured. The default `snap build` profile matches `snap dev`. Build
+prints artifact paths but never launches the host or replaces a listener, and ignores
+runtime-only `SNAP_ADDR`. Cargo target-directory overrides remain supported.
+
+One build per application may run at a time; a competing build fails with a retry
+message. Hooks, compilation, and generation hold the same lock. Compilation failures
+retain the last completed package, and successful builds replace it without stale
+assets. The generated bindings directory holds the most recently built profile;
+each completed package contains its own matching JS and WASM.
+
+The `dist/` directory is a copy of the release package. Copy either directory to a
+compatible host to run it without the checkout,
 Node, Bun, or a Rust toolchain. `SNAP_ADDR=0.0.0.0:3846` binds beyond loopback.
 `SNAP_WEB_DIR` overrides the asset directory. TLS and process supervision belong
 to the deployment environment; no deployment provider is configured here.
@@ -283,7 +306,9 @@ Build the Rust client into a browser-loadable WASM module and generated JS/types
 ./bin/build-client
 ```
 
-The script installs the matching wasm-bindgen CLI into `.tools` on first use.
+`bin/build-client` and `bin/build-web` are compatibility aliases for the full release
+build. They delegate to `snap build` through `bin/build`; they no longer maintain
+separate Cargo, browser, or tool-install recipes.
 Generated bindings live in `apps/healthy/.snap/bindings` and are ignored by Git.
 The app-owned `healthy-wasm` crate links shared query exports and adds its resident
 Healthy application. Its TypeScript facade selects that generated module, so another

@@ -144,18 +144,18 @@ plus browser artifacts; `snap dev` builds through the same implementation.
 
 Acceptance:
 
-- [ ] Implicit, nested, and explicit directory selection follow the same rules.
-- [ ] Both native and WASM compilation use deliberate profile selection.
-- [ ] A shared internal result identifies the executable and browser artifacts.
-- [ ] A release directory runs on a compatible machine without the source checkout,
+- [x] Implicit, nested, and explicit directory selection follow the same rules.
+- [x] Both native and WASM compilation use deliberate profile selection.
+- [x] A shared internal result identifies the executable and browser artifacts.
+- [x] A release directory runs on a compatible machine without the source checkout,
   Bun, or a Rust toolchain, matching the existing packaging promise.
-- [ ] Build performs no listener replacement or server launch.
-- [ ] Standard build/version/tool-install knowledge has one implementation; remaining
+- [x] Build performs no listener replacement or server launch.
+- [x] Standard build/version/tool-install knowledge has one implementation; remaining
   shell entrypoints delegate instead of maintaining separate build recipes.
-- [ ] Ordered hooks preserve literal argv, config-relative cwd, failure status,
+- [x] Ordered hooks preserve literal argv, config-relative cwd, failure status,
   cancellation, and descendant cleanup. Define shared-build versus dev-only hook
   semantics explicitly so a preparation command does not accidentally run twice.
-- [ ] Independent project fixtures prove selection, failure, and artifact behavior;
+- [x] Independent project fixtures prove selection, failure, and artifact behavior;
   Healthy proves the real native/browser package.
 
 Select and document artifact layout and config amendments in this slice. Respect
@@ -265,7 +265,8 @@ process fails to start; do not imply that retaining old artifacts guarantees upt
 Recommended working order: **01 → 02 → 03 → 04 → 05 → 06**.
 The real dependency branches are **01 → 02 → 03 → 04** and **02 → 05 → 06**.
 Complete and verify one slice before beginning the next; report remaining scope and
-record its commit/check evidence here. Do not implement all six in one session.
+record its commit/check evidence here. On 2026-09-23 the user authorized unattended
+continuation through all six slices, with verification and review at each milestone.
 
 Authy can begin after 04; HMR/watch work is a developer-experience improvement rather
 than an authentication prerequisite. If desired, finish 05–06 first so the larger
@@ -328,4 +329,12 @@ Cargo metadata confirmed no shared package depends on Healthy in any dependency
 kind, and the portable Healthy dependency list is unchanged. `git diff --check`
 passed. Review evidence lives in `docs/reviews/app-owned-composition.md`.
 
-Slices 02–06 are unstarted. Next is slice 02, shared build support and `snap build`.
+Slice 02 is implemented and verified; independent review is pending. Build packages live at
+`.snap/build/{debug,release}`; dev consumes the same debug builder. Shared preparation
+runs before dev-only preparation. The selected WASM dependency graph owns bindgen
+version selection. Shell build wrappers delegate to the CLI, with `bin/build`
+copying the complete release package to the compatibility `dist/` location.
+The full `mise exec -- ./bin/check` gate and `git diff --check` passed. Review evidence
+lives in `docs/reviews/snap-build.md`.
+
+Slices 03–06 are unstarted. The user authorized continuing through the full list.

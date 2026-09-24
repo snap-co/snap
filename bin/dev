@@ -2,11 +2,4 @@
 # Checkout convenience. The installed `snap dev` needs no wrapper.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cd "$root"
-if command -v mise >/dev/null; then
-  mise exec -- cargo build --target-dir "$root/target" -p snap-cli
-  exec mise exec -- "$root/target/debug/snap" dev "$root/apps/healthy" "$@"
-else
-  cargo build --target-dir "$root/target" -p snap-cli
-  exec "$root/target/debug/snap" dev "$root/apps/healthy" "$@"
-fi
+exec "$root/bin/snap" dev "$root/apps/healthy" "$@"

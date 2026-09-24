@@ -44,6 +44,8 @@ pub struct Web {
 #[serde(deny_unknown_fields)]
 pub struct Prepare {
     #[serde(default)]
+    pub build: Vec<Vec<String>>,
+    #[serde(default)]
     pub dev: Vec<Vec<String>>,
 }
 
@@ -63,7 +65,6 @@ impl Default for Dev {
 pub struct Project {
     pub root: PathBuf,
     pub config: Config,
-    pub address: SocketAddr,
 }
 
 impl Project {
@@ -109,23 +110,20 @@ impl Project {
                         .or(config.server.example.as_ref())
                         .unwrap();
                     ensure!(!name.trim().is_empty(), "server target must not be empty");
-                    for command in &config.prepare.dev {
-                        ensure!(
-                            command.first().is_some_and(|s| !s.trim().is_empty()),
-                            "prepare.dev commands must contain a nonempty executable"
-                        );
+                    for (name, commands) in [
+                        ("build", &config.prepare.build),
+                        ("dev", &config.prepare.dev),
+                    ] {
+                        for command in commands {
+                            ensure!(
+                                command.first().is_some_and(|s| !s.trim().is_empty()),
+                                "prepare.{name} commands must contain a nonempty executable"
+                            );
+                        }
                     }
-                    let address = match std::env::var("SNAP_ADDR") {
-                        Ok(address) => address
-                            .parse()
-                            .context("SNAP_ADDR must be an IP address and port")?,
-                        Err(std::env::VarError::NotPresent) => config.dev.address,
-                        Err(error) => return Err(error.into()),
-                    };
                     let project = Self {
                         root: root.to_owned(),
                         config,
-                        address,
                     };
                     project.file(&project.config.server.manifest)?;
                     if let Some(web) = &project.config.web {
@@ -148,13 +146,22 @@ impl Project {
             }
         }
         bail!(
-            "No snap.toml found from {}. Create one at the application root or pass its directory to snap dev.",
+            "No snap.toml found from {}. Create one at the application root or pass its directory to snap build or snap dev.",
             start.display()
         )
     }
 
     pub fn path(&self, path: &Path) -> PathBuf {
         self.root.join(path)
+    }
+    pub fn address(&self) -> Result<SocketAddr> {
+        match std::env::var("SNAP_ADDR") {
+            Ok(address) => address
+                .parse()
+                .context("SNAP_ADDR must be an IP address and port"),
+            Err(std::env::VarError::NotPresent) => Ok(self.config.dev.address),
+            Err(error) => Err(error.into()),
+        }
     }
     pub fn file(&self, path: &Path) -> Result<PathBuf> {
         ensure!(

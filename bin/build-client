@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
+# Compatibility alias: all application builds now use the shared CLI builder.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cd "$root"
-tool="$root/.tools/bin/wasm-bindgen"
-
-run_cargo() {
-  if command -v mise >/dev/null; then mise exec -- cargo "$@"; else cargo "$@"; fi
-}
-
-if [[ ! -x $tool ]] || [[ $($tool --version) != 'wasm-bindgen 0.2.128' ]]; then
-  mkdir -p "$root/target/tmp"
-  TMPDIR="$root/target/tmp" run_cargo install wasm-bindgen-cli --version 0.2.128 --locked --root "$root/.tools"
-fi
-run_cargo build --target-dir "$root/target" -p healthy-wasm --target wasm32-unknown-unknown --release
-"$tool" --target web --out-dir apps/healthy/.snap/bindings \
-  target/wasm32-unknown-unknown/release/healthy_wasm.wasm
+exec "$root/bin/build" "$@"

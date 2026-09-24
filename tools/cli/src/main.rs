@@ -20,6 +20,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build a runnable package for the nearest snap.toml project
+    Build {
+        /// Start discovery here instead of the current directory
+        project: Option<PathBuf>,
+        /// Optimize native, WASM, and browser code
+        #[arg(long)]
+        release: bool,
+    },
     /// Build and run the nearest snap.toml project (no file watching yet)
     Dev {
         /// Start discovery here instead of the current directory
@@ -33,6 +41,21 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
+            Command::Build { project, release } => {
+                let project = config::Project::discover(project)?;
+                let profile = if release {
+                    build::Profile::Release
+                } else {
+                    build::Profile::Debug
+                };
+                let artifacts = build::run(&project, &runner, build::Mode::Build(profile)).await?;
+                println!("Package: {}", artifacts.directory.display());
+                println!("Executable: {}", artifacts.executable.display());
+                if let Some(web) = artifacts.web {
+                    println!("Web assets: {}", web.display());
+                }
+                Ok(())
+            }
             Command::Dev { project } => {
                 dev::run(config::Project::discover(project)?, &runner).await
             }
