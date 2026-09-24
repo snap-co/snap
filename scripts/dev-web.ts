@@ -1,10 +1,13 @@
 import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
 import type { ViteDevServer } from "vite";
 
-const [project, packageDir, application, host, html, wasm, backend, address] = process.argv.slice(2);
+const [project, packageDir, application, host, html, initialWasm, backend, address] = process.argv.slice(2);
+let wasm = initialWasm;
+let generation = "initial";
 if (![project, packageDir, application, host, html, wasm, backend, address].every(Boolean))
   throw new Error("Missing Snap development server inputs");
 // Resolve browser tooling from the configured JS package, not the embedded driver.
@@ -24,6 +27,7 @@ let vite: ViteDevServer;
 const server = createServer(async (req, res) => {
   try {
     const path = new URL(req.url ?? "/", "http://snap.local").pathname;
+    if (path === "/__snap/build") res.setHeader("x-snap-dev-generation", generation);
     if (path === "/" || path === "/index.html") {
       const template = (await readFile(html, "utf8"))
         .replace(/<link\b[^>]*href=["']\/?main\.css["'][^>]*>/g, "")
@@ -76,7 +80,7 @@ vite = await createViteServer({
     middlewareMode: true,
     hmr: { server },
     fs: { allow: [project, packageDir, dirname(host)] },
-    watch: { ignored: ["**/.snap/**", "**/target/**"] },
+    watch: { ignored: ["**/.snap/**", "**/target/**", "**/*.rs", "**/Cargo.toml", "**/Cargo.lock"] },
   },
 });
 await new Promise<void>((done, fail) => {
@@ -84,9 +88,19 @@ await new Promise<void>((done, fail) => {
   server.listen(Number(listen.port || "80"), listen.hostname.replace(/^\[|\]$/g, ""), done);
 });
 let closing = false;
+// Snap sends only complete accepted generations. Vite owns the browser channel.
+const control = createInterface({ input: process.stdin });
+control.on("line", (line) => {
+  const update = JSON.parse(line) as { wasm: string; generation: string };
+  wasm = update.wasm;
+  generation = update.generation;
+  vite.moduleGraph.invalidateAll();
+  vite.ws.send({ type: "full-reload" });
+});
 async function close() {
   if (closing) return;
   closing = true;
+  control.close();
   await vite.close();
   server.closeAllConnections();
   await new Promise<void>((done) => server.close(() => done()));

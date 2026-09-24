@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 /** Owns one real host on an ephemeral port; never replaces development listeners. */
 export async function startServer(
-  options: { executable?: string; web?: boolean; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { executable?: string; web?: boolean; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv; freshBuild?: boolean } = {},
 ) {
   const root = resolve(import.meta.dirname, "../..");
   const env: NodeJS.ProcessEnv = {
@@ -14,6 +14,8 @@ export async function startServer(
     SNAP_BUILD: "healthy-smoke",
   };
   delete env.SNAP_WEB_DIR;
+  if (options.freshBuild) delete env.SNAP_BUILD;
+  let logs = "";
   let backendUrl: string | undefined;
   if (options.web) env.SNAP_WEB_DIR = resolve(root, "dist/web");
   const child = spawn(
@@ -53,7 +55,6 @@ export async function startServer(
   }
   try {
     const baseUrl = await new Promise<string>((done, fail) => {
-      let logs = "";
       let settled = false;
       const timeout = setTimeout(
         () => finish(new Error(`Host readiness timeout: ${logs}`)),
@@ -78,7 +79,7 @@ export async function startServer(
         if (match) finish(undefined, match[1]);
       });
     });
-    return { baseUrl, backendUrl, close };
+    return { baseUrl, backendUrl, close, logs: () => logs };
   } catch (error) {
     await close();
     throw error;

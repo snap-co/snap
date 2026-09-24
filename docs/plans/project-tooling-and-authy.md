@@ -251,18 +251,18 @@ the previous successful application.
 
 Acceptance:
 
-- [ ] Watch app sources and relevant shared/path dependencies, manifests, and config.
+- [x] Watch app sources and relevant shared/path dependencies, manifests, and config.
   Exclude generated bindings, assets, and build/tool outputs from rebuild loops.
-- [ ] Debounce edits and handle changes during compilation; do not publish stale or
+- [x] Debounce edits and handle changes during compilation; do not publish stale or
   partially built generations. Shared dependencies can invalidate both targets.
-- [ ] Native-only changes restart the server; WASM changes trigger full page reload
+- [x] Native-only changes restart the server; WASM changes trigger full page reload
   after the relevant successful artifacts and server generation are ready.
-- [ ] Existing operation Build identity rules remain coherent across restart/reload;
+- [x] Existing operation Build identity rules remain coherent across restart/reload;
   stale browser clients can recover rather than remaining stuck on build mismatch.
-- [ ] Build failures show useful diagnostics and leave the previous working version
+- [x] Build failures show useful diagnostics and leave the previous working version
   serving. Later successful edits recover without manually restarting snap dev.
-- [ ] Ctrl-C/SIGTERM clean watchers, build commands, frontend server, and native host.
-- [ ] Real edit/failure/recovery scenarios are tested through observable CLI/browser
+- [x] Ctrl-C/SIGTERM clean watchers, build commands, frontend server, and native host.
+- [x] Real edit/failure/recovery scenarios are tested through observable CLI/browser
   behavior, with bounded timeouts and fixture-owned processes.
 
 Reuse file-watching machinery. State-preserving native/WASM hot replacement is
@@ -367,4 +367,11 @@ Vite/React serves the public development origin and proxies to an owned loopback
 native host. Chromium proves state-preserving React/CSS updates and shutdown.
 Human recovery is READY at `313bda57312803eff58e43ec185808f405f13861` under the
 port-ownership ruling above. Full checks passed and both authorized recovery
-validators returned CLEAR. STD-2 / SPEC-5 are resolved. Slice 06 is next.
+validators returned CLEAR. STD-2 / SPEC-5 are resolved.
+
+Slice 06 is implemented and verified, pending review in `docs/reviews/rust-watch.md`.
+Native/WASM dependency watching, private generation staging, Vite reload, compilation
+failure retention and startup-failure restoration pass the real browser editing
+contract. Full repository checks pass, including four Chromium scenarios. Native
+generations reload browser clients to rediscover Build identity; WASM-only edits
+retain the native process. Rust state-preserving hot replacement remains out of scope.

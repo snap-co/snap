@@ -1,8 +1,8 @@
 import { mkdir, copyFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname, relative, isAbsolute } from "node:path";
 
 // Embedded by the Rust builder. Every input is explicit.
-const [application, host, html, wasm, output, profile] = process.argv.slice(2);
+const [application, host, html, wasm, output, profile, bindingSource, bindingOutput] = process.argv.slice(2);
 if (!application || !host || !html || !wasm || !output || !["debug", "release"].includes(profile))
   throw new Error(
     "Usage: build-web.ts <application> <host> <html> <wasm> <output> <debug|release>",
@@ -20,6 +20,14 @@ const result = await Bun.build({
     {
       name: "application",
       setup(build) {
+        if (bindingSource && bindingOutput && bindingSource !== bindingOutput) {
+          build.onResolve({ filter: /^\./ }, (args) => {
+            const path = resolve(dirname(args.importer), args.path);
+            const suffix = relative(bindingSource, path);
+            if (!suffix.startsWith("..") && !isAbsolute(suffix))
+              return { path: resolve(bindingOutput, suffix) };
+          });
+        }
         build.onResolve({ filter: /^snap:application$/ }, () => ({
           path: resolve(application),
         }));

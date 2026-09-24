@@ -44,8 +44,8 @@ need Bun and the `wasm32-unknown-unknown` Rust target. `mise install` installs t
 pinned Rust toolchain. `mise run dev` invokes the checkout convenience command.
 With rustup on PATH, `./bin/dev` also works without mise. The CLI installs locked JS
 dependencies and the application's matching wasm-bindgen tool on first use.
-React and CSS edits update through Vite HMR. Restart `snap dev` for Rust changes
-until the Rust watching milestone is implemented.
+React and CSS edits update through Vite HMR. Rust edits rebuild automatically;
+native edits restart the server and WASM edits reload the browser.
 
 ```sh
 curl -H 'x-snap-operation-id: example-1' http://127.0.0.1:3846/health/up
@@ -62,7 +62,8 @@ The response uses the existing Snap completion envelope:
 ```
 
 `SNAP_ADDR` overrides the configured listen address, defaulting to `127.0.0.1:3846`.
-`snap dev` creates one fresh Build token per invocation unless `SNAP_BUILD` is set.
+`snap dev` creates a fresh Build token at startup and after each accepted native
+rebuild unless `SNAP_BUILD` is set. WASM-only rebuilds retain the server's token.
 The standalone host defaults to `rust-spike`. `GET /__snap/build` exposes the Build
 document. Ctrl-C or SIGTERM stops the CLI's active process group, including hooks
 and builds, with a six-second grace period. The CLI propagates child exit codes.
@@ -124,7 +125,8 @@ Packages live under the application's ignored `.snap/build/debug/` or
 `.snap/build/release/`.
 Bindings go to the explicit location imported by its TypeScript facade.
 
-Preparation hooks run once per invocation, with the config directory as cwd and
+Initial preparation runs once per invocation; watched rebuilds rerun `prepare.build`.
+Hooks use the config directory as cwd and
 inherited environment/output. Each command is an argument array, not a shell
 string. The first failure stops startup. Config loading itself executes no hooks.
 `SNAP_ENV` defaults to `development` for the launched host; the CLI supplies
@@ -165,6 +167,37 @@ updates in place. Vite may reload the page for incompatible module exports. Rust
 client state survives compatible renderer/CSS updates. Generated `.snap` output and
 Cargo targets are excluded from Vite's watcher. Release packages use the static
 builder and need no Vite process at runtime.
+
+### Rust development watching
+
+Snap uses Cargo's resolved local/path dependency graphs and `notify` filesystem
+events. It watches the native and WASM source trees, build scripts, Cargo manifests
+and lockfiles, `snap.toml`, and ancestor Cargo/toolchain configuration. Frontend
+TS/JS/CSS/HTML edits remain Vite's responsibility. `.snap`, generated bindings,
+Cargo target directories, `.git`, and `node_modules` never trigger Rust rebuilds.
+New source directories and changed manifests refresh the dependency/watch graph.
+
+Edits settle for 250ms before building. Changes arriving during compilation discard
+the candidate and queue the latest generation. Native-only changes rebuild native;
+WASM-only changes rebuild bindings/assets; shared dependencies invalidate both.
+`prepare.dev` runs once at startup, after `prepare.build`. Rebuilds rerun only
+`prepare.build`. Hook-generated outputs should live outside watched source trees.
+
+Reload candidates own private files under `.snap/dev/`. Compilation failures leave
+the running executable, bindings, browser assets, and Build token intact. A later
+edit retries all outstanding changes. A native replacement uses its prescribed
+port, so restarting has a short outage. If it fails startup, Snap restores the last
+working executable and Build token. If restoration also fails, Snap exits with the
+error and releases its processes. A configuration edit can restart both services;
+explicit address changes require opening the newly reported public URL.
+
+After readiness, Snap publishes bindings and asks Vite to invalidate modules and
+reload the page. Native changes also reload the page so clients discover the new
+Build token. WASM-only edits preserve the native process. Vite acknowledges its
+accepted asset generation on development Build responses before Snap removes old
+files. React/CSS-only edits keep their existing state-preserving HMR behavior.
+Ctrl-C/SIGTERM cancels active compilation/hooks, releases watchers, and stops both
+services. Standalone build/release packages stay static.
 
 ### Project verification
 

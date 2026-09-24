@@ -6,6 +6,7 @@ mod check;
 mod config;
 mod dev;
 mod process;
+mod watch;
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -42,7 +43,7 @@ enum Command {
         #[arg(long)]
         release: bool,
     },
-    /// Build and run the nearest snap.toml project (no file watching yet)
+    /// Build, watch, and run the nearest snap.toml project
     Dev {
         /// Start discovery here instead of the current directory
         project: Option<PathBuf>,

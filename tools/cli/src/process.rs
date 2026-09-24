@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-    process::{Child, Command},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, Command},
     signal::unix::{SignalKind, signal},
     sync::watch,
 };
@@ -34,6 +34,12 @@ impl Runner {
     /// One deadline bounds all probes; child exit and interruption remain observable.
     /// Dropping a partially started service releases its entire process group.
     pub async fn service(&self, command: &mut Command, url: &str, build: &str) -> Result<Service> {
+        let mut service = self.start(command)?;
+        self.ready(&mut service, url, build).await?;
+        Ok(service)
+    }
+
+    pub fn start(&self, command: &mut Command) -> Result<Service> {
         self.check()?;
         let mut child = command
             .stdin(Stdio::piped())
@@ -54,11 +60,15 @@ impl Runner {
             }
             Ok::<_, std::io::Error>(())
         });
-        let mut service = Service {
+        Ok(Service {
+            input: child.stdin.take(),
             child,
             group: Some(group),
             logs: Some(logs),
-        };
+        })
+    }
+
+    async fn ready(&self, service: &mut Service, url: &str, build: &str) -> Result<()> {
         let mut stopped = self.stopped.clone();
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -90,7 +100,7 @@ impl Runner {
             }
             _ = stopped.changed() => { service.stop().await?; return Err(Failed(*stopped.borrow()).into()); }
         };
-        Ok(service)
+        Ok(())
     }
     pub fn new() -> Result<Self> {
         let mut interrupt = signal(SignalKind::interrupt())?;
@@ -178,12 +188,25 @@ impl Runner {
 }
 
 pub struct Service {
+    // Child::wait closes stdin even when its future is cancelled. Keep the
+    // resident frontend control channel independent of supervision waits.
+    input: Option<ChildStdin>,
     child: Child,
     group: Option<Group>,
     logs: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
 }
 
 impl Service {
+    pub async fn send(&mut self, message: &str) -> Result<()> {
+        let input = self
+            .input
+            .as_mut()
+            .context("Service control input closed")?;
+        input.write_all(message.as_bytes()).await?;
+        input.write_all(b"\n").await?;
+        input.flush().await?;
+        Ok(())
+    }
     pub async fn wait(&mut self, runner: &Runner) -> Result<()> {
         let mut stopped = runner.stopped.clone();
         let status = if *stopped.borrow() != 0 {

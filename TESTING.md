@@ -137,6 +137,13 @@ Fast Refresh preserves component state, page identity, Rust sample history, and 
 identity. CSS updates without navigation. Shutdown checks both public frontend and
 private backend listeners. Fixture sources and outputs are removed afterward.
 
+`tests/browser/rust-watch.spec.ts` owns a copy of Healthy's Rust application/native/
+WASM sources. It proves native restart, WASM-only reload without native restart,
+shared dependency rebuilding, failed-compilation retention, edits during a gated
+build, startup-failure rollback, configuration recovery, and interruption during a
+manifest-triggered rebuild. Assertions use rendered bindings, HTTP Build discovery,
+CLI diagnostics and process lifecycle. Generated output never drives source edits.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
