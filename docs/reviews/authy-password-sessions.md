@@ -1,5 +1,9 @@
 # Authy password/session review
 
+Status: **READY** on 2026-09-24. Reviewed product revision:
+`f2f964777691872d7c52a8d5170b3d7779bed2a7`. Both review axes are CLEAR and the full
+repository and Authy project checks pass. Two review rounds used; review is closed.
+
 ## Contract and revisions
 
 - User authorization: first password/session flow with the framework and WebSocket
@@ -9,7 +13,7 @@
 - Worktree: `/home/cc444/code/snapco/snap`, existing `main` branch.
 - No remote, tracker, or publication workflow exists. Keep records locally.
 - Review budget: new Authy scope, independent of the closed tooling and private
-  output reviews. Round 1 recorded below; one fix-validation round remains.
+  output reviews. Both authorized rounds are complete and recorded below.
 
 Supported assumptions: Linux native host, browser WASM client, one host process
 with a local SQLite database, same-origin HTTP/WebSocket browser traffic, explicit
@@ -117,3 +121,48 @@ password/session journey through both SDKs, both real Authy UI scenarios, the wi
 contract, TypeScript checking, workspace check and warnings-denied Clippy.
 The new cases reproduce the reviewers' SDK-level triggers without importing the
 controller, storage, or private host state.
+
+### Round 2: fix validation
+
+Repair revision: `f2f964777691872d7c52a8d5170b3d7779bed2a7`.
+Prior reviewed revision: `2f2f4cece05d61bfb0ad1853c27f6a3c46e888a2`.
+The full `mise exec -- ./bin/check` passed again on the repair revision, including
+all eight recovery cases, all nine Playwright scenarios, reference interoperability,
+and the existing Healthy/tooling/structure/dependency gates. Log:
+`/tmp/opencode/authy-fixed-full-check.log`.
+
+Both original reviewers now validate their finding IDs and regressions caused by
+the fixes, including affected interactions. This is the second and final review
+round, not a fresh whole-diff review. No further autonomous repair/review round is
+authorized if blockers remain. The application-directory project check is also
+complete on the repair revision: `mise exec -- ./bin/snap check apps/authy` passed
+with its added recovery command. Log: `/tmp/opencode/authy-fixed-project-check.log`.
+
+Standards validation is **CLEAR**: STD-1 through STD-4 resolved, with no new
+findings. Complete report: `authy-standards-round2.md`. The reviewer independently
+ran the eight recovery cases and confirmed the sole socket-send timeout path.
+Spec validation is **CLEAR**: SPEC-1 through SPEC-3 resolved, with no new findings.
+Complete report: `authy-spec-round2.md`. The reviewer independently ran the eight
+recovery cases and additionally checked close-Promise sharing, final notification,
+snapshot immutability, and retained server-session authority after SDK close.
+
+## Final disposition
+
+| Findings | Final status |
+| --- | --- |
+| STD-1 / SPEC-1 | Resolved: HTTP Build lifecycle |
+| STD-2 / SPEC-2 | Resolved: uncertain mutation recovery |
+| STD-3 / SPEC-3 | Resolved: final browser closed observation |
+| STD-4 | Resolved: bounded Pong writes |
+
+No unresolved blockers, decisions, advisories, or independent follow-ups remain.
+There is no tracker or publication step. Product and tests are committed locally;
+the closure commit adds only documentation and complete review artifacts.
+
+Implementation commits:
+
+- `2f2f4cece05d61bfb0ad1853c27f6a3c46e888a2`: first password/session implementation.
+- `f2f964777691872d7c52a8d5170b3d7779bed2a7`: reviewed lifecycle repairs and regressions.
+
+The next feature should receive its own accepted scope. This completed review
+budget must not be reused for another repair or quietly reset.

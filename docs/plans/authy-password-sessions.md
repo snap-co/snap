@@ -1,5 +1,9 @@
 # Authy password sessions
 
+Status: **READY**, 2026-09-24. Product revision
+`f2f964777691872d7c52a8d5170b3d7779bed2a7` passes the full repository and Authy project
+checks. Both final review axes are CLEAR; see the review record below.
+
 ## Accepted scope
 
 On 2026-09-24 the user approved the first password/session flow and the Transport

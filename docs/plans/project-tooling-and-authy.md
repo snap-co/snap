@@ -17,7 +17,9 @@ All six slices are complete and reviewed as of 2026-09-23. Latest reviewed code:
 `e9f64499daad0b9e1790e38a6a3d4bedcf84076c`. The full repository gate passes.
 The private-dev-output follow-on is also READY as of 2026-09-24 at
 `53ae50d17e84254f79a2454876e6dcf5b7861cbb`, with full checks passing and both final
-review axes CLEAR. Authy's first password/session flow is the next separate scope.
+review axes CLEAR. Authy's first password/session flow subsequently completed at
+`f2f964777691872d7c52a8d5170b3d7779bed2a7`, with passing full/project checks and both
+final review axes CLEAR. See [the Authy contract](authy-password-sessions.md).
 
 ## Accepted decisions
 
