@@ -210,3 +210,71 @@ test("agent control steps a live browser request and restores its state", async 
     ).status(),
   ).toBe(403);
 });
+
+test("execution desk displays and supplies exact i64 dependencies", async ({
+  page,
+  server,
+}) => {
+  await page.goto(`${server}/calc`);
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await page.getByText("Committed records", { exact: true }).click();
+  await page.locator("summary").filter({ hasText: "Execution trace" }).click();
+  const values = [
+    "9007199254740993",
+    "9223372036854775807",
+    "-9223372036854775808",
+  ];
+  for (const [index, value] of values.entries()) {
+    if (index) {
+      await page.getByRole("button", { name: "Close calculator" }).click();
+      await page
+        .getByRole("button", { name: "Reconnect", exact: true })
+        .click();
+      await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    }
+    await page.getByLabel("Operand", { exact: true }).fill(value);
+    await page.getByRole("button", { name: "+", exact: true }).click();
+    await expect(page.getByTestId("accumulator")).toHaveText(value);
+    await expect(page.getByTestId("host-state")).toContainText(
+      `"accumulator": ${value}`,
+    );
+    await page.getByLabel("Break after acceptance").click();
+    await expect(page.getByLabel("Break after acceptance")).toBeChecked();
+    await page.getByLabel("Operand", { exact: true }).fill("0");
+    await page.getByRole("button", { name: "Checked +", exact: true }).click();
+    await expect(page.locator(".execution-status")).toContainText(
+      "ready for attempt",
+    );
+    await page.getByRole("button", { name: "Step once" }).click();
+    // Invalid JSON is rejected locally and leaves the outstanding dependency intact.
+    await page.getByLabel("Dependency value").fill(`${value} trailing`);
+    await page.getByRole("button", { name: "Supply input" }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await page.getByLabel("Dependency value").fill(value);
+    const [supply] = await Promise.all([
+      page.waitForRequest(
+        (request) =>
+          request.url().endsWith("/__dev") &&
+          request.postData()?.includes('"action":"supply"') === true,
+      ),
+      page.getByRole("button", { name: "Supply input" }).click(),
+    ]);
+    expect(supply.postData()).toContain(`"value":${value}`);
+    await expect(page.getByLabel("Dependency value")).toHaveCount(0);
+    await page.getByLabel("Break after acceptance").click();
+    await expect(page.getByLabel("Break after acceptance")).not.toBeChecked();
+    await page.getByRole("button", { name: "Step once" }).click();
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Refresh", exact: true }),
+    ).toBeEnabled();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "History 2", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByTestId("accumulator")).toHaveText(value);
+    await expect(page.getByTestId("host-trace")).toContainText(
+      `"Ok": ${value}`,
+    );
+  }
+});

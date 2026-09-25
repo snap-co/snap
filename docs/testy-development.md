@@ -13,6 +13,9 @@ increasing sequence number, and records submitted invocations and resolved input
 for replay. An active call includes its ticket, scope, operation,
 input, acceptance status, missing dependency and already supplied inputs. Private
 attempt data is discarded on return and cannot be inspected between entries.
+The execution desk sends dependency JSON as text through its Rust binding, which
+also formats records and trace text for display. Signed-64-bit values remain exact
+even outside JavaScript's safe-integer range; the HTTP interface still uses JSON numbers.
 
 `POST /__dev` accepts JSON with an `action` field. Success returns inspection unless
 noted below. Failed controls return HTTP 409 with `{"error":"..."}`. The listener

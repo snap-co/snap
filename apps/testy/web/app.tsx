@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import init, { Client } from "../.snap/web/bindings/testy_wasm.js";
+import init, {
+  Client,
+  development_control,
+  development_observation,
+} from "../.snap/web/bindings/testy_wasm.js";
 import { WebChannel } from "./channel";
 import "./style.css";
 
@@ -19,27 +23,27 @@ type Host = {
   program: string;
   snapshot: boolean;
   active: {
-    ticket: number;
+    ticket: string;
     operation: string;
     accepted: boolean;
     waiting: string | null;
   } | null;
   queued: unknown[];
-  states: unknown[];
-  trace: unknown[];
+  states: string;
+  trace: string;
 };
-async function control(action?: object): Promise<Host> {
+async function control(action?: object, input?: string): Promise<Host> {
   const response = await fetch(
     "/__dev",
     action
       ? {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(action),
+          body: development_control(JSON.stringify(action), input),
         }
       : undefined,
   );
-  const value = await response.json();
+  const value = JSON.parse(development_observation(await response.text()));
   if (!response.ok) throw new Error(value.error ?? response.statusText);
   return value;
 }
@@ -64,10 +68,10 @@ function Development() {
       clearInterval(timer);
     };
   }, []);
-  async function act(action: object) {
+  async function act(action: object, input?: string) {
     try {
       setError("");
-      setHost(await control(action));
+      setHost(await control(action, input));
     } catch (e) {
       setError(String(e));
     }
@@ -129,18 +133,16 @@ function Development() {
             onChange={(e) => setCeiling(e.target.value)}
           />
           <button
-            onClick={() => {
-              try {
-                void act({
+            onClick={() =>
+              act(
+                {
                   action: "supply",
                   ticket: host.active!.ticket,
                   key: host.active!.waiting,
-                  value: JSON.parse(ceiling),
-                });
-              } catch (e) {
-                setError(String(e));
-              }
-            }}
+                },
+                ceiling,
+              )
+            }
           >
             Supply input
           </button>
@@ -185,15 +187,13 @@ function Development() {
       )}
       <details>
         <summary>Committed records</summary>
-        <pre data-testid="host-state">
-          {JSON.stringify(host?.states, null, 2)}
-        </pre>
+        <pre data-testid="host-state">{host?.states}</pre>
       </details>
       <details>
         <summary>
           Execution trace <span className="muted">last 256 observations</span>
         </summary>
-        <pre>{JSON.stringify(host?.trace, null, 2)}</pre>
+        <pre data-testid="host-trace">{host?.trace}</pre>
       </details>
     </section>
   );

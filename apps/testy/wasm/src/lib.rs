@@ -26,6 +26,47 @@ fn error(error: Error) -> JsValue {
     JsValue::from_str(&format!("{error:?}"))
 }
 
+/// Keep dependency JSON and observation IDs out of JavaScript's numeric type.
+/// The browser passes editable JSON as text; Rust validates and embeds its value.
+#[wasm_bindgen]
+pub fn development_control(action: &str, input: Option<String>) -> Result<String, JsValue> {
+    let parse = |text: &str| {
+        serde_json::from_str::<serde_json::Value>(text)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    };
+    let mut action = parse(action)?;
+    if let Some(ticket) = action.get("ticket").and_then(serde_json::Value::as_str) {
+        let ticket = ticket
+            .parse::<u64>()
+            .map_err(|_| JsValue::from_str("Invalid ticket"))?;
+        action["ticket"] = json!(ticket);
+    }
+    if let Some(input) = input {
+        action["value"] = parse(&input)?;
+    }
+    Ok(action.to_string())
+}
+
+/// Structured UI flags plus preformatted records/trace. Pretty-print in Rust so
+/// every JSON integer retains its exact value and numeric representation on screen.
+#[wasm_bindgen]
+pub fn development_observation(encoded: &str) -> Result<String, JsValue> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(encoded).map_err(|error| JsValue::from_str(&error.to_string()))?;
+    for key in ["states", "trace"] {
+        if let Some(records) = value.get_mut(key) {
+            *records = json!(serde_json::to_string_pretty(records).unwrap());
+        }
+    }
+    if let Some(ticket) = value
+        .get_mut("active")
+        .and_then(|active| active.get_mut("ticket"))
+    {
+        *ticket = json!(ticket.to_string());
+    }
+    Ok(value.to_string())
+}
+
 #[wasm_bindgen]
 pub struct Client {
     inner: testy::Client<Connection>,

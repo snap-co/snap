@@ -61,6 +61,8 @@ host carries the same commands and observations as JSON text over WebSocket. Bot
 permit one outstanding command per physical connection. WebSocket messages are
 bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preserving
 64-bit integers. Rust SDK results cross the UI binding as decimal strings.
+Development controls also use the Rust binding to validate supplied JSON text and
+format inspection records/trace without passing integers through JavaScript numbers.
 Workers, TLS deployment and migration of the earlier hosts are subsequent work.
 
 ## Application interface and global gate
