@@ -116,6 +116,12 @@ pub struct Material {
     pub token: String,
     pub digest: String,
 }
+pub struct Description {
+    pub session: Session,
+    pub email: String,
+    pub authenticated_at: u64,
+}
+pub type Enrollment = fn(&Material, &str, u64) -> Vec<S>;
 
 pub struct Response {
     pub outcome: Outcome,
@@ -132,6 +138,7 @@ pub struct Passport<S, C, K = NoCache> {
     store: S,
     crypto: C,
     cache: K,
+    enrollment: Option<Enrollment>,
 }
 impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
     pub fn new(kind: &'static str, register: &'static str, store: D, crypto: C, cache: K) -> Self {
@@ -141,7 +148,74 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
             store,
             crypto,
             cache,
+            enrollment: None,
         }
+    }
+
+    /// Trusted composition hook. App-owned initial records join the credential and
+    /// first-session transaction. The callback must only construct statements for
+    /// registered app schemas; it performs no IO and cannot commit independently.
+    pub fn with_enrollment(mut self, enrollment: Enrollment) -> Self {
+        self.enrollment = Some(enrollment);
+        self
+    }
+    /// Passport owns the shape of session authority used by dependent modules.
+    pub fn authority(subject: &str, session: &str, now: u64) -> Guard {
+        Guard {
+            query: Query::new(SESSIONS)
+                .matching(vec![
+                    P::eq("id", session),
+                    P::eq("identity_id", subject),
+                    P::gt("expires", now as i64),
+                ])
+                .limit(1),
+            exists: true,
+        }
+    }
+    /// Trusted server projection, not a published operation. A caller must obtain
+    /// the identifiers from a verified bearer or a previously granted authority.
+    pub async fn describe(
+        &self,
+        subject: &str,
+        id: &str,
+        now: u64,
+    ) -> Result<Option<Description>, Error> {
+        let authority = Self::authority(subject, id, now);
+        let Some(row) = self.read(authority.query.clone()).await?.pop() else {
+            return Ok(None);
+        };
+        let credentials = self
+            .transaction(
+                vec![authority],
+                vec![S::Select(
+                    Query::new(CREDENTIALS)
+                        .matching(vec![
+                            P::eq("id", text(&row, "credential_id")?),
+                            P::eq("identity_id", subject),
+                        ])
+                        .limit(1),
+                )],
+            )
+            .await?;
+        let credential = credentials[0].first().ok_or_else(unavailable)?;
+        Ok(Some(Description {
+            session: session(&row)?,
+            email: text(credential, "email")?,
+            authenticated_at: integer(&row, "created")? as u64,
+        }))
+    }
+    /// Trusted issuer logout. The application must bind this to the authenticated
+    /// session and confirm the browser's logout request before invoking it.
+    pub async fn end_session(&self, subject: &str, id: &str) -> Result<(), Error> {
+        self.transaction(
+            vec![],
+            vec![S::Delete {
+                table: SESSIONS,
+                filter: vec![P::eq("id", id), P::eq("identity_id", subject)],
+            }],
+        )
+        .await?;
+        Ok(())
     }
 
     async fn transaction(
@@ -225,11 +299,11 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
                     ("id", fresh.credential.clone().into()),
                     ("identity_id", fresh.identity.clone().into()),
                     ("kind", self.kind.into()),
-                    ("email", email.into()),
+                    ("email", email.clone().into()),
                     ("hash", hash.into()),
                     ("created", (context.now as i64).into()),
                 ]);
-                let statements = vec![
+                let mut statements = vec![
                     S::Insert {
                         table: CREDENTIALS,
                         row: credential,
@@ -240,6 +314,9 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
                         row: session_row(&fresh, &fresh.credential, &fresh.identity, context.now),
                     },
                 ];
+                if let Some(enrollment) = self.enrollment {
+                    statements.extend(enrollment(&fresh, &email, context.now));
+                }
                 self.store
                     .transaction(Transaction {
                         guards: vec![],

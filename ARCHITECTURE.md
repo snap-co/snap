@@ -31,6 +31,14 @@ their implementation language, not their platform identity. Workers compositions
 live beside the native/wasm compositions in Healthy and Authy. The signed-cookie
 codec and web reply projection live in `platforms/web` and serve both hosts.
 
+`snap-http` declares owned requests/responses for application-selected standard HTTP
+endpoints. Its native and Workers adapters retain bounded, thread-local calls without
+adding Snap Build negotiation or completion envelopes. Applications own origin,
+content-type and authorization policy. OIDC uses this carrier because its standard
+redirect/form/token protocol cannot be represented by Snap's operation envelope.
+`snap-oidc` owns issuer grant transitions and claim policy. Its injected Accounts
+interface supplies Passport-owned transaction guards; host crypto supplies RS256.
+
 ## Host-driven execution
 
 `Provider::invoke` creates an owned future with capability-specific context and
@@ -69,6 +77,12 @@ without forcing their records into Document's tree/synchronization model. Module
 own logical schemas and namespaces; application composition registers them together.
 Namespaces express ownership, not end-user authorization. Published operations own
 permission checks.
+
+Authy's account profile is an application-owned versioned JSON document in Store.
+It does not imply the planned Document/Snapshot replication capability. Passport's
+trusted enrollment callback constructs app-owned statements for the same transaction
+as credential/session creation. Passport also supplies current-session guards and
+server-only identity projections so OIDC never reads its private credential rows.
 
 The authoritative transaction and advisory-cache contracts live beside the traits
 in `crates/store/src/lib.rs`. Memory and SQLite implement the same atomic semantics;

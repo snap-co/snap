@@ -1,6 +1,8 @@
 //! Native host execution and web carriers. Composition supplies a Protocol provider.
 pub mod client;
 pub mod cookie;
+mod http;
+pub mod oidc;
 pub mod passport;
 pub mod store;
 mod websocket;
@@ -124,15 +126,33 @@ pub fn run_application(
     config: Config,
     web: Web,
 ) -> io::Result<()> {
+    run_with_http(module, config, web, None)
+}
+/// Compose standards endpoints alongside the selected Snap carrier bindings.
+pub fn run_application_with_http(
+    module: impl Provider<Context = Option<String>, Output = Reply> + 'static,
+    config: Config,
+    web: Web,
+    http: impl snap_http::Service,
+) -> io::Result<()> {
+    run_with_http(module, config, web, Some(Box::new(http)))
+}
+fn run_with_http(
+    module: impl Provider<Context = Option<String>, Output = Reply> + 'static,
+    config: Config,
+    web: Web,
+    http: Option<Box<dyn snap_http::Service>>,
+) -> io::Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(tokio::task::LocalSet::new().run_until(serve(module, config, web)))
+        .block_on(tokio::task::LocalSet::new().run_until(serve(module, config, web, http)))
 }
 async fn serve(
     module: impl Provider<Context = Option<String>, Output = Reply> + 'static,
     config: Config,
     mut web: Web,
+    http: Option<Box<dyn snap_http::Service>>,
 ) -> io::Result<()> {
     let operations: Vec<_> = module.operations().map(|op| op.key).collect();
     for (i, binding) in web.bindings.iter().enumerate() {
@@ -199,12 +219,22 @@ async fn serve(
     }
     .layer(DefaultBodyLimit::max(64 * 1024))
     .with_state(host.clone());
+    let (router, http_worker) = if let Some(service) = http {
+        let (extra, task) = self::http::router(service);
+        (router.merge(extra), Some(task))
+    } else {
+        (router, None)
+    };
     eprintln!("listening on http://{}", listener.local_addr()?);
     let worker = tokio::task::spawn_local(drive(module, receiver, host));
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
         .await;
     worker.abort();
+    if let Some(task) = http_worker {
+        task.abort();
+        let _ = task.await;
+    }
     let _ = worker.await;
     result
 }

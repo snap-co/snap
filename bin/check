@@ -25,6 +25,7 @@ bun scripts/check-client.ts
 bun test tests/sdk/browser-runtime.test.ts
 bun scripts/healthy-smoke.ts
 bun test tests/protocol/authy.test.ts
+bun test tests/protocol/oidc.test.ts
 bun test tests/protocol/workers.test.ts
 bun test tests/protocol/carriers.test.ts tests/protocol/migration.test.ts tests/protocol/passport-policy.test.ts
 bun test tests/sdk/identity-recovery.test.ts

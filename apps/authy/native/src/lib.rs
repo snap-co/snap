@@ -45,7 +45,7 @@ pub fn run(cache: impl snap_store::Cache) -> std::io::Result<()> {
     let database = std::env::var_os("SNAP_DATABASE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| ".snap/authy.sqlite".into());
-    let store = snap_native::store::Store::sqlite(&database, &snap_runtime::passport::schemas())
+    let store = snap_native::store::Store::sqlite(&database, &authy::schemas())
         .map_err(|e| std::io::Error::other(format!("Store registration failed: {e:?}")))?;
     let key = snap_native::passport::signing_key(&store)?;
     let cookie = snap_native::cookie::Cookie::new(
@@ -54,8 +54,36 @@ pub fn run(cache: impl snap_store::Cache) -> std::io::Result<()> {
         origin.scheme() == "https",
         snap_runtime::passport::SESSION_SECONDS,
     )?;
-    let application = Authy(authy::server(store, snap_native::passport::Crypto, cache));
-    snap_native::run_application(
+    let signer = snap_native::oidc::Crypto::load(&store)?;
+    let passport = authy::server(store.clone(), snap_native::passport::Crypto, cache);
+    let chatty_origin =
+        std::env::var("CHATTY_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:3850".into());
+    let chatty_origin = snap_native::parse_origin(&chatty_origin)?
+        .origin()
+        .ascii_serialization();
+    let http = authy::http::Web {
+        issuer: snap_oidc::Issuer {
+            origin: origin.origin().ascii_serialization(),
+            clients: vec![snap_oidc::Client {
+                id: "chatty".into(),
+                name: "Chatty".into(),
+                redirect_uri: format!("{chatty_origin}/auth/callback"),
+                post_logout_redirect_uri: format!("{chatty_origin}/auth/logged-out"),
+                secret_digest: std::env::var("CHATTY_CLIENT_SECRET")
+                    .ok()
+                    .map(|s| snap_oidc::digest(&s)),
+            }],
+            store: store.clone(),
+            crypto: signer,
+            accounts: authy::account::Accounts {
+                store,
+                passport: passport.clone(),
+            },
+        },
+        cookie: cookie.clone(),
+    };
+    let application = Authy(passport);
+    snap_native::run_application_with_http(
         application,
         config,
         snap_native::Web {
@@ -66,5 +94,6 @@ pub fn run(cache: impl snap_store::Cache) -> std::io::Result<()> {
                 identify: "identity.fetch",
             }),
         },
+        http,
     )
 }

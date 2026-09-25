@@ -8,6 +8,7 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+snap-oidc.workspace = true
 authy.workspace = true
 snap-protocol.workspace = true
 snap-runtime.workspace = true

@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { resolve } from "node:path";
 
 /** Real local workerd, with fixture-owned persistence and no remote bindings. */
-export async function workersServer(application: "authy" | "healthy" | "contract") {
+export async function workersServer(application: "authy" | "healthy" | "contract", vars: Record<string, string> = {}) {
   const root = resolve(import.meta.dirname, "../..");
   const cwd = resolve(root, application === "contract" ? "tests/workers" : `apps/${application}/workers`);
   const directory = await mkdtemp("/tmp/opencode/snap-workers-");
@@ -20,6 +20,7 @@ export async function workersServer(application: "authy" | "healthy" | "contract
   const start = async () => {
     process = spawn("node", [resolve(root, "node_modules/wrangler/bin/wrangler.js"), "dev", "--local", "--port", String(port), "--inspector-port", "0", "--persist-to", directory,
       ...(application !== "healthy" ? ["--var", `SNAP_ORIGIN:${baseUrl}`, "--var", "SNAP_BUILD:healthy-smoke"] : []),
+      ...Object.entries(vars).flatMap(([key, value]) => ["--var", `${key}:${value}`]),
     ], { cwd, detached: true, env: { ...globalThis.process.env, WRANGLER_SEND_METRICS: "false", CI: "true" }, stdio: ["ignore", "pipe", "pipe"] });
     await new Promise<void>((done, reject) => {
       const timeout = setTimeout(() => reject(new Error(`Workers startup timed out:\n${output}`)), 90_000);

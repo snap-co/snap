@@ -81,3 +81,16 @@ impl Cookie {
         )
     }
 }
+impl snap_http::Cookie for Cookie {
+    fn read(
+        &self,
+        header: Option<&str>,
+    ) -> Result<Option<alloc::string::String>, snap_http::Response> {
+        Cookie::read(self, header).map_err(|_| {
+            snap_http::Response::error(401, "invalid_session", "Invalid session cookie")
+        })
+    }
+    fn encode(&self, token: Option<&str>) -> alloc::string::String {
+        Cookie::encode(self, token)
+    }
+}

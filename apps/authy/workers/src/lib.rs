@@ -50,6 +50,7 @@ impl Provider for App {
 pub async fn fetch(request: Request, env: Env, _ctx: Context) -> Result<Response> {
     let path = request.path();
     if path == "/__snap/build"
+        || authy::http::ROUTES.contains(&path.as_str())
         || path.starts_with("/identity/")
         || path.starts_with("/account/")
         || path == "/_transport/ws"
@@ -68,17 +69,27 @@ pub async fn fetch(request: Request, env: Env, _ctx: Context) -> Result<Response
 #[durable_object]
 pub struct IdentityRealm {
     host: Rc<OnceCell<Host<App>>>,
+    http: Rc<OnceCell<snap_workers::http::Host<HttpApp>>>,
 }
+type HttpApp = authy::http::Web<
+    Store,
+    Crypto,
+    snap_store::NoCache,
+    snap_workers::oidc::Crypto,
+    snap_web::cookie::Cookie,
+>;
 impl DurableObject for IdentityRealm {
     fn new(state: State, env: Env) -> Self {
         let raw = state._inner();
         let storage = raw.storage().expect("Durable Object storage").into();
         let state = Rc::new(State::from(raw));
         let host = Rc::new(OnceCell::new());
+        let http = Rc::new(OnceCell::new());
+        let http_output = http.clone();
         let output = host.clone();
         let owner = state.clone();
         let _initialize = state.block_concurrency_while(async move {
-            let store = Store::new(storage, &snap_runtime::passport::schemas())
+            let store = Store::new(storage, &authy::schemas())
                 .await
                 .map_err(store_error)?;
             let query = Query::new(snap_runtime::passport::SETTINGS)
@@ -130,24 +141,62 @@ impl DurableObject for IdentityRealm {
                     env.get_binding::<WorkerVersionMetadata>("SNAP_VERSION")
                         .map(|v| v.id())
                 })?,
-                origin,
+                origin: origin.clone(),
                 bindings: snap_web::identity("account.create"),
-                cookie,
+                cookie: cookie.clone(),
                 identify: "identity.fetch",
             };
-            let application = Host::new(
-                App(authy::server(store, Crypto, snap_store::NoCache)),
-                owner,
-                config,
-            )?;
+            let signer = snap_workers::oidc::Crypto::load(&store)
+                .await
+                .map_err(|_| Error::RustError("Cannot initialize OIDC key".into()))?;
+            let chatty_origin = env
+                .var("CHATTY_ORIGIN")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|_| "http://127.0.0.1:8789".into());
+            let chatty_origin = Url::parse(&chatty_origin)?.origin().ascii_serialization();
+            let passport = authy::server(store.clone(), Crypto, snap_store::NoCache);
+            let http = authy::http::Web {
+                issuer: snap_oidc::Issuer {
+                    origin,
+                    clients: vec![snap_oidc::Client {
+                        id: "chatty".into(),
+                        name: "Chatty".into(),
+                        redirect_uri: format!("{chatty_origin}/auth/callback"),
+                        post_logout_redirect_uri: format!("{chatty_origin}/auth/logged-out"),
+                        secret_digest: env
+                            .secret("CHATTY_CLIENT_SECRET")
+                            .ok()
+                            .map(|s| snap_oidc::digest(&s.to_string())),
+                    }],
+                    store: store.clone(),
+                    crypto: signer,
+                    accounts: authy::account::Accounts {
+                        store,
+                        passport: passport.clone(),
+                    },
+                },
+                cookie,
+            };
+            http_output
+                .set(snap_workers::http::Host::new(http, owner.clone()))
+                .map_err(|_| Error::RustError("HTTP already initialized".into()))?;
+            let application = Host::new(App(passport), owner, config)?;
             output
                 .set(application)
                 .map_err(|_| Error::RustError("Host already initialized".into()))?;
             Ok(())
         });
-        Self { host }
+        Self { host, http }
     }
     async fn fetch(&self, request: Request) -> Result<Response> {
+        if authy::http::ROUTES.contains(&request.path().as_str()) {
+            return self
+                .http
+                .get()
+                .ok_or_else(|| Error::RustError("HTTP initialization failed".into()))?
+                .fetch(request)
+                .await;
+        }
         self.host()?.fetch(request).await
     }
     async fn websocket_message(

@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+snap-http.workspace = true
+snap-oidc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 snap-runtime.workspace = true
 snap-store.workspace = true
 snap-client.workspace = true

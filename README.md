@@ -2,7 +2,8 @@
 
 A local architecture experiment in IO-free Rust providers, driven by native and
 browser hosts. Healthy demonstrates a health-check client; Authy adds persistent
-password sessions. This is a selected Snap compatibility slice, not a complete port.
+password sessions, account profiles and an OIDC issuer. This is a selected Snap
+compatibility slice, not a complete port.
 
 ## Start
 
@@ -45,6 +46,11 @@ directly as `snap`, run `mise run cli` with mise activated in your shell.
 Standalone hosts use `SNAP_ADDR` for the listen address and `SNAP_WEB_DIR` for an
 asset-directory override. Authy's database, origin, and signing-key configuration
 are in [its contract](apps/authy/CONTRACT.md).
+
+Authy's OIDC discovery is at `/.well-known/openid-configuration`. Configure
+`CHATTY_ORIGIN` for the registered relying-party origin and `CHATTY_CLIENT_SECRET`
+for confidential-client authentication. Both apps must use the same secret. The
+registered redirects are `/auth/callback` and `/auth/logged-out` on Chatty's origin.
 
 ## Local Cloudflare Workers
 

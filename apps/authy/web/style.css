@@ -12,9 +12,10 @@ h2 { font-size: 1.1rem; }
 .identity { font-family: monospace; overflow-wrap: anywhere; font-size: .85rem; }
 form, label { display: grid; gap: 10px; }
 form { gap: 22px; margin-top: 28px; }
-input, button { font: inherit; border-radius: 7px; padding: 11px 14px; }
-input { color: inherit; background: #101319; border: 1px solid #465268; }
-input:focus { outline: 2px solid #90bdff; }
+input, textarea, button { font: inherit; border-radius: 7px; padding: 11px 14px; }
+input, textarea { color: inherit; background: #101319; border: 1px solid #465268; }
+textarea { min-height: 100px; resize: vertical; }
+input:focus, textarea:focus { outline: 2px solid #90bdff; }
 button { border: 1px solid transparent; color: #10213b; background: #9cc5fe; cursor: pointer; font-weight: 600; }
 button:disabled { opacity: .5; cursor: wait; }
 .secondary { background: transparent; border-color: #536079; color: #e7e9ed; }
