@@ -16,6 +16,8 @@ pub struct Operation {
 /// A statically composed provider. Invocation creates an owned continuation;
 /// the host owns polling, admission, cancellation, and external work execution.
 /// Context and output belong to the capability/composition, not the scheduler.
+/// Continuations are local: neither providers nor futures must cross threads.
+/// Hosts move owned external-work requests across threads when needed instead.
 pub trait Provider {
     type Context;
     type Output;
@@ -24,7 +26,7 @@ pub trait Provider {
         &mut self,
         invocation: Invocation,
         context: Self::Context,
-    ) -> impl core::future::Future<Output = Self::Output> + Send + 'static;
+    ) -> impl core::future::Future<Output = Self::Output> + 'static;
 }
 
 /// Carrier framing has already been removed. Missing payload differs from JSON null.

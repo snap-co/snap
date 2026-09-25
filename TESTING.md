@@ -45,6 +45,13 @@ mise exec -- ./bin/check-deps --audit
 Install Chromium once with `bunx playwright install chromium`. The full gate also
 requires `~/code/bod/snap` with its TypeScript dependencies installed. Ordinary
 builds and application checks do not require that reference checkout.
+
+Workers gates require Node.js, the pinned `worker-build` from `mise install`, and
+Wrangler from `bun install`. They launch real local workerd with `--local`, isolated
+temporary persistence and ephemeral ports; no account or remote bindings are used.
+Run `mise exec -- bun test tests/protocol/workers.test.ts` for dispatch and Store,
+or the shared Authy/carrier Protocol tests for cross-host behavior. The Authy browser
+test includes Workers. Build Authy's browser package before running that journey.
 `SNAP_REFERENCE` selects another checkout for `scripts/healthy-smoke.ts`.
 
 During iteration, run the check for the changed interface. Test entry points live

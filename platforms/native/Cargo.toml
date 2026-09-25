@@ -22,11 +22,13 @@ tower-http = { version = "0.6", features = ["fs", "set-header"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 argon2 = "0.5"
 rand = "0.8"
-hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+futures-channel = "0.3"
 
 [lints]
 workspace = true
@@ -37,3 +39,7 @@ path = "../../tests/store/contract.rs"
 
 [package.metadata.snap]
 role = "platform"
+
+[package.metadata.cargo-machete]
+# The shared carrier contract is outside this package's source directory.
+ignored = ["futures-channel"]

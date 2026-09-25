@@ -1,9 +1,34 @@
 //! Selected HTTP/WebSocket compatibility bindings, shared by web hosts and clients.
 #![no_std]
 extern crate alloc;
+pub mod cookie;
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 use snap_protocol::{ConnectionEvent, Disconnect, Error, Invocation, Outcome, Value, json};
+
+/// Provider result projected by web hosts after the authoritative workflow completes.
+pub struct Lease {
+    pub id: String,
+    pub expires_at: u64,
+}
+pub struct Reply {
+    pub outcome: Outcome,
+    pub empty: bool,
+    pub lease: Option<Lease>,
+    pub cookie: Option<Option<String>>,
+    pub terminate: Vec<String>,
+}
+impl Reply {
+    pub fn new(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            empty: false,
+            lease: None,
+            cookie: None,
+            terminate: Vec::new(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {

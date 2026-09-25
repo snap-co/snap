@@ -13,7 +13,7 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
         &mut self,
         invocation: Invocation,
         token: Option<String>,
-    ) -> impl core::future::Future<Output = Self::Output> + Send + 'static {
+    ) -> impl core::future::Future<Output = Self::Output> + 'static {
         let future = self.0.invoke(
             invocation,
             snap_runtime::passport::Context {

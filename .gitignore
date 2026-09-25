@@ -8,3 +8,6 @@
 /playwright-report/
 .snap/
 __pycache__/
+.wrangler/
+**/workers/build/
+.dev.vars*

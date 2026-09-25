@@ -11,6 +11,7 @@ pub struct Handler<State> {
 /// Read-only Message admission for one logical lifetime. Reattachment currently
 /// creates a new lifetime. Accepted IDs are never executed twice in that lifetime;
 /// callers receive Indeterminate rather than an invented cached completion.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Connection {
     epoch: String,
     sequence: u64,
@@ -91,7 +92,7 @@ impl<State> Provider for Transport<State> {
         &mut self,
         invocation: Invocation,
         _: (),
-    ) -> impl core::future::Future<Output = Outcome> + Send + 'static {
+    ) -> impl core::future::Future<Output = Outcome> + 'static {
         let outcome = match self
             .handlers
             .iter()

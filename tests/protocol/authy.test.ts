@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { authyServer } from "../adapters/authy";
 import { deadline } from "../adapters/server";
+import { workersServer } from "../adapters/workers";
 
 function socket(base: string, cookie?: string, build = "healthy-smoke") {
   const url = new URL("/_transport/ws", base);
@@ -13,8 +14,9 @@ function socket(base: string, cookie?: string, build = "healthy-smoke") {
   return { ws, closed, next: () => deadline(messages.length ? Promise.resolve(messages.shift()) : new Promise(resolve => waiters.push(resolve)), 5_000) };
 }
 
-test("password/session wire: cookies, identity modes, Message admission and persistent authority", async () => {
-  const server = await authyServer();
+for (const host of ["native", "workers"] as const) {
+test(`${host} password/session wire: cookies, identity modes, Message admission and persistent authority`, async () => {
+  const server = await (host === "native" ? authyServer() : workersServer("authy"));
   const sockets: ReturnType<typeof socket>[] = [];
   const request = async (key: string, payload?: unknown, cookie?: string, extra: Record<string,string> = {}) => {
     const response = await fetch(`${server.baseUrl}/${key.replaceAll(".", "/")}`, { method: key === "identity.fetch" ? "GET" : "POST", headers: { "x-snap-build": "healthy-smoke", "x-snap-operation-id": "wire-operation", "content-type": "application/json", ...(cookie ? { cookie } : {}), ...extra }, body: payload === undefined ? undefined : JSON.stringify(payload) });
@@ -78,4 +80,5 @@ test("password/session wire: cookies, identity modes, Message admission and pers
     expect(released.response.headers.get("set-cookie")).toContain("Max-Age=0");
     expect((await request("identity.fetch", undefined, cookie)).body.payload.payload.identityId).toBeNull();
   } finally { for (const { ws } of sockets) ws.close(); await server.close(); }
-}, 30_000);
+}, 120_000);
+}

@@ -4,6 +4,7 @@ import { authyProject } from "../adapters/project";
 import { startServer } from "../adapters/server";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { workersServer } from "../adapters/workers";
 
 test("Authy development keeps its public origin and socket after a Rust rebuild", async ({ page }) => {
   test.setTimeout(120_000);
@@ -49,10 +50,10 @@ test("Authy development keeps its public origin and socket after a Rust rebuild"
   } finally { try { await page.close(); } finally { try { await server?.close(); } finally { await project.close(); } } }
 });
 
-for (const dev of [false, true]) {
-  test(`Authy ${dev ? "development proxy" : "package"}: sign in, reload, reconnect and remote revocation`, async ({ browser }) => {
+for (const host of ["package", "development proxy", "workers"] as const) {
+  test(`Authy ${host}: sign in, reload, reconnect and remote revocation`, async ({ browser }) => {
     test.setTimeout(120_000);
-    const server = await authyServer(dev);
+    const server = await (host === "workers" ? workersServer("authy") : authyServer(host === "development proxy"));
     const first = await browser.newContext();
     const second = await browser.newContext();
     const page = await first.newPage();
@@ -84,7 +85,7 @@ for (const dev of [false, true]) {
       await expect(other.getByTestId("identity")).toHaveText(identity!);
       await expect(other.getByTestId("connection")).toHaveText("connected");
       await expect(other.getByText("Another session", { exact: true })).toBeVisible();
-      if (!dev) {
+      if (host !== "development proxy") {
         await server.restart(async () => {
           await expect(page.getByTestId("connection")).not.toHaveText("connected");
         });

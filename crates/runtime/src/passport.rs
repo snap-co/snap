@@ -103,14 +103,10 @@ pub struct Context {
 }
 
 /// Host crypto work is separate from Store and its transactional lifetime.
-pub trait Crypto: Clone + Send + Sync + 'static {
-    fn hash(&self, password: String) -> impl Future<Output = Result<String, Error>> + Send;
-    fn verify(
-        &self,
-        password: String,
-        hash: String,
-    ) -> impl Future<Output = Result<bool, Error>> + Send;
-    fn generate(&self) -> impl Future<Output = Result<Material, Error>> + Send;
+pub trait Crypto: Clone + 'static {
+    fn hash(&self, password: String) -> impl Future<Output = Result<String, Error>>;
+    fn verify(&self, password: String, hash: String) -> impl Future<Output = Result<bool, Error>>;
+    fn generate(&self) -> impl Future<Output = Result<Material, Error>>;
     fn digest(&self, token: &str) -> String;
 }
 pub struct Material {
@@ -439,7 +435,7 @@ impl<S: Store, C: Crypto, K: Cache> Provider for Passport<S, C, K> {
         &mut self,
         invocation: Invocation,
         context: Context,
-    ) -> impl Future<Output = Response> + Send + 'static {
+    ) -> impl Future<Output = Response> + 'static {
         let provider = self.clone();
         async move {
             let mut reply = Response {

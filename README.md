@@ -6,7 +6,7 @@ password sessions. This is a selected Snap compatibility slice, not a complete p
 
 ## Start
 
-Requires Linux, Bun, lsof, and mise. Install Chromium separately for browser tests.
+Requires Linux, Bun, Node.js, lsof, and mise. Install Chromium separately for browser tests.
 
 ```sh
 mise trust
@@ -46,11 +46,40 @@ Standalone hosts use `SNAP_ADDR` for the listen address and `SNAP_WEB_DIR` for a
 asset-directory override. Authy's database, origin, and signing-key configuration
 are in [its contract](apps/authy/CONTRACT.md).
 
+## Local Cloudflare Workers
+
+`mise install` installs the pinned `worker-build`; `bun install` installs Wrangler.
+Wrangler runs the Rust/Wasm application in local `workerd`, including SQLite-backed
+Durable Objects. No Cloudflare account is needed for these local commands.
+
+```sh
+# Build Authy's browser assets, then run its Workers composition on port 8788:
+mise exec -- ./bin/snap build apps/authy
+mise exec -- bunx wrangler dev --cwd apps/authy/workers --local --inspector-port 0
+
+# Or run the small stateless Healthy Worker on port 8787:
+mise exec -- bunx wrangler dev --cwd apps/healthy/workers --local --inspector-port 0
+```
+
+Authy opens at `http://127.0.0.1:8788`. Its Worker data lives under
+`apps/authy/workers/.wrangler/state`, independently of the native Authy database.
+Rebuild browser assets after UI/client changes. Wrangler builds the server Wasm
+with `worker-build --release`. Run commands from the Worker directory or use
+`--cwd`; `--config` alone does not set the custom build's working directory.
+
+The same Wrangler configuration supports deployment. Set `SNAP_ORIGIN` to the
+public HTTPS origin before deploying Authy, select its custom domain or workers.dev
+hostname, and keep `SNAP_REALM` stable. The default origin is local-only. Cloudflare
+version metadata supplies the server Build; `SNAP_BUILD` is an explicit test override.
+Cloud deployment, CPU-budget measurement on Cloudflare, and automated branch
+Previews are not established by the local tests. See the Workers guarantees in
+[Authy's contract](apps/authy/CONTRACT.md#workers-host).
+
 ## Read when needed
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): ownership, module ports, portability, storage.
 - [TESTING.md](TESTING.md): test policy, prerequisites, verification entry points.
 - [Authy contract](apps/authy/CONTRACT.md): persistence, wire compatibility, recovery.
 
-Document/Snapshot replication, native language bindings, deployment providers, and
+Document/Snapshot replication, native language bindings, deployment automation, and
 full TypeScript Protocol compatibility are future work.

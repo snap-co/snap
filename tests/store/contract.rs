@@ -1,249 +1,58 @@
-//! Store is an application-facing local capability. These promises (cross-table
-//! snapshots, constraints and transactions) cannot be expressed by Identity's SDK.
 #[path = "../adapters/store.rs"]
 mod adapter;
-use snap_store::{
-    Cache, Error, ForeignKey, Guard, Index, Kind, Predicate as P, Query, Row, Rows, Schema,
-    Statement as S, Store, Table, Transaction, Value,
-};
-
-const ROOT: Table = Table {
-    namespace: "documents",
-    name: "records",
-};
-const EXTENT: Table = Table {
-    namespace: "extents",
-    name: "records",
-};
-fn schemas() -> [Schema; 2] {
-    [
-        Schema {
-            table: ROOT,
-            columns: &[
-                ("id", Kind::Text),
-                ("locator", Kind::Text),
-                ("revision", Kind::Integer),
-            ],
-            primary: &["id"],
-            indexes: &[Index {
-                columns: &["locator"],
-                unique: true,
-            }],
-            foreign: &[],
-            legacy_name: None,
-        },
-        Schema {
-            table: EXTENT,
-            columns: &[
-                ("id", Kind::Text),
-                ("root", Kind::Text),
-                ("revision", Kind::Integer),
-            ],
-            primary: &["id"],
-            indexes: &[Index {
-                columns: &["root"],
-                unique: false,
-            }],
-            foreign: &[ForeignKey {
-                columns: &["root"],
-                target: ROOT,
-                references: &["id"],
-            }],
-            legacy_name: None,
-        },
-    ]
-}
-fn root(id: &str, locator: &str, revision: i64) -> Row {
-    [
-        ("id".into(), id.into()),
-        ("locator".into(), locator.into()),
-        ("revision".into(), revision.into()),
-    ]
-    .into()
-}
-fn extent(revision: i64) -> Row {
-    [
-        ("id".into(), "e".into()),
-        ("root".into(), "r".into()),
-        ("revision".into(), revision.into()),
-    ]
-    .into()
-}
-fn tx(statements: Vec<S>) -> Transaction {
-    Transaction {
-        guards: vec![],
-        statements,
-    }
-}
-async fn read(store: &impl Store, table: Table) -> Rows {
-    store
-        .transaction(tx(vec![S::Select(Query::new(table))]))
-        .await
-        .unwrap()
-        .remove(0)
-}
-fn change(table: Table, revision: i64) -> S {
-    S::Update {
-        table,
-        filter: vec![],
-        changes: [("revision".into(), revision.into())].into(),
-    }
-}
-
-async fn contract(store: impl Store, peer: impl Store) {
-    store
-        .transaction(tx(vec![
-            S::Insert {
-                table: ROOT,
-                row: root("r", "unique", 1),
-            },
-            S::Insert {
-                table: EXTENT,
-                row: extent(1),
-            },
-        ]))
-        .await
-        .unwrap();
-    assert_eq!(read(&store, ROOT).await, vec![root("r", "unique", 1)]);
-    assert_eq!(read(&store, EXTENT).await, vec![extent(1)]);
-    // Unique and referential failures roll back earlier writes in the same batch.
-    assert_eq!(
-        store
-            .transaction(tx(vec![
-                change(EXTENT, 2),
-                S::Insert {
-                    table: ROOT,
-                    row: root("duplicate", "unique", 2)
-                }
-            ]))
-            .await,
-        Err(Error::Constraint)
-    );
-    assert_eq!(read(&store, EXTENT).await, vec![extent(1)]);
-    assert_eq!(
-        store
-            .transaction(tx(vec![S::Delete {
-                table: ROOT,
-                filter: vec![]
-            }]))
-            .await,
-        Err(Error::Constraint)
-    );
-    assert_eq!(
-        store
-            .transaction(tx(vec![S::Insert {
-                table: ROOT,
-                row: [("id".into(), Value::Integer(7))].into()
-            }]))
-            .await,
-        Err(Error::Invalid)
-    );
-    assert_eq!(read(&store, ROOT).await, vec![root("r", "unique", 1)]);
-    // A stale optimistic guard cannot partially advance a document frontier.
-    assert_eq!(
-        store
-            .transaction(Transaction {
-                guards: vec![Guard {
-                    query: Query::new(ROOT).matching(vec![P::eq("revision", 0_i64)]),
-                    exists: true
-                }],
-                statements: vec![change(ROOT, 2), change(EXTENT, 2)]
-            })
-            .await,
-        Err(Error::Conflict)
-    );
-    let concurrent_claim = || {
-        tx(vec![S::Insert {
-            table: ROOT,
-            row: root("claim", "claimed", 0),
-        }])
-    };
-    let (a, b) = tokio::join!(
-        store.transaction(concurrent_claim()),
-        peer.transaction(concurrent_claim())
-    );
-    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
-    assert!(matches!(a, Err(Error::Constraint)) || matches!(b, Err(Error::Constraint)));
-    store
-        .transaction(tx(vec![S::Delete {
-            table: ROOT,
-            filter: vec![P::eq("id", "claim")],
-        }]))
-        .await
-        .unwrap();
-    // Distinct SQLite connections must still give a coherent cross-namespace read.
-    let writer = async {
-        for revision in 2..=24 {
-            peer.transaction(tx(vec![change(ROOT, revision), change(EXTENT, revision)]))
-                .await
-                .unwrap();
-        }
-    };
-    let reader = async {
-        for _ in 0..24 {
-            let results = store
-                .transaction(tx(vec![
-                    S::Select(Query::new(ROOT)),
-                    S::Select(Query::new(EXTENT)),
-                ]))
-                .await
-                .unwrap();
-            assert_eq!(results[0][0]["revision"], results[1][0]["revision"]);
-        }
-    };
-    tokio::join!(writer, reader);
-    assert_eq!(read(&store, ROOT).await[0]["revision"], Value::Integer(24));
-    let cache = snap_native::store::MemoryCache::new(8);
-    let query = Query::new(ROOT)
-        .matching(vec![P::eq("locator", "unique")])
-        .limit(1);
-    let snapshot = snap_store::snapshot(&store, &cache, query.clone())
-        .await
-        .unwrap();
-    assert_eq!(cache.get(&query), Some(snapshot.clone()));
-    peer.transaction(tx(vec![change(ROOT, 25), change(EXTENT, 25)]))
-        .await
-        .unwrap();
-    assert_eq!(
-        snap_store::snapshot(&store, &cache, query.clone())
-            .await
-            .unwrap(),
-        snapshot
-    );
-    assert_eq!(
-        snap_store::snapshot(&store, &snap_store::NoCache, query)
-            .await
-            .unwrap()[0]["revision"],
-        Value::Integer(25)
-    );
-    assert_eq!(read(&store, ROOT).await[0]["revision"], Value::Integer(25));
-}
+mod shared;
 
 #[tokio::test]
 async fn memory_store_contract() {
-    let fixture = adapter::Fixture::new(false, &schemas());
-    contract(fixture.store.clone(), fixture.peer.clone()).await;
+    let fixture = adapter::Fixture::new(false, &shared::schemas());
+    shared::contract(
+        fixture.store.clone(),
+        fixture.peer.clone(),
+        snap_native::store::MemoryCache::new(8),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sqlite_store_contract() {
+    let fixture = adapter::Fixture::new(true, &shared::schemas());
+    shared::contract(
+        fixture.store.clone(),
+        fixture.peer.clone(),
+        snap_native::store::MemoryCache::new(8),
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn identifiers_cannot_alias_namespace_ownership() {
+    use snap_store::{Error, Query, Statement, Store, Table, Transaction};
     for sqlite in [false, true] {
-        let fixture = adapter::Fixture::new(sqlite, &schemas());
+        let schemas = shared::schemas();
+        let fixture = adapter::Fixture::new(sqlite, &schemas);
+        let row = [
+            ("id".into(), "r".into()),
+            ("locator".into(), "original".into()),
+            ("revision".into(), 1_i64.into()),
+        ]
+        .into();
         fixture
             .store
-            .transaction(tx(vec![S::Insert {
-                table: ROOT,
-                row: root("r", "original", 1),
-            }]))
+            .transaction(Transaction {
+                guards: vec![],
+                statements: vec![Statement::Insert {
+                    table: schemas[0].table,
+                    row,
+                }],
+            })
             .await
             .unwrap();
-        let mut mixed = schemas()[0].clone();
+        let mut mixed = schemas[0].clone();
         mixed.table.namespace = "Documents";
         assert!(matches!(
-            fixture.register(&[schemas()[0].clone(), mixed.clone()]),
+            fixture.register(&[schemas[0].clone(), mixed.clone()]),
             Err(Error::Invalid)
         ));
-        // A later registration must not acquire an existing owner's rows either.
         assert!(matches!(fixture.register(&[mixed]), Err(Error::Invalid)));
         for table in [
             Table {
@@ -255,25 +64,29 @@ async fn identifiers_cannot_alias_namespace_ownership() {
                 name: "Records",
             },
         ] {
-            let mut invalid = schemas()[0].clone();
+            let mut invalid = schemas[0].clone();
             invalid.table = table;
             assert!(matches!(fixture.register(&[invalid]), Err(Error::Invalid)));
         }
-        let mut legacy = schemas()[0].clone();
+        let mut legacy = schemas[0].clone();
         legacy.legacy_name = Some("DOCUMENTS_RECORDS");
         assert!(matches!(fixture.register(&[legacy]), Err(Error::Invalid)));
-        assert_eq!(
-            read(&fixture.store, ROOT).await,
-            vec![root("r", "original", 1)]
-        );
+        let read = Transaction {
+            guards: vec![],
+            statements: vec![Statement::Select(Query::new(schemas[0].table))],
+        };
+        let rows = fixture.store.transaction(read.clone()).await.unwrap();
+        assert_eq!(rows[0][0]["locator"], "original".into());
         if sqlite {
-            let reopened = fixture.register(&schemas()).unwrap();
-            assert_eq!(read(&reopened, ROOT).await, vec![root("r", "original", 1)]);
+            assert_eq!(
+                fixture
+                    .register(&schemas)
+                    .unwrap()
+                    .transaction(read)
+                    .await
+                    .unwrap(),
+                rows
+            );
         }
     }
-}
-#[tokio::test]
-async fn sqlite_store_contract() {
-    let fixture = adapter::Fixture::new(true, &schemas());
-    contract(fixture.store.clone(), fixture.peer.clone()).await;
 }

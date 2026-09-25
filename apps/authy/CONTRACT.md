@@ -3,7 +3,7 @@
 Authy selects the `user` identity kind and `account.create`; Passport owns shared
 password/session behavior. It supports account creation, password sign-in, sign-out,
 identity recovery, credential/session reads, reconnect, and session revocation.
-Password reset/change, fresh assurance, passkeys, OAuth, and distributed hosting
+Password reset/change, fresh assurance, passkeys, OAuth, and multi-realm federation
 are outside this slice. See [architecture](../../ARCHITECTURE.md) for composition.
 
 ## Persistence and deployment
@@ -88,3 +88,33 @@ Shared native/browser assertions live in `tests/sdk/identity.contract.ts` and
 `identity-recovery.test.ts`; wire/migration assertions live in `tests/protocol`.
 `tests/browser/authy.spec.ts` covers the UI and development proxy.
 `scripts/authy-reference.ts` checks the selected TypeScript SDK against Rust.
+
+## Workers host
+
+`workers/` composes the same Passport provider and browser client with
+`snap-workers`. One `SNAP_REALM` identifies one SQLite-backed Durable Object.
+That object owns credential uniqueness, sessions, signing-key persistence, and
+socket revocation for the realm. NoCache remains selected. Changing the realm or
+Durable Object namespace selects different data. Native SQLite files are not
+automatically imported into Workers storage.
+
+The host uses local Rust futures and Workers bindings. Password hashing retains
+the native Argon2id policy but executes synchronously in Wasm; it blocks that
+isolate while hashing and requires an adequate deployment CPU/memory budget.
+The local workerd tests prove functionality, not edge throughput or plan capacity.
+
+Sockets use hibernation attachments to retain the token, lease, Build, and receive
+fence across object eviction. Reconstructing a host with a different Build closes
+old attachments with 4003. Each new physical connection still receives a fresh
+epoch. Accepted operations are bounded at 64, sockets at 128, and pending frame
+callbacks at 64. HTTP bodies and incoming text frames are bounded at 64 KiB.
+Workers queues outgoing frames through its WebSocket API; it does not expose the
+native host's physical-write deadline. Expiry rejects operations against current
+authority; idle socket closure uses Durable Object alarms and their scheduling
+latency. These are host delivery differences, not extended session validity.
+
+`tests/protocol/authy.test.ts`, `tests/protocol/carriers.test.ts`, and the Authy
+browser journey run against both native and Workers hosts. The shared Store
+contract also runs inside workerd, including rollback, coherent reads, concurrent
+claims, advisory caches, binary values, and full-width integers. Tests use temporary
+storage and exercise process restart. They do not require Cloudflare credentials.

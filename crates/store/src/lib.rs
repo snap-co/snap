@@ -1,6 +1,8 @@
 //! Local storage contract. Declarations do not publish remote operations.
 #![no_std]
 extern crate alloc;
+
+pub mod validation;
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::future::Future;
 
@@ -173,16 +175,18 @@ pub enum Error {
 /// Implementations reject undeclared tables/columns and mismatched value types.
 /// Memory is an explicitly non-durable implementation of the same atomic semantics.
 /// A successful durable backend result means commit completed, not merely queued.
-pub trait Store: Clone + Send + Sync + 'static {
+/// Handles and futures may be thread-local. Atomicity is a backend guarantee,
+/// independent of whether its executor uses threads, an event loop, or RPC.
+pub trait Store: Clone + 'static {
     fn transaction(
         &self,
         transaction: Transaction,
-    ) -> impl Future<Output = Result<Vec<Rows>, Error>> + Send;
+    ) -> impl Future<Output = Result<Vec<Rows>, Error>>;
 }
 
 /// Advisory snapshots only. Transactional reads always go to Store authority.
 /// Cache loss is harmless; freshness must be revalidated before granting authority.
-pub trait Cache: Clone + Send + Sync + 'static {
+pub trait Cache: Clone + 'static {
     fn get(&self, query: &Query) -> Option<Rows>;
     fn put(&self, query: Query, rows: Rows);
 }

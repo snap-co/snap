@@ -2,9 +2,11 @@ import { test, expect } from "bun:test";
 import { createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { deadline, startServer } from "../adapters/server";
+import { workersServer } from "../adapters/workers";
 
-test("one operation is bound to HTTP and WebSocket; an accepted continuation outlives its observer", async () => {
-  const server=await startServer({executable:resolve(import.meta.dirname,"../../target/debug/examples/carrier-contract")});
+for (const host of ["native", "workers"] as const) {
+test(`${host}: one operation is bound to HTTP and WebSocket; an accepted continuation outlives its observer`, async () => {
+  const server=await (host === "native" ? startServer({executable:resolve(import.meta.dirname,"../../target/debug/examples/carrier-contract")}) : workersServer("contract"));
   const post=async (key:string,payload:unknown=null,signal?:AbortSignal)=> {
     const response=await fetch(`${server.baseUrl}/${key}`,{method:"POST",headers:{"x-snap-build":"healthy-smoke","x-snap-operation-id":"same-caller-id","content-type":"application/json"},body:JSON.stringify(payload),signal});
     return (await response.json()).payload.payload;
@@ -31,4 +33,5 @@ test("one operation is bound to HTTP and WebSocket; an accepted continuation out
     await post("release");
     expect((await until(state=>state.completed===1)).completed).toBe(1);
   } finally {socket?.close();await server.close();}
-},20000);
+},120000);
+}

@@ -5,6 +5,7 @@ pub mod passport;
 pub mod store;
 mod websocket;
 pub use snap_web as web;
+pub use snap_web::{Lease, Reply};
 
 use axum::{
     Extension, Json, Router,
@@ -70,28 +71,6 @@ pub struct SessionCarrier {
     pub cookie: cookie::Cookie,
     pub identify: &'static str,
 }
-pub struct Lease {
-    pub id: String,
-    pub expires_at: u64,
-}
-pub struct Reply {
-    pub outcome: Outcome,
-    pub empty: bool,
-    pub lease: Option<Lease>,
-    pub cookie: Option<Option<String>>,
-    pub terminate: Vec<String>,
-}
-impl Reply {
-    pub fn new(outcome: Outcome) -> Self {
-        Self {
-            outcome,
-            empty: false,
-            lease: None,
-            cookie: None,
-            terminate: Vec::new(),
-        }
-    }
-}
 struct Work {
     invocation: Invocation,
     token: Option<String>,
@@ -120,14 +99,14 @@ impl<M: Provider<Context = (), Output = Outcome>> Provider for Plain<M> {
         &mut self,
         invocation: Invocation,
         _: Option<String>,
-    ) -> impl core::future::Future<Output = Reply> + Send + 'static {
+    ) -> impl core::future::Future<Output = Reply> + 'static {
         let future = self.0.invoke(invocation, ());
         async move { Reply::new(future.await) }
     }
 }
 /// Convenience composition for the existing HTTP-only Healthy consumers.
 pub fn run(
-    module: impl Provider<Context = (), Output = Outcome> + Send + 'static,
+    module: impl Provider<Context = (), Output = Outcome> + 'static,
     config: Config,
 ) -> io::Result<()> {
     let bindings = module.operations().map(|op| Binding::get(op.key)).collect();
@@ -141,17 +120,17 @@ pub fn run(
     )
 }
 pub fn run_application(
-    module: impl Provider<Context = Option<String>, Output = Reply> + Send + 'static,
+    module: impl Provider<Context = Option<String>, Output = Reply> + 'static,
     config: Config,
     web: Web,
 ) -> io::Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(serve(module, config, web))
+        .block_on(tokio::task::LocalSet::new().run_until(serve(module, config, web)))
 }
 async fn serve(
-    module: impl Provider<Context = Option<String>, Output = Reply> + Send + 'static,
+    module: impl Provider<Context = Option<String>, Output = Reply> + 'static,
     config: Config,
     mut web: Web,
 ) -> io::Result<()> {
@@ -221,7 +200,7 @@ async fn serve(
     .layer(DefaultBodyLimit::max(64 * 1024))
     .with_state(host.clone());
     eprintln!("listening on http://{}", listener.local_addr()?);
-    let worker = tokio::spawn(drive(module, receiver, host));
+    let worker = tokio::task::spawn_local(drive(module, receiver, host));
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
         .await;

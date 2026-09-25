@@ -26,12 +26,25 @@ Shared client controllers consume normalized outcomes and disconnect reasons.
 Native and browser adapters drive those controllers; TypeScript adapts WASM values
 to Promises and immutable observations; React renders them.
 
+`platforms/native` and `platforms/workers` are distinct execution hosts. Rust is
+their implementation language, not their platform identity. Workers compositions
+live beside the native/wasm compositions in Healthy and Authy. The signed-cookie
+codec and web reply projection live in `platforms/web` and serve both hosts.
+
 ## Host-driven execution
 
 `Provider::invoke` creates an owned future with capability-specific context and
 output. The host polls it and performs external work. Immediate providers need not
 suspend. This replaces hand-maintained workflow stages without giving providers
 control of an executor or introducing capability-specific branches in the scheduler.
+
+Providers, Store/cache handles, crypto handles, and their futures can be thread-local.
+Their contracts do not require `Send` or `Sync`. Native uses a current-thread Tokio
+runtime and a local dispatcher that interleaves owned invocation futures. Blocking
+Store and crypto requests still cross into host workers using thread-safe owned
+inputs/results. Native Store serializes transactions under its connection lock;
+it does not dedicate a thread to each invocation or promise a fixed thread count.
+Workers uses its event loop and `workers-rs`; no Tokio executor is involved.
 
 Keep blocking IO out of portable polling and release guards before suspension.
 Document admission, cancellation, ordering, late results, shutdown, and uncertain
@@ -42,6 +55,12 @@ The web host retains admitted continuations after an HTTP observer leaves, inclu
 their capacity and later delivery effects. Shutdown drops remaining continuations;
 an already-started blocking Store transaction can still finish. Process failure
 does not recover or replay the workflow.
+
+The Workers Durable Object host retains accepted futures with `State::wait_until`,
+independently of the HTTP response waiter. The five-second response deadline does
+not cancel admitted work. Runtime termination can interrupt the continuation;
+there is no durable workflow recovery. Host lifetime and delivery mechanisms must
+be documented separately from the portable operation semantics.
 
 ## Storage and authority
 
@@ -55,6 +74,20 @@ The authoritative transaction and advisory-cache contracts live beside the trait
 in `crates/store/src/lib.rs`. Memory and SQLite implement the same atomic semantics;
 only SQLite is durable. Native Store executes work on blocking host workers.
 Backend substitution requires the same guarantees, not merely a database adapter.
+
+Workers Store uses SQLite inside one Durable Object. All namespaces participating
+in a transaction must be registered in that object. Guards and statements execute
+in `transactionSync` without suspension; results are fully consumed there, and
+the future waits for `storage.sync()` before returning success. Integer bindings
+and results use decimal text with SQL casts to preserve all signed 64-bit values
+across the JavaScript interface. Schema/transaction validation is shared with
+native. Unregistered physical tables and incompatible schemas fail registration;
+legacy native-file migration is not supported on this host.
+
+Authy's current Workers composition routes one configured identity realm to one
+object, keeping credential uniqueness and session revocation in the same authority
+domain. This is a bounded reference composition, not a sharding design for all Snap
+applications. Transactions across objects are not supported by this Store adapter.
 
 SQLite maps tables to quoted `namespace_name` identifiers and registers schemas
 atomically. Passport migrates original `credentials`, `sessions`, and `settings`
