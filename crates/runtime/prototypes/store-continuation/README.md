@@ -19,12 +19,11 @@ not adopted as the production contract.
 
 Current interfaces and evidence:
 
-- [Store reference](../../../../docs/architecture/store.md).
+- [Current architecture](../../../../ARCHITECTURE.md).
 - `crates/store/src/lib.rs`: schema, transaction and advisory snapshot contracts.
 - `crates/runtime/src/passport.rs`: real portable password/session continuations.
 - `platforms/native/src/store.rs`: shared Memory/SQLite executors.
 - `tests/store/contract.rs`: reusable application-facing storage assertions.
 - `tests/protocol/carriers.test.ts`: carrier-independent dispatch and accepted
   continuation lifetime through real host IO.
-- [Architecture decision](../../../../docs/adr/0001-host-driven-capability-providers.md)
-  and [reference refactor](../../../../docs/plans/host-driven-module-pattern.md).
+- [Authy compatibility contract](../../../../apps/authy/CONTRACT.md).

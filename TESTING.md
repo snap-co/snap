@@ -1,231 +1,57 @@
-# Testing contracts
+# Testing
 
-The suite should survive replacing the server implementation or client runtime.
-Queue changes, crate splits, state representations, and a language rewrite should
-require at most a different launcher or client adapter, not rewritten assertions.
+Behavior assertions should survive replacement of the server or client runtime.
+Change launchers and adapters when implementations change, rather than rewriting
+the promises under test.
 
-## Default to the consumer's interface
+## Choose the consumer interface
 
-The main behavior suite runs outside the implementation:
+- SDK contracts exercise operations, observations, errors, and client lifetime.
+- Protocol contracts check wire details the SDK hides, with independent examples
+  so a shared encoding bug cannot make both sides agree on the wrong behavior.
+- Host CLI contracts exercise real commands, artifacts, and process lifetime.
+- Browser scenarios cover packaging, rendering, and development reload behavior.
 
-- **Headless journeys** run realistic multi-step client workflows through the native
-  SDK. The script is the client application consumer, with no renderer or binding.
-  Completion conditions and a runner deadline turn failed or stalled steps into
-  an unsuccessful run; journeys do not inspect runtime internals.
-- **Client SDK contracts** exercise operations, subscriptions, state updates, and
-  observable lifecycle behavior through the SDK that applications use.
-- **Protocol contracts** exercise wire behavior the SDK hides: envelopes, malformed
-  input, status and close codes, correlation, and compatibility negotiation.
-- **Host CLI contracts** exercise launch, replacement, and shutdown through the real
-  executable. Process lifecycle is an observable interface too.
+Keep one primary assertion per promise. Reuse scenarios across client adapters;
+put construction and cleanup in adapters. Tests should assert observable results,
+not private state, SQL text, helper calls, or incidental event ordering.
 
-Keep one primary assertion of each promise. A raw-protocol case complements an SDK
-case only when it proves something different. A Rust function being public does
-not make it an application contract. Tests should not import dispatchers,
-controllers, private stores, or call `Provider::invoke` to retest client behavior.
+Before adding a lower-level contract, name the promise the consumer interfaces
+cannot express. Store's coherent cross-namespace reads and atomic guarded writes
+justify its shared Memory/SQLite contract. Calling `Provider::invoke` merely to
+retest application behavior does not.
 
-Use a platform-interface contract only for a promise that cannot be expressed at
-these consumer interfaces. State the uncovered promise before adding it. Keep its
-assertions at the replaceable interface, including injected failures or time when
-needed. Do not infer a need for tests from a file, function, branch, or coverage gap.
+Fixtures own temporary data and processes, use ephemeral ports, and clean up on
+failure. Synchronize on readiness or completion; timeouts bound stalled tests.
+Development-port replacement belongs only in the runner's lifecycle tests.
 
-## What assertions may depend on
-
-Assert returned values, public errors, authorized delivery, documented ordering,
-and externally visible lifecycle outcomes. Do not assert helper calls, allocation
-counts, queue contents, SQL text, incidental event batching, or private layouts.
-Use the same scenario against alternate implementations through their launchers or
-client adapters; avoid cloning suites per platform or making every possible matrix
-combination a required run.
-
-Keep expected outcomes independent of the implementation under test. Retain a
-small set of wire examples even if the server and SDK eventually share Rust code.
-That prevents the two sides agreeing on the same mistaken encoding.
-
-Regression tests reproduce the reported behavior at its owning consumer interface.
-Use explicit readiness/completion signals; timeouts bound a stalled test rather
-than define correctness. Fixtures own their processes and release them in cleanup.
-Network tests use OS-assigned ports. Development-port replacement is reserved for
-the development runner and its lifecycle contract.
-
-## Current checks
-
-`tests/store/contract.rs` checks the application-facing local Store contract through
-Memory and SQLite adapters in `tests/adapters/store.rs`. This lower seam expresses
-promises absent from Identity's SDK: coherent cross-namespace reads, atomic guarded
-writes, uniqueness, foreign keys, rollback, and advisory cache versus authoritative
-reads. SQLite contention uses separate connections to the same fixture database.
-
-`tests/protocol/carriers.test.ts` uses an independent Protocol provider to verify
-one operation exposed through both HTTP and WebSocket, and accepted continuation
-completion after its HTTP observer disconnects. `tests/protocol/migration.test.ts`
-starts Authy with an independently declared legacy database and checks old cookies,
-password login, uniqueness, and restart through published operations. All fixtures
-own their temporary databases, ports, and processes.
-
-`tests/protocol/passport-policy.test.ts` verifies normalized HTTPS cookie behavior
-and login after a cached negative lookup followed by enrollment. Its cache adapter
-uses Authy's native composition with MemoryCache; the same operation assertions run
-with the packaged NoCache selection. Store registration contracts also reject
-case-only namespace aliases and check existing data after failed registration.
-
-The structural CLI contract verifies that a `contract` package cannot depend on a
-portable provider. Existing portability gates cover all new contract crates.
-
-Authy's password/session contract runs through native and browser SDK adapters in
-`tests/browser/identity-sdk.spec.ts`, using the same assertions in
-`tests/sdk/identity.contract.ts`. The native line-protocol bridge owns construction
-only. The browser adapter loads the real WASM facade without a renderer.
-`tests/protocol/authy.test.ts` owns cookie/envelope/sequence assertions and persistent
-session authority across a restart. `tests/browser/authy.spec.ts` exercises the real
-UI against both packaged files and the development WebSocket proxy.
-`scripts/authy-reference.ts` checks the TypeScript SDK against the Rust host.
-`tests/sdk/identity-recovery.test.ts` runs shared native/browser recovery assertions
-against a real Authy authority through a controlled HTTP carrier. It checks HTTP
-Build replacement, malformed/uncorrelated mutation outcomes, and pending-command
-close through the public SDK. Fixture disposal is separate from SDK close so the
-final closed observation remains inspectable.
-
-Build Authy with `./bin/snap build apps/authy` and the SDK adapter with
-`cargo build -p authy-native --examples` before running these cases individually.
-`snap check apps/authy` runs its project checks; `./bin/check` includes the reference
-interoperability case and the complete repository suite. Authy fixtures own
-temporary databases under `/tmp/opencode` and ephemeral listeners.
-
-```text
-tests/
-  journeys/       Native SDK scripts, driven by platform runners
-  sdk/            Public SDK contracts and controlled failure scenarios
-  protocol/       Wire promises the SDK hides
-  browser/        Packaged application, bindings, and rendered observations
-  adapters/       Process ownership, client construction, controlled wire peers
-  cli/            Local snap command contracts against independent project fixtures
-```
-
-`tests/journeys/healthy.rs` waits for a successful observation through the native
-client SDK. Its runner in `apps/healthy/native/examples/healthy-journey.rs` owns the
-runtime, configuration, deadline, and cleanup. It can run against a development
-server independently of the test suite.
-
-`tests/sdk/healthy.contract.ts` contains the reusable health assertion. The reference
-TypeScript adapter, native Rust process bridge, and Rust/WASM facade all run it.
-The bridge only translates calls/results; it contains no assertions.
-
-`tests/sdk/native.rs`, compiled by the `healthy-native` package, runs Rust SDK contracts
-directly against a controlled HTTP peer: error propagation, correlation, concurrency,
-cancellation, deadline expiry,
-and resident-client failure/recovery. `tests/sdk/browser-runtime.test.ts` checks
-the browser SDK's corresponding query behavior and the binding-specific promises
-of immutable snapshot identity and subscription cleanup. Neither suite uses React.
-Both exercise real IO adapters; no simulated runtime is claimed by these tests.
-
-`tests/protocol/healthy.contract.ts` checks independent wire examples, malformed
-input, methods, routes, and Build discovery. `scripts/healthy-smoke.ts` runs this
-contract, all three health SDK adapters, and the native journey. Its default
-launcher owns a Rust process on an ephemeral port. Set
-`SNAP_BASE_URL` to run the same assertions against an already-running compatible
-server. Set `SNAP_REFERENCE` to select the TypeScript checkout, defaulting to
-`~/code/bod/snap` with dependencies installed.
-
-`tests/browser/healthy.spec.ts` launches `dist/healthy` with no asset-path override.
-Chromium loads the real HTML/JS/WASM and verifies OK, failed polling, history, and
-recovery. This catches packaging and rendering faults beyond the headless SDK
-contracts. Playwright interception supplies a network failure at the browser edge.
-
-`tests/cli/dev.py` runs the real Rust `snap` executable against temporary projects.
-It covers discovery from nested/explicit directories, invalid nearest config,
-literal hook arguments/order/cwd, failure exit codes, Cargo target selection, and
-signal cleanup of hook descendants. Its small Rust fixture is an independent CLI
-consumer, not an internal runtime test. Run through mise if Cargo is not on PATH.
-The fixture launcher requests shutdown on timeout before forced session cleanup;
-stalled-command checks verify both paths release their listeners. A wrapper test
-also verifies mise-only Cargo availability, when mise and Bun are installed and
-Cargo is absent from the system default PATH.
-Startup contracts also cover a host that closes stderr and stalls, a healthy HTTP
-host with closed stderr, and an early-exiting host whose descendant retains stderr.
-Snap must enforce its readiness deadline independently of all three logging cases.
-Port-zero fixtures verify Snap passes a concrete port to the child. The lifecycle
-smoke test reuses both prescribed addresses to verify replacement and cleanup.
-The watcher CLI contract edits a dependency's separate workspace manifest and
-creates an initially absent ancestor Cargo config. HTTP responses expose the
-changed compiled values, without a Rust source edit to trigger recovery.
-
-`tests/cli/build.py` uses the same process fixture for the build command. It runs
-packaged native binaries and an independent generated WASM/browser application to
-verify debug/release profiles, directory selection, example targets, literal hook
-ordering, failure recovery, listener preservation, concurrent-build rejection, and
-interruption cleanup. A relocated native package runs after its sources and Cargo
-outputs are removed. These are CLI/output contracts, not Rust helper tests.
-
-`tests/cli/check.py` verifies selected-project checks, artifact prerequisites, literal
-arguments, sibling isolation, failure/missing-tool reporting, and descendant cleanup.
-`snap check apps/healthy` runs application Rust, TypeScript, SDK, and packaged browser
-checks without the reference checkout. The full repository gate adds CLI and
-cross-implementation compatibility assertions.
-
-`tests/cli/architecture.py` verifies actionable errors for forbidden dependencies,
-including feature/target-specific and development edges, missing role declarations,
-and automatic portability checking of a newly declared workspace package. Assertions
-use `snap check --structure-only`; they do not import the metadata implementation.
-Project checks include warnings-denied Rustdoc. The repository gate also checks all
-workspace documentation and pinned dependency tools. `bin/check-deps --audit` opts
-into network advisory checks separately.
-
-`scripts/dev-smoke.py` starts two real `snap dev` processes from Healthy's root on
-the same dynamically selected port. It proves replacement, HTML/WASM serving, and
-that terminating the CLI releases the listener. Both scripts use Python's standard
-library. `tests/browser/dev.spec.ts` verifies the development assets boot in Chromium;
-the release browser test separately verifies portable artifact packaging and recovery.
-
-`tests/browser/hmr.spec.ts` edits an owned copy of Healthy's renderer/CSS. It checks
-Fast Refresh preserves component state, page identity, Rust sample history, and Build
-identity. CSS updates without navigation. Shutdown checks both public frontend and
-private backend listeners. Fixture sources and outputs are removed afterward.
-
-`tests/browser/rust-watch.spec.ts` owns a copy of Healthy's Rust application/native/
-WASM sources. It proves native restart, WASM-only reload without native restart,
-shared dependency rebuilding, failed-compilation retention, edits during a gated
-build, startup-failure rollback, configuration recovery, and interruption during a
-manifest-triggered rebuild. Assertions use rendered bindings, HTTP Build discovery,
-CLI diagnostics and process lifecycle. Generated output never drives source edits.
-
-`tests/browser/dev-outputs.spec.ts` keeps dev live while a separate `snap build`
-publishes a different generated binding ABI, selected by a command-local build-script
-environment variable. The packaged browser observes its numeric result while fresh
-dev pages retain their string result. Subsequent WASM and native edits still reload
-correctly. This covers initial and watched dev output ownership through the CLI and
-real browser, including JS/WASM pairing rather than identical-file publication.
-The facade uses an extensionless binding import to cover ordinary module resolution
-after redirection into private outputs.
+## Run checks
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-snap check apps/healthy --structure-only --workspace
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-./bin/check-deps
-cargo build -p snap-native --examples
-cargo build -p healthy-native --bins --examples
-cargo build -p snap-cli
-python3 tests/cli/dev.py
-python3 tests/cli/build.py
-python3 tests/cli/check.py
-python3 tests/cli/architecture.py
-cargo test -p healthy-native --test client-contract
-./bin/build
-bun scripts/check-client.ts
-bun test tests/sdk/browser-runtime.test.ts
-bun scripts/healthy-smoke.ts
-bunx playwright test
-python3 scripts/dev-smoke.py
+# Full repository gate; bin/check owns the command sequence:
+mise exec -- ./bin/check
+
+# Selected application's gate:
+mise exec -- ./bin/snap check apps/authy
+mise exec -- ./bin/snap check apps/healthy
+
+# Required after package/dependency changes:
+mise exec -- ./bin/snap check apps/healthy --structure-only --workspace
+
+# Optional network-backed dependency advisory check:
+mise exec -- ./bin/check-deps --audit
 ```
 
-Install Chromium once with `bunx playwright install chromium`. If the system's
-temporary directory is quota-limited, set `TMPDIR` to a writable build directory.
-`./bin/check` runs these gates in order. It expects Chromium and the reference
-checkout to be installed; ordinary builds and development do not use the reference.
+Install Chromium once with `bunx playwright install chromium`. The full gate also
+requires `~/code/bod/snap` with its TypeScript dependencies installed. Ordinary
+builds and application checks do not require that reference checkout.
+`SNAP_REFERENCE` selects another checkout for `scripts/healthy-smoke.ts`.
 
-Use `mise exec -- cargo ...` if mise is not activated in the shell. During iteration,
-run the check for the changed interface. At a milestone run the relevant gates
-once; repeat only after relevant changes or failures. Compiler/lint/portability
-checks enforce structure without coupling behavior tests to implementation.
+During iteration, run the check for the changed interface. Test entry points live
+under `tests/{sdk,protocol,browser,cli,store,journeys}`. Consult `bin/check` and the
+app's `snap.toml` for build prerequisites and invocation details instead of copying
+their command sequences here. Run the relevant full gate at a milestone; repeat
+after relevant changes or failures.
+
+Formatting, Clippy, Rustdoc, dependency policy, and structural checks enforce
+source constraints separately from behavior tests.
