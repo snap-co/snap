@@ -7,7 +7,7 @@ test("packaged Healthy renders Rust observations and recovers after a failed pol
 }) => {
   // No asset path injection: the packaged binary must find its adjacent web directory.
   const server = await startServer({
-    executable: process.env.SNAP_CHECK_EXECUTABLE ?? resolve("dist/healthy"),
+    executable: process.env.SNAP_CHECK_EXECUTABLE ?? resolve("tests/fixtures/healthy/.snap/build/release/healthy"),
   });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

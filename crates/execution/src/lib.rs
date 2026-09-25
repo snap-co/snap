@@ -9,7 +9,7 @@ extern crate alloc;
 mod executor;
 mod program;
 
-pub use executor::{Event, Executor, Scope, Snapshot, Ticket};
+pub use executor::{Event, Executor, Inspection, JobView, Scope, Snapshot, Ticket};
 pub use program::{
     Admission, Attempt, Call, Error, Inputs, Operation, Outcome, Program, Stop, Validator, View,
     WorkingSet,

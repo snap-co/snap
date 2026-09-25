@@ -11,7 +11,7 @@ if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
 "${cargo_cmd[@]}" build -p healthy-native --bins --examples
 "${cargo_cmd[@]}" build -p authy-native --bins --examples
 "${cargo_cmd[@]}" build -p chatty-native
-./bin/snap check apps/healthy --structure-only --workspace
+./bin/snap check apps/testy --structure-only --workspace
 RUSTDOCFLAGS="-D warnings" "${cargo_cmd[@]}" doc --workspace --no-deps
 ./bin/check-deps
 python3 tests/cli/dev.py
@@ -22,7 +22,7 @@ python3 tests/cli/architecture.py
 "${cargo_cmd[@]}" test -p snap-memory -p authy
 "${cargo_cmd[@]}" test -p snap-native --test store-contract
 "${cargo_cmd[@]}" test -p snap-workers --lib
-./bin/build
+./bin/snap build tests/fixtures/healthy --release
 ./bin/snap build apps/authy
 bun scripts/build-chatty.ts
 bun scripts/check-client.ts

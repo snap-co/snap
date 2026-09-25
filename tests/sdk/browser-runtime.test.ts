@@ -1,11 +1,11 @@
 // SDK contracts exercised through bindings, without React or a DOM.
 import { test, expect } from "bun:test";
-import { createClient, startHealthy } from "../../apps/healthy/client";
+import { createClient, startHealthy } from "../fixtures/healthy/client";
 import { deadline } from "../adapters/server";
 
 const wasm = await Bun.file(
   new URL(
-    "../../apps/healthy/.snap/bindings/healthy_wasm_bg.wasm",
+    "../fixtures/healthy/.snap/bindings/healthy_wasm_bg.wasm",
     import.meta.url,
   ),
 ).arrayBuffer();

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+bun scripts/build-testy.ts
+bunx tsc -p apps/testy/web/tsconfig.json
+mise exec -- cargo build -p testy-local --no-default-features --features web --bin testy-web
+bunx playwright test --config apps/testy/tests/playwright.config.ts

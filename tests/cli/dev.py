@@ -152,9 +152,9 @@ fn main() {
         (self.root / "index.html").write_text('<script type="module" src="/main.js"></script>')
         (self.root / "snap.toml").write_text(self.config + '\n[web]\n' +
             f'package-dir={json.dumps(str(ROOT))}\napplication="app.ts"\nhost="host.ts"\nhtml="index.html"\n' +
-            f'wasm-manifest={json.dumps(str(ROOT / "apps/healthy/wasm/Cargo.toml"))}\nbindings=".snap/bindings"\n')
+            f'wasm-manifest={json.dumps(str(ROOT / "tests/fixtures/healthy/wasm/Cargo.toml"))}\nbindings=".snap/bindings"\n')
         self.env["CARGO_TARGET_DIR"] = str(ROOT / "target")
-        tools = sorted((ROOT / "apps/healthy/.snap/tools").glob("wasm-bindgen-*/bin"))
+        tools = sorted((ROOT / "tests/fixtures/healthy/.snap/tools").glob("wasm-bindgen-*/bin"))
         self.env["PATH"] = os.pathsep.join([*(str(path) for path in tools), self.env["PATH"]])
 
     def test_web_host_startup_failure_preserves_exit_code(self):
@@ -356,7 +356,7 @@ HTTPServer((host, int(port)), Handler).serve_forever()
                "SNAP_ADDR": "127.0.0.1:0", "SNAP_BACKEND_ADDR": "127.0.0.1:0"}
         env.pop("CARGO_TARGET_DIR", None)
         self.assertIsNone(shutil.which("cargo", path=env["PATH"]))
-        process = subprocess.Popen([str(ROOT / "bin/dev")], cwd=self.root, env=env,
+        process = subprocess.Popen([str(ROOT / "bin/snap"), "dev", str(ROOT / "tests/fixtures/healthy")], cwd=self.root, env=env,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                    start_new_session=True)
         try:

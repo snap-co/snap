@@ -10,6 +10,16 @@ impl<C: Channel> Client<C> {
             transport: snap_transport::client::Client::new(channel),
         }
     }
+    pub async fn health(&mut self) -> Result<Value, Error> {
+        let value = self
+            .transport
+            .request(None, "health.up", Value::Null)
+            .await?;
+        if value != json!({"status": "OK"}) {
+            return Err(Error::InvalidOutput);
+        }
+        Ok(value)
+    }
     /// Bootstrap is deliberately explicit: anonymous credential acquisition,
     /// authenticated attachment, then initialization of connection-owned state.
     pub async fn start(&mut self, client_id: &str) -> Result<(), Error> {

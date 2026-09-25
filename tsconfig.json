@@ -13,9 +13,9 @@
   "include": [
     "clients/**/*.ts",
     "clients/**/*.tsx",
-    "apps/healthy/web/**/*.tsx",
-    "apps/healthy/web/**/*.ts",
-    "apps/healthy/client.ts",
+    "tests/fixtures/healthy/web/**/*.tsx",
+    "tests/fixtures/healthy/web/**/*.ts",
+    "tests/fixtures/healthy/client.ts",
     "apps/authy/web/**/*.tsx",
     "apps/authy/client.ts",
     "apps/chatty/web/**/*.tsx",

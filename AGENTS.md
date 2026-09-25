@@ -9,7 +9,7 @@ This is a local architecture experiment. Work within the selected consumer flow.
 - Before changing authentication, session recovery, or Authy's persistence/wire
   behavior, read [apps/authy/CONTRACT.md](apps/authy/CONTRACT.md).
 - After package/dependency changes, run
-  `mise exec -- ./bin/snap check apps/healthy --structure-only --workspace`.
+  `mise exec -- ./bin/snap check apps/testy --structure-only --workspace`.
 - Keep portable behavior `no_std` with `alloc`; hosts own execution and external IO.
   Document non-obvious guarantees beside the interface that promises them.
 - Update the existing authoritative document when a decision or operating procedure

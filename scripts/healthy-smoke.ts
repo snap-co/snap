@@ -1,4 +1,4 @@
-import { createClient } from "../apps/healthy/client";
+import { createClient } from "../tests/fixtures/healthy/client";
 import { healthyContract } from "../tests/sdk/healthy.contract";
 import { referenceClient } from "../tests/adapters/reference-client";
 import { nativeClient } from "../tests/adapters/native-client";
@@ -26,7 +26,7 @@ try {
           build: build.build,
           wasm: await Bun.file(
             new URL(
-              "../apps/healthy/.snap/bindings/healthy_wasm_bg.wasm",
+              "../tests/fixtures/healthy/.snap/bindings/healthy_wasm_bg.wasm",
               import.meta.url,
             ),
           ).arrayBuffer(),

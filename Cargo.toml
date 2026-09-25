@@ -5,6 +5,7 @@ members = [
     "platforms/local",
     "apps/testy",
     "apps/testy/local",
+    "apps/testy/wasm",
     "crates/protocol",
     "crates/http",
     "crates/oidc",
@@ -22,11 +23,11 @@ members = [
     "platforms/browser",
     "platforms/web",
     "platforms/workers",
-    "apps/healthy/workers",
+    "tests/fixtures/healthy/workers",
     "tests/workers",
-    "apps/healthy",
-    "apps/healthy/native",
-    "apps/healthy/wasm",
+    "tests/fixtures/healthy",
+    "tests/fixtures/healthy/native",
+    "tests/fixtures/healthy/wasm",
     "apps/authy",
     "apps/authy/native",
     "apps/authy/wasm",
@@ -65,7 +66,7 @@ snap-native = { path = "platforms/native" }
 snap-memory = { path = "platforms/memory" }
 snap-client-wasm = { path = "bindings/wasm" }
 wasm-bindgen = "=0.2.128"
-healthy = { path = "apps/healthy" }
+healthy = { path = "tests/fixtures/healthy" }
 authy = { path = "apps/authy" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

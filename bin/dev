@@ -2,4 +2,4 @@
 # Checkout convenience. The installed `snap dev` needs no wrapper.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-exec "$root/bin/snap" dev "$root/apps/healthy" "$@"
+exec bash "$root/bin/testy" "$@"

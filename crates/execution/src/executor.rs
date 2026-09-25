@@ -2,12 +2,49 @@ use crate::{Admission, Attempt, Call, Error, Inputs, Outcome, Program, Value, Vi
 use alloc::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     string::String,
+    vec::Vec,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Scope(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ticket(u64);
+impl Ticket {
+    /// Host observation ID, never an authority to submit or resume work.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
+/// Read-only host inspection. Values describe committed state and queued inputs;
+/// an attempt's scratch data never survives long enough to appear here.
+pub struct Inspection<'a> {
+    pub states: &'a BTreeMap<Scope, Value>,
+    pub active: Option<JobView<'a>>,
+    pub queued: Vec<JobView<'a>>,
+    pub releases: usize,
+    pub paused: bool,
+}
+pub struct JobView<'a> {
+    pub ticket: Ticket,
+    pub scope: Option<Scope>,
+    pub call: &'a Call,
+    pub accepted: bool,
+    pub waiting: Option<&'a str>,
+    pub inputs: &'a BTreeMap<String, Value>,
+}
+impl Job {
+    fn view(&self) -> JobView<'_> {
+        JobView {
+            ticket: self.ticket,
+            scope: self.scope,
+            call: &self.call,
+            accepted: self.accepted,
+            waiting: self.waiting.as_deref(),
+            inputs: &self.inputs,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -99,6 +136,26 @@ impl<P: Program> Executor<P> {
     }
     pub fn state(&self, scope: Scope) -> Option<&Value> {
         self.states.get(&scope)
+    }
+    pub fn inspect(&self) -> Inspection<'_> {
+        Inspection {
+            states: &self.states,
+            active: self.active.as_ref().map(Job::view),
+            queued: self
+                .queue
+                .iter()
+                .filter_map(|entry| match entry {
+                    Queued::Run(job) => Some(job.view()),
+                    Queued::Release(_) => None,
+                })
+                .collect(),
+            releases: self
+                .queue
+                .iter()
+                .filter(|entry| matches!(entry, Queued::Release(_)))
+                .count(),
+            paused: self.paused,
+        }
     }
     pub fn submit(&mut self, scope: Option<Scope>, call: Call) -> Result<Ticket, Error> {
         if self.paused {

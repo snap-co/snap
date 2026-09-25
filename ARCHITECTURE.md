@@ -19,6 +19,9 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `apps/testy` defines the calculator, operation contracts and SDK.
 - `apps/testy/local` owns the executable entry points and selects the platform,
   authority, application implementation and host input resolver.
+- `apps/testy/wasm` binds the same Rust SDK to browser-owned WebSocket IO.
+- `apps/testy/web` owns the launcher, Healthy and calculator screens, and the
+  development execution desk. Routing into `/calc` bootstraps the SDK.
 
 Transport and execution do not depend on each other or on the earlier runtime,
 Identity, Passport, Store or Cache. Testy selects both capabilities. Native IO is
@@ -26,7 +29,7 @@ feature-selected; memory builds do not compile Tokio, and native-only builds do
 not select the memory executor. A platform is not owned by transport. Adding a
 capability must not make it an unconditional dependency of other capabilities.
 
-The earlier Authy/Chatty/Healthy implementation uses a different execution model.
+The earlier Authy/Chatty implementation and `tests/fixtures/healthy` use a different execution model.
 Its reference is [legacy architecture](docs/legacy-architecture.md).
 
 ## Transport and connection lifetime
@@ -53,9 +56,12 @@ replay commands after IO failure or provide cross-reconnect result recovery. Its
 client must replace an interrupted native stream. Dropping a memory client future
 after submission discards observation interest, not host-owned work.
 
-The current native adapter uses bounded length-prefixed JSON over TCP, with one
-invocation at a time per physical connection. It is a local fixture. Workers,
-WebSocket, TLS adapters and migration of the earlier hosts are subsequent work.
+The native adapter uses bounded length-prefixed JSON over TCP. The web development
+host carries the same commands and observations as JSON text over WebSocket. Both
+permit one outstanding command per physical connection. WebSocket messages are
+bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preserving
+64-bit integers. Rust SDK results cross the UI binding as decimal strings.
+Workers, TLS deployment and migration of the earlier hosts are subsequent work.
 
 ## Application interface and global gate
 
@@ -121,6 +127,10 @@ must supply captured inputs separately.
 
 ## Testy calculator
 
+The launcher links to `/healthy` and `/calc`. `health.up` is an anonymous stateless
+application operation returning `{"status":"OK"}`. Both screens use the Rust SDK
+and the same WebSocket host. A per-tab client ID survives reload in session storage.
+
 `calc.start` is an application operation. The SDK calls it anonymously for a
 constant fixture bearer, connects with a client ID, then calls it on the connection
 to initialize the calculator. Existing calculators are preserved. Interrupted
@@ -134,6 +144,29 @@ Failed calculations leave accumulator/history untouched. History holds at most
 `calc.add_checked` writes its private accumulator and history before reading
 `testy.calculator.ceiling`. A missing ceiling returns Need and discards those edits.
 A supplied ceiling below the proposed accumulator fails with `AboveCeiling`.
+
+## Development observation and control
+
+`platforms/local::development::Development` owns stepping policy, response delivery,
+a bounded observation trace and an idle-state snapshot. Its read-only inspection
+reports committed records, the active operation, queued calls and requested inputs.
+It never exposes references that can mutate live state. Manual mode stops host
+stepping while continuing to admit submissions to the queue. The after-acceptance
+breakpoint queues ACK and stops before the handler's first attempt. Each step
+performs one executor observation; pending dependency reads require supply/failure.
+
+The web host exposes these controls at `/__dev` independently of the application
+gate, so tools can inspect and resume held requests. The UI uses that same HTTP
+interface. Snapshots, restoration and program selection retain their idle-gate
+requirements. The trace and delivered client results are not rewound. Replaying
+uses a fresh invocation ID after restoring records; it is not transport redelivery.
+`standard` and `double-add` are compiled variants, not dynamic code loading.
+
+The host binds loopback only and rejects mismatched Host and browser Origin headers
+on transport/control routes. These are local development controls, with full access
+to fixture state. HTTP-owned tool peers require explicit drop; WebSocket peers
+detach when the socket closes. The host ticks connection expiry even while held.
+See [development controls](docs/testy-development.md) for the executable interface.
 
 ## Dependency enforcement
 

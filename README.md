@@ -21,6 +21,28 @@ and Testy's library/composition. See [TESTING.md](TESTING.md) for narrower comma
 
 ## Run Testy
 
+Testy is a collection of mini-apps. The launcher at `/` opens Healthy at `/healthy`
+or the transport-backed calculator at `/calc`. Entering `/calc` calls `calc.start`;
+reload and reconnect retain the tab's calculator until close or expiry.
+
+For the browser host, install Bun dependencies and the browser Wasm target once:
+
+```sh
+bun install
+mise exec -- rustup target add wasm32-unknown-unknown
+./bin/dev
+```
+
+Open `http://127.0.0.1:3848`. The runner builds the Rust SDK binding and web assets,
+then starts the host. Re-run it after source changes. `TESTY_WEB_ADDR` overrides the
+loopback address; `TESTY_WEB_DIR` overrides assets. `bin/build` creates `dist/testy-web`
+and adjacent assets for the same local development host.
+
+The execution desk exposes hold/run, an after-acceptance breakpoint, single steps,
+dependency supply/failure, snapshots and compiled program selection. Agents use the
+same controls over HTTP. See [development controls](docs/testy-development.md) for
+the wire interface and a complete replay example.
+
 ```sh
 # Rollback, serialized commits, code replacement and snapshot replay:
 mise exec -- cargo run -p testy-local --bin testy-execution-demo
@@ -62,8 +84,11 @@ Cache. See [ARCHITECTURE.md](ARCHITECTURE.md) for ownership and execution guaran
 
 ## Earlier integrations
 
-Healthy, Authy and Chatty remain available by explicit package selection. Their
+Authy and Chatty remain available by explicit package selection. Healthy's former
+implementation is retained at `tests/fixtures/healthy` for legacy CLI and carrier
+contracts; its active health operation now belongs to Testy. The older apps'
 development commands, CLI configuration, browser/Workers setup and full gate are
 documented in [legacy development](docs/legacy-development.md). Their earlier
 future-based execution model is in [legacy architecture](docs/legacy-architecture.md).
-The active Testy flow uses Cargo directly.
+The active Testy flow uses Cargo and `bin/dev`. Its `snap.toml` supports structural
+checks; the older `snap dev/build` workflow remains specific to legacy integrations.

@@ -6,7 +6,7 @@ use snap_execution::{
 pub const CEILING: &str = "testy.calculator.ceiling";
 
 pub struct App {
-    operations: [Operation; 7],
+    operations: [Operation; 8],
     add: fn(i64, i64) -> Option<i64>,
 }
 impl Default for App {
@@ -20,6 +20,13 @@ impl App {
     pub fn with_add(add: fn(i64, i64) -> Option<i64>) -> Self {
         Self {
             operations: [
+                Operation {
+                    key: "health.up",
+                    identity_required: false,
+                    input: Value::is_null,
+                    output: |value| *value == json!({"status": "OK"}),
+                    error: declared_error,
+                },
                 Operation {
                     key: "calc.start",
                     identity_required: false,
@@ -44,6 +51,9 @@ impl App {
         }
     }
     fn handle(&self, call: &Call, work: &mut WorkingSet<'_>) -> Result<Value, Stop> {
+        if call.operation == "health.up" {
+            return Ok(json!({"status": "OK"}));
+        }
         if call.operation == "calc.start" {
             if work.connected {
                 if !work.state.is_null() {
@@ -108,7 +118,9 @@ impl Program for App {
         &self.operations
     }
     fn admit(&self, call: &Call, view: View<'_>) -> Admission {
-        if call.operation != "calc.start" && (!view.connected || view.state.is_null()) {
+        if !matches!(call.operation.as_str(), "calc.start" | "health.up")
+            && (!view.connected || view.state.is_null())
+        {
             Admission::Reject(failure("NotStarted"))
         } else {
             Admission::Ready

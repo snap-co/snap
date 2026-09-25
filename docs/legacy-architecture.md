@@ -1,6 +1,7 @@
 # Legacy integration architecture
 
-This reference describes the existing Authy, Chatty and Healthy implementation.
+This reference describes Authy, Chatty and the retired Healthy implementation,
+retained under `tests/fixtures/healthy` for legacy tooling/carrier contracts.
 The active Testy design is in [ARCHITECTURE.md](../ARCHITECTURE.md). Setup and
 verification commands for these earlier apps are in [legacy development](legacy-development.md).
 

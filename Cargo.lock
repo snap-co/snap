@@ -2129,10 +2129,14 @@ dependencies = [
 name = "snap-platform-local"
 version = "0.0.0"
 dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
  "serde_json",
  "snap-execution",
  "snap-transport",
  "tokio",
+ "tower-http",
 ]
 
 [[package]]
@@ -2341,6 +2345,18 @@ dependencies = [
  "snap-transport",
  "testy",
  "tokio",
+]
+
+[[package]]
+name = "testy-wasm"
+version = "0.0.0"
+dependencies = [
+ "js-sys",
+ "serde_json",
+ "snap-transport",
+ "testy",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

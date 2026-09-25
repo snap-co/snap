@@ -22,7 +22,7 @@ doc = false
 
 [[test]]
 name = "client-contract"
-path = "../../../tests/sdk/native.rs"
+path = "../../../sdk/native.rs"
 
 [lints]
 workspace = true

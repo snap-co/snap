@@ -1,4 +1,4 @@
-//! Application composition only. The executable belongs to the selected host.
+//! Legacy CLI/browser fixture. Testy's /healthy is the active health application.
 #![no_std]
 
 extern crate alloc;

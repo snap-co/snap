@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 /** Real local workerd, with fixture-owned persistence and no remote bindings. */
 export async function workersServer(application: "authy" | "healthy" | "contract" | "chatty", vars: Record<string, string> = {}, selectedPort?: number, authyService?: string) {
   const root = resolve(import.meta.dirname, "../..");
-  const cwd = resolve(root, application === "contract" ? "tests/workers" : `apps/${application}/workers`);
+  const cwd = resolve(root, application === "contract" ? "tests/workers" : application === "healthy" ? "tests/fixtures/healthy/workers" : `apps/${application}/workers`);
   const directory = await mkdtemp("/tmp/opencode/snap-workers-");
   const workerName = `fixture-${application}-${crypto.randomUUID()}`;
   let configuration: string | undefined;

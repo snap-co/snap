@@ -1,8 +1,12 @@
 //! Application-owned local platform. Transport and execution are selected here;
 //! neither portable capability depends on the other. Hosts own all IO and state.
+#[cfg(feature = "web")]
+pub mod development;
 pub mod memory;
 #[cfg(feature = "native")]
 pub mod native;
+#[cfg(feature = "web")]
+pub mod web;
 
 use snap_execution::{Call, Executor, Program, Scope, Ticket};
 use snap_transport::{
@@ -155,6 +159,18 @@ impl<P: Program, R: Authority> Platform<P, R> {
     }
     pub fn pause(&mut self) {
         self.execution.pause();
+    }
+    pub fn inspect(&self) -> snap_execution::Inspection<'_> {
+        self.execution.inspect()
+    }
+    pub fn snapshot(&self) -> Result<snap_execution::Snapshot, snap_execution::Error> {
+        self.execution.snapshot()
+    }
+    pub fn restore(
+        &mut self,
+        snapshot: &snap_execution::Snapshot,
+    ) -> Result<(), snap_execution::Error> {
+        self.execution.restore(snapshot)
     }
     pub fn resume(&mut self) {
         self.execution.resume();

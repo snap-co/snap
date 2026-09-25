@@ -12,5 +12,5 @@ description = "Build this checkout's snap executable"
 run = "cargo build --target-dir target -p snap-cli"
 
 [tasks.dev]
-description = "Build Healthy, replace the selected port's listener, and run"
+description = "Build Testy's browser SDK and start its local development host"
 run = "exec ./bin/dev"

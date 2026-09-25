@@ -7,12 +7,17 @@ publish.workspace = true
 [features]
 default = []
 native = ["dep:tokio", "dep:serde_json"]
+web = ["dep:tokio", "dep:serde_json", "dep:serde", "dep:axum", "dep:tower-http", "dep:futures-util"]
 
 [dependencies]
 snap-execution = { path = "../../crates/execution" }
 snap-transport = { path = "../../crates/transport" }
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"], optional = true }
 serde_json = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [lints]
 workspace = true

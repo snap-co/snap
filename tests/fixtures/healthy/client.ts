@@ -9,9 +9,9 @@ import {
   type Client,
   type ObservedClient,
   type Options,
-} from "../../clients/typescript/src";
+} from "../../../clients/typescript/src";
 
-export { ClientError, type Client, type Options } from "../../clients/typescript/src";
+export { ClientError, type Client, type Options } from "../../../clients/typescript/src";
 
 export interface Snapshot {
   readonly status: "loading" | "ok" | "error";

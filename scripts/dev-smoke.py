@@ -20,7 +20,7 @@ children = []
 def start(address, backend="127.0.0.1:0"):
     process = subprocess.Popen(
         COMMAND,
-        cwd=ROOT / "apps/healthy",
+        cwd=ROOT / "tests/fixtures/healthy",
         env={**os.environ, "SNAP_ADDR": address, "SNAP_BACKEND_ADDR": backend},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,

@@ -41,7 +41,7 @@ bindings=".snap/bindings"
         # Reuse dependency compilation and any installed real binding tool. The CLI
         # still discovers the fixture's artifacts and checks the tool's version.
         self.env["CARGO_TARGET_DIR"] = str(ROOT / "target")
-        tools = sorted((ROOT / "apps/healthy/.snap/tools").glob("wasm-bindgen-*/bin"))
+        tools = sorted((ROOT / "tests/fixtures/healthy/.snap/tools").glob("wasm-bindgen-*/bin"))
         self.env["PATH"] = os.pathsep.join([*(str(path) for path in tools), self.env["PATH"]])
         for profile, flags, expected in [
             ("debug", [], {"debug": True, "mode": "development"}),

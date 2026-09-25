@@ -1,0 +1,484 @@
+import React, { useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import init, { Client } from "../.snap/web/bindings/testy_wasm.js";
+import { WebChannel } from "./channel";
+import "./style.css";
+
+type Calculator = {
+  accumulator: string;
+  history: {
+    operation: string;
+    operand: string;
+    before: string;
+    after: string;
+  }[];
+};
+type Host = {
+  manual: boolean;
+  breakpoint: boolean;
+  program: string;
+  snapshot: boolean;
+  active: {
+    ticket: number;
+    operation: string;
+    accepted: boolean;
+    waiting: string | null;
+  } | null;
+  queued: unknown[];
+  states: unknown[];
+  trace: unknown[];
+};
+async function control(action?: object): Promise<Host> {
+  const response = await fetch(
+    "/__dev",
+    action
+      ? {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(action),
+        }
+      : undefined,
+  );
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error ?? response.statusText);
+  return value;
+}
+function Development() {
+  const [host, setHost] = useState<Host>();
+  const [error, setError] = useState("");
+  const [ceiling, setCeiling] = useState("1000");
+  useEffect(() => {
+    let stopped = false;
+    async function refresh() {
+      try {
+        const next = await control();
+        if (!stopped) setHost(next);
+      } catch (e) {
+        if (!stopped) setError(String(e));
+      }
+    }
+    void refresh();
+    const timer = setInterval(refresh, 250);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, []);
+  async function act(action: object) {
+    try {
+      setError("");
+      setHost(await control(action));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  return (
+    <section className="developer">
+      <div className="section-heading">
+        <span className="eyebrow">HOST CONTROLS</span>
+        <span className={`pill ${host?.manual ? "held" : ""}`}>
+          {host?.manual ? "Manual stepping" : "Running"}
+        </span>
+      </div>
+      <h2>Execution desk</h2>
+      <p className="muted">
+        Shared by this screen and agents at <code>/__dev</code>. Steps stop
+        between application entries.
+      </p>
+      <div className="controls">
+        <button onClick={() => act({ action: "mode", manual: !host?.manual })}>
+          {host?.manual ? "Run" : "Hold"}
+        </button>
+        <button onClick={() => act({ action: "step" })}>Step once</button>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={host?.breakpoint ?? false}
+            onChange={(e) =>
+              act({ action: "breakpoint", enabled: e.target.checked })
+            }
+          />
+          Break after acceptance
+        </label>
+      </div>
+      <div className="execution-status" aria-live="polite">
+        {host?.active ? (
+          <>
+            <strong>{host.active.operation}</strong>
+            <span>
+              Ticket {host.active.ticket} ·{" "}
+              {host.active.waiting
+                ? `needs ${host.active.waiting}`
+                : host.active.accepted
+                  ? "ready for attempt"
+                  : "awaiting admission"}
+            </span>
+          </>
+        ) : (
+          <>
+            <strong>Idle</strong>
+            <span>{host?.queued.length ?? 0} queued operations</span>
+          </>
+        )}
+      </div>
+      {host?.active?.waiting && (
+        <div className="controls">
+          <input
+            aria-label="Dependency value"
+            value={ceiling}
+            onChange={(e) => setCeiling(e.target.value)}
+          />
+          <button
+            onClick={() => {
+              try {
+                void act({
+                  action: "supply",
+                  ticket: host.active!.ticket,
+                  key: host.active!.waiting,
+                  value: JSON.parse(ceiling),
+                });
+              } catch (e) {
+                setError(String(e));
+              }
+            }}
+          >
+            Supply input
+          </button>
+          <button
+            onClick={() =>
+              act({
+                action: "fail",
+                ticket: host.active!.ticket,
+                key: host.active!.waiting,
+              })
+            }
+          >
+            Fail input
+          </button>
+        </div>
+      )}
+      <div className="controls">
+        <button onClick={() => act({ action: "snapshot" })}>Save state</button>
+        <button
+          disabled={!host?.snapshot}
+          onClick={() => act({ action: "restore" })}
+        >
+          Restore state
+        </button>
+        <select
+          aria-label="Program variant"
+          value={host?.program ?? "standard"}
+          onChange={(e) => act({ action: "replace", program: e.target.value })}
+        >
+          <option value="standard">Standard addition</option>
+          <option value="double-add">Double-add variant</option>
+        </select>
+      </div>
+      <p className="muted small">
+        Save, restore and replace require an idle executor. Replacement selects
+        compiled code. To replay, restore and submit the calculation again.
+      </p>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <details>
+        <summary>Committed records</summary>
+        <pre data-testid="host-state">
+          {JSON.stringify(host?.states, null, 2)}
+        </pre>
+      </details>
+      <details>
+        <summary>
+          Execution trace <span className="muted">last 256 observations</span>
+        </summary>
+        <pre>{JSON.stringify(host?.trace, null, 2)}</pre>
+      </details>
+    </section>
+  );
+}
+function App() {
+  const route = location.pathname;
+  const [status, setStatus] = useState("Connecting");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [calc, setCalc] = useState<Calculator>({
+    accumulator: "0",
+    history: [],
+  });
+  const [operand, setOperand] = useState("10");
+  const [health, setHealth] = useState("");
+  const [frames, setFrames] = useState<string[]>([]);
+  const client = useRef<Client | undefined>(undefined);
+  const channel = useRef<WebChannel | undefined>(undefined);
+  const id = useRef(
+    sessionStorage.getItem("testy.client") || crypto.randomUUID(),
+  );
+  sessionStorage.setItem("testy.client", id.current);
+  async function connect() {
+    channel.current?.dispose();
+    client.current?.free();
+    client.current = undefined;
+    setStatus("Connecting");
+    const next = new WebChannel(
+      (frame) => setFrames((old) => [...old.slice(-99), frame]),
+      () => {
+        if (channel.current === next) setStatus("Disconnected");
+      },
+    );
+    channel.current = next;
+    await next.ready;
+    const sdk = new Client(next);
+    client.current = sdk;
+    if (route === "/calc") {
+      await sdk.start(id.current);
+      setCalc(JSON.parse(await sdk.inspect()));
+    }
+    setStatus("Connected");
+  }
+  async function run(work: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    try {
+      await work();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => {
+    if (route === "/calc" || route === "/healthy") void run(connect);
+    return () => {
+      channel.current?.dispose();
+    };
+  }, []);
+  const isApp = route === "/calc" || route === "/healthy";
+  return (
+    <main>
+      <header>
+        <a className="brand" href="/">
+          s<span>snap</span>
+        </a>
+        <span className="eyebrow">LOCAL PLAYGROUND</span>
+        <span className="version">TESTY / 01</span>
+      </header>
+      {!isApp ? (
+        <section className="launcher">
+          <div className="intro">
+            <span className="eyebrow">SMALL APPS. REAL CONTRACTS.</span>
+            <h1>Your testing ground.</h1>
+            <p>
+              Open an app. Follow a request.
+              <br />
+              See what the host is doing.
+            </p>
+          </div>
+          <div className="app-grid">
+            <a className="app-tile" href="/healthy">
+              <span className="app-icon health-icon">↗</span>
+              <strong>Healthy</strong>
+              <span>Check the connection</span>
+            </a>
+            <a className="app-tile" href="/calc">
+              <span className="app-icon calc-icon">
+                ＋<br />＝
+              </span>
+              <strong>Calculator</strong>
+              <span>State over transport</span>
+            </a>
+          </div>
+          <div className="launcher-note">
+            <span className="status-dot" /> One host. A collection of small
+            experiments.
+          </div>
+        </section>
+      ) : (
+        <>
+          <nav>
+            <a href="/">← All apps</a>
+            <span className="pill">{status}</span>
+          </nav>
+          <div className="workspace">
+            <section className="application">
+              <span className="eyebrow">
+                {route === "/calc" ? "CONNECTED STATE" : "ANONYMOUS REQUEST"}
+              </span>
+              <h1>{route === "/calc" ? "Calculator" : "Healthy"}</h1>
+              {route === "/calc" ? (
+                <>
+                  <p className="muted">
+                    Every calculation runs on the server. Entering this screen
+                    calls <code>calc.start</code>.
+                  </p>
+                  <div className="display">
+                    <span>COMMITTED VALUE</span>
+                    <output data-testid="accumulator">
+                      {calc.accumulator}
+                    </output>
+                  </div>
+                  <label className="field">
+                    Operand
+                    <input
+                      value={operand}
+                      onChange={(e) => setOperand(e.target.value)}
+                      inputMode="numeric"
+                    />
+                  </label>
+                  <div className="operations">
+                    {[
+                      ["add", "+"],
+                      ["sub", "−"],
+                      ["mul", "×"],
+                      ["div", "÷"],
+                      ["add_checked", "Checked +"],
+                    ].map(([operation, label]) => (
+                      <button
+                        key={operation}
+                        disabled={busy || status !== "Connected"}
+                        onClick={() =>
+                          run(async () => {
+                            const result = await client.current!.calculate(
+                              operation,
+                              operand,
+                            );
+                            setCalc((old) => ({ ...old, accumulator: result }));
+                            setCalc(
+                              JSON.parse(await client.current!.inspect()),
+                            );
+                          })
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="controls">
+                    <button
+                      disabled={busy || status !== "Connected"}
+                      onClick={() =>
+                        run(async () => {
+                          await client.current!.disconnect();
+                          setStatus("Detached");
+                        })
+                      }
+                    >
+                      Disconnect
+                    </button>
+                    <button
+                      disabled={busy || status === "Connected"}
+                      onClick={() => run(connect)}
+                    >
+                      Reconnect
+                    </button>
+                    <button
+                      disabled={busy || status !== "Connected"}
+                      onClick={() =>
+                        run(async () => {
+                          await client.current!.close();
+                          setStatus("Closed");
+                          setCalc({ accumulator: "0", history: [] });
+                        })
+                      }
+                    >
+                      Close calculator
+                    </button>
+                    <button
+                      disabled={busy || status !== "Connected"}
+                      onClick={() =>
+                        run(async () =>
+                          setCalc(JSON.parse(await client.current!.inspect())),
+                        )
+                      }
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  <p className="muted small">
+                    Client <code>{id.current}</code>
+                  </p>
+                  <h2>
+                    History <span className="count">{calc.history.length}</span>
+                  </h2>
+                  <div className="history">
+                    {calc.history.length ? (
+                      calc.history
+                        .slice()
+                        .reverse()
+                        .map((entry, i) => (
+                          <div key={i}>
+                            <span>
+                              {entry.operation.replace("calc.", "")}{" "}
+                              {entry.operand}
+                            </span>
+                            <span>
+                              {entry.before} → <strong>{entry.after}</strong>
+                            </span>
+                          </div>
+                        ))
+                    ) : (
+                      <p className="muted">
+                        Your first calculation starts here.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="muted">
+                    A small round trip through transport and execution. No
+                    identity or calculator connection required.
+                  </p>
+                  <div className={`health-result ${health ? "ok" : ""}`}>
+                    <span>{health ? "✓" : "↗"}</span>
+                    <output>{health || "Ready to check"}</output>
+                  </div>
+                  <button
+                    className="primary"
+                    disabled={busy || status !== "Connected"}
+                    onClick={() =>
+                      run(async () =>
+                        setHealth(
+                          JSON.parse(await client.current!.health()).status,
+                        ),
+                      )
+                    }
+                  >
+                    Check health
+                  </button>
+                  {status !== "Connected" && (
+                    <button disabled={busy} onClick={() => run(connect)}>
+                      Reconnect
+                    </button>
+                  )}
+                </>
+              )}
+              {busy && (
+                <p className="pending" role="status">
+                  Request in progress. Host controls remain available.
+                </p>
+              )}
+              {error && (
+                <p role="alert" className="error">
+                  {error}
+                </p>
+              )}
+              <details className="wire">
+                <summary>Transport activity</summary>
+                <pre>{frames.join("\n\n")}</pre>
+              </details>
+            </section>
+            <Development />
+          </div>
+        </>
+      )}
+      <footer>
+        <span>SNAP / TESTY</span>
+        <span>Host-owned state. Observable execution.</span>
+      </footer>
+    </main>
+  );
+}
+await init({ module_or_path: "/bindings/testy_wasm_bg.wasm" });
+createRoot(document.getElementById("root")!).render(<App />);

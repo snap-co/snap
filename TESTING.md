@@ -107,9 +107,10 @@ lifecycle tests.
 ## Current commands
 
 The active build is Testy, `snap-transport` and `snap-execution`. Run `./bin/check`
-for selected formatting, Clippy, transport contracts, memory and native SDK tests,
+for selected formatting, Clippy, transport contracts, memory/native SDK and development-control tests,
 portable WASM compilation, and dependency isolation. It does not run or build
-Authy/Chatty integration suites. Cargo default members select the same five packages.
+Authy/Chatty integration suites. Cargo default members select the five portable/local
+packages; the check also compiles the browser binding.
 `cargo test -p testy-local` runs the memory SDK scenarios; add `--features native`
 for the real TCP host case. Testy scenarios live in `apps/testy/tests`, registered
 by its application-owned local composition. Transport contracts live in
@@ -142,7 +143,7 @@ mise exec -- cargo test -p testy-local --test memory
 mise exec -- cargo test -p testy-local --features native --test native
 
 # Required after package/dependency changes:
-mise exec -- ./bin/snap check apps/healthy --structure-only --workspace
+mise exec -- ./bin/snap check apps/testy --structure-only --workspace
 
 # Optional network-backed dependency advisory check:
 mise exec -- ./bin/check-deps --audit
@@ -152,6 +153,22 @@ The structure-only workspace check is required after package/dependency changes.
 It compiles portable legacy packages too, but runs no legacy application suites.
 Browser/Workers prerequisites, the earlier memory rig, `snap check` and
 `bin/check-legacy` belong to [legacy development](docs/legacy-development.md).
+
+The separate browser gate builds the Wasm SDK and assets, typechecks the Testy UI,
+and runs real Chromium against an ephemeral WebSocket host:
+
+```sh
+bunx playwright install chromium
+./bin/check-testy-web
+```
+
+Its app-owned journeys cover routing/bootstrap, health, arithmetic, reload,
+reconnect/close, exact 64-bit values, and HTTP tools stepping a live browser request
+through a held dependency, restoring state and selecting replacement code. The
+in-process development-control journey covers stale input rejection and preservation
+of submitted work after its observer disconnects. Browser/process tests stay out
+of the warm `bin/check` loop. Healthy's legacy fixture lives under
+`tests/fixtures/healthy`; root build/dev commands now select Testy.
 
 Formatting, Clippy, Rustdoc, dependency policy, and structural checks enforce
 source constraints separately from behavior tests.

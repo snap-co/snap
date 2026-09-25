@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.json",
+  "include": [
+    "./**/*.ts",
+    "./**/*.tsx",
+    "../tests/**/*.ts",
+    "../../../scripts/build-testy.ts"
+  ],
+  "compilerOptions": { "types": ["bun", "react", "react-dom"] }
+}

@@ -16,6 +16,12 @@ tokio = { version = "1", features = ["rt", "net", "sync", "macros"], optional = 
 default = ["memory"]
 memory = ["dep:futures"]
 native = ["snap-platform-local/native", "dep:tokio"]
+web = ["snap-platform-local/web", "dep:tokio"]
+
+[[bin]]
+name = "testy-web"
+path = "src/web.rs"
+required-features = ["web"]
 
 [[bin]]
 name = "testy-memory-demo"
@@ -51,3 +57,8 @@ required-features = ["native"]
 
 [package.metadata.snap]
 role = "composition"
+
+[[test]]
+name = "development"
+path = "../tests/development.rs"
+required-features = ["web"]

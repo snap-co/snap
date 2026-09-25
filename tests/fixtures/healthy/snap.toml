@@ -6,10 +6,10 @@ manifest = "native/Cargo.toml"
 bin = "healthy"
 
 [web]
-package-dir = "../.."
+package-dir = "../../.."
 application = "web/app.tsx"
-host = "../../clients/react/main.tsx"
-html = "../../clients/react/index.html"
+host = "../../../clients/react/main.tsx"
+html = "../../../clients/react/index.html"
 wasm-manifest = "wasm/Cargo.toml"
 bindings = ".snap/bindings"
 
@@ -21,7 +21,7 @@ architecture = true
 rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
 build = true
 commands = [
-    ["bun", "../../scripts/check-client.ts"],
-    ["bun", "test", "../../tests/sdk/browser-runtime.test.ts"],
-    ["bunx", "playwright", "test", "--config", "../../playwright.config.ts", "healthy.spec.ts"],
+    ["bun", "../../../scripts/check-client.ts"],
+    ["bun", "test", "../../../tests/sdk/browser-runtime.test.ts"],
+    ["bunx", "playwright", "test", "--config", "../../../playwright.config.ts", "healthy.spec.ts"],
 ]

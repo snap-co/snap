@@ -17,7 +17,7 @@ export async function startServer(
   if (options.freshBuild) delete env.SNAP_BUILD;
   let logs = "";
   let backendUrl: string | undefined;
-  if (options.web) env.SNAP_WEB_DIR = resolve(root, "dist/web");
+  if (options.web) env.SNAP_WEB_DIR = resolve(root, "tests/fixtures/healthy/.snap/build/release/web");
   if (options.webDirectory) env.SNAP_WEB_DIR = options.webDirectory;
   const child = spawn(
     options.executable ??
@@ -28,7 +28,7 @@ export async function startServer(
     options.dev ? ["dev", ...(options.project ? [options.project] : [])] : [],
     {
       env,
-      cwd: options.dev && !options.project ? resolve(root, "apps/healthy") : root,
+      cwd: options.dev && !options.project ? resolve(root, "tests/fixtures/healthy") : root,
       stdio: ["ignore", "ignore", "pipe"],
     },
   );

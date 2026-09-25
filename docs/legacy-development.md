@@ -1,6 +1,6 @@
 # Legacy application development
 
-This reference covers Healthy, Authy and Chatty, which use the earlier
+This reference covers Authy, Chatty and the retired Healthy test fixture, which use the earlier
 [integration architecture](legacy-architecture.md). Their source remains in the
 workspace for later migration. Run the commands below from the repository root.
 The active Testy flow is documented in the [main README](../README.md).
@@ -18,8 +18,8 @@ Requires Linux, Bun, Node.js, lsof, and mise. Install Chromium separately for br
 mise trust
 mise install
 mise exec -- ./bin/snap dev apps/authy
-# Or launch Healthy:
-./bin/dev
+# Or launch the legacy Healthy CLI fixture:
+mise exec -- ./bin/snap dev tests/fixtures/healthy
 # Authy + Chatty, with keys in .snap/chatty.env:
 mise exec -- bun scripts/chatty.ts
 ```
@@ -46,7 +46,7 @@ and adjacent `web/` assets. The package runs on a compatible host without a Rust
 JS toolchain. TLS and process supervision belong to the deployment environment.
 
 `snap` searches upward for the nearest `snap.toml`; paths resolve relative to that
-file. See [Healthy's config](../apps/healthy/snap.toml) and
+file. See [the Healthy fixture config](../tests/fixtures/healthy/snap.toml) and
 [Authy's config](../apps/authy/snap.toml) for working examples. To use the checkout CLI
 directly as `snap`, run `mise run cli` with mise activated in your shell.
 
@@ -74,7 +74,7 @@ mise exec -- ./bin/snap build apps/authy
 mise exec -- bunx wrangler dev --cwd apps/authy/workers --local --inspector-port 0
 
 # Or run the small stateless Healthy Worker on port 8787:
-mise exec -- bunx wrangler dev --cwd apps/healthy/workers --local --inspector-port 0
+mise exec -- bunx wrangler dev --cwd tests/fixtures/healthy/workers --local --inspector-port 0
 ```
 
 Authy opens at `http://127.0.0.1:8788`. Its Worker data lives under
@@ -106,8 +106,9 @@ Previews are not established by the local tests. See the Workers guarantees in
 
 `bin/check-legacy` preserves the cross-application gate. It includes build, browser,
 development-server and Workers checks and is outside the active Testy iteration
-loop. `snap check` still runs each legacy app's configured commands; there is no
-`snap test` command or Testy `snap.toml` integration yet.
+loop. `snap check` still runs each legacy app's configured commands. Testy's
+`snap.toml` selects structural checks; its browser runner is `bin/dev`.
+There is no `snap test` command yet.
 
 The earlier memory rig uses Store, Identity and Passport fixtures. Its snapshots
 copy database state, not live futures, clocks, client-held tokens or crypto counters:

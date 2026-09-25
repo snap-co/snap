@@ -3,8 +3,10 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-./bin/snap build "$root/apps/healthy" --release "$@"
-# Compatibility location. The CLI already produced the complete runnable package.
-rm -rf "$root/dist"
-cp -a "$root/apps/healthy/.snap/build/release" "$root/dist"
-echo "Run ./dist/healthy; it serves the adjacent web/ directory."
+bun scripts/build-testy.ts
+mise exec -- cargo build -p testy-local --no-default-features --features web --bin testy-web --release "$@"
+mkdir -p "$root/dist"
+cp "$root/target/release/testy-web" "$root/dist/testy-web"
+rm -rf "$root/dist/web"
+cp -a "$root/apps/testy/.snap/web" "$root/dist/web"
+echo "Run ./dist/testy-web; it serves the adjacent web/ directory."

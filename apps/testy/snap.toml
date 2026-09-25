@@ -1,0 +1,10 @@
+version = 1
+application = "testy"
+
+[server]
+manifest = "local/Cargo.toml"
+bin = "testy-web"
+
+[check]
+architecture = true
+rust = ["Cargo.toml", "local/Cargo.toml", "wasm/Cargo.toml"]
