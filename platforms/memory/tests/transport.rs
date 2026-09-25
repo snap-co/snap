@@ -35,7 +35,7 @@ impl Provider for App {
         &mut self,
         invocation: Invocation,
         identified: bool,
-    ) -> impl std::future::Future<Output = Result<Accepted<Outcome>, Error>> + 'static {
+    ) -> impl std::future::Future<Output = snap_protocol::Admission<Outcome>> + 'static {
         let entered = self.entered.clone();
         let release = self.release.clone();
         async move {
@@ -174,7 +174,7 @@ impl Provider for Guarded {
         &mut self,
         invocation: Invocation,
         _: GuardContext,
-    ) -> impl std::future::Future<Output = Result<Accepted<Outcome>, Error>> + 'static {
+    ) -> impl std::future::Future<Output = snap_protocol::Admission<Outcome>> + 'static {
         self.0.prepare(invocation, true)
     }
 }

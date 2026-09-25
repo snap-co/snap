@@ -24,7 +24,7 @@ test("HTTPS scheme normalization preserves secure cookie naming and session reco
     await server.restart();
     expect(await identity()).toBe(id);
   } finally { await server.close(); }
-});
+}, 30_000); // Real host startup includes random RSA key provisioning.
 
 // The same public operation sequence must work with either application cache policy.
 for (const cached of [false, true]) {
@@ -46,5 +46,5 @@ for (const cached of [false, true]) {
       expect((await request("identity.release", { scope: "current" }, enrolled.cookie)).result.ok).toBe(true);
       expect((await request("identity.password.acquire", credentials)).result.payload).toEqual({ _tag: "Approved" });
     } finally { await server.close(); }
-  });
+  }, 30_000);
 }

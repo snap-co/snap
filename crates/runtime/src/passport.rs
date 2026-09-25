@@ -544,7 +544,7 @@ impl<S: Store, C: Crypto, K: Cache> Provider for Passport<S, C, K> {
         &mut self,
         invocation: Invocation,
         context: Context,
-    ) -> impl Future<Output = Result<snap_protocol::Accepted<Response>, Error>> + 'static {
+    ) -> impl Future<Output = snap_protocol::Admission<Response>> + 'static {
         let provider = self.clone();
         let policy = self
             .operations()
@@ -560,7 +560,13 @@ impl<S: Store, C: Crypto, K: Cache> Provider for Passport<S, C, K> {
             } else {
                 None
             };
-            policy.check(resolved.is_some())?;
+            if let Err(error) = policy.check(resolved.is_some()) {
+                let mut reply = <Response as snap_protocol::Rejection>::rejected(error);
+                if context.token.is_some() && resolved.is_none() {
+                    reply.token = Some(None);
+                }
+                return Err(snap_protocol::Refusal::Reply(reply));
+            }
             Ok(snap_protocol::Accepted::new(move || async move {
                 let mut reply = Response {
                     outcome: Ok(Value::Null),

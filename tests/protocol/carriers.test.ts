@@ -19,7 +19,7 @@ test(`${host}: one operation is bound to HTTP and WebSocket; an accepted continu
     socket=new WebSocket(`${server.baseUrl.replace("http:","ws:")}/_transport/ws?build=healthy-smoke&clientId=fixture`,{headers:{origin:server.baseUrl,cookie:`fixture_session=fixture.${signature}`}});
     const queue:any[]=[];const waiters:((value:any)=>void)[]=[];
     socket.onmessage=event=> {const value=JSON.parse(String(event.data));const waiter=waiters.shift();if(waiter)waiter(value);else queue.push(value);};
-    const next=()=>deadline(queue.length?Promise.resolve(queue.shift()):new Promise<any>(done=>waiters.push(done)),5000);
+    const next=(milliseconds=5000)=>deadline(queue.length?Promise.resolve(queue.shift()):new Promise<any>(done=>waiters.push(done)),milliseconds);
     const epoch=(await next()).payload.epoch;
     socket.send(JSON.stringify({operationId:`${epoch}:1`,key:"echo",payload}));
     expect((await next()).key).toBe("transport.ack");
@@ -54,6 +54,19 @@ test(`${host}: one operation is bound to HTTP and WebSocket; an accepted continu
     expect((await next()).payload).toEqual({ok:true,payload:3});
     await completion(4);
     await completion(5);
+    // Admission, unlike the earlier held handlers, has not emitted acceptance.
+    // The observer deadline must remain bounded, and late admission must not
+    // deliver an ack after its terminal timeout completion.
+    send(6,"admission.wait");
+    await until(state=>state.admissions===1);
+    const timeout=await next(8000);
+    expect(timeout.key).toBe("transport.complete");
+    expect(timeout.target).toBe(`${epoch}:6`);
+    expect(timeout.payload.error._tag).toBe("UnavailableError");
+    await post("release");
+    await until(state=>state.completed===4);
+    send(7,"echo");
+    await completion(7);
   } finally {socket?.close();await server.close();}
 },120000);
 }

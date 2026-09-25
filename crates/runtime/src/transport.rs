@@ -96,8 +96,7 @@ impl<State: 'static> Provider for Transport<State> {
         &mut self,
         invocation: Invocation,
         _: (),
-    ) -> impl core::future::Future<Output = Result<snap_protocol::Accepted<Outcome>, Error>> + 'static
-    {
+    ) -> impl core::future::Future<Output = snap_protocol::Admission<Outcome>> + 'static {
         let state = self.state.clone();
         let outcome = match self
             .handlers
@@ -114,6 +113,6 @@ impl<State: 'static> Provider for Transport<State> {
                 message: format!("Unknown key: {}", invocation.key),
             }),
         };
-        core::future::ready(outcome)
+        core::future::ready(outcome.map_err(Into::into))
     }
 }

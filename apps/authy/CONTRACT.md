@@ -131,6 +131,9 @@ produce no acknowledgement. Accepted work can still fail, reported by completion
 the acknowledgement does not imply a successful or durable commit. Native and
 Workers use the same portable dispatch lifecycle. HTTP bindings retain their
 single completion response rather than exposing a separate acknowledgement.
+An admission refusal for a stale signed session still clears the cookie and marks
+`sessionChanged`. A host response deadline ends that invocation's observation;
+late admission must not emit acknowledgement after its timeout completion.
 
 Each physical attachment starts a new logical epoch. Clients discard incomplete
 reads and request fresh snapshots after reconnect. Detached-operation retention

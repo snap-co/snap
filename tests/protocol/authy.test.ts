@@ -78,6 +78,11 @@ test(`${host} password/session wire: cookies, identity modes, Message admission 
     const released = await request("identity.release", { scope: "current" }, cookie);
     expect(released.body).toEqual({ key: "transport.complete", target: "wire-operation", payload: { ok: true, sessionChanged: true } });
     expect(released.response.headers.get("set-cookie")).toContain("Max-Age=0");
+    const staleRelease = await request("identity.release", { scope: "current" }, cookie);
+    expect(staleRelease.response.status).toBe(401);
+    expect(staleRelease.body.payload.error._tag).toBe("IdentityRequiredError");
+    expect(staleRelease.body.payload.sessionChanged).toBe(true);
+    expect(staleRelease.response.headers.get("set-cookie")).toContain("Max-Age=0");
     expect((await request("identity.fetch", undefined, cookie)).body.payload.payload.identityId).toBeNull();
   } finally { for (const { ws } of sockets) ws.close(); await server.close(); }
 }, 120_000);

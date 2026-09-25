@@ -207,9 +207,9 @@ impl<P: Provider + 'static> Endpoint<P> {
                         record(Phase::Completed);
                         output
                     }
-                    Err(error) => {
+                    Err(refusal) => {
                         record(Phase::Rejected);
-                        P::Output::rejected(error)
+                        refusal.into_output()
                     }
                 };
                 // Observation loss never cancels accepted work.

@@ -59,8 +59,13 @@ own reservation cleanup. Irreversible guard effects are not rolled back.
 constructing typed handler input; carriers call `dispatch`, not this hook directly.
 Passport resolves live session authority and applies the declared identity policy
 here. `Accepted::start` emits acceptance before entering even a synchronous handler.
+Admission refusals can retain capability-owned reply effects, such as clearing a
+stale session credential, without entering the handler. Composition projects both
+accepted results and refusals through the same reply adapter.
 Native queues that signal to its socket observer; Workers sends it through its
 socket adapter. Existing HTTP request/response bindings expose completion only.
+An observer deadline ends delivery for that invocation, including any later
+acknowledgement; it does not cancel independently owned admission/execution work.
 The existing Authy HTTP/WebSocket binding choices remain compatibility policy;
 automatic routing from identity requirements is not implemented in this slice.
 

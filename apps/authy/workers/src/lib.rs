@@ -22,9 +22,7 @@ impl Provider for App {
         &mut self,
         invocation: Invocation,
         token: Option<String>,
-    ) -> impl core::future::Future<
-        Output = std::result::Result<snap_protocol::Accepted<Reply>, snap_protocol::Error>,
-    > + 'static {
+    ) -> impl core::future::Future<Output = snap_protocol::Admission<Reply>> + 'static {
         let future = snap_protocol::dispatch(
             &mut self.0,
             invocation,
@@ -34,7 +32,7 @@ impl Provider for App {
             },
         );
         async move {
-            Ok(future.await?.map(|reply| Reply {
+            snap_protocol::project(future.await, |reply| Reply {
                 outcome: reply.outcome,
                 empty: reply.empty,
                 cookie: reply.token,
@@ -43,7 +41,7 @@ impl Provider for App {
                     id: s.session_id,
                     expires_at: s.expires_at,
                 }),
-            }))
+            })
         }
     }
 }

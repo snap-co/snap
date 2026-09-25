@@ -69,9 +69,7 @@ impl Provider for Empty {
         &mut self,
         _: Invocation,
         _: Option<String>,
-    ) -> impl core::future::Future<
-        Output = Result<snap_protocol::Accepted<Self::Output>, snap_protocol::Error>,
-    > + 'static {
+    ) -> impl core::future::Future<Output = snap_protocol::Admission<Self::Output>> + 'static {
         async { unreachable!("no published Snap operations") }
     }
 }

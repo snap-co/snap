@@ -13,9 +13,7 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
         &mut self,
         invocation: Invocation,
         token: Option<String>,
-    ) -> impl core::future::Future<
-        Output = Result<snap_protocol::Accepted<Self::Output>, snap_protocol::Error>,
-    > + 'static {
+    ) -> impl core::future::Future<Output = snap_protocol::Admission<Self::Output>> + 'static {
         let future = snap_protocol::dispatch(
             &mut self.0,
             invocation,
@@ -25,7 +23,7 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
             },
         );
         async move {
-            Ok(future.await?.map(|response| snap_native::Reply {
+            snap_protocol::project(future.await, |response| snap_native::Reply {
                 outcome: response.outcome,
                 empty: response.empty,
                 lease: response.session.map(|s| snap_native::Lease {
@@ -34,7 +32,7 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
                 }),
                 cookie: response.token,
                 terminate: response.revoked,
-            }))
+            })
         }
     }
 }

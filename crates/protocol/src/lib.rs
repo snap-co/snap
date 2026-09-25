@@ -114,6 +114,40 @@ impl Rejection for Outcome {
     }
 }
 
+/// Admission may reject with capability-owned effects, such as clearing a stale
+/// session credential. These are projected without acknowledging or entering a
+/// handler. Ordinary schema/guard errors need no capability metadata.
+#[derive(Debug)]
+pub enum Refusal<T> {
+    Error(Error),
+    Reply(T),
+}
+impl<T> From<Error> for Refusal<T> {
+    fn from(error: Error) -> Self {
+        Self::Error(error)
+    }
+}
+impl<T: Rejection> Refusal<T> {
+    pub fn into_output(self) -> T {
+        match self {
+            Self::Error(error) => T::rejected(error),
+            Self::Reply(reply) => reply,
+        }
+    }
+}
+pub type Admission<T> = Result<Accepted<T>, Refusal<T>>;
+
+/// Compose both successful preparation and rejection effects through one adapter.
+pub fn project<T: Rejection + 'static, U: 'static>(
+    admission: Admission<T>,
+    project: impl FnOnce(T) -> U + 'static,
+) -> Admission<U> {
+    match admission {
+        Ok(work) => Ok(work.map(project)),
+        Err(refusal) => Err(Refusal::Reply(project(refusal.into_output()))),
+    }
+}
+
 /// A statically composed provider. Shared dispatch validates input and runs guards;
 /// the host owns capacity, polling, cancellation, and external work execution.
 /// Context and output belong to the capability/composition, not the scheduler.
@@ -135,7 +169,7 @@ pub trait Provider {
         &mut self,
         invocation: Invocation,
         context: Self::Context,
-    ) -> impl Future<Output = Result<Accepted<Self::Output>, Error>> + 'static;
+    ) -> impl Future<Output = Admission<Self::Output>> + 'static;
 
     /// In-process convenience for callers that do not observe acknowledgements.
     fn invoke(
@@ -147,7 +181,7 @@ pub trait Provider {
         async move {
             match pending.await {
                 Ok(work) => work.start(|| {}).await,
-                Err(error) => Self::Output::rejected(error),
+                Err(refusal) => refusal.into_output(),
             }
         }
     }
@@ -160,7 +194,7 @@ pub fn dispatch<P: Provider + ?Sized>(
     provider: &mut P,
     invocation: Invocation,
     context: P::Context,
-) -> LocalFuture<Result<Accepted<P::Output>, Error>> {
+) -> LocalFuture<Admission<P::Output>> {
     let operation = provider.operations().find(|op| op.key == invocation.key);
     let validation = operation
         .ok_or_else(|| Error::ContractViolationError {
@@ -168,7 +202,7 @@ pub fn dispatch<P: Provider + ?Sized>(
         })
         .and_then(|op| (op.input)(&invocation.payload));
     match validation {
-        Err(error) => Box::pin(async { Err(error) }),
+        Err(error) => Box::pin(async { Err(error.into()) }),
         Ok(()) => {
             let guards: Vec<_> = provider
                 .guards(&invocation.key)

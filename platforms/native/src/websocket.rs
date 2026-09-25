@@ -134,7 +134,9 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
                     result = &mut execution => {
                         // The driver may have completed before this task was polled.
                         // Its acceptance signal still precedes completion.
-                        if acceptance.await.is_ok() && send(&mut socket, json!({"key":"transport.ack","target":target})).await.is_err() { break; }
+                        // A response timeout can beat admission. Never wait for a
+                        // future signal here: it would defeat the response deadline.
+                        if acceptance.try_recv().is_ok() && send(&mut socket, json!({"key":"transport.ack","target":target})).await.is_err() { break; }
                         result
                     }
                 };

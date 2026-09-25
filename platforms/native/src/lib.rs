@@ -104,10 +104,9 @@ impl<M: Provider<Context = (), Output = Outcome>> Provider for Plain<M> {
         &mut self,
         invocation: Invocation,
         _: Option<String>,
-    ) -> impl core::future::Future<Output = Result<snap_protocol::Accepted<Reply>, Error>> + 'static
-    {
+    ) -> impl core::future::Future<Output = snap_protocol::Admission<Reply>> + 'static {
         let future = snap_protocol::dispatch(&mut self.0, invocation, ());
-        async move { Ok(future.await?.map(Reply::new)) }
+        async move { snap_protocol::project(future.await, Reply::new) }
     }
 }
 /// Convenience composition for the existing HTTP-only Healthy consumers.
@@ -273,7 +272,7 @@ async fn drive(
                     let _permit=work.permit;
                     let result = match preparation.await {
                         Ok(accepted) => accepted.start(|| { if let Some(signal) = work.accepted { let _ = signal.send(()); } }).await,
-                        Err(error) => Reply::new(Err(error)),
+                        Err(refusal) => refusal.into_output(),
                     };
                     (work.reply,result)
                 });

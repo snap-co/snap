@@ -115,19 +115,33 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
         let preparation =
             snap_protocol::dispatch(&mut *self.provider.borrow_mut(), invocation, token);
         let (send, receive) = oneshot::channel();
+        let observing = Rc::new(Cell::new(true));
+        let delivery = observing.clone();
         let state = self.state.clone();
         self.state.wait_until(async move {
             let _permit = permit;
             let reply = match preparation.await {
-                Ok(work) => work.start(accepted).await,
-                Err(error) => Reply::new(Err(error)),
+                Ok(work) => {
+                    work.start(|| {
+                        if delivery.get() {
+                            accepted();
+                        }
+                    })
+                    .await
+                }
+                Err(refusal) => refusal.into_output(),
             };
             terminate(&state, &reply.terminate);
             let _ = send.send(reply);
         });
         match select(receive, Box::pin(Delay::from(Duration::from_secs(5)))).await {
             Either::Left((Ok(reply), _)) => reply,
-            _ => fail("Host did not complete the operation"),
+            _ => {
+                // Completion ends this observation. Admission may finish later,
+                // but must not emit acknowledgement after terminal completion.
+                observing.set(false);
+                fail("Host did not complete the operation")
+            }
         }
     }
 
