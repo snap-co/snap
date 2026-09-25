@@ -1,7 +1,7 @@
 # Host-driven module reference refactor review
 
-Status: implementation complete; repository verification and independent review
-pending. This is a new scope authorized by the user on 2026-09-24. Earlier Authy
+Status: READY. Repository verification and both independent review axes passed.
+This is a new scope authorized by the user on 2026-09-24. Earlier Authy
 and tooling review budgets remain closed.
 
 ## Contract and scope
@@ -116,3 +116,57 @@ packaged executable still selects NoCache.
 Initial repair gate stopped at cargo-machete: moving socket serialization to
 snap-web left snap-browser's serde_json dependency unused. Removed that dependency
 before the final validation revision. No behavior check had failed.
+
+## Round 2: final fix validation
+
+Prior reviewed HEAD: `a47a4018c7755c548eeb4d3bac55edc7ca72afe6`.
+Validation HEAD: `72954a3dbd0e27b2400e186067f176c4f22d1c21`.
+Repair commits: `a864b932753c6be7f6be7b73864e202cace9cfb0` and the dependency cleanup.
+Fix delta: `/tmp/opencode/module-pattern-round2-fixes.diff`.
+
+Round 2 is the only post-fix validation. Both original reviewers resume against
+this fixed revision and their findings plus affected interactions. No new whole-diff
+review is authorized. The agreed contract and exclusions are unchanged.
+
+Verification on the repaired code:
+
+- `mise exec -- ./bin/check` passed. Log:
+  `/tmp/opencode/module-pattern-final-full-check.log`.
+- `mise exec -- ./bin/snap check apps/authy` passed. Log:
+  `/tmp/opencode/module-pattern-final-project-check.log`.
+- These include the three Store contracts, three new Passport policy cases, eight
+  native/browser recovery cases, all nine Chromium scenarios, TypeScript reference
+  interoperability, namespace migration, carriers/lifecycle, structural bare-WASM,
+  dependency checks, and Healthy/tooling compatibility.
+- A private copy of the user's local Authy SQLite database started with the repaired
+  executable. All credential, session and signing-key rows compared equal before
+  and after registration. The probe removed its owned copy; the source was read-only.
+
+During this checkpoint, repository guidance moved maintained architecture and Authy
+compatibility into `ARCHITECTURE.md` and `apps/authy/CONTRACT.md`. The active review
+has an explicit exception preserving this ledger and its inputs until it closes.
+Concurrent documentation consolidation is outside the fixed product-code delta.
+After closure, the remaining docs tree will be retired per AGENTS.md; the complete
+review evidence will remain under `/tmp/opencode` and in local Git history.
+
+Standards round 2 returned CLEAR for the validation HEAD. STD-1 and STD-2 are
+resolved, with no repair-caused Standards blocker. Complete report:
+`/tmp/opencode/module-pattern-standards-round2.md`. The reviewer independently ran
+three Store cases, four policy/migration cases, and the shared native password/session
+SDK contract; all passed.
+
+Spec round 2 also returned CLEAR for the validation HEAD. SPEC-1, SPEC-2 and SPEC-3
+are resolved; no repair-caused blocker or decision remains. Complete report:
+`/tmp/opencode/module-pattern-spec-round2.md`. The reviewer independently ran three
+Store cases, five wire/policy cases, the native password/session SDK journey and
+eight native/browser recovery cases; all passed.
+
+## Closure
+
+Two rounds used, budget closed. Standards and Spec are CLEAR for
+`72954a3dbd0e27b2400e186067f176c4f22d1c21`. Both required gates pass on that code.
+Every accepted finding is resolved, and there are no independent follow-ups.
+No remote, publication, new worktree, or tracker was introduced. A final ledger
+copy and all four complete reviewer reports are retained under `/tmp/opencode`.
+The historical documentation inputs remain recoverable in Git when the docs tree
+is retired under the current repository guidance.
