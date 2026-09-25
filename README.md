@@ -63,7 +63,18 @@ mise exec -- bunx wrangler dev --cwd apps/healthy/workers --local --inspector-po
 
 Authy opens at `http://127.0.0.1:8788`. Its Worker data lives under
 `apps/authy/workers/.wrangler/state`, independently of the native Authy database.
-Rebuild browser assets after UI/client changes. Wrangler builds the server Wasm
+To use another device on LAN or Tailscale, bind the listener to `0.0.0.0` and
+override `SNAP_ORIGIN` with the exact browser origin. For this machine's tailnet name:
+
+```sh
+mise exec -- bunx wrangler dev --cwd apps/authy/workers --local --ip 0.0.0.0 --var SNAP_ORIGIN:http://achilles:8788 --inspector-port 0
+```
+
+Open `http://achilles:8788` from a device connected to the tailnet. The origin
+override is also used for WebSocket admission, so use that hostname consistently.
+
+Stop Wrangler before rebuilding browser assets after UI/client changes, then
+restart it so its ASSETS binding uses the new directory. Wrangler builds server Wasm
 with `worker-build --release`. Run commands from the Worker directory or use
 `--cwd`; `--config` alone does not set the custom build's working directory.
 

@@ -10,6 +10,7 @@ pub struct App {
     gate: Rc<RefCell<VecDeque<futures_channel::oneshot::Sender<()>>>>,
     started: Rc<Cell<bool>>,
     completed: Rc<Cell<usize>>,
+    reads_started: Rc<Cell<usize>>,
     now: fn() -> u64,
 }
 impl App {
@@ -18,6 +19,7 @@ impl App {
             gate: Rc::default(),
             started: Rc::default(),
             completed: Rc::default(),
+            reads_started: Rc::default(),
             now,
         }
     }
@@ -26,9 +28,16 @@ impl Provider for App {
     type Context = Option<String>;
     type Output = Reply;
     fn operations(&self) -> impl Iterator<Item = Operation> {
-        ["echo", "lease.resolve", "hold", "release", "status"]
-            .into_iter()
-            .map(|key| Operation { key })
+        [
+            "echo",
+            "lease.resolve",
+            "hold",
+            "read.wait",
+            "release",
+            "status",
+        ]
+        .into_iter()
+        .map(|key| Operation { key })
     }
     fn invoke(
         &mut self,
@@ -38,6 +47,7 @@ impl Provider for App {
         let gate = self.gate.clone();
         let started = self.started.clone();
         let completed = self.completed.clone();
+        let reads_started = self.reads_started.clone();
         let now = self.now;
         async move {
             match invocation.key.as_str() {
@@ -51,13 +61,21 @@ impl Provider for App {
                     }
                     reply
                 }
-                "hold" => {
+                "hold" | "read.wait" => {
+                    let read = invocation.key == "read.wait";
+                    if read {
+                        reads_started.set(reads_started.get() + 1);
+                    }
                     started.set(true);
                     let (send, receive) = futures_channel::oneshot::channel();
                     gate.borrow_mut().push_back(send);
                     let _ = receive.await;
                     completed.set(completed.get() + 1);
-                    Reply::new(Ok(json!("completed")))
+                    Reply::new(Ok(if read {
+                        invocation.payload.unwrap_or_default()
+                    } else {
+                        json!("completed")
+                    }))
                 }
                 "release" => {
                     if let Some(send) = gate.borrow_mut().pop_front() {
@@ -66,7 +84,7 @@ impl Provider for App {
                     Reply::new(Ok(json!("released")))
                 }
                 "status" => Reply::new(Ok(
-                    json!({"started":started.get(),"completed":completed.get()}),
+                    json!({"started":started.get(),"completed":completed.get(),"readsStarted":reads_started.get()}),
                 )),
                 _ => Reply::new(Ok(invocation.payload.unwrap_or_default())),
             }
@@ -79,6 +97,11 @@ pub fn bindings() -> Vec<snap_web::Binding> {
         http: Some(snap_web::Method::Post),
         socket: true,
     }];
+    bindings.push(snap_web::Binding {
+        key: "read.wait",
+        http: Some(snap_web::Method::Post),
+        socket: true,
+    });
     bindings.extend(
         ["hold", "release", "status"]
             .into_iter()

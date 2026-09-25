@@ -32,6 +32,25 @@ test(`${host}: one operation is bound to HTTP and WebSocket; an accepted continu
     expect(await post("echo",payload)).toEqual(payload);
     await post("release");
     expect((await until(state=>state.completed===1)).completed).toBe(1);
+    // Two suspended reads with later frames queued behind them. Frame 5 arrives
+    // after frame 3 starts, exercising reuse of a previous waiter's position.
+    const send = (sequence:number,key:string) => socket!.send(JSON.stringify({operationId:`${epoch}:${sequence}`,key,payload:sequence}));
+    const completion = async (sequence:number) => {
+      expect(await next()).toEqual({key:"transport.ack",target:`${epoch}:${sequence}`});
+      expect((await next()).payload).toEqual({ok:true,payload:sequence});
+    };
+    send(2,"read.wait");
+    await until(state=>state.readsStarted===1);
+    send(3,"read.wait");
+    send(4,"echo");
+    await post("release");
+    await completion(2);
+    await until(state=>state.readsStarted===2);
+    send(5,"echo");
+    await post("release");
+    await completion(3);
+    await completion(4);
+    await completion(5);
   } finally {socket?.close();await server.close();}
 },120000);
 }

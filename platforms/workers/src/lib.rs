@@ -1,5 +1,6 @@
 //! Local execution on Cloudflare Workers. No threaded runtime or unsafe Send shims.
 pub mod crypto;
+mod fifo;
 pub mod host;
 pub mod store;
 use snap_protocol::{Error, Invocation, Outcome, Provider};

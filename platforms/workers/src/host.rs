@@ -2,12 +2,11 @@
 //! authority domain, not a distributed transaction coordinator. Accepted futures
 //! are retained with wait_until after their observer leaves; object/runtime loss
 //! can still interrupt them. Mutations are never automatically replayed.
-use crate::crypto;
+use crate::{crypto, fifo::Fifo};
 use futures_channel::oneshot;
 use futures_util::{
     StreamExt,
     future::{Either, select},
-    lock::Mutex,
 };
 use serde::{Deserialize, Serialize};
 use snap_protocol::{Error as ProtocolError, Invocation, Provider, json};
@@ -35,7 +34,7 @@ pub struct Host<P> {
     config: Config,
     admitted: Rc<Cell<usize>>,
     queued_frames: Rc<Cell<usize>>,
-    socket_jobs: RefCell<BTreeMap<String, Rc<Mutex<()>>>>,
+    socket_jobs: RefCell<BTreeMap<String, Rc<Fifo>>>,
 }
 struct Permit(Rc<Cell<usize>>);
 impl Drop for Permit {
@@ -352,7 +351,7 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
             .entry(epoch)
             .or_default()
             .clone();
-        let _turn = queue.lock().await;
+        let _turn = queue.enter().await;
         let Some(mut data) = socket.deserialize_attachment::<Attachment>()? else {
             return Ok(());
         };

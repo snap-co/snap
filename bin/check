@@ -18,6 +18,7 @@ python3 tests/cli/check.py
 python3 tests/cli/architecture.py
 "${cargo_cmd[@]}" test -p healthy-native --test client-contract
 "${cargo_cmd[@]}" test -p snap-native --test store-contract
+"${cargo_cmd[@]}" test -p snap-workers --lib
 ./bin/build
 ./bin/snap build apps/authy
 bun scripts/check-client.ts
