@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+snap-execution = { path = "../../../crates/execution" }
 testy = { path = ".." }
 snap-transport = { path = "../../../crates/transport" }
 snap-platform-local = { path = "../../../platforms/local" }
@@ -20,6 +21,10 @@ native = ["snap-platform-local/native", "dep:tokio"]
 name = "testy-server-memory"
 path = "src/memory.rs"
 required-features = ["memory"]
+
+[[bin]]
+name = "testy-execution-demo"
+path = "src/execution.rs"
 
 [[bin]]
 name = "testy-server-native"

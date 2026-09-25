@@ -1,14 +1,17 @@
 # Snap Rust spike
 
-## Current stage: Testy transport
+## Current stage: Testy transport and execution
 
-Testy is the isolated transport contract application. Its server and SDK use no
-Identity, Passport, Store or Cache. Application-owned compositions mount transport
-in a memory or native local platform.
+Testy is the transport and execution contract application. Its server and SDK use
+no Identity, Passport, Store or Cache. Application-owned compositions mount both
+capabilities in a memory or native local platform.
 
 ```sh
 # Selected format, lint, behavior, portability and dependency-isolation gate:
 ./bin/check
+
+# Watch rollback on a missing input, serialized commits, and code replacement:
+mise exec -- cargo run -p testy-local --bin testy-execution-demo
 
 # Run an SDK calculator program entirely in memory:
 mise exec -- cargo run -p testy-local --bin testy-server-memory
@@ -21,8 +24,22 @@ mise exec -- cargo run -p testy-local --no-default-features --features native --
 Native programs default to `127.0.0.1:3847`; set `TESTY_ADDR` to override it. These
 are local fixtures with constant test credentials and plaintext TCP. The platform
 does not own `main()` or install other capabilities. Workers and WebSocket builds
-are not part of this stage. Cargo's default members select Testy and transport;
+are not part of this stage. Cargo's default members select Testy, transport and execution;
 older packages remain available by explicit package selection for later migration.
+
+The execution demo starts a calculator at 42, attempts +10, and discovers a missing
+ceiling input after its private write. Live state stays at 42 and a queued +20
+waits. Supplying the input commits 52, then 72. It then replaces the addition
+implementation at an idle gate, restores the saved 42, and replays +10 under the
+replacement code to produce 62. This is an in-process interface demonstration;
+it does not load a shared library or Wasm module.
+
+The interface is `Program::{admit, attempt}` in `crates/execution/src/lib.rs`.
+Testy's implementation is `apps/testy/src/program.rs`. `Executor` owns committed
+state and permits one logical operation at a time, including dependency waits.
+Attempts receive deep working copies and either request inputs, fail, or propose
+a commit. The memory host lets tests hold and supply inputs explicitly; the native
+fixture uses an immediate host resolver, with a ceiling of 1000.
 
 ## Earlier applications
 

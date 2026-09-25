@@ -1,13 +1,12 @@
-//! Snap's transport contract application. No Identity, Store or host dependencies.
+//! Snap's transport/execution contract application. No Identity, Store or host dependencies.
 #![no_std]
 extern crate alloc;
-use alloc::{rc::Rc, string::String, vec::Vec};
-use core::cell::RefCell;
+use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
-use snap_transport::{
-    Channel, Error, Outcome, Value, json,
-    server::{Application, Authority, Context, Operation},
-};
+use snap_transport::{Channel, Error, Value, json, server::Authority};
+
+mod program;
+pub use program::{App, CEILING};
 
 pub const BEARER: &str = "testy-private-fixture-token";
 pub const IDENTITY: &str = "testy-fixture-identity";
@@ -30,146 +29,10 @@ pub struct Calculator {
     pub accumulator: i64,
     pub history: Vec<Entry>,
 }
-#[derive(Default)]
-pub struct State {
-    pub calculator: Option<Rc<RefCell<Calculator>>>,
-}
-
-pub struct App {
-    operations: [Operation<State>; 6],
-}
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            operations: [
-                Operation {
-                    key: "calc.start",
-                    identity_required: false,
-                    input: null,
-                    output: start_output,
-                    error: declared_error,
-                    guard: allow,
-                    handle: start,
-                },
-                arithmetic("calc.add", add),
-                arithmetic("calc.sub", sub),
-                arithmetic("calc.mul", mul),
-                arithmetic("calc.div", div),
-                Operation {
-                    key: "calc.inspect",
-                    identity_required: true,
-                    input: null,
-                    output: calculator_output,
-                    error: declared_error,
-                    guard: ready,
-                    handle: inspect,
-                },
-            ],
-        }
-    }
-}
-impl Application for App {
-    type State = State;
-    fn operations(&self) -> &[Operation<State>] {
-        &self.operations
-    }
-}
-fn arithmetic(
-    key: &'static str,
-    handle: fn(&Context, &mut State, Value) -> Outcome,
-) -> Operation<State> {
-    Operation {
-        key,
-        identity_required: true,
-        input: integer,
-        output: integer,
-        error: declared_error,
-        guard: ready,
-        handle,
-    }
-}
-fn null(value: &Value) -> bool {
-    value.is_null()
-}
-fn integer(value: &Value) -> bool {
-    value.as_i64().is_some()
-}
 fn start_output(value: &Value) -> bool {
     value.as_object().is_some_and(|obj| {
         obj.len() == 1 && obj.get("bearer").and_then(Value::as_str) == Some(BEARER)
     })
-}
-fn calculator_output(value: &Value) -> bool {
-    serde_json::from_value::<Calculator>(value.clone()).is_ok()
-}
-fn declared_error(value: &Value) -> bool {
-    matches!(
-        value.as_str(),
-        Some("NotStarted" | "DivisionByZero" | "Overflow" | "AlreadyStarted" | "HistoryFull")
-    )
-}
-fn failure(message: &str) -> Error {
-    Error::Application(json!(message))
-}
-fn allow(_: &Context, _: &State, _: &Value) -> Result<(), Error> {
-    Ok(())
-}
-fn ready(context: &Context, state: &State, _: &Value) -> Result<(), Error> {
-    if !context.connected || state.calculator.is_none() {
-        Err(failure("NotStarted"))
-    } else {
-        Ok(())
-    }
-}
-fn start(context: &Context, state: &mut State, _: Value) -> Outcome {
-    if context.connected {
-        if state.calculator.is_some() {
-            return Err(failure("AlreadyStarted"));
-        }
-        state.calculator = Some(Rc::default());
-    }
-    Ok(json!({"bearer": BEARER}))
-}
-fn inspect(_: &Context, state: &mut State, _: Value) -> Outcome {
-    serde_json::to_value(&*state.calculator.as_ref().unwrap().borrow())
-        .map_err(|_| Error::InvalidOutput)
-}
-fn calculate(
-    state: &mut State,
-    input: Value,
-    key: &str,
-    operation: fn(i64, i64) -> Option<i64>,
-) -> Outcome {
-    let operand = input.as_i64().unwrap();
-    let mut calculator = state.calculator.as_ref().unwrap().borrow_mut();
-    if calculator.history.len() >= 128 {
-        return Err(failure("HistoryFull"));
-    }
-    if key == "calc.div" && operand == 0 {
-        return Err(failure("DivisionByZero"));
-    }
-    let before = calculator.accumulator;
-    let after = operation(before, operand).ok_or_else(|| failure("Overflow"))?;
-    calculator.history.push(Entry {
-        operation: key.into(),
-        operand,
-        before,
-        after,
-    });
-    calculator.accumulator = after;
-    Ok(json!(after))
-}
-fn add(_: &Context, state: &mut State, input: Value) -> Outcome {
-    calculate(state, input, "calc.add", i64::checked_add)
-}
-fn sub(_: &Context, state: &mut State, input: Value) -> Outcome {
-    calculate(state, input, "calc.sub", i64::checked_sub)
-}
-fn mul(_: &Context, state: &mut State, input: Value) -> Outcome {
-    calculate(state, input, "calc.mul", i64::checked_mul)
-}
-fn div(_: &Context, state: &mut State, input: Value) -> Outcome {
-    calculate(state, input, "calc.div", i64::checked_div)
 }
 
 pub struct Client<C> {
@@ -216,6 +79,11 @@ impl<C: Channel> Client<C> {
     }
     pub async fn add(&mut self, operand: i64) -> Result<i64, Error> {
         self.calc("calc.add", operand).await
+    }
+    /// Exercises a dependency read after a tentative mutation. The execution host
+    /// supplies CEILING; a miss must roll back the entire attempt before retry.
+    pub async fn add_checked(&mut self, operand: i64) -> Result<i64, Error> {
+        self.calc("calc.add_checked", operand).await
     }
     pub async fn sub(&mut self, operand: i64) -> Result<i64, Error> {
         self.calc("calc.sub", operand).await

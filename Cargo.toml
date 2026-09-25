@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/execution",
     "crates/transport",
     "platforms/local",
     "apps/testy",
@@ -33,7 +34,7 @@ members = [
     "tools/cli",
 ]
 resolver = "3"
-default-members = ["crates/transport", "platforms/local", "apps/testy", "apps/testy/local"]
+default-members = ["crates/execution", "crates/transport", "platforms/local", "apps/testy", "apps/testy/local"]
 
 [workspace.package]
 version = "0.0.0"

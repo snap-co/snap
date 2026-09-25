@@ -1,28 +1,7 @@
-use crate::{Error, Event, Invocation, Outcome, Value};
-use alloc::{collections::BTreeMap, rc::Rc, string::String};
-use core::cell::{Cell, RefCell};
-
-pub type Validator = fn(&Value) -> bool;
-pub struct Operation<S> {
-    pub key: &'static str,
-    pub identity_required: bool,
-    pub input: Validator,
-    pub output: Validator,
-    pub error: Validator,
-    /// Called after schema and identity checks, before acceptance. No handler
-    /// effects belong here. This first slice uses synchronous guards/handlers.
-    pub guard: fn(&Context, &S, &Value) -> Result<(), Error>,
-    pub handle: fn(&Context, &mut S, Value) -> Outcome,
-}
-
-pub struct Context {
-    pub identity: Option<String>,
-    pub connected: bool,
-}
-pub trait Application: 'static {
-    type State: Default + 'static;
-    fn operations(&self) -> &[Operation<Self::State>];
-}
+//! Trusted connection context and logical lifetime, independent of application
+//! execution. A platform selects its dispatcher and owns resident application data.
+use crate::{Error, Invocation};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 /// Supplied by trusted composition. Tokens are opaque to transport. Changing a
 /// token need not change identity; no session IDs, leases or cookies cross here.
@@ -37,7 +16,9 @@ impl<F: Fn(&str) -> Option<String>> Authority for F {
 
 #[derive(Clone, Copy)]
 pub struct Config {
+    /// Detached retention, in monotonic milliseconds. Defaults to five minutes.
     pub reconnect_ms: u64,
+    /// Attached and detached logical connections both count toward capacity.
     pub capacity: usize,
 }
 impl Default for Config {
@@ -49,59 +30,78 @@ impl Default for Config {
     }
 }
 
-/// Opaque, host-owned proof of one physical attachment. Old handles cannot invoke,
-/// detach or close a replacement attachment. Never accepted from a wire caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionId(pub u64);
+
+/// Opaque, host-owned proof of one physical attachment. Never accepted from a
+/// wire caller. Old handles cannot invoke, detach or close a replacement.
 #[derive(Clone)]
 pub struct Attachment {
     key: (String, String),
     generation: u64,
+    connection: ConnectionId,
 }
-struct Resident<S> {
-    state: Rc<RefCell<S>>,
+impl Attachment {
+    pub fn connection(&self) -> ConnectionId {
+        self.connection
+    }
+}
+struct Resident {
+    id: ConnectionId,
     generation: u64,
     attached: bool,
     expires: u64,
-    sequence: Cell<u64>,
+    sequence: u64,
 }
 
-pub struct Server<A: Application, R: Authority> {
-    app: A,
+/// Verified input for the host dispatcher. The wire has no asserted identity,
+/// connection ID or server attachment. Request calls have no resident scope.
+pub struct Dispatch {
+    pub identity: Option<String>,
+    pub connection: Option<ConnectionId>,
+    pub invocation: Invocation,
+}
+
+pub struct Server<R: Authority> {
     authority: R,
     config: Config,
-    residents: BTreeMap<(String, String), Resident<A::State>>,
+    residents: BTreeMap<(String, String), Resident>,
+    retired: Vec<ConnectionId>,
     generation: u64,
     now: u64,
 }
-impl<A: Application, R: Authority> Server<A, R> {
-    pub fn new(app: A, authority: R, config: Config) -> Result<Self, Error> {
-        for (i, op) in app.operations().iter().enumerate() {
-            if op.key.is_empty()
-                || app.operations()[..i]
-                    .iter()
-                    .any(|other| other.key == op.key)
-            {
-                return Err(Error::Protocol);
-            }
-        }
-        Ok(Self {
-            app,
+impl<R: Authority> Server<R> {
+    pub fn new(authority: R, config: Config) -> Self {
+        Self {
             authority,
             config,
             residents: BTreeMap::new(),
+            retired: Vec::new(),
             generation: 0,
             now: 0,
-        })
+        }
     }
-    /// Hosts call this on their timer as well as before attachment. Time is elapsed
-    /// monotonic milliseconds, not a wall-clock/session expiration timestamp.
+    /// Hosts drive this even without traffic, then drain `take_retired`. Retiring
+    /// a connection revokes new dispatch; already owned work may finish before
+    /// the execution host releases its associated resident data.
     pub fn tick(&mut self, now: u64) {
         self.now = self.now.max(now);
-        self.residents
-            .retain(|_, entry| entry.attached || entry.expires > self.now);
+        self.residents.retain(|_, entry| {
+            let keep = entry.attached || entry.expires > self.now;
+            if !keep {
+                self.retired.push(entry.id);
+            }
+            keep
+        });
+    }
+    pub fn take_retired(&mut self) -> Vec<ConnectionId> {
+        core::mem::take(&mut self.retired)
     }
     pub fn resident_count(&self) -> usize {
         self.residents.len()
     }
+    /// Resolve the bearer for every attachment. The returned flag is true only
+    /// when reconnecting to retained logical state. An occupied owner is untouched.
     pub fn connect(
         &mut self,
         bearer: &str,
@@ -130,147 +130,78 @@ impl<A: Application, R: Authority> Server<A, R> {
             .residents
             .entry(key.clone())
             .or_insert_with(|| Resident {
-                state: Rc::default(),
+                id: ConnectionId(self.generation),
                 generation: 0,
                 attached: false,
                 expires: 0,
-                sequence: Cell::new(0),
+                sequence: 0,
             });
         entry.attached = true;
         entry.generation = self.generation;
-        entry.sequence.set(0);
+        entry.sequence = 0;
         Ok((
             Attachment {
                 key,
                 generation: self.generation,
+                connection: entry.id,
             },
             resumed,
         ))
     }
-    fn resident(&self, attachment: &Attachment) -> Result<&Resident<A::State>, Error> {
+    fn resident(&mut self, attachment: &Attachment) -> Result<&mut Resident, Error> {
         self.residents
-            .get(&attachment.key)
+            .get_mut(&attachment.key)
             .filter(|entry| entry.attached && entry.generation == attachment.generation)
             .ok_or(Error::StaleConnection)
     }
+    /// Detach without retiring resident state until the reconnect deadline.
     pub fn disconnect(&mut self, attachment: &Attachment, now: u64) -> Result<(), Error> {
         self.tick(now);
-        self.resident(attachment)?;
-        let entry = self.residents.get_mut(&attachment.key).unwrap();
+        let expires = self.now.saturating_add(self.config.reconnect_ms);
+        let entry = self.resident(attachment)?;
         entry.attached = false;
-        entry.expires = self.now.saturating_add(self.config.reconnect_ms);
+        entry.expires = expires;
         self.tick(self.now);
         Ok(())
     }
+    /// Revoke immediately and notify the host to release the logical scope.
     pub fn close(&mut self, attachment: &Attachment) -> Result<(), Error> {
-        self.resident(attachment)?;
+        let id = self.resident(attachment)?.id;
         self.residents.remove(&attachment.key);
+        self.retired.push(id);
         Ok(())
     }
-    pub fn request(&self, bearer: Option<&str>, invocation: Invocation, emit: impl FnMut(Event)) {
-        let identity = match bearer {
-            Some(token) => match self.authority.identify(token).filter(|id| !id.is_empty()) {
-                Some(id) => Some(id),
-                None => {
-                    let mut emit = emit;
-                    emit(Event::Completed {
-                        id: invocation.id,
-                        outcome: Err(Error::InvalidBearer),
-                    });
-                    return;
-                }
-            },
-            None => None,
-        };
-        self.dispatch(
-            Context {
-                identity,
-                connected: false,
-            },
-            &RefCell::default(),
+    /// Non-connection requests resolve credentials on every invocation. Their
+    /// execution state is temporary and must not become a resident connection.
+    pub fn request(&self, bearer: Option<&str>, invocation: Invocation) -> Result<Dispatch, Error> {
+        let identity = bearer
+            .map(|token| {
+                self.authority
+                    .identify(token)
+                    .filter(|id| !id.is_empty())
+                    .ok_or(Error::InvalidBearer)
+            })
+            .transpose()?;
+        Ok(Dispatch {
+            identity,
+            connection: None,
             invocation,
-            emit,
-        );
+        })
     }
     pub fn invoke(
-        &self,
+        &mut self,
         attachment: &Attachment,
         invocation: Invocation,
-        mut emit: impl FnMut(Event),
-    ) {
-        match self.resident(attachment) {
-            Ok(entry) => {
-                if invocation.id <= entry.sequence.get() {
-                    emit(Event::Completed {
-                        id: invocation.id,
-                        outcome: Err(Error::Protocol),
-                    });
-                    return;
-                }
-                entry.sequence.set(invocation.id);
-                self.dispatch(
-                    Context {
-                        identity: Some(attachment.key.0.clone()),
-                        connected: true,
-                    },
-                    &entry.state,
-                    invocation,
-                    emit,
-                )
-            }
-            Err(error) => emit(Event::Completed {
-                id: invocation.id,
-                outcome: Err(error),
-            }),
+    ) -> Result<Dispatch, Error> {
+        let entry = self.resident(attachment)?;
+        if invocation.id <= entry.sequence {
+            return Err(Error::Protocol);
         }
-    }
-    fn dispatch(
-        &self,
-        context: Context,
-        state: &RefCell<A::State>,
-        invocation: Invocation,
-        mut emit: impl FnMut(Event),
-    ) {
-        let id = invocation.id;
-        let admitted = (|| {
-            let op = self
-                .app
-                .operations()
-                .iter()
-                .find(|op| op.key == invocation.operation)
-                .ok_or(Error::UnknownOperation)?;
-            if !(op.input)(&invocation.input) {
-                return Err(Error::InvalidInput);
-            }
-            if op.identity_required && context.identity.is_none() {
-                return Err(Error::IdentityRequired);
-            }
-            if let Err(error) = (op.guard)(&context, &state.borrow(), &invocation.input) {
-                if let Error::Application(value) = &error
-                    && !(op.error)(value)
-                {
-                    return Err(Error::InvalidOutput);
-                }
-                return Err(error);
-            }
-            Ok(op)
-        })();
-        let outcome = match admitted {
-            Err(error) => Err(error),
-            Ok(op) => {
-                // Emit before even entering synchronous application code. Failed
-                // delivery must be recorded by the adapter, not cancel this call.
-                emit(Event::Accepted { id });
-                let outcome = (op.handle)(&context, &mut state.borrow_mut(), invocation.input);
-                match &outcome {
-                    Ok(value) if !(op.output)(value) => Err(Error::InvalidOutput),
-                    Err(Error::Application(value)) if !(op.error)(value) => {
-                        Err(Error::InvalidOutput)
-                    }
-                    _ => outcome,
-                }
-            }
-        };
-        emit(Event::Completed { id, outcome });
+        entry.sequence = invocation.id;
+        Ok(Dispatch {
+            identity: Some(attachment.key.0.clone()),
+            connection: Some(entry.id),
+            invocation,
+        })
     }
 }

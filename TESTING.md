@@ -106,20 +106,30 @@ lifecycle tests.
 
 ## Current commands
 
-The active build is now Testy and standalone `snap-transport`. Run `./bin/check`
+The active build is Testy, `snap-transport` and `snap-execution`. Run `./bin/check`
 for selected formatting, Clippy, transport contracts, memory and native SDK tests,
 portable WASM compilation, and dependency isolation. It does not run or build
-Authy/Chatty integration suites. Cargo default members select the same four packages.
+Authy/Chatty integration suites. Cargo default members select the same five packages.
 `cargo test -p testy-local` runs the memory SDK scenarios; add `--features native`
 for the real TCP host case. Testy scenarios live in `apps/testy/tests`, registered
 by its application-owned local composition. Transport contracts live in
-`crates/transport/tests`.
+`crates/transport/tests`. Execution contracts live in `crates/execution/tests`.
 
 Memory delivery yields before dispatch and passes values without byte encoding.
 Its virtual clock drives detached-connection expiry; native tests exercise actual
 socket loss and competing attachments without waiting through expiry windows.
-Weak-reference probes verify resident data is actually released. The native case
-runs the same SDK program as memory. No test uses Identity, Store, or fixture crypto.
+Execution tests verify the whole-operation gate, admission ordering, repeated
+read misses after tentative edits, rollback of bad commits, FIFO writes, deferred
+scope release, stale dependency responses, code replacement and snapshot replay.
+Memory SDK tests hold a read while another client's operation queues, then supply
+it without wall-clock waits. Cancellation after submission leaves work owned by
+the host; connection expiry releases its state after that work finishes. The native
+case runs the same SDK journey plus a checked calculation using immediate host
+inputs. No test uses Identity, Store, or fixture crypto.
+
+Run `mise exec -- cargo run -p testy-local --bin testy-execution-demo` for a short
+asserting demonstration of rollback, serialized writes, retained-state code
+replacement, and replay from an in-memory snapshot. It loads no dynamic module.
 
 The following commands describe the older integration slice and are not the
 active iteration gate:

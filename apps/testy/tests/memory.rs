@@ -6,17 +6,16 @@ use snap_transport::{
 };
 
 fn platform() -> Memory<testy::App, testy::TestAuthority> {
-    Memory::new(
+    Memory::new(snap_platform_local::Platform::new(
         Server::new(
-            testy::App::default(),
             testy::TestAuthority,
             Config {
                 reconnect_ms: 100,
                 capacity: 8,
             },
-        )
-        .unwrap(),
-    )
+        ),
+        snap_execution::Executor::new(testy::App::default(), 16).unwrap(),
+    ))
 }
 
 #[test]
@@ -149,4 +148,75 @@ fn memory_delivery_is_async_and_cancellable_before_admission() {
     );
     drop(pending);
     assert_eq!(platform.residents(), 0);
+}
+
+#[test]
+fn sdk_waits_behind_the_application_gate_and_retries_without_duplicate_history() {
+    use futures::{FutureExt, task::noop_waker};
+    let platform = platform();
+    let mut first = testy::Client::new(platform.channel());
+    let mut second = testy::Client::new(platform.channel());
+    block_on(first.start("first")).unwrap();
+    block_on(second.start("second")).unwrap();
+    block_on(first.add(42)).unwrap();
+    let baseline = platform.trace().len();
+    let mut pending = Box::pin(first.add_checked(10));
+    let waker = noop_waker();
+    let mut cx = core::task::Context::from_waker(&waker);
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    let (ticket, key) = platform.pending_read().unwrap();
+    assert_eq!(key, testy::CEILING);
+    let mut queued = Box::pin(second.add(20));
+    assert!(queued.poll_unpin(&mut cx).is_pending());
+    assert!(queued.poll_unpin(&mut cx).is_pending());
+    assert!(matches!(
+        &platform.trace()[baseline..],
+        [Event::Accepted { .. }]
+    ));
+    assert_eq!(
+        platform.replace(testy::App::default()),
+        Err(snap_execution::Error::Unavailable)
+    );
+    platform.supply(ticket, &key, Ok(json!(100))).unwrap();
+    assert_eq!(block_on(pending).unwrap(), 52);
+    assert_eq!(block_on(queued).unwrap(), 20);
+    let calculator = block_on(first.inspect()).unwrap();
+    assert_eq!(calculator.history.len(), 2);
+    assert_eq!(calculator.history[1].before, 42);
+    assert_eq!(calculator.history[1].after, 52);
+    platform
+        .replace(testy::App::with_add(|a, b| {
+            a.checked_add(b.checked_mul(2)?)
+        }))
+        .unwrap();
+    assert_eq!(block_on(first.add(5)).unwrap(), 62);
+    assert_eq!(block_on(first.inspect()).unwrap().history.len(), 3);
+}
+
+#[test]
+fn cancelled_client_keeps_owned_work_and_expiry_waits_for_it() {
+    use futures::{FutureExt, task::noop_waker};
+    let platform = platform();
+    let mut client = testy::Client::new(platform.channel());
+    block_on(client.start("lost")).unwrap();
+    let mut pending = Box::pin(client.add_checked(10));
+    let waker = noop_waker();
+    let mut cx = core::task::Context::from_waker(&waker);
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    let (ticket, key) = platform.pending_read().unwrap();
+    drop(pending);
+    drop(client);
+    platform.advance(100);
+    assert_eq!(platform.residents(), 0);
+    // Data remains pinned until the accepted operation has finished. Supplying
+    // the read cannot panic or revive the retired connection.
+    platform.supply(ticket, &key, Ok(json!(100))).unwrap();
+    assert!(
+        matches!(platform.trace().last(), Some(Event::Completed { outcome: Ok(value), .. }) if value == &json!(10))
+    );
+    let mut client = testy::Client::new(platform.channel());
+    block_on(client.start("lost")).unwrap();
+    assert_eq!(block_on(client.inspect()).unwrap().accumulator, 0);
 }

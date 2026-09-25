@@ -1,10 +1,8 @@
 //! Native event-loop adapter. The executable owns Tokio and its LocalSet. This
 //! baseline uses length-delimited JSON over TCP; deployments supply secure IO.
-use crate::{Peer, Platform};
-use snap_transport::{
-    Channel, Command, Error, Event, Response,
-    server::{Application, Authority},
-};
+use crate::{Observation, Peer, Platform, Submission};
+use snap_execution::{Call, Program};
+use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
 use std::{cell::RefCell, io, rc::Rc, time::Instant};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -41,12 +39,16 @@ async fn write(stream: &mut TcpStream, response: &[u8]) -> io::Result<()> {
 
 /// Runs until the application requests shutdown. Detached residents are swept on
 /// a timer even if no further traffic arrives. Shutdown drops all resident state.
-pub async fn serve<A: Application, R: Authority + 'static>(
+/// This fixture's read resolver must return immediate inputs without blocking.
+/// Use Platform's submit/step/supply interface to build an async dependency host.
+pub async fn serve<P: Program + 'static, R: Authority + 'static>(
     listener: TcpListener,
-    platform: Platform<A, R>,
+    platform: Platform<P, R>,
     mut shutdown: watch::Receiver<bool>,
+    reads: impl Fn(&Call, &str) -> snap_execution::Outcome + 'static,
 ) -> io::Result<()> {
     let platform = Rc::new(RefCell::new(platform));
+    let reads: Reads = Rc::new(reads);
     let clock = Instant::now();
     let mut sweep = tokio::time::interval(std::time::Duration::from_millis(10));
     let mut peers = tokio::task::JoinSet::new();
@@ -56,13 +58,21 @@ pub async fn serve<A: Application, R: Authority + 'static>(
         }
         tokio::select! {
             _ = shutdown.changed() => break Ok(()),
-            _ = sweep.tick() => platform.borrow_mut().transport.tick(clock.elapsed().as_millis() as u64),
+            _ = sweep.tick() => {
+                let mut platform = platform.borrow_mut();
+                platform.tick(clock.elapsed().as_millis() as u64);
+                // Native requests below run to completion with immediate inputs;
+                // between requests only queued lifecycle releases remain.
+                let observation = platform.step();
+                debug_assert!(observation.is_none());
+            },
             Some(_) = peers.join_next(), if !peers.is_empty() => {},
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     if peers.len() >= 1024 { drop(stream); continue; }
                     let platform = platform.clone();
-                    peers.spawn_local(async move { let _ = serve_peer(stream, platform, clock).await; });
+                    let reads = reads.clone();
+                    peers.spawn_local(async move { let _ = serve_peer(stream, platform, clock, reads).await; });
                 }
                 Err(error) => break Err(error),
             }
@@ -73,22 +83,25 @@ pub async fn serve<A: Application, R: Authority + 'static>(
     result
 }
 
-struct Physical<A: Application, R: Authority> {
+type Reads = Rc<dyn Fn(&Call, &str) -> snap_execution::Outcome>;
+
+struct Physical<P: Program, R: Authority> {
     peer: Peer,
-    platform: Rc<RefCell<Platform<A, R>>>,
+    platform: Rc<RefCell<Platform<P, R>>>,
     clock: Instant,
 }
-impl<A: Application, R: Authority> Drop for Physical<A, R> {
+impl<P: Program, R: Authority> Drop for Physical<P, R> {
     fn drop(&mut self) {
         self.platform
             .borrow_mut()
             .lost(&mut self.peer, self.clock.elapsed().as_millis() as u64);
     }
 }
-async fn serve_peer<A: Application, R: Authority>(
+async fn serve_peer<P: Program, R: Authority>(
     mut stream: TcpStream,
-    platform: Rc<RefCell<Platform<A, R>>>,
+    platform: Rc<RefCell<Platform<P, R>>>,
     clock: Instant,
+    reads: Reads,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let mut physical = Physical {
@@ -102,16 +115,34 @@ async fn serve_peer<A: Application, R: Authority>(
         // Queue each acceptance before handler entry. Current handlers are
         // synchronous; the event loop writes the queued frames immediately after.
         let mut frames = Vec::new();
-        let response = physical.platform.borrow_mut().receive(
-            &mut physical.peer,
-            command,
-            clock.elapsed().as_millis() as u64,
-            |event| {
-                frames.push(Response::Events(vec![event]));
-            },
-        );
-        if !matches!(response, Response::Events(_)) {
-            frames.push(response);
+        {
+            let mut platform = physical.platform.borrow_mut();
+            if let Submission::Ready(response) = platform.submit(
+                &mut physical.peer,
+                command,
+                clock.elapsed().as_millis() as u64,
+            ) {
+                frames.push(response);
+            }
+            while let Some(observation) = platform.step() {
+                match observation {
+                    Observation::Event { event, .. } => frames.push(Response::Events(vec![event])),
+                    Observation::Need { ticket, key } => {
+                        // This native fixture selects immediate host inputs only.
+                        // The portable scheduler also supports held/asynchronous
+                        // reads, exercised by the memory host via explicit supply.
+                        let call = platform
+                            .execution
+                            .pending_call(ticket)
+                            .expect("pending read");
+                        let result = reads(call, &key);
+                        platform
+                            .execution
+                            .supply(ticket, &key, result)
+                            .expect("matching read");
+                    }
+                }
+            }
         }
         for frame in frames {
             write(

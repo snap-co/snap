@@ -2037,6 +2037,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap-execution"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "snap-http"
 version = "0.0.0"
 dependencies = [
@@ -2123,6 +2130,7 @@ name = "snap-platform-local"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "snap-execution",
  "snap-transport",
  "tokio",
 ]
@@ -2319,6 +2327,7 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "snap-execution",
  "snap-transport",
 ]
 
@@ -2327,6 +2336,7 @@ name = "testy-local"
 version = "0.0.0"
 dependencies = [
  "futures",
+ "snap-execution",
  "snap-platform-local",
  "snap-transport",
  "testy",

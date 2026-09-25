@@ -10,15 +10,21 @@ fn sdk_program_over_real_native_socket_and_reconnect() {
         .block_on(tokio::task::LocalSet::new().run_until(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
-            let server = Server::new(
-                testy::App::default(),
-                testy::TestAuthority,
-                Default::default(),
-            )
-            .unwrap();
+            let server = Server::new(testy::TestAuthority, Default::default());
+            let execution = snap_execution::Executor::new(testy::App::default(), 16).unwrap();
             let (shutdown, receiver) = tokio::sync::watch::channel(false);
-            let host =
-                tokio::task::spawn_local(native::serve(listener, Platform::new(server), receiver));
+            let host = tokio::task::spawn_local(native::serve(
+                listener,
+                Platform::new(server, execution),
+                receiver,
+                |_, key| {
+                    if key == testy::CEILING {
+                        Ok(snap_execution::json!(100))
+                    } else {
+                        Err(snap_execution::Error::Unavailable)
+                    }
+                },
+            ));
             let mut first = testy::Client::new(native::Connection::open(address).await.unwrap());
             let result = testy::journey(&mut first, "native-tab").await.unwrap();
             assert_eq!(result.accumulator, 6);
@@ -48,6 +54,14 @@ fn sdk_program_over_real_native_socket_and_reconnect() {
             .await
             .unwrap();
             assert_eq!(second.inspect().await.unwrap(), result);
+            second.close().await.unwrap();
+            second.start("checked").await.unwrap();
+            assert_eq!(second.add_checked(12).await.unwrap(), 12);
+            assert_eq!(
+                second.add_checked(100).await,
+                Err(Error::Application(snap_execution::json!("AboveCeiling")))
+            );
+            assert_eq!(second.inspect().await.unwrap().accumulator, 12);
             second.close().await.unwrap();
             shutdown.send(true).unwrap();
             host.await.unwrap().unwrap();

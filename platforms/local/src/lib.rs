@@ -1,47 +1,66 @@
-//! Application-owned local platform. Mount transport; select memory or native IO.
-//! No application, identity, persistence or cache provider is installed implicitly.
+//! Application-owned local platform. Transport and execution are selected here;
+//! neither portable capability depends on the other. Hosts own all IO and state.
 pub mod memory;
 #[cfg(feature = "native")]
 pub mod native;
 
+use snap_execution::{Call, Executor, Program, Scope, Ticket};
 use snap_transport::{
     Command, Error, Event, Response,
-    server::{Application, Attachment, Authority, Server},
+    server::{Attachment, Authority, Dispatch, Server},
 };
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub struct Peer {
     attachment: Option<Attachment>,
 }
-pub struct Platform<A: Application, R: Authority> {
-    pub transport: Server<A, R>,
+pub enum Submission {
+    Ready(Response),
+    Pending(Ticket),
 }
-impl<A: Application, R: Authority> Platform<A, R> {
-    pub fn new(transport: Server<A, R>) -> Self {
-        Self { transport }
+pub enum Observation {
+    Event { ticket: Ticket, event: Event },
+    Need { ticket: Ticket, key: String },
+}
+pub struct Platform<P: Program, R: Authority> {
+    transport: Server<R>,
+    execution: Executor<P>,
+    invocations: BTreeMap<Ticket, u64>,
+}
+impl<P: Program, R: Authority> Platform<P, R> {
+    pub fn new(transport: Server<R>, execution: Executor<P>) -> Self {
+        Self {
+            transport,
+            execution,
+            invocations: BTreeMap::new(),
+        }
     }
-    /// The platform retains physical handles, never the client. Emission is local
-    /// queueing before handler entry; external delivery is not an acceptance gate.
-    pub fn receive(
-        &mut self,
-        peer: &mut Peer,
-        command: Command,
-        now: u64,
-        mut observe: impl FnMut(Event),
-    ) -> Response {
+    pub fn tick(&mut self, now: u64) {
         self.transport.tick(now);
-        let mut events = Vec::new();
-        let mut emit = |event: Event| {
-            observe(event.clone());
-            events.push(event);
-        };
-        match command {
+        self.retire();
+    }
+    fn retire(&mut self) {
+        for connection in self.transport.take_retired() {
+            self.execution.release(Scope(connection.0));
+        }
+    }
+    /// Only enqueues application work. Hosts must drive `step`, deliver its
+    /// observations in order, and resolve Need outside application entry points.
+    pub fn submit(&mut self, peer: &mut Peer, command: Command, now: u64) -> Submission {
+        self.tick(now);
+        let response = match command {
             Command::Connect { bearer, client_id } => {
                 if peer.attachment.is_some() {
-                    return Response::Failed(Error::Occupied);
+                    return Submission::Ready(Response::Failed(Error::Occupied));
                 }
                 match self.transport.connect(&bearer, &client_id, now) {
                     Ok((attachment, resumed)) => {
+                        if !resumed {
+                            self.execution
+                                .open(Scope(attachment.connection().0))
+                                .expect("fresh connection ID");
+                        }
                         peer.attachment = Some(attachment);
                         Response::Attached { resumed }
                     }
@@ -49,39 +68,118 @@ impl<A: Application, R: Authority> Platform<A, R> {
                 }
             }
             Command::Request { bearer, invocation } => {
-                self.transport
-                    .request(bearer.as_deref(), invocation, &mut emit);
-                Response::Events(events)
+                let id = invocation.id;
+                return self.enqueue(id, self.transport.request(bearer.as_deref(), invocation));
             }
             Command::Invoke(invocation) => {
-                match &peer.attachment {
-                    Some(attachment) => self.transport.invoke(attachment, invocation, &mut emit),
-                    None => emit(Event::Completed {
-                        id: invocation.id,
-                        outcome: Err(Error::IdentityRequired),
-                    }),
-                }
-                Response::Events(events)
+                let id = invocation.id;
+                let dispatch = match &peer.attachment {
+                    Some(attachment) => self.transport.invoke(attachment, invocation),
+                    None => Err(Error::IdentityRequired),
+                };
+                return self.enqueue(id, dispatch);
             }
             Command::Disconnect | Command::Close => {
                 let Some(attachment) = peer.attachment.take() else {
-                    return Response::Failed(Error::StaleConnection);
+                    return Submission::Ready(Response::Failed(Error::StaleConnection));
                 };
                 let result = if matches!(command, Command::Close) {
                     self.transport.close(&attachment)
                 } else {
                     self.transport.disconnect(&attachment, now)
                 };
+                self.retire();
                 match result {
                     Ok(()) => Response::Detached,
                     Err(error) => Response::Failed(error),
                 }
             }
+        };
+        Submission::Ready(response)
+    }
+    fn enqueue(&mut self, id: u64, dispatch: Result<Dispatch, Error>) -> Submission {
+        let result = dispatch.and_then(|dispatch| {
+            self.execution
+                .submit(
+                    dispatch.connection.map(|id| Scope(id.0)),
+                    Call {
+                        operation: dispatch.invocation.operation,
+                        input: dispatch.invocation.input,
+                        identity: dispatch.identity,
+                    },
+                )
+                .map_err(transport_error)
+        });
+        match result {
+            Ok(ticket) => {
+                self.invocations.insert(ticket, id);
+                Submission::Pending(ticket)
+            }
+            Err(error) => Submission::Ready(Response::Events(vec![Event::Completed {
+                id,
+                outcome: Err(error),
+            }])),
         }
+    }
+    pub fn step(&mut self) -> Option<Observation> {
+        Some(match self.execution.step()? {
+            snap_execution::Event::Accepted(ticket) => Observation::Event {
+                ticket,
+                event: Event::Accepted {
+                    id: self.invocations[&ticket],
+                },
+            },
+            snap_execution::Event::Need { ticket, key } => Observation::Need { ticket, key },
+            snap_execution::Event::Completed { ticket, outcome } => {
+                let id = self.invocations.remove(&ticket).expect("owned invocation");
+                Observation::Event {
+                    ticket,
+                    event: Event::Completed {
+                        id,
+                        outcome: outcome.map_err(transport_error),
+                    },
+                }
+            }
+        })
+    }
+    pub fn supply(
+        &mut self,
+        ticket: Ticket,
+        key: &str,
+        result: snap_execution::Outcome,
+    ) -> Result<(), snap_execution::Error> {
+        self.execution.supply(ticket, key, result)
+    }
+    pub fn pending_call(&self, ticket: Ticket) -> Option<&Call> {
+        self.execution.pending_call(ticket)
+    }
+    pub fn pause(&mut self) {
+        self.execution.pause();
+    }
+    pub fn resume(&mut self) {
+        self.execution.resume();
+    }
+    pub fn replace(&mut self, program: P) -> Result<(), snap_execution::Error> {
+        self.execution.replace(program)
     }
     pub fn lost(&mut self, peer: &mut Peer, now: u64) {
         if let Some(attachment) = peer.attachment.take() {
             let _ = self.transport.disconnect(&attachment, now);
         }
+        self.retire();
+    }
+}
+pub fn transport_error(error: snap_execution::Error) -> Error {
+    match error {
+        snap_execution::Error::UnknownOperation => Error::UnknownOperation,
+        snap_execution::Error::IdentityRequired => Error::IdentityRequired,
+        snap_execution::Error::InvalidInput => Error::InvalidInput,
+        snap_execution::Error::InvalidOutput | snap_execution::Error::InvalidState => {
+            Error::InvalidOutput
+        }
+        snap_execution::Error::Unavailable => Error::Unavailable,
+        snap_execution::Error::Protocol => Error::Protocol,
+        snap_execution::Error::Capacity => Error::Capacity,
+        snap_execution::Error::Application(value) => Error::Application(value),
     }
 }

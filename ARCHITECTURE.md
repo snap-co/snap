@@ -3,18 +3,21 @@
 Snap separates capability contracts from their providers. Applications select
 implementations and explicitly publish operations. Hosts own execution and IO.
 
-## Active slice: Testy and standalone transport
+## Active slice: Testy, transport and execution
 
-`crates/transport` is the standalone `snap-transport` capability. It owns operation
-contracts, admission, client correlation and resumable logical connections, and
-compiles with `no_std` plus `alloc`. It has no dependencies on the older runtime,
-Identity, Passport, Store or Cache. Testy is Snap's permanent contract application;
-its portable server and SDK depend only on transport and serialization utilities.
-The older integrations below have not been migrated and are outside this stage.
+`crates/transport` is the standalone `snap-transport` capability. It owns verified
+connection context, client correlation, envelopes and resumable logical connections.
+`crates/execution` is `snap-execution`, the IO-free application interface and host
+execution state machine. It owns admission, private attempts and in-memory commit.
+Neither capability depends on the other. Both compile with `no_std` plus `alloc`.
+Testy is Snap's permanent contract application, selecting these two capabilities
+and serialization utilities. They have no dependencies on the older runtime,
+Identity, Passport, Store or Cache. The earlier integrations below are outside
+this stage.
 
 Applications own entry points and platform composition. `apps/testy/local` builds
-the memory program, native server and native SDK program. `platforms/local` supplies
-a local platform that mounts transport and selects memory or native IO. Native IO
+the memory program, native server, native SDK program and execution demonstration.
+`platforms/local` mounts transport and execution and selects memory or native IO. Native IO
 is feature-selected; memory builds do not compile Tokio. The native-only executable
 does not select the memory executor. A platform is not owned by transport, and
 adding another capability later must not make it a transport dependency.
@@ -31,20 +34,77 @@ Unexpected disconnect retains application state for five minutes by default,
 configurable by composition. Explicit close or detached expiry drops that state.
 Platforms drive the monotonic timer even without new requests. Reattachment before
 expiry restores state, but uses a new internal generation to fence old socket events.
-Connection-owned reference counts release resident application objects when their
-last owner leaves. Process shutdown loses all resident state; this is not persistence.
+Transport holds stable logical connection IDs. The platform maps those IDs to
+execution-owned state scopes. Close and expiry revoke new dispatch immediately,
+then queue state release behind owned operations through the execution gate.
+Process shutdown loses all resident state; this is not persistence.
 
-Operation contracts include input, output and declared application-error validators,
-an identity requirement and a guard. Transport checks schemas and identity before
-the guard, queues acceptance before entering the handler, and validates completion.
-An invalid handler result is a contract failure, not a rollback of handler effects.
-Per-attachment increasing invocation IDs reject duplicates; no automatic replay or
-cross-reconnect result recovery is promised. IO failure leaves mutation outcome
-unknown. Client code must not reuse an interrupted native exchange stream.
+### Application interface and global gate
 
-This first calculator slice uses synchronous authority, guards and handlers. Memory
+`Program::admit` returns Ready, Need, or Reject. `Program::attempt` returns Need,
+Commit with proposed state and result, or Fail. Both entry points are synchronous,
+IO-free and must retain no invocation state in the program. The static build uses
+ordinary Rust calls; it is not an IO sandbox or a stable binary ABI. A later Wasm
+adapter will translate explicit data rather than pass Rust trait objects.
+
+`Executor` serializes the whole application instance with one active operation and
+a FIFO. There are no per-object locks or concurrent application dispatch. The
+active operation owns the gate from admission through commit/failure, including
+dependency waits and retries. Other operations stay queued. The host can continue
+network IO. Slow or unresolved inputs deliberately stall application dispatch;
+hosts must resolve a read or supply a failure. The current native fixture selects
+an immediate, nonblocking resolver; memory supports explicitly held reads.
+
+Operation descriptions declare input/output/error validators and an identity
+policy. Execution checks schema and the transport-verified identity before calling
+admission. Admission may request read-only inputs before deciding. Ready produces
+one Accepted observation; the next step enters the handler. The platform queues
+the acknowledgement before that next step. A Need during handler execution discards
+all edits and restarts the handler using the same invocation and accumulated inputs.
+The gate keeps admission state valid throughout retries. No second acknowledgement
+is emitted. Unexpected repeated requests for an already supplied key fail, and
+dependency discovery is bounded to 64 distinct keys per operation.
+
+For this pass each logical connection has one data-only state record, represented
+by an owned `serde_json::Value`. Request-local calls start with null and discard
+their proposed state after completion. Every handler attempt receives a deep copy
+of committed state. Reads of that working copy see its earlier edits. Input lookup
+uses a supplied map, without callbacks into the host. App-local Rust allocations
+are dropped on return; there is no custom arena allocator or binary state layout yet.
+The memory path passes values directly, without byte serialization.
+
+Before publication, execution checks both the result schema and proposed state
+schema. Failures discard the whole proposal, including history edits. A successful
+commit replaces the scoped state before emitting completion. No other operation
+can observe a partial update. This is in-memory atomic publication, not a database
+transaction. Dependency requests are reads, never irreversible external effects.
+External write reconciliation and multiple-object memory graphs are not implemented.
+
+Increasing invocation IDs reject duplicates per attachment. Transport does not
+replay commands after IO failure or provide cross-reconnect result recovery. Its
+client must replace an interrupted native stream. Internal execution retries happen
+only before publication and are distinct from client retries. Dropping a memory
+client future after submission discards observation interest, not host-owned work.
+
+### Replacement and snapshots
+
+Pausing the executor stops new submissions and drains already queued operations.
+Replacement requires an idle, paused gate, an equal application state version and
+valid retained records. An incompatible replacement leaves the old program intact.
+State has no application callbacks, vtables or destructors. Operation descriptors
+are read from the selected program rather than cached across replacement.
+
+The execution demo replaces a Rust implementation in process against the same
+retained state. It establishes the programming interface; module loading, Wasm
+memory layouts and unloading are later work. Statically linked production builds
+use the same entry points without a loader. Development snapshots copy idle state
+records and their version. Restore requires a paused, idle gate and the same live
+scope IDs. It does not restore sockets, clocks, pending IO, or external side effects.
+Replay of a read-dependent invocation must supply the captured inputs separately.
+
+Authority, admission and application entry points remain synchronous. Memory
 delivery and native IO are asynchronous, and acceptance is locally queued before
-handler entry. It does not yet supply suspended operation continuations. The native
+handler entry. No suspended application continuations survive calls. The native
 adapter uses bounded length-prefixed JSON over TCP, with one invocation at a time
 per physical connection. It is a local fixture, not a TLS or WebSocket deployment.
 Workers/WebSocket compositions and migration of the old adapters are subsequent
@@ -58,6 +118,11 @@ Calculator arithmetic is checked signed-64-bit arithmetic; division truncates
 toward zero. Failed calculations leave accumulator/history untouched. History is
 bounded to 128 successful operations for this fixture. Different logical
 connections own different calculators, even under the same identity.
+
+`calc.add_checked` deliberately writes its private accumulator and history before
+reading `testy.calculator.ceiling`. A missing ceiling returns Need and rolls back
+those edits; a supplied ceiling below the proposed accumulator fails with
+`AboveCeiling`. This exercises the retry interface using the real calculator SDK.
 
 ## Earlier integration architecture
 
