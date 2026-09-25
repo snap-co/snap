@@ -470,7 +470,7 @@ is an in-process lifetime promise, not crash recovery or durable continuations.
 composition supplies web bindings separately; a single operation can be enabled
 for both HTTP and WebSocket. `Provider::Context` and `Output` belong to the selected
 capability/composition, so the scheduler has no Passport-specific work variants.
-`apps/authy/native/src/main.rs` selects Store/crypto/cookie implementations and
+`apps/authy/native/src/lib.rs` composes Store/crypto/cookie implementations and
 projects Passport results into web delivery effects.
 
 Passport uses namespaced Store tables and transactions from portable Rust. The

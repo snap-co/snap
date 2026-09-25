@@ -269,7 +269,16 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
             let mut rows = snap_store::snapshot(&self.store, &self.cache, query.clone())
                 .await
                 .map_err(storage_error)?;
-            let mut credential = rows.pop().ok_or_else(bad_credential)?;
+            // Cached absence is advisory too: enrollment may have happened since
+            // the lookup. Reload authority before rejecting a missing credential.
+            let mut credential = match rows.pop() {
+                Some(credential) => credential,
+                None => self
+                    .read(query.clone())
+                    .await?
+                    .pop()
+                    .ok_or_else(bad_credential)?,
+            };
             // A stale cached hash must not reject a password that is valid now.
             if !self
                 .crypto

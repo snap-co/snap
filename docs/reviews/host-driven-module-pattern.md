@@ -14,8 +14,10 @@ and tooling review budgets remain closed.
   superseding its old synchronous-stage and Lane implementation choices.
 - Work remains on `main`. No remote, tracker, new branch, or worktree is involved.
 
-Review base is the design/prototype commit `ee98a70` immediately before the product
-refactor. Record full base and reviewed HEAD before reviewer dispatch.
+Immutable review base: `ee98a70afac25a3caee8a0306db633efb1ab18c1`.
+Round-1 HEAD: `a47a4018c7755c548eeb4d3bac55edc7ca72afe6`.
+Commit: `Implement host-driven providers, shared Store and carrier bindings`.
+Captured diff: `/tmp/opencode/module-pattern-round1.diff`.
 
 ## Implemented decisions
 
@@ -69,5 +71,44 @@ schema registration; exercise migrations on owned fixtures before restarting it.
 
 ## Review rounds
 
-Zero rounds used. Both Standards and Spec axes are required in round 1; at most
-one post-fix validation round may follow, under implementation-review.
+Round 1 is dispatched below for independent Standards and Spec assessments of
+the same immutable revision and contract. At most one post-fix validation round
+may follow, under implementation-review.
+
+Model discovery confirms `openai/gpt-6-astra` and its high/xhigh variants. Persistence
+migration and continuation lifetime warrant deeper review. The tool's model field
+requires an explicit user model request; none was made, so the reviewers use the
+harness's default Astra rather than an unauthorized variant override.
+
+The full `mise exec -- ./bin/check` passed on the recorded HEAD. Log:
+`/tmp/opencode/module-pattern-full-check.log`. It includes format/Clippy, all-target
+builds, final contract-role/bare-WASM structural checks, Rustdoc, dependency policy,
+CLI suites, Store contracts, Healthy SDK/wire/journey/reference, Authy wire/migration,
+carrier/lifecycle, eight recovery cases, TypeScript interoperability, all nine
+Chromium scenarios, and listener replacement/cleanup.
+
+`mise exec -- ./bin/snap check apps/authy` also passed on the recorded HEAD, including
+its newly wired Store/carrier/migration commands from the application directory.
+Log: `/tmp/opencode/module-pattern-project-check.log`. Reviewers may run focused
+isolated probes but must leave shared builds/full gates to the coordinator.
+
+- Standards session: `ses_f2a230405ffewKza60BDz1ajjN`.
+- Spec session: `ses_f2a228380ffeuUqadFQn8PYy57`.
+
+## Round-1 findings and repair disposition
+
+Both axes returned BLOCKED. Complete reports are archived alongside this ledger:
+[Standards round 1](host-driven-module-pattern-standards-round1.md) and
+[Spec round 1](host-driven-module-pattern-spec-round1.md).
+
+| Finding | Disposition | Repair |
+| --- | --- | --- |
+| STD-1 / SPEC-1 | Accepted, duplicate namespace-isolation blocker | Both backends reject identifiers outside lowercase ASCII letters, digits and underscores. Persisted SQLite ownership lookups use NOCASE. Shared registration tests cover case aliases, reserved/legacy names, rejection on reopening and preserved rows. |
+| STD-2 | Accepted carrier-boundary blocker | Core uses opaque operation IDs and an attachment flag. Each native/browser physical connection owns a snap-web codec, sequences web IDs and maps completions back to controller IDs. Generation fencing and deadlines still use core IDs. |
+| SPEC-2 | Accepted HTTPS compatibility blocker | Native composition and web host share parsed origin validation. Cookie policy uses the normalized scheme. Wire regression verifies uppercase HTTPS yields a Secure __Host cookie that survives restart. |
+| SPEC-3 | Accepted as in-scope repair | This cache-enabled failure was introduced by this refactor's optional Passport cache support, so it is repaired in the same batch rather than filed as independent work. Empty snapshots reload authority before rejecting login. One wire sequence runs through NoCache and a MemoryCache composition. |
+
+No requirement or threat model was broadened. No independent finding remains to
+file; this repository has no configured tracker. Authy's native projection moved
+to `src/lib.rs` so packaged and cache-enabled launchers share composition. The
+packaged executable still selects NoCache.

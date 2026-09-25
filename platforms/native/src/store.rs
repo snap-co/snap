@@ -66,7 +66,7 @@ impl Store {
             );
             let registered: Option<(String, String)> = tx
                 .query_row(
-                    "SELECT logical, shape FROM snap_store_schemas WHERE physical=?1",
+                    "SELECT logical, shape FROM snap_store_schemas WHERE physical=?1 COLLATE NOCASE",
                     [&physical],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -438,7 +438,10 @@ impl snap_store::Cache for MemoryCache {
 }
 
 fn valid(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 fn name(table: Table) -> String {
     format!("{}_{}", table.namespace, table.name)

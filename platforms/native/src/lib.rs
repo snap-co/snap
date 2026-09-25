@@ -168,17 +168,7 @@ async fn serve(
         if !operations.contains(&session.identify) {
             return Err(io::Error::other("Unknown session resolver"));
         }
-        let mut origin = reqwest::Url::parse(&session.origin).map_err(io::Error::other)?;
-        if !matches!(origin.scheme(), "http" | "https")
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.host_str().is_none()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(io::Error::other("SNAP_ORIGIN must be an HTTP(S) origin"));
-        }
+        let mut origin = parse_origin(&session.origin)?;
         if origin.port() == Some(0) {
             let _ = origin.set_port(Some(listener.local_addr()?.port()));
         }
@@ -417,6 +407,21 @@ fn problem(status: StatusCode, message: &str) -> Response {
         Json(json!({"error":message})),
     )
         .into_response()
+}
+/// Shared normalization for carrier origin checks and composition's cookie policy.
+pub fn parse_origin(value: &str) -> io::Result<reqwest::Url> {
+    let origin = reqwest::Url::parse(value).map_err(io::Error::other)?;
+    if !matches!(origin.scheme(), "http" | "https")
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.host_str().is_none()
+        || origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return Err(io::Error::other("SNAP_ORIGIN must be an HTTP(S) origin"));
+    }
+    Ok(origin)
 }
 pub fn now() -> u64 {
     std::time::SystemTime::now()

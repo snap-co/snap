@@ -13,7 +13,10 @@ declared primary keys. `Row` values are checked against those declarations befor
 execution. This is a bounded relational interface, not a SQL parser or ORM.
 
 SQLite maps a table to `namespace_name`, quotes identifiers, and rejects physical
-name collisions. Schema registration runs in one transaction. A module can declare
+name collisions. Both backends require lowercase ASCII letters, digits and underscores
+in namespaces, tables, columns and legacy names. This excludes case-only aliases
+under SQLite's identifier comparison, including on a later registration.
+Schema registration runs in one transaction. A module can declare
 a legacy physical name for a one-time rename preserving rows and references.
 Passport uses this to migrate the old `credentials`, `sessions`, and `settings`
 tables into `snap_identity`. The persisted signing key is reused.
@@ -62,7 +65,7 @@ but cannot substitute for a transactional check of current authority.
 
 Authy selects NoCache. Passport can consume a snapshot cache for credential lookup:
 it checks the credential/hash again inside session creation and reloads authority
-before rejecting a password against a cached hash. Receipt caching has separate
+before rejecting cached absence or a password against a cached hash. Receipt caching has separate
 lifetime/recovery semantics and is not implemented by this record cache.
 
 Contract verification: `cargo test -p snap-native --test store-contract`. Authy

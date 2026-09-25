@@ -18,7 +18,8 @@ tracks verification and review.
 - Native executors: `platforms/native/src/store.rs` and `passport.rs`.
 - Carrier mapping/codecs: `platforms/web`; physical delivery: `platforms/native`
   and `platforms/browser`. Shared clients consume normalized outcomes/events.
-- Application selection and output projection: `apps/authy/native/src/main.rs`.
+- Application selection and output projection: `apps/authy/native/src/lib.rs`;
+  `main.rs` selects NoCache for the packaged application.
 
 ## Assign ownership before choosing directories
 

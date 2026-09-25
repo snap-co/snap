@@ -1,8 +1,8 @@
 //! Resident identity client shared by browser and native hosts.
 //!
 //! Commands are never replayed. A dropped connection rejects unfinished reads;
-//! reconnect opens a new epoch and explicitly refreshes the server's snapshots.
-//! Generation fencing discards late HTTP/socket observations after session change.
+//! reconnect opens a new attachment and explicitly refreshes the server's snapshots.
+//! Generation fencing discards late carrier observations after session change.
 //! Host clocks, IO, timers and task cancellation do not enter this module.
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use serde::Serialize;
@@ -92,8 +92,7 @@ pub struct Client {
     generation: u64,
     socket_generation: u64,
     sequence: u64,
-    message_sequence: u64,
-    epoch: Option<String>,
+    attached: bool,
     pending: BTreeMap<String, Pending>,
     retry: u32,
     closed: bool,
@@ -116,8 +115,7 @@ impl Client {
             generation: 0,
             socket_generation: 0,
             sequence: 0,
-            message_sequence: 0,
-            epoch: None,
+            attached: false,
             pending: BTreeMap::new(),
             retry: 250,
             closed: false,
@@ -164,9 +162,11 @@ impl Client {
         if self.pending.values().any(|p| p.key == key) {
             return;
         }
-        let Some(epoch) = &self.epoch else { return };
-        self.message_sequence += 1;
-        let id = format!("{epoch}:{}", self.message_sequence);
+        if !self.attached {
+            return;
+        }
+        self.sequence += 1;
+        let id = format!("identity-{}", self.sequence);
         self.pending.insert(
             id.clone(),
             Pending {
@@ -193,7 +193,7 @@ impl Client {
         self.session_ended = false;
         self.generation += 1;
         self.socket_generation += 1;
-        self.epoch = None;
+        self.attached = false;
         self.state.connection = "disconnected";
         self.state.phase = "loading";
         self.state.identity_id = None;
@@ -233,7 +233,7 @@ impl Client {
                 }
                 self.state.error = None;
                 if key == "refresh" {
-                    if self.epoch.is_some() {
+                    if self.attached {
                         self.read("identity.credentials", out);
                         self.read("identity.sessions", out);
                     } else if self.state.phase == "error" {
@@ -338,9 +338,8 @@ impl Client {
                     return;
                 };
                 match event {
-                    ConnectionEvent::Attached { epoch } => {
-                        self.epoch = Some(epoch);
-                        self.message_sequence = 0;
+                    ConnectionEvent::Attached => {
+                        self.attached = true;
                         self.retry = 250;
                         self.state.connection = "connected";
                         self.state.error = None;
@@ -398,7 +397,7 @@ impl Client {
                     if self.state.pending {
                         self.session_ended = true;
                         self.socket_generation += 1;
-                        self.epoch = None;
+                        self.attached = false;
                         self.state.phase = "loading";
                         self.state.connection = "disconnected";
                         self.state.identity_id = None;
@@ -412,7 +411,7 @@ impl Client {
                     self.request("identity.fetch", None, None, out);
                     return;
                 }
-                self.epoch = None;
+                self.attached = false;
                 self.state.connection = "disconnected";
                 self.socket_generation += 1;
                 out.push(Action::Disconnect);

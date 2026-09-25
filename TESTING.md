@@ -63,6 +63,12 @@ starts Authy with an independently declared legacy database and checks old cooki
 password login, uniqueness, and restart through published operations. All fixtures
 own their temporary databases, ports, and processes.
 
+`tests/protocol/passport-policy.test.ts` verifies normalized HTTPS cookie behavior
+and login after a cached negative lookup followed by enrollment. Its cache adapter
+uses Authy's native composition with MemoryCache; the same operation assertions run
+with the packaged NoCache selection. Store registration contracts also reject
+case-only namespace aliases and check existing data after failed registration.
+
 The structural CLI contract verifies that a `contract` package cannot depend on a
 portable provider. Existing portability gates cover all new contract crates.
 

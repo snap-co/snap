@@ -14,6 +14,7 @@ authy.workspace = true
 snap-native.workspace = true
 snap-protocol.workspace = true
 snap-runtime.workspace = true
+snap-store.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -4,6 +4,7 @@ use snap_store::Schema;
 pub struct Fixture {
     pub store: Store,
     pub peer: Store,
+    sqlite: bool,
     directory: std::path::PathBuf,
 }
 impl Fixture {
@@ -28,7 +29,15 @@ impl Fixture {
         Self {
             store,
             peer,
+            sqlite,
             directory,
+        }
+    }
+    pub fn register(&self, schemas: &[Schema]) -> Result<Store, snap_store::Error> {
+        if self.sqlite {
+            Store::sqlite(&self.directory.join("store.sqlite"), schemas)
+        } else {
+            Store::memory(schemas)
         }
     }
 }

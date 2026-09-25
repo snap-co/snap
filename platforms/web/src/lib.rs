@@ -1,9 +1,9 @@
 //! Selected HTTP/WebSocket compatibility bindings, shared by web hosts and clients.
 #![no_std]
 extern crate alloc;
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
-use snap_protocol::{ConnectionEvent, Disconnect, Error, Outcome, Value, json};
+use snap_protocol::{ConnectionEvent, Disconnect, Error, Invocation, Outcome, Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -122,28 +122,63 @@ pub fn decode_completion(wire: &str, id: &str) -> Result<Outcome, Error> {
         None => Err(invalid("Invalid Transport result outcome")),
     }
 }
-pub fn event(wire: &str) -> Result<ConnectionEvent, Error> {
-    let event: Value = serde_json::from_str(wire).map_err(|_| invalid("Invalid socket event"))?;
-    let key = event["key"]
-        .as_str()
-        .ok_or_else(|| invalid("Invalid socket event"))?;
-    match key {
-        "transport.epoch" => Ok(ConnectionEvent::Attached {
-            epoch: event["payload"]["epoch"]
-                .as_str()
-                .ok_or_else(|| invalid("Invalid epoch"))?
-                .into(),
-        }),
-        "transport.complete" => {
-            let id = event["target"]
-                .as_str()
-                .ok_or_else(|| invalid("Missing target"))?;
-            Ok(ConnectionEvent::Completed {
-                id: id.into(),
-                outcome: decode_completion(wire, id)?,
-            })
+/// One physical connection owns web sequence framing and maps completion targets
+/// back to opaque controller IDs. Dropping it discards every unfinished mapping;
+/// the controller's generation fencing rejects observations from old attachments.
+#[derive(Default)]
+pub struct Connection {
+    epoch: Option<String>,
+    sequence: u64,
+    pending: BTreeMap<String, String>,
+}
+impl Connection {
+    pub fn encode(&mut self, mut invocation: Invocation) -> Result<String, Error> {
+        let epoch = self
+            .epoch
+            .as_ref()
+            .ok_or_else(|| invalid("Connection is not attached"))?;
+        if self.sequence >= 9_007_199_254_740_991 {
+            return Err(invalid("Connection sequence exhausted"));
         }
-        _ => Ok(ConnectionEvent::Notification { key: key.into() }),
+        self.sequence += 1;
+        let wire_id = format!("{epoch}:{}", self.sequence);
+        let id = core::mem::replace(&mut invocation.operation_id, wire_id.clone());
+        let wire = serde_json::to_string(&invocation).map_err(|_| invalid("Invalid invocation"))?;
+        self.pending.insert(wire_id, id);
+        Ok(wire)
+    }
+    pub fn event(&mut self, wire: &str) -> Result<ConnectionEvent, Error> {
+        let event: Value =
+            serde_json::from_str(wire).map_err(|_| invalid("Invalid socket event"))?;
+        let key = event["key"]
+            .as_str()
+            .ok_or_else(|| invalid("Invalid socket event"))?;
+        match key {
+            "transport.epoch" => {
+                if self.epoch.is_some() {
+                    return Err(invalid("Connection is already attached"));
+                }
+                self.epoch = Some(
+                    event["payload"]["epoch"]
+                        .as_str()
+                        .ok_or_else(|| invalid("Invalid epoch"))?
+                        .into(),
+                );
+                Ok(ConnectionEvent::Attached)
+            }
+            "transport.complete" => {
+                let id = event["target"]
+                    .as_str()
+                    .ok_or_else(|| invalid("Missing target"))?;
+                let outcome = decode_completion(wire, id)?;
+                let id = self
+                    .pending
+                    .remove(id)
+                    .ok_or_else(|| invalid("Unknown completion target"))?;
+                Ok(ConnectionEvent::Completed { id, outcome })
+            }
+            _ => Ok(ConnectionEvent::Notification { key: key.into() }),
+        }
     }
 }
 pub fn disconnect(code: u16) -> Disconnect {

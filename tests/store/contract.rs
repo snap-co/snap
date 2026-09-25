@@ -224,6 +224,54 @@ async fn memory_store_contract() {
     let fixture = adapter::Fixture::new(false, &schemas());
     contract(fixture.store.clone(), fixture.peer.clone()).await;
 }
+
+#[tokio::test]
+async fn identifiers_cannot_alias_namespace_ownership() {
+    for sqlite in [false, true] {
+        let fixture = adapter::Fixture::new(sqlite, &schemas());
+        fixture
+            .store
+            .transaction(tx(vec![S::Insert {
+                table: ROOT,
+                row: root("r", "original", 1),
+            }]))
+            .await
+            .unwrap();
+        let mut mixed = schemas()[0].clone();
+        mixed.table.namespace = "Documents";
+        assert!(matches!(
+            fixture.register(&[schemas()[0].clone(), mixed.clone()]),
+            Err(Error::Invalid)
+        ));
+        // A later registration must not acquire an existing owner's rows either.
+        assert!(matches!(fixture.register(&[mixed]), Err(Error::Invalid)));
+        for table in [
+            Table {
+                namespace: "snap",
+                name: "STORE_SCHEMAS",
+            },
+            Table {
+                namespace: "documents",
+                name: "Records",
+            },
+        ] {
+            let mut invalid = schemas()[0].clone();
+            invalid.table = table;
+            assert!(matches!(fixture.register(&[invalid]), Err(Error::Invalid)));
+        }
+        let mut legacy = schemas()[0].clone();
+        legacy.legacy_name = Some("DOCUMENTS_RECORDS");
+        assert!(matches!(fixture.register(&[legacy]), Err(Error::Invalid)));
+        assert_eq!(
+            read(&fixture.store, ROOT).await,
+            vec![root("r", "original", 1)]
+        );
+        if sqlite {
+            let reopened = fixture.register(&schemas()).unwrap();
+            assert_eq!(read(&reopened, ROOT).await, vec![root("r", "original", 1)]);
+        }
+    }
+}
 #[tokio::test]
 async fn sqlite_store_contract() {
     let fixture = adapter::Fixture::new(true, &schemas());

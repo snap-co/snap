@@ -40,6 +40,8 @@ impl From<i64> for Value {
 pub type Row = BTreeMap<String, Value>;
 pub type Rows = Vec<Row>;
 
+/// Identifiers use nonempty lowercase ASCII letters, digits and underscores.
+/// Backends must reject ambiguous physical mappings during registration.
 #[derive(Clone, Debug)]
 pub struct Schema {
     pub table: Table,

@@ -86,6 +86,7 @@ impl Drop for Client {
 
 struct Socket {
     socket: web_sys::WebSocket,
+    codec: Rc<RefCell<snap_web::Connection>>,
     _message: Closure<dyn FnMut(web_sys::MessageEvent)>,
     _close: Closure<dyn FnMut(web_sys::CloseEvent)>,
 }
@@ -162,6 +163,8 @@ async fn drive(
                     );
                     match web_sys::WebSocket::new(&url.href()) {
                         Ok(ws) => {
+                            let codec = Rc::new(RefCell::new(snap_web::Connection::default()));
+                            let incoming = codec.clone();
                             let tx = sender.clone();
                             let received = Rc::new(Cell::new(false));
                             let ready = received.clone();
@@ -171,7 +174,7 @@ async fn drive(
                                         ready.set(true);
                                         let _ = tx.unbounded_send(Event::Input(Input::Event {
                                             generation,
-                                            event: snap_web::event(&wire),
+                                            event: incoming.borrow_mut().event(&wire),
                                         }));
                                     }
                                 })
@@ -198,6 +201,7 @@ async fn drive(
                             );
                             socket = Some(Socket {
                                 socket: ws,
+                                codec,
                                 _message: message,
                                 _close: close,
                             });
@@ -215,9 +219,10 @@ async fn drive(
                     invocation,
                 } => {
                     let sent = socket.as_ref().is_some_and(|ws| {
-                        ws.socket
-                            .send_with_str(&serde_json::to_string(&invocation).expect("invocation"))
-                            .is_ok()
+                        ws.codec
+                            .borrow_mut()
+                            .encode(invocation)
+                            .is_ok_and(|wire| ws.socket.send_with_str(&wire).is_ok())
                     });
                     if !sent {
                         let _ = sender.unbounded_send(Event::Input(Input::Disconnected {

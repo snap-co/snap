@@ -3,7 +3,7 @@ use super::{Http, unavailable};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::cookie::CookieStore;
 use snap_client::identity::{Action, Client as Core, Input, Snapshot};
-use snap_protocol::{Error, Outcome, Value, json};
+use snap_protocol::{Error, Invocation, Outcome, Value, json};
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicU64, Ordering},
@@ -107,7 +107,7 @@ async fn drive(
 ) {
     let mut replies = BTreeMap::new();
     let mut jobs = JoinSet::new();
-    let mut socket: Option<(mpsc::Sender<String>, tokio::task::AbortHandle)> = None;
+    let mut socket: Option<(mpsc::Sender<Invocation>, tokio::task::AbortHandle)> = None;
     let mut input = Input::Start;
     loop {
         let closing = matches!(input, Input::Close);
@@ -160,11 +160,9 @@ async fn drive(
                     generation,
                     invocation,
                 } => {
-                    let sent = socket.as_ref().is_some_and(|(socket, _)| {
-                        socket
-                            .try_send(serde_json::to_string(&invocation).expect("invocation"))
-                            .is_ok()
-                    });
+                    let sent = socket
+                        .as_ref()
+                        .is_some_and(|(socket, _)| socket.try_send(invocation).is_ok());
                     if !sent {
                         let _ = sender.try_send(Event::Input(Input::Disconnected {
                             generation,
@@ -231,9 +229,10 @@ async fn connection(
     http: Http,
     generation: u64,
     sender: mpsc::Sender<Event>,
-    mut outbound: mpsc::Receiver<String>,
+    mut outbound: mpsc::Receiver<Invocation>,
 ) {
     let result = async {
+        let mut codec = snap_web::Connection::default();
         let mut url = http.base.join("/_transport/ws").map_err(unavailable)?;
         url.set_scheme(if http.base.scheme() == "https" { "wss" } else { "ws" }).map_err(|_| unavailable("Invalid URL"))?;
         url.query_pairs_mut().append_pair("build", &http.build).append_pair("clientId", &uuid::Uuid::new_v4().to_string());
@@ -243,15 +242,15 @@ async fn connection(
         let (mut ws, _) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request)).await.map_err(unavailable)?.map_err(unavailable)?;
         let first = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.map_err(unavailable)?;
         match first {
-            Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Event { generation, event: snap_web::event(&wire) })).await.map_err(unavailable)?; }
+            Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Event { generation, event: codec.event(&wire) })).await.map_err(unavailable)?; }
             Some(Ok(Message::Close(detail))) => return Ok(detail.map(|d| u16::from(d.code)).unwrap_or(1000)),
             _ => return Ok(1006),
         }
         loop {
             tokio::select! {
-                wire = outbound.recv() => { let Some(wire) = wire else { let _ = ws.close(None).await; return Ok(1000) }; ws.send(Message::Text(wire.into())).await.map_err(unavailable)?; }
+                invocation = outbound.recv() => { let Some(invocation) = invocation else { let _ = ws.close(None).await; return Ok(1000) }; let wire = codec.encode(invocation)?; ws.send(Message::Text(wire.into())).await.map_err(unavailable)?; }
                 frame = ws.next() => match frame {
-                    Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Event { generation, event: snap_web::event(&wire) })).await.map_err(unavailable)?; }
+                    Some(Ok(Message::Text(wire))) => { sender.send(Event::Input(Input::Event { generation, event: codec.event(&wire) })).await.map_err(unavailable)?; }
                     Some(Ok(Message::Close(detail))) => return Ok(detail.map(|d| u16::from(d.code)).unwrap_or(1000)),
                     Some(Ok(_)) => {},
                     _ => return Ok(1006),

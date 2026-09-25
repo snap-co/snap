@@ -55,7 +55,7 @@ pub enum Error {
 pub type Outcome = Result<Value, Error>;
 
 pub enum ConnectionEvent {
-    Attached { epoch: String },
+    Attached,
     Completed { id: String, outcome: Outcome },
     Notification { key: String },
 }
