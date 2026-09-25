@@ -1,10 +1,12 @@
 import { test, expect } from "bun:test";
 import { createPublicKey, verify, createHash } from "node:crypto";
 import { oidcServer, clientOrigin, clientSecret } from "../adapters/oidc";
+import { deadline } from "../adapters/server";
 
 for (const host of ["native", "workers"] as const) {
 test(`${host} OIDC: profile, consent, PKCE, signed claims, rotation, replay and restart`, async () => {
   const server = await oidcServer(host);
+  const sockets: WebSocket[] = [];
   const base = server.baseUrl;
   const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
   const challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
@@ -84,17 +86,25 @@ test(`${host} OIDC: profile, consent, PKCE, signed claims, rotation, replay and 
     const redemptions = await Promise.all([exchange(concurrentCode), exchange(concurrentCode)]);
     expect(redemptions.map(r => r.status).sort()).toEqual([200, 400]);
     const logoutTokens = await (await exchange(await authorize())).json();
+    const idle = new WebSocket(`${base.replace("http:", "ws:")}/_transport/ws?build=healthy-smoke&clientId=oidc-logout`, { headers: { origin: base, cookie } });
+    sockets.push(idle);
+    await deadline(new Promise<void>((done, fail) => {
+      idle.addEventListener("message", event => { if (JSON.parse(String(event.data)).key === "transport.epoch") done(); });
+      idle.addEventListener("error", () => fail(new Error("Idle socket failed")));
+    }), 5000);
+    const closed = new Promise<CloseEvent>(done => idle.addEventListener("close", done, { once: true }));
     const initiate = await form("/oauth/logout", { client_id: "chatty", post_logout_redirect_uri: `${clientOrigin}/auth/logged-out`, id_token_hint: logoutTokens.id_token, state: "logout-state" }, { cookie });
     expect(initiate.status).toBe(200);
     const logoutHandle = (await initiate.text()).match(/name=request value="([^"]+)"/)![1];
     expect((await form("/oauth/logout", { request: logoutHandle }, { cookie, origin: "https://attacker.example" })).status).toBe(403);
     const loggedOut = await form("/oauth/logout", { request: logoutHandle }, { cookie, origin: base });
     expect(loggedOut.status).toBe(303); expect(loggedOut.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect((await deadline(closed, 5000)).code).toBe(4001);
     expect(new URL(loggedOut.headers.get("location")!).searchParams.get("state")).toBe("logout-state");
     expect((await info(logoutTokens.access_token)).status).toBe(401);
     expect((await request("/api/account", { headers: { cookie } })).status).toBe(401);
     cookie = await signIn(false);
     expect((await request("/oauth/logout", { headers: { cookie } })).status).toBe(200);
-  } finally { await server.close(); }
+  } finally { for (const socket of sockets) socket.close(); await server.close(); }
 }, 120_000);
 }

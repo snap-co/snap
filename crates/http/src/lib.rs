@@ -83,6 +83,9 @@ pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Post-commit local-session termination, delivered by the retained host call
+    /// before notifying the HTTP observer. These IDs never enter the HTTP wire.
+    pub terminate: Vec<String>,
 }
 impl Response {
     pub fn new(status: u16, content_type: &str, body: Vec<u8>) -> Self {
@@ -96,6 +99,7 @@ impl Response {
                 ("referrer-policy".into(), "no-referrer".into()),
             ],
             body,
+            terminate: Vec::new(),
         }
     }
     pub fn json(status: u16, value: serde_json::Value) -> Self {
@@ -103,6 +107,9 @@ impl Response {
     }
     pub fn html(body: String) -> Self {
         Self::new(200, "text/html; charset=utf-8", body.into_bytes())
+            // no-referrer makes Chromium form POST Origin opaque. same-origin
+            // retains origin validation and still withholds cross-origin referrers.
+            .with("referrer-policy", "same-origin")
             .with("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
     }
     pub fn error(status: u16, code: &str, description: &str) -> Self {
@@ -115,6 +122,10 @@ impl Response {
         Self::new(303, "text/plain", Vec::new()).with("location", url)
     }
     pub fn with(mut self, name: &str, value: &str) -> Self {
+        if !name.eq_ignore_ascii_case("set-cookie") {
+            self.headers
+                .retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+        }
         self.headers.push((name.into(), value.into()));
         self
     }

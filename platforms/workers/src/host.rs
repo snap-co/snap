@@ -110,15 +110,7 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
         self.state.wait_until(async move {
             let _permit = permit;
             let reply = future.await;
-            if !reply.terminate.is_empty() {
-                for socket in state.get_websockets() {
-                    if let Ok(Some(data)) = socket.deserialize_attachment::<Attachment>()
-                        && reply.terminate.contains(&data.session)
-                    {
-                        let _ = socket.close(Some(4001), Some("session ended"));
-                    }
-                }
-            }
+            terminate(&state, &reply.terminate);
             let _ = send.send(reply);
         });
         match select(receive, Box::pin(Delay::from(Duration::from_secs(5)))).await {
@@ -428,6 +420,19 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
             self.state.storage().set_alarm(next as i64).await?;
         }
         Ok(())
+    }
+}
+/// Shared post-commit delivery for Protocol and standards-HTTP continuations.
+pub(crate) fn terminate(state: &State, sessions: &[String]) {
+    if sessions.is_empty() {
+        return;
+    }
+    for socket in state.get_websockets() {
+        if let Ok(Some(data)) = socket.deserialize_attachment::<Attachment>()
+            && sessions.contains(&data.session)
+        {
+            let _ = socket.close(Some(4001), Some("session ended"));
+        }
     }
 }
 

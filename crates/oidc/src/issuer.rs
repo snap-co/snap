@@ -374,7 +374,7 @@ impl<D: Store, C: Crypto, A: Accounts> Issuer<D, C, A> {
                 escape(&handle),
                 escape(&client.name)
             ),
-        )))
+        )).with("content-security-policy", &form_policy(&client.redirect_uri)))
     }
     async fn consent(&self, req: &Request, actor: Option<Identity>) -> Result<Response, Response> {
         self.origin(req)?;
@@ -723,7 +723,7 @@ impl<D: Store, C: Crypto, A: Accounts> Issuer<D, C, A> {
                     escape(actor.claims["email"].as_str().unwrap_or("this account")),
                     escape(&handle)
                 ),
-            )));
+            )).with("content-security-policy", &form_policy(redirect)));
         }
         self.origin(req)?;
         let id = digest(param(&p, "request")?);
@@ -743,12 +743,11 @@ impl<D: Store, C: Crypto, A: Accounts> Issuer<D, C, A> {
         guards.push(guard(q));
         transaction(&self.store, guards, vec![delete(FLOWS, &id)]).await?;
         self.accounts
-            .end_session(data.subject, data.session, req.now)
+            .end_session(data.subject, data.session.clone(), req.now)
             .await?;
-        Ok(Response::redirect(&append(
-            &data.redirect,
-            &[("state", &data.state)],
-        )))
+        let mut response = Response::redirect(&append(&data.redirect, &[("state", &data.state)]));
+        response.terminate.push(data.session);
+        Ok(response)
     }
 }
 fn scoped_claims(actor: &Identity, data: &Authorization) -> Value {
@@ -825,5 +824,17 @@ fn redirect_error(uri: &str, state: &str, code: &str, description: &str, issuer:
 fn page(title: &str, content: &str) -> String {
     format!(
         "<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{title} · Authy</title><style>body{{background:#f5f3ee;color:#202923;font:17px system-ui;margin:0;padding:8vh 24px}}main{{max-width:520px;margin:auto;background:white;border:1px solid #deded5;border-radius:20px;padding:36px}}small{{color:#687668}}h1{{font-size:30px}}p{{line-height:1.6}}button{{border:0;background:#234d3c;color:white;border-radius:8px;padding:13px 20px;font:inherit;cursor:pointer;margin:12px 8px 0 0}}.secondary{{background:#eeeee8;color:#222}}</style><main><small>AUTHY / ACCOUNT ACCESS</small><h1>{title}</h1>{content}</main></html>"
+    )
+}
+/// The destination comes from validated registration. Browsers enforce form-action
+/// on redirects too, so self alone would block an ordinary cross-origin RP callback.
+fn form_policy(redirect: &str) -> String {
+    let destination = if redirect.starts_with('/') {
+        "'self'"
+    } else {
+        redirect
+    };
+    format!(
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' {destination}; frame-ancestors 'none'; base-uri 'none'"
     )
 }

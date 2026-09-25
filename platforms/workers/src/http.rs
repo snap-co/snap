@@ -60,9 +60,12 @@ impl<T: Service> Host<T> {
         };
         let future = self.service.call(req);
         let (send, receive) = oneshot::channel();
+        let state = self.state.clone();
         self.state.wait_until(async move {
             let _permit = permit;
-            let _ = send.send(future.await);
+            let response = future.await;
+            crate::host::terminate(&state, &response.terminate);
+            let _ = send.send(response);
         });
         match select(receive, Box::pin(Delay::from(Duration::from_secs(180)))).await {
             Either::Left((Ok(reply), _)) => {

@@ -220,7 +220,7 @@ async fn serve(
     .layer(DefaultBodyLimit::max(64 * 1024))
     .with_state(host.clone());
     let (router, http_worker) = if let Some(service) = http {
-        let (extra, task) = self::http::router(service);
+        let (extra, task) = self::http::router(service, host.revoked.clone());
         (router.merge(extra), Some(task))
     } else {
         (router, None)

@@ -24,7 +24,10 @@ struct Host {
     capacity: Arc<Semaphore>,
 }
 
-pub(crate) fn router(service: Box<dyn Service>) -> (Router, tokio::task::JoinHandle<()>) {
+pub(crate) fn router(
+    service: Box<dyn Service>,
+    revoked: tokio::sync::broadcast::Sender<Vec<String>>,
+) -> (Router, tokio::task::JoinHandle<()>) {
     let (inbox, mut receiver) = mpsc::channel::<Work>(64);
     let mut router = Router::new();
     for route in service.routes() {
@@ -45,7 +48,13 @@ pub(crate) fn router(service: Box<dyn Service>) -> (Router, tokio::task::JoinHan
                     let Some(work) = work else { break };
                     if work.reply.is_closed() { continue; }
                     let future = service.call(work.request);
-                    jobs.push(async move { let _permit = work.permit; let _ = work.reply.send(future.await); });
+                    let revoked=revoked.clone();
+                    jobs.push(async move {
+                        let _permit = work.permit;
+                        let response=future.await;
+                        if !response.terminate.is_empty() {let _=revoked.send(response.terminate.clone());}
+                        let _ = work.reply.send(response);
+                    });
                 }
                 _ = jobs.next(), if !jobs.is_empty() => {}
             }
