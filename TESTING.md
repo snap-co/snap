@@ -2,7 +2,7 @@
 
 ## Fast iteration
 
-`snap check` and `bin/check` should maximize useful coverage per second. The target
+The active `bin/check` should maximize useful coverage per second. The target
 is a few seconds on a warm build, roughly two to five, rather than a fixed deadline
 for cold compilation. Measure test execution and fixture setup separately from
 builds. Investigate individual tests taking more than 100 ms, including setup and
@@ -131,39 +131,15 @@ Run `mise exec -- cargo run -p testy-local --bin testy-execution-demo` for a sho
 asserting demonstration of rollback, serialized writes, retained-state code
 replacement, and replay from an in-memory snapshot. It loads no dynamic module.
 
-The following commands describe the older integration slice and are not the
-active iteration gate:
-
-The memory platform rig drives real portable providers and the Identity SDK without
-network, filesystem, browser, or wall-clock IO. Run its transport contracts and
-Authy's in-process app cases with:
+Focused commands:
 
 ```sh
-mise exec -- cargo test -p snap-memory -p authy
-```
+# Portable capability contracts:
+mise exec -- cargo test -p snap-execution -p snap-transport
 
-`snap_memory::Rig` loads the provider, queues work, exposes acceptance/completion
-events and a payload-free trace, and drives a local executor on demand. Advance its
-clock explicitly for expiry/deadline cases. `run_until_stalled` permits inspection
-of deliberately held work; `run` and `complete` require a scenario that can finish
-without additional outside actions. Store baselines can be copied at quiescent
-points. A reset also needs fresh clients, execution state, and compatible crypto
-state; copying a database alone is not a complete platform snapshot.
-
-The command split above is the intended policy. Currently `snap check` still runs
-the commands listed in each app's `snap.toml`, including integration/browser suites,
-and `bin/check-legacy` preserves the old full repository gate. `snap test` is the intended separate
-entry point for thorough app suites; it is not implemented yet. Moving existing
-coverage to separate gates is required before these checks meet the fast-loop
-policy.
-
-```sh
-# Historical cross-application gate, outside this stage:
-mise exec -- bash ./bin/check-legacy
-
-# Selected application's gate:
-mise exec -- ./bin/snap check apps/authy
-mise exec -- ./bin/snap check apps/healthy
+# Testy SDK scenarios:
+mise exec -- cargo test -p testy-local --test memory
+mise exec -- cargo test -p testy-local --features native --test native
 
 # Required after package/dependency changes:
 mise exec -- ./bin/snap check apps/healthy --structure-only --workspace
@@ -172,24 +148,10 @@ mise exec -- ./bin/snap check apps/healthy --structure-only --workspace
 mise exec -- ./bin/check-deps --audit
 ```
 
-Install Chromium once with `bunx playwright install chromium`. The full gate also
-requires `~/code/bod/snap` with its TypeScript dependencies installed. Ordinary
-builds and application checks do not require that reference checkout.
-
-Workers gates require Node.js, the pinned `worker-build` from `mise install`, and
-Wrangler from `bun install`. They launch real local workerd with `--local`, isolated
-temporary persistence and ephemeral ports; no account or remote bindings are used.
-Run `mise exec -- bun test tests/protocol/workers.test.ts` for dispatch and Store,
-or the shared Authy/carrier Protocol tests for cross-host behavior. The Authy browser
-test includes Workers. Build Authy's browser package before running that journey.
-`SNAP_REFERENCE` selects another checkout for `scripts/healthy-smoke.ts`.
-
-During iteration, run the check for the changed interface. Test entry points live
-under `tests/{sdk,protocol,browser,cli,store,journeys}`. Consult `bin/check` and the
-app's `snap.toml` for build prerequisites and invocation details instead of copying
-their command sequences here. Rust package tests can be selected directly with
-`mise exec -- cargo test -p <package>`. Run the relevant full gate at a milestone;
-repeat after relevant changes or failures.
+The structure-only workspace check is required after package/dependency changes.
+It compiles portable legacy packages too, but runs no legacy application suites.
+Browser/Workers prerequisites, the earlier memory rig, `snap check` and
+`bin/check-legacy` belong to [legacy development](docs/legacy-development.md).
 
 Formatting, Clippy, Rustdoc, dependency policy, and structural checks enforce
 source constraints separately from behavior tests.

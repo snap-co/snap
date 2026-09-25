@@ -119,6 +119,6 @@ keys in ignored `.dev.vars`, never in Wrangler config. Model/search keys belong 
 to Chatty. Build browser assets before Wrangler starts. Work remains active while
 the object has pending IO, but runtime eviction/reset still has uncertain outcomes.
 
-Tests use fresh fixture data and no paid keys by default. `bin/check` runs the
+Tests use fresh fixture data and no paid keys by default. `bin/check-legacy` runs the
 native/workerd thread contract, independent RP validation/refresh tests and both
 browser journeys. Live Go/Exa checks are deliberate one-off integrations.

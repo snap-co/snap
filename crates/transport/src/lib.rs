@@ -33,7 +33,7 @@ pub struct Invocation {
     pub input: Value,
 }
 
-/// Commands are carried inside a physical attachment. Clients never supply the
+/// Commands travel over a physical channel. Clients never supply the
 /// server's attachment handle or an asserted identity in the wire envelope.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {

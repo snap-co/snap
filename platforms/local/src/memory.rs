@@ -88,7 +88,7 @@ impl<P: Program, R: Authority> Memory<P, R> {
         result: snap_execution::Outcome,
     ) -> Result<(), snap_execution::Error> {
         let mut host = self.host.borrow_mut();
-        host.platform.execution.supply(ticket, key, result)?;
+        host.platform.supply(ticket, key, result)?;
         host.waiting = None;
         host.drive();
         Ok(())
@@ -97,9 +97,9 @@ impl<P: Program, R: Authority> Memory<P, R> {
     /// gate; no transport attachment or calculator data is reconstructed.
     pub fn replace(&self, program: P) -> Result<(), snap_execution::Error> {
         let mut host = self.host.borrow_mut();
-        host.platform.execution.pause();
-        let result = host.platform.execution.replace(program);
-        host.platform.execution.resume();
+        host.platform.pause();
+        let result = host.platform.replace(program);
+        host.platform.resume();
         result
     }
 }

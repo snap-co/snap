@@ -131,13 +131,9 @@ async fn serve_peer<P: Program, R: Authority>(
                         // This native fixture selects immediate host inputs only.
                         // The portable scheduler also supports held/asynchronous
                         // reads, exercised by the memory host via explicit supply.
-                        let call = platform
-                            .execution
-                            .pending_call(ticket)
-                            .expect("pending read");
+                        let call = platform.pending_call(ticket).expect("pending read");
                         let result = reads(call, &key);
                         platform
-                            .execution
                             .supply(ticket, &key, result)
                             .expect("matching read");
                     }

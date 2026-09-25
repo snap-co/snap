@@ -18,7 +18,7 @@ memory = ["dep:futures"]
 native = ["snap-platform-local/native", "dep:tokio"]
 
 [[bin]]
-name = "testy-server-memory"
+name = "testy-memory-demo"
 path = "src/memory.rs"
 required-features = ["memory"]
 
