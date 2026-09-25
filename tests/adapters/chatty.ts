@@ -4,18 +4,21 @@ import { resolve } from "node:path";
 import { freePort, oidcServer } from "./oidc";
 import { startServer } from "./server";
 import { workersServer } from "./workers";
+const root = resolve(import.meta.dirname, "../..");
 
 export async function modelServer() {
   const requests: any[] = [];
-  let release: (() => void) | undefined;
+  const releases: (() => void)[] = [];
+  let active = 0, peak = 0;
   const server = createServer(async (req, res) => {
     const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
     const body = JSON.parse(Buffer.concat(parts).toString()); requests.push(body);
+    active++; peak = Math.max(peak, active); res.once("close", () => { active--; });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (value: unknown) => res.write(`data: ${JSON.stringify(value)}\n\n`);
     const prompt = body.input.findLast((item: any) => item.role === "user")?.content ?? "";
     const hasResult = body.input.at(-1)?.type === "function_call_output";
-    if (prompt === "hold") { send({ type: "response.output_text.delta", delta: "Started" }); await new Promise<void>(done => { release = done; }); }
+    if (prompt === "hold") { send({ type: "response.output_text.delta", delta: "Started" }); await new Promise<void>(done => { releases.push(done); }); }
     if (prompt === "broken") { res.end(); return; }
     const tool = prompt.startsWith("write:") ? { name: "write_file", arguments: JSON.stringify({ path: "notes/proof.txt", content: "private note" }) } : prompt.startsWith("read:") ? { name: "read_file", arguments: JSON.stringify({ path: prompt.slice(5) }) } : null;
     let output: any[];
@@ -31,7 +34,8 @@ export async function modelServer() {
   });
   await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", done); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing model port");
-  return { endpoint: `http://127.0.0.1:${address.port}/responses`, requests, release: () => { release?.(); release = undefined; }, close: async () => { release?.(); server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); } };
+  const release = () => { for (const done of releases.splice(0)) done(); };
+  return { endpoint: `http://127.0.0.1:${address.port}/responses`, requests, active: () => active, peak: () => peak, release, close: async () => { release(); server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); } };
 }
 export async function chattyServer(options: { live?: boolean; env?: NodeJS.ProcessEnv; host?: "native" | "workers" } = {}) {
   const directory = await mkdtemp("/tmp/opencode/chatty-");
@@ -39,10 +43,10 @@ export async function chattyServer(options: { live?: boolean; env?: NodeJS.Proce
   const address = `127.0.0.1:${await freePort()}`;
   const origin = `http://${address}`;
   const authy = await oidcServer(options.host ?? "native", origin);
-  const config = { executable: resolve("target/debug/chatty"), address, env: { SNAP_DATABASE: resolve(directory, "chatty.sqlite"), SNAP_ORIGIN: origin, AUTHY_ORIGIN: authy.baseUrl, CHATTY_FILES: resolve(directory, "files"), CHATTY_CLIENT_SECRET: "oidc-fixture-only-secret-32-characters", OPENCODE_API_KEY: "fixture", ...options.env, ...(model ? { CHATTY_MODEL_ENDPOINT: model.endpoint } : {}) } };
+  const config = { executable: resolve(root, "target/debug/chatty"), address, env: { SNAP_DATABASE: resolve(directory, "chatty.sqlite"), SNAP_ORIGIN: origin, AUTHY_ORIGIN: authy.baseUrl, CHATTY_FILES: resolve(directory, "files"), CHATTY_CLIENT_SECRET: "oidc-fixture-only-secret-32-characters", OPENCODE_API_KEY: "fixture", ...options.env, ...(model ? { CHATTY_MODEL_ENDPOINT: model.endpoint } : {}) } };
   const start = async () => options.host === "workers"
     ? workersServer("chatty", { AUTHY_ORIGIN: authy.baseUrl, CHATTY_CLIENT_SECRET: config.env.CHATTY_CLIENT_SECRET, OPENCODE_API_KEY: config.env.OPENCODE_API_KEY, ...(model ? { CHATTY_MODEL_ENDPOINT: model.endpoint } : {}) }, Number(address.split(":")[1]), "workerName" in authy ? authy.workerName : undefined)
-    : startServer({ ...config, webDirectory: resolve("apps/chatty/.snap/web") });
+    : startServer({ ...config, webDirectory: resolve(root, "apps/chatty/.snap/web") });
   let app: Awaited<ReturnType<typeof start>>;
   try { app = await start(); } catch (e) { await authy.close(); await model?.close(); await rm(directory, { recursive: true, force: true }); throw e; }
   return { baseUrl: app.baseUrl, authy: authy.baseUrl, model, directory, logs: () => app.logs(), restart: async () => { if ("restart" in app) await app.restart(); else { await app.close(); app = await start(); } }, close: async () => { try { await app.close(); await authy.close(); await model?.close(); } finally { await rm(directory, { recursive: true, force: true }); } } };

@@ -2,6 +2,44 @@ import { test, expect } from "bun:test";
 import { chattyServer, BrowserSession } from "../adapters/chatty";
 
 for (const host of ["native", "workers"] as const) {
+test(`${host} concurrent duplicate sends return the same receipt and run the model once`, async () => {
+  const server = await chattyServer({ host }); const browser = new BrowserSession(server.baseUrl, server.authy);
+  try {
+    await browser.login("duplicates@chatty.test");
+    const thread = await (await browser.post("/api/thread/create", {})).json();
+    const body = { thread_id: thread.id, message: "hold", request_id: "same-receipt" };
+    const responses = await Promise.all(Array.from({ length: 16 }, () => browser.post("/api/send", body)));
+    expect(responses.every(r => r.status === 202)).toBe(true);
+    const receipts = await Promise.all(responses.map(r => r.json()));
+    expect(new Set(receipts.map(r => r.turn_id)).size).toBe(1);
+    const deadline = Date.now() + 5000;
+    while (!server.model!.active() && Date.now() < deadline) await new Promise(done => setTimeout(done, 20));
+    expect(server.model!.requests).toHaveLength(1);
+    const conflicts = await Promise.all([browser.post("/api/send", { ...body, message: "changed" }), browser.post("/api/send", { ...body, request_id: "unrelated" })]);
+    expect(conflicts.map(r => r.status)).toEqual([409, 409]);
+    server.model!.release(); expect((await browser.settled(thread.id)).turns).toHaveLength(1);
+  } finally { await server.close(); }
+}, 120_000);
+test(`${host} Chatty reserves four retained generation slots across concurrent threads`, async () => {
+  const server = await chattyServer({ host }); const browser = new BrowserSession(server.baseUrl, server.authy);
+  try {
+    await browser.login("capacity@chatty.test");
+    const threads: string[] = [];
+    for (let i = 0; i < 16; i++) threads.push((await (await browser.post("/api/thread/create", {})).json()).id);
+    const replies = await Promise.all(threads.map(thread_id => browser.post("/api/send", { thread_id, message: "hold", request_id: "admission" })));
+    expect(replies.filter(r => r.status === 202)).toHaveLength(4);
+    expect(replies.filter(r => r.status === 503)).toHaveLength(12);
+    const admitted = threads.filter((_, i) => replies[i].status === 202);
+    const deadline = Date.now() + 5000;
+    while (server.model!.active() < 4 && Date.now() < deadline) await new Promise(done => setTimeout(done, 20));
+    expect(server.model!.active()).toBe(4); expect(server.model!.peak()).toBe(4);
+    server.model!.release();
+    for (const id of admitted) expect((await browser.settled(id)).turns[0].status).toBe("complete");
+    const response = await browser.post("/api/send", { thread_id: admitted[0], message: "capacity returned", request_id: "next" });
+    expect(response.status).toBe(202); expect((await browser.settled(admitted[0])).turns.at(-1).status).toBe("complete");
+    expect(server.model!.peak()).toBe(4);
+  } finally { await server.close(); }
+}, 120_000);
 test(`${host} Chatty uses Authy login, isolates persistent threads and replays reasoning`, async () => {
   const server = await chattyServer({ host }); const alice = new BrowserSession(server.baseUrl, server.authy); const bob = new BrowserSession(server.baseUrl, server.authy);
   try {

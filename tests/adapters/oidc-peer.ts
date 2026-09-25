@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { freePort } from "./oidc";
 import { startServer } from "./server";
+const root = resolve(import.meta.dirname, "../..");
 
 /** Independent issuer fixture lets the RP contract vary signed claims and refresh
  * outcomes without changing production clocks or reaching private session rows. */
@@ -51,6 +52,6 @@ export async function relyingParty() {
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing issuer port"); origin = `http://127.0.0.1:${address.port}`;
   const directory = await mkdtemp("/tmp/opencode/chatty-rp-");
   const chattyAddress = `127.0.0.1:${await freePort()}`;
-  const app = await startServer({ executable: resolve("target/debug/chatty"), address: chattyAddress, env: { SNAP_ORIGIN: `http://${chattyAddress}`, SNAP_DATABASE: resolve(directory, "chatty.sqlite"), AUTHY_ORIGIN: origin, CHATTY_CLIENT_SECRET: "independent-issuer-fixture-32-characters", CHATTY_FILES: resolve(directory, "files") } });
+  const app = await startServer({ executable: resolve(root, "target/debug/chatty"), address: chattyAddress, env: { SNAP_ORIGIN: `http://${chattyAddress}`, SNAP_DATABASE: resolve(directory, "chatty.sqlite"), AUTHY_ORIGIN: origin, CHATTY_CLIENT_SECRET: "independent-issuer-fixture-32-characters", CHATTY_FILES: resolve(directory, "files") } });
   return { baseUrl: app.baseUrl, origin, claims: (value: Record<string, unknown>) => { claims = value; }, invalidSignature: (value: boolean) => { invalidSignature = value; }, ttl: (value: number) => { ttl = value; }, wrongUserInfo: (value: boolean) => { wrongUserInfo = value; }, failRefresh: () => { failRefresh = true; }, refreshes: () => refreshes, close: async () => { await app.close(); server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); } };
 }

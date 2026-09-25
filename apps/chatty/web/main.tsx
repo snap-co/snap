@@ -11,7 +11,9 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [selected, setSelected] = useState<string | null>(new URLSearchParams(location.search).get("thread"));
-  const [view, setView] = useState<View | null>(null);
+  const [storedView, setView] = useState<View | null>(null);
+  const view = storedView?.thread.id === selected ? storedView : null;
+  const selection = useRef({ id: selected, generation: 0 });
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,6 +39,7 @@ function App() {
   }, []);
   useEffect(() => {
     if (!session?.identified) { setThreads([]); setView(null); return; }
+    const chosen = selection.current;
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
@@ -45,7 +48,7 @@ function App() {
         setThreads(list.threads);
         if (selected) {
           const next = await api<View>(`/api/thread?id=${encodeURIComponent(selected)}`, undefined, controller.signal);
-          if (!controller.signal.aborted) setView(next);
+          if (!controller.signal.aborted && selection.current === chosen) setView(next);
         }
       } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e)); }
       finally { if (!controller.signal.aborted) timer = setTimeout(poll, 700); }
@@ -55,23 +58,44 @@ function App() {
   }, [session?.identified, selected]);
   useEffect(() => { if (nearBottom.current) end.current?.scrollIntoView({ behavior: "instant" }); }, [view?.turns]);
   const choose = (id: string | null) => {
+    if (selection.current.id === id) { setSidebar(false); return; }
+    selection.current = { id, generation: selection.current.generation + 1 };
     setSelected(id); setView(null); setError(""); setSidebar(false); nearBottom.current = true;
     history.replaceState(null, "", id ? `/?thread=${encodeURIComponent(id)}` : "/");
   };
   async function action(work: () => Promise<void>) { setBusy(true); setError(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   const create = async () => {
+    const chosen = selection.current;
     const thread = await api<Thread>("/api/thread/create", { effort });
-    setThreads(t => [thread, ...t]); choose(thread.id); return thread.id;
+    setThreads(t => [thread, ...t]); if (selection.current === chosen) choose(thread.id); return thread.id;
   };
+  async function editThread(thread: Thread, title: string, effort: string) {
+    const chosen = selection.current;
+    if (chosen.id !== thread.id) return;
+    const next = await api<View>("/api/thread/rename", { thread_id: thread.id, title, effort });
+    if (selection.current === chosen) setView(next);
+  }
+  async function deleteThread() {
+    const chosen = selection.current;
+    if (!chosen.id) return;
+    await api("/api/thread/delete", { thread_id: chosen.id });
+    setThreads(t => t.filter(x => x.id !== chosen.id));
+    if (selection.current === chosen) choose(null);
+  }
   async function send(event: FormEvent) {
     event.preventDefault(); if (!draft.trim() || busy) return;
     await action(async () => {
       const thread = selected ?? await create();
+      const chosen = selection.current;
       const message = draft.trim();
       if (!pendingSend.current || pendingSend.current.thread !== thread || pendingSend.current.message !== message) pendingSend.current = { thread, message, id: Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("") };
       await api("/api/send", { thread_id: thread, message, request_id: pendingSend.current.id });
-      pendingSend.current = null; setDraft(""); nearBottom.current = true;
-      setView(await api<View>(`/api/thread?id=${encodeURIComponent(thread)}`));
+      pendingSend.current = null;
+      if (selection.current === chosen && chosen.id === thread) {
+        setDraft(current => current === draft ? "" : current); nearBottom.current = true;
+        const next = await api<View>(`/api/thread?id=${encodeURIComponent(thread)}`);
+        if (selection.current === chosen) setView(next);
+      }
     });
   }
   const logout = () => action(async () => {
@@ -91,7 +115,7 @@ function App() {
     </aside>
     {sidebar && <button className="scrim" aria-label="Close sidebar" onClick={() => setSidebar(false)} />}
     <main className="conversation">
-      <header className="topbar"><button className="icon mobile" aria-label="Open sidebar" onClick={() => setSidebar(true)}>☰</button><div><strong>{view?.thread.title ?? "New conversation"}</strong><small>Muse Spark <span>Contributor</span></small></div>{selected && <div className="thread-actions"><button className="quiet" disabled={busy} onClick={() => { const title = prompt("Conversation title", view?.thread.title); if (title) void action(async () => { setView(await api<View>("/api/thread/rename", { thread_id: selected, title, effort: view?.thread.effort ?? effort })); }); }}>Rename</button><button className="quiet" disabled={busy} onClick={() => { if (confirm("Delete this conversation and its messages?")) void action(async () => { await api("/api/thread/delete", { thread_id: selected }); setThreads(t => t.filter(x => x.id !== selected)); choose(null); }); }}>Delete</button></div>}</header>
+      <header className="topbar"><button className="icon mobile" aria-label="Open sidebar" onClick={() => setSidebar(true)}>☰</button><div><strong>{view?.thread.title ?? "New conversation"}</strong><small>Muse Spark <span>Contributor</span></small></div>{selected && <div className="thread-actions"><button className="quiet" disabled={busy || !view} onClick={() => { if (!view) return; const title = prompt("Conversation title", view.thread.title); if (title) void action(() => editThread(view.thread, title, view.thread.effort)); }}>Rename</button><button className="quiet" disabled={busy} onClick={() => { if (confirm("Delete this conversation and its messages?")) void action(deleteThread); }}>Delete</button></div>}</header>
       <div className="messages" onScroll={e => { const node = e.currentTarget; nearBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 140; }}>
         {!view?.turns.length && <section className="empty"><div className="spark">✳</div><h1>What's on your mind?</h1><p>Work through a question, explore an idea, or make something worth keeping.</p><div className="suggestions">{["Help me think through a decision", "Create a plan for my week", "Find a useful starting point"].map(text => <button key={text} onClick={() => setDraft(text)}>{text}<span>↗</span></button>)}</div></section>}
         <div className="transcript">{view?.turns.map(turn => <article key={turn.id}>
@@ -107,7 +131,7 @@ function App() {
         </article>)}<div ref={end} /></div>
       </div>
       <div className="composer-area">{error && <div className="error" role="alert">{error}<button className="icon" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
-        <form className="composer" onSubmit={e => void send(e)}><textarea aria-label="Message Chatty" placeholder="Ask anything, or pick up where you left off…" value={draft} maxLength={32768} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} /><div className="composer-bottom"><label className="effort">Thinking <select aria-label="Thinking effort" value={view?.thread.effort ?? effort} disabled={!!active || busy} onChange={e => { const value = e.target.value; setEffort(value); if (view) void action(async () => { setView(await api<View>("/api/thread/rename", { thread_id: view.thread.id, title: view.thread.title, effort: value })); }); }}>{["minimal", "low", "medium", "high", "xhigh"].map(v => <option key={v} value={v}>{v === "xhigh" ? "Extra high" : v[0].toUpperCase() + v.slice(1)}</option>)}</select></label><span className="capabilities">{session.files_available && "Files"}{session.files_available && session.search_available && " · "}{session.search_available && "Web search"}</span>{active ? <button type="button" className="send" aria-label="Stop reply" onClick={() => void action(async () => { await api("/api/cancel", { thread_id: selected, turn_id: active }); })}>■</button> : <button className="send" type="submit" aria-label="Send message" disabled={!draft.trim() || busy || !session.model_ready}>↑</button>}</div></form>
+        <form className="composer" onSubmit={e => void send(e)}><textarea aria-label="Message Chatty" placeholder="Ask anything, or pick up where you left off…" value={draft} maxLength={32768} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} /><div className="composer-bottom"><label className="effort">Thinking <select aria-label="Thinking effort" value={view?.thread.effort ?? effort} disabled={!!active || busy || !!selected && !view} onChange={e => { const value = e.target.value; setEffort(value); if (view) void action(() => editThread(view.thread, view.thread.title, value)); }}>{["minimal", "low", "medium", "high", "xhigh"].map(v => <option key={v} value={v}>{v === "xhigh" ? "Extra high" : v[0].toUpperCase() + v.slice(1)}</option>)}</select></label><span className="capabilities">{session.files_available && "Files"}{session.files_available && session.search_available && " · "}{session.search_available && "Web search"}</span>{active ? <button type="button" className="send" aria-label="Stop reply" onClick={() => void action(async () => { await api("/api/cancel", { thread_id: selected, turn_id: active }); })}>■</button> : <button className="send" type="submit" aria-label="Send message" disabled={!draft.trim() || busy || !session.model_ready}>↑</button>}</div></form>
         <p className="composer-note">{session.model_ready ? "Muse Spark Contributor · Check important information." : "Set OPENCODE_API_KEY on the server to enable replies."}</p>
       </div>
     </main>

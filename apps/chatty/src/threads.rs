@@ -3,6 +3,7 @@
 use crate::{Config, Host, session::Actor, storage::*, tools};
 use alloc::{
     boxed::Box,
+    collections::BTreeSet,
     format,
     rc::Rc,
     string::{String, ToString},
@@ -22,6 +23,15 @@ pub struct Threads<S, H> {
     pub host: H,
     pub config: Config,
     running: Rc<Cell<usize>>,
+    accepting: Rc<RefCell<BTreeSet<String>>>,
+}
+/// Serializes only a thread's short acceptance phase. The set borrow is released
+/// before every suspension; the owned permit is independent of generation lifetime.
+struct Acceptance(Rc<RefCell<BTreeSet<String>>>, String);
+impl Drop for Acceptance {
+    fn drop(&mut self) {
+        self.0.borrow_mut().remove(&self.1);
+    }
 }
 struct Permit(Rc<Cell<usize>>);
 impl Drop for Permit {
@@ -46,6 +56,7 @@ impl<D: Store, H: Host> Threads<D, H> {
             host,
             config,
             running: Rc::new(Cell::new(0)),
+            accepting: Rc::new(RefCell::new(BTreeSet::new())),
         }
     }
     async fn thread(&self, actor: &Actor, id: &str) -> Result<Row, Response> {
@@ -244,6 +255,20 @@ impl<D: Store, H: Host> Threads<D, H> {
         {
             return Err(bad("Invalid request identifier"));
         }
+        // A duplicate can arrive while its first receipt is still committing.
+        // Wait for that acceptance before receipt lookup/capacity reservation.
+        // Distinct threads keep independent admission, and Store guards still
+        // fence all persisted writes. This never retries model or tool work.
+        let mut acceptance = None;
+        for _ in 0..750 {
+            if self.accepting.borrow_mut().insert(thread.clone()) {
+                acceptance = Some(Acceptance(self.accepting.clone(), thread.clone()));
+                break;
+            }
+            self.host.sleep(20).await;
+        }
+        let _acceptance = acceptance
+            .ok_or_else(|| Response::error(503, "busy", "Thread acceptance is in progress"))?;
         let record = self.thread(&actor, &thread).await?;
         if let Some(existing) = read(
             &self.store,
@@ -309,6 +334,15 @@ impl<D: Store, H: Host> Threads<D, H> {
         let now = self.host.now();
         let revision = number(&record, "revision")?;
         let effort = text(&record, "effort")?;
+        // History loading above suspends. Reserve synchronously with the final
+        // capacity check so distinct threads cannot all spend the same free slot.
+        if self.running.get() >= 4 {
+            return Err(Response::error(
+                503,
+                "busy",
+                "Four replies are already in progress",
+            ));
+        }
         self.running.set(self.running.get() + 1);
         let permit = Permit(self.running.clone());
         let mut q = owned(&thread, &actor.owner);
