@@ -112,3 +112,7 @@ No requirement or threat model was broadened. No independent finding remains to
 file; this repository has no configured tracker. Authy's native projection moved
 to `src/lib.rs` so packaged and cache-enabled launchers share composition. The
 packaged executable still selects NoCache.
+
+Initial repair gate stopped at cargo-machete: moving socket serialization to
+snap-web left snap-browser's serde_json dependency unused. Removed that dependency
+before the final validation revision. No behavior check had failed.

@@ -12,7 +12,6 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Request", "RequestInit", "RequestCredentials", "Response", "Headers", "AbortController", "AbortSignal", "Url", "UrlSearchParams", "WebSocket", "MessageEvent", "CloseEvent", "Event", "Window", "Location"] }
-serde_json.workspace = true
 gloo-timers = { version = "0.3", features = ["futures"] }
 futures-util = "0.3"
 futures-channel = "0.3"

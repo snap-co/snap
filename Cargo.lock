@@ -1583,7 +1583,6 @@ dependencies = [
  "futures-util",
  "gloo-timers",
  "js-sys",
- "serde_json",
  "snap-client",
  "snap-protocol",
  "snap-web",
