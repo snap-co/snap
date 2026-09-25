@@ -80,6 +80,7 @@ struct Work {
     token: Option<String>,
     reply: oneshot::Sender<Reply>,
     permit: OwnedSemaphorePermit,
+    accepted: Option<oneshot::Sender<()>>,
 }
 #[derive(Clone)]
 struct Host {
@@ -99,13 +100,14 @@ impl<M: Provider<Context = (), Output = Outcome>> Provider for Plain<M> {
     fn operations(&self) -> impl Iterator<Item = Operation> {
         self.0.operations()
     }
-    fn invoke(
+    fn prepare(
         &mut self,
         invocation: Invocation,
         _: Option<String>,
-    ) -> impl core::future::Future<Output = Reply> + 'static {
-        let future = self.0.invoke(invocation, ());
-        async move { Reply::new(future.await) }
+    ) -> impl core::future::Future<Output = Result<snap_protocol::Accepted<Reply>, Error>> + 'static
+    {
+        let future = snap_protocol::dispatch(&mut self.0, invocation, ());
+        async move { Ok(future.await?.map(Reply::new)) }
     }
 }
 /// Convenience composition for the existing HTTP-only Healthy consumers.
@@ -266,8 +268,15 @@ async fn drive(
             work=inbox.recv()=>{
                 let Some(work)=work else {break};
                 if work.reply.is_closed() {continue;}
-                let future=module.invoke(work.invocation,work.token);
-                jobs.push(async move {let _permit=work.permit;(work.reply,future.await)});
+                let preparation=snap_protocol::dispatch(&mut module,work.invocation,work.token);
+                jobs.push(async move {
+                    let _permit=work.permit;
+                    let result = match preparation.await {
+                        Ok(accepted) => accepted.start(|| { if let Some(signal) = work.accepted { let _ = signal.send(()); } }).await,
+                        Err(error) => Reply::new(Err(error)),
+                    };
+                    (work.reply,result)
+                });
             }
             completed=jobs.next(),if !jobs.is_empty()=>{
                 if let Some((observer,reply))=completed {
@@ -360,6 +369,14 @@ async fn request(
     response
 }
 async fn execute(host: &Host, invocation: Invocation, token: Option<String>) -> Reply {
+    execute_observed(host, invocation, token, None).await
+}
+async fn execute_observed(
+    host: &Host,
+    invocation: Invocation,
+    token: Option<String>,
+    accepted: Option<oneshot::Sender<()>>,
+) -> Reply {
     let failed = |message: &str| {
         Reply::new(Err(Error::UnavailableError {
             message: message.into(),
@@ -376,6 +393,7 @@ async fn execute(host: &Host, invocation: Invocation, token: Option<String>) -> 
             token,
             reply,
             permit,
+            accepted,
         })
         .is_err()
     {

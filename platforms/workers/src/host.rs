@@ -94,6 +94,14 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
     }
 
     async fn execute(&self, invocation: Invocation, token: Option<String>) -> Reply {
+        self.execute_observed(invocation, token, || {}).await
+    }
+    async fn execute_observed(
+        &self,
+        invocation: Invocation,
+        token: Option<String>,
+        accepted: impl FnOnce() + 'static,
+    ) -> Reply {
         let fail = |message: &str| {
             Reply::new(Err(ProtocolError::UnavailableError {
                 message: message.into(),
@@ -104,12 +112,16 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
         }
         self.admitted.set(self.admitted.get() + 1);
         let permit = Permit(self.admitted.clone());
-        let future = self.provider.borrow_mut().invoke(invocation, token);
+        let preparation =
+            snap_protocol::dispatch(&mut *self.provider.borrow_mut(), invocation, token);
         let (send, receive) = oneshot::channel();
         let state = self.state.clone();
         self.state.wait_until(async move {
             let _permit = permit;
-            let reply = future.await;
+            let reply = match preparation.await {
+                Ok(work) => work.start(accepted).await,
+                Err(error) => Reply::new(Err(error)),
+            };
             terminate(&state, &reply.terminate);
             let _ = send.send(reply);
         });
@@ -376,19 +388,18 @@ impl<P: Provider<Context = Option<String>, Output = Reply> + 'static> Host<P> {
             return socket.send(&Completion::new(target, Err(error)));
         }
         socket.serialize_attachment(&data)?;
-        let reply = self.execute(invocation, Some(data.token)).await;
+        let observer = socket.clone();
+        let accepted_target = target.clone();
+        let reply = self
+            .execute_observed(invocation, Some(data.token), move || {
+                let _ = observer.send(&json!({"key":"transport.ack","target":accepted_target}));
+            })
+            .await;
         if matches!(
             reply.outcome,
             Err(ProtocolError::IdentityRequiredError { .. })
         ) {
             return socket.close(Some(4001), Some("session ended"));
-        }
-        if !matches!(
-            reply.outcome,
-            Err(ProtocolError::InvalidInputError { .. }
-                | ProtocolError::ContractViolationError { .. })
-        ) {
-            socket.send(&json!({"key":"transport.ack","target":target}))?;
         }
         socket.send(&Completion::new(target, reply.outcome))
     }

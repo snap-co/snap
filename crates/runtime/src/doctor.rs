@@ -6,14 +6,19 @@ use crate::transport::Handler;
 
 pub fn up<State>() -> Handler<State> {
     Handler {
-        operation: Operation { key: "health.up" },
-        run: |_, payload| {
-            if payload.is_some() {
-                return Err(Error::InvalidInputError {
-                    message: "health.up expects no input".into(),
-                });
-            }
-            Ok(json!({ "status": "OK" }))
-        },
+        operation: Operation::new(
+            "health.up",
+            |payload| {
+                if payload.is_none() {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidInputError {
+                        message: "health.up expects no input".into(),
+                    })
+                }
+            },
+            snap_protocol::IdentityPolicy::Optional,
+        ),
+        run: |_, _| Ok(json!({ "status": "OK" })),
     }
 }

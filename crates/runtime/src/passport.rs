@@ -123,12 +123,70 @@ pub struct Description {
 }
 pub type Enrollment = fn(&Material, &str, u64) -> Vec<S>;
 
+/// Decoded before acceptance. Handlers never parse an untrusted invocation.
+enum Input {
+    Fetch,
+    Password {
+        enrollment: bool,
+        email: String,
+        password: String,
+        kind: Option<String>,
+    },
+    Collection(Table),
+    Release(Release),
+}
+impl Input {
+    fn decode(invocation: Invocation, register: &str) -> Result<Self, Error> {
+        let key = invocation.key.as_str();
+        if key == register || key == "identity.password.acquire" {
+            let value = invocation.payload.ok_or_else(invalid)?;
+            return Ok(Self::Password {
+                enrollment: key == register,
+                email: value
+                    .get("email")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?
+                    .trim()
+                    .to_lowercase(),
+                password: value
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?
+                    .to_string(),
+                kind: value.get("kind").and_then(Value::as_str).map(String::from),
+            });
+        }
+        match key {
+            "identity.fetch" => Ok(Self::Fetch),
+            "identity.credentials" => Ok(Self::Collection(CREDENTIALS)),
+            "identity.sessions" => Ok(Self::Collection(SESSIONS)),
+            "identity.release" => serde_json::from_value(invocation.payload.ok_or_else(invalid)?)
+                .map(Self::Release)
+                .map_err(|_| invalid()),
+            _ => Err(Error::ContractViolationError {
+                message: format!("Unknown key: {key}"),
+            }),
+        }
+    }
+}
+
 pub struct Response {
     pub outcome: Outcome,
     pub empty: bool,
     pub session: Option<Session>,
     pub token: Option<Option<String>>,
     pub revoked: Vec<String>,
+}
+impl snap_protocol::Rejection for Response {
+    fn rejected(error: Error) -> Self {
+        Self {
+            outcome: Err(error),
+            empty: false,
+            session: None,
+            token: None,
+            revoked: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -253,46 +311,26 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
 
     async fn dispatch(
         &self,
-        invocation: Invocation,
+        input: Input,
         context: Context,
         reply: &mut Response,
+        resolved: Option<Session>,
     ) -> Outcome {
-        let resolved = if let Some(token) = &context.token {
-            self.resolve(token, context.now).await?
-        } else {
-            None
-        };
         reply.session = resolved.clone();
         if context.token.is_some() && resolved.is_none() {
             reply.token = Some(None);
         }
-        let key = invocation.key.as_str();
-        if key == "identity.fetch" {
-            void(&invocation.payload)?;
+        if matches!(input, Input::Fetch) {
             return Ok(json!({"identityId":resolved.map(|s| s.identity_id)}));
         }
-        if key == self.register || key == "identity.password.acquire" {
-            if key != self.register && resolved.is_some() {
-                return Err(Error::IdentityForbiddenError {
-                    message: "Identity forbidden".into(),
-                });
-            }
-            let value = invocation.payload.ok_or_else(invalid)?;
-            let email = value
-                .get("email")
-                .and_then(Value::as_str)
-                .ok_or_else(invalid)?
-                .trim()
-                .to_lowercase();
-            let password = value
-                .get("password")
-                .and_then(Value::as_str)
-                .ok_or_else(invalid)?
-                .to_string();
-            if key == self.register {
-                if !(8..=256).contains(&password.encode_utf16().count()) {
-                    return Err(invalid());
-                }
+        if let Input::Password {
+            enrollment,
+            email,
+            password,
+            kind,
+        } = input
+        {
+            if enrollment {
                 let hash = self.crypto.hash(password).await?;
                 let fresh = self.crypto.generate().await?;
                 let credential = row(&[
@@ -333,7 +371,7 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
                 reply.token = Some(Some(fresh.token));
                 return Ok(Value::Null);
             }
-            if value.get("kind").and_then(Value::as_str) != Some(self.kind) {
+            if kind.as_deref() != Some(self.kind) {
                 return Err(bad_credential());
             }
             let query = Query::new(CREDENTIALS)
@@ -405,14 +443,8 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
                 .limit(1),
             exists: true,
         };
-        match key {
-            "identity.credentials" | "identity.sessions" => {
-                void(&invocation.payload)?;
-                let table = if key == "identity.credentials" {
-                    CREDENTIALS
-                } else {
-                    SESSIONS
-                };
+        match input {
+            Input::Collection(table) => {
                 let mut filter = vec![P::eq("identity_id", session.identity_id.clone())];
                 if table == SESSIONS {
                     filter.push(P::gt("expires", context.now as i64));
@@ -444,10 +476,7 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
                     json!({"sessions":values})
                 })
             }
-            "identity.release" => {
-                let scope: Release =
-                    serde_json::from_value(invocation.payload.ok_or_else(invalid)?)
-                        .map_err(|_| invalid())?;
+            Input::Release(scope) => {
                 let mut filter = vec![P::eq("identity_id", session.identity_id.clone())];
                 let clear = match scope {
                     Release::Current => {
@@ -496,9 +525,7 @@ impl<D: Store, C: Crypto, K: Cache> Passport<D, C, K> {
                 }
                 Ok(Value::Null)
             }
-            _ => Err(Error::ContractViolationError {
-                message: format!("Unknown key: {key}"),
-            }),
+            Input::Fetch | Input::Password { .. } => unreachable!("handled above"),
         }
     }
 }
@@ -506,25 +533,48 @@ impl<S: Store, C: Crypto, K: Cache> Provider for Passport<S, C, K> {
     type Context = Context;
     type Output = Response;
     fn operations(&self) -> impl Iterator<Item = Operation> {
-        core::iter::once(Operation { key: self.register }).chain(snap_identity::OPERATIONS)
+        core::iter::once(Operation::new(
+            self.register,
+            snap_identity::enrollment,
+            snap_protocol::IdentityPolicy::Optional,
+        ))
+        .chain(snap_identity::OPERATIONS)
     }
-    fn invoke(
+    fn prepare(
         &mut self,
         invocation: Invocation,
         context: Context,
-    ) -> impl Future<Output = Response> + 'static {
+    ) -> impl Future<Output = Result<snap_protocol::Accepted<Response>, Error>> + 'static {
         let provider = self.clone();
+        let policy = self
+            .operations()
+            .find(|op| op.key == invocation.key)
+            .map(|op| op.identity);
         async move {
-            let mut reply = Response {
-                outcome: Ok(Value::Null),
-                empty: false,
-                session: None,
-                token: None,
-                revoked: Vec::new(),
+            let policy = policy.ok_or_else(|| Error::ContractViolationError {
+                message: "Unknown operation".into(),
+            })?;
+            let input = Input::decode(invocation, provider.register)?;
+            let resolved = if let Some(token) = &context.token {
+                provider.resolve(token, context.now).await?
+            } else {
+                None
             };
-            reply.outcome = provider.dispatch(invocation, context, &mut reply).await;
-            reply.empty = matches!(reply.outcome, Ok(Value::Null));
-            reply
+            policy.check(resolved.is_some())?;
+            Ok(snap_protocol::Accepted::new(move || async move {
+                let mut reply = Response {
+                    outcome: Ok(Value::Null),
+                    empty: false,
+                    session: None,
+                    token: None,
+                    revoked: Vec::new(),
+                };
+                reply.outcome = provider
+                    .dispatch(input, context, &mut reply, resolved)
+                    .await;
+                reply.empty = matches!(reply.outcome, Ok(Value::Null));
+                reply
+            }))
         }
     }
 }
@@ -591,13 +641,6 @@ fn storage_error(error: snap_store::Error) -> Error {
         required()
     } else {
         unavailable()
-    }
-}
-fn void(value: &Option<Value>) -> Result<(), Error> {
-    if value.is_none() || matches!(value, Some(Value::Null)) {
-        Ok(())
-    } else {
-        Err(invalid())
     }
 }
 pub fn domain(tag: &str, message: &str) -> Error {

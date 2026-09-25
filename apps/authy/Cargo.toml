@@ -15,5 +15,9 @@ snap-client.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+snap-memory.workspace = true
+snap-protocol.workspace = true
+
 [package.metadata.snap]
 role = "application"

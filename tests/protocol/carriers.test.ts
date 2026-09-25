@@ -40,15 +40,18 @@ test(`${host}: one operation is bound to HTTP and WebSocket; an accepted continu
       expect((await next()).payload).toEqual({ok:true,payload:sequence});
     };
     send(2,"read.wait");
+    // Acceptance must arrive while the handler is still blocked, not after release.
+    expect(await next()).toEqual({key:"transport.ack",target:`${epoch}:2`});
     await until(state=>state.readsStarted===1);
     send(3,"read.wait");
     send(4,"echo");
     await post("release");
-    await completion(2);
+    expect((await next()).payload).toEqual({ok:true,payload:2});
     await until(state=>state.readsStarted===2);
+    expect(await next()).toEqual({key:"transport.ack",target:`${epoch}:3`});
     send(5,"echo");
     await post("release");
-    await completion(3);
+    expect((await next()).payload).toEqual({ok:true,payload:3});
     await completion(4);
     await completion(5);
   } finally {socket?.close();await server.close();}

@@ -65,11 +65,13 @@ impl Provider for Empty {
     }
     // Provider requires an owned 'static future; async fn would borrow self.
     #[allow(clippy::manual_async_fn)]
-    fn invoke(
+    fn prepare(
         &mut self,
         _: Invocation,
         _: Option<String>,
-    ) -> impl core::future::Future<Output = Self::Output> + 'static {
+    ) -> impl core::future::Future<
+        Output = Result<snap_protocol::Accepted<Self::Output>, snap_protocol::Error>,
+    > + 'static {
         async { unreachable!("no published Snap operations") }
     }
 }

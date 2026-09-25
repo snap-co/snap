@@ -29,6 +29,11 @@ impl Reply {
         }
     }
 }
+impl snap_protocol::Rejection for Reply {
+    fn rejected(error: Error) -> Self {
+        Self::new(Err(error))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -201,6 +206,17 @@ impl Connection {
                     .remove(id)
                     .ok_or_else(|| invalid("Unknown completion target"))?;
                 Ok(ConnectionEvent::Completed { id, outcome })
+            }
+            "transport.ack" => {
+                let target = event["target"]
+                    .as_str()
+                    .ok_or_else(|| invalid("Missing target"))?;
+                let id = self
+                    .pending
+                    .get(target)
+                    .ok_or_else(|| invalid("Unknown acceptance target"))?
+                    .clone();
+                Ok(ConnectionEvent::Accepted { id })
             }
             _ => Ok(ConnectionEvent::Notification { key: key.into() }),
         }

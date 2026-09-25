@@ -1,6 +1,7 @@
 //! Shared dispatch behind the normalized host input. No HTTP or socket types.
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, rc::Rc, string::String, vec::Vec};
+use core::cell::RefCell;
 use snap_protocol::{Error, Invocation, Operation, Outcome, Provider, Value};
 
 pub struct Handler<State> {
@@ -51,7 +52,7 @@ impl Connection {
 
 /// Resident application state lives here. The host need not know its shape.
 pub struct Transport<State> {
-    state: State,
+    state: Rc<RefCell<State>>,
     handlers: Vec<Handler<State>>,
 }
 
@@ -77,28 +78,38 @@ impl<State> Transport<State> {
                 });
             }
         }
-        Ok(Self { state, handlers })
+        Ok(Self {
+            state: Rc::new(RefCell::new(state)),
+            handlers,
+        })
     }
 }
 
-impl<State> Provider for Transport<State> {
+impl<State: 'static> Provider for Transport<State> {
     type Context = ();
     type Output = Outcome;
     fn operations(&self) -> impl Iterator<Item = Operation> {
         self.handlers.iter().map(|handler| handler.operation)
     }
 
-    fn invoke(
+    fn prepare(
         &mut self,
         invocation: Invocation,
         _: (),
-    ) -> impl core::future::Future<Output = Outcome> + 'static {
+    ) -> impl core::future::Future<Output = Result<snap_protocol::Accepted<Outcome>, Error>> + 'static
+    {
+        let state = self.state.clone();
         let outcome = match self
             .handlers
             .iter()
             .find(|handler| handler.operation.key == invocation.key)
         {
-            Some(handler) => (handler.run)(&mut self.state, invocation.payload),
+            Some(handler) => handler.operation.identity.check(false).map(|()| {
+                let run = handler.run;
+                snap_protocol::Accepted::new(move || {
+                    core::future::ready(run(&mut state.borrow_mut(), invocation.payload))
+                })
+            }),
             None => Err(Error::ContractViolationError {
                 message: format!("Unknown key: {}", invocation.key),
             }),

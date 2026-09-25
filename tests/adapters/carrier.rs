@@ -37,19 +37,27 @@ impl Provider for App {
             "status",
         ]
         .into_iter()
-        .map(|key| Operation { key })
+        .map(|key| {
+            Operation::new(
+                key,
+                snap_protocol::any_input,
+                snap_protocol::IdentityPolicy::Optional,
+            )
+        })
     }
-    fn invoke(
+    fn prepare(
         &mut self,
         invocation: Invocation,
         token: Option<String>,
-    ) -> impl core::future::Future<Output = Reply> + 'static {
+    ) -> impl core::future::Future<
+        Output = Result<snap_protocol::Accepted<Reply>, snap_protocol::Error>,
+    > + 'static {
         let gate = self.gate.clone();
         let started = self.started.clone();
         let completed = self.completed.clone();
         let reads_started = self.reads_started.clone();
         let now = self.now;
-        async move {
+        core::future::ready(Ok(snap_protocol::Accepted::new(move || async move {
             match invocation.key.as_str() {
                 "lease.resolve" => {
                     let mut reply = Reply::new(Ok(json!({})));
@@ -88,7 +96,7 @@ impl Provider for App {
                 )),
                 _ => Reply::new(Ok(invocation.payload.unwrap_or_default())),
             }
-        }
+        })))
     }
 }
 pub fn bindings() -> Vec<snap_web::Binding> {

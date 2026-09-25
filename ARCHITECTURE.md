@@ -22,6 +22,57 @@ SQLite Store, NoCache, crypto, and cookie projection. Carrier bindings in
 Portable operations have no carrier classification. A single operation can have
 multiple explicit bindings; declaring a table or importing a type publishes nothing.
 
+### Transport admission
+
+The shared transport lifecycle is validation, guards, acceptance, handler
+execution, then completion. Each operation defines an input schema. Transport
+validates the payload against that schema and runs the operation's guards before
+accepting it. Guards may inspect validated input and request identity or enforce
+rate limits and quotas. A rejected invocation does not enter the handler.
+
+Acceptance means validation and admission guards passed and the server owns the
+work under its execution-lifetime contract. Transport emits `transport.ack` before
+handing the invocation to the handler. This is a local ordering guarantee, not a
+requirement that the remote client confirm receipt. Lost acknowledgement delivery
+does not undo acceptance. `transport.complete` reports the handler's result or
+error, including completion without a result. Acceptance does not promise success
+or durable execution across a crash.
+
+`snap_protocol::dispatch` owns operation lookup, schema validation, guard orchestration,
+acceptance, correlation, and completion semantics. Hosts execute IO and poll work;
+carrier adapters own physical encoding and delivery. An asynchronous memory
+adapter passes invocation and event values without a serialization round trip,
+while retaining the same client/server transport logic. Application scenarios
+should run across memory and network adapters without changing their assertions;
+wire-format and physical-host guarantees have separate tests. Guards establish
+admission, while handlers retain transaction guards needed to keep authority and
+data invariants valid when committing work.
+
+`Operation` declares a key, input validator and identity policy. Validators are
+executable schemas in this spike, not a schema-description language. Additional
+operation-selected guards return owned asynchronous work and reservation leases.
+Dispatch polls guards in order and retains leases through execution; rejection or
+shutdown drops them. Guard implementations must defer effects until polled and
+own reservation cleanup. Irreversible guard effects are not rolled back.
+
+`Provider::prepare` is the trusted composition hook for resolving authority and
+constructing typed handler input; carriers call `dispatch`, not this hook directly.
+Passport resolves live session authority and applies the declared identity policy
+here. `Accepted::start` emits acceptance before entering even a synchronous handler.
+Native queues that signal to its socket observer; Workers sends it through its
+socket adapter. Existing HTTP request/response bindings expose completion only.
+The existing Authy HTTP/WebSocket binding choices remain compatibility policy;
+automatic routing from identity requirements is not implemented in this slice.
+
+`platforms/memory` supplies an explicit local executor, value-level delivery,
+virtual time, transactional memory Store and an Identity SDK adapter. Its test
+crypto is deliberately insecure and belongs only in isolated test compositions.
+The native memory Store delegates to the same database implementation, so Store
+contracts cover the backend used by the rig. Memory snapshots copy database state;
+they do not snapshot live futures, clocks, tokens held by clients, or crypto counters.
+Native/Workers retain physical attachment and receive-sequence management. A raw
+TCP adapter, generic delegated authority, and distributed simulation are future work.
+
 Shared client controllers consume normalized outcomes and disconnect reasons.
 Native and browser adapters drive those controllers; TypeScript adapts WASM values
 to Promises and immutable observations; React renders them.
@@ -50,8 +101,10 @@ WASM binding for a Snap Protocol controller it does not consume.
 
 ## Host-driven execution
 
-`Provider::invoke` creates an owned future with capability-specific context and
-output. The host polls it and performs external work. Immediate providers need not
+Dispatch creates owned admission work, then returns an accepted handler factory
+with capability-specific context and output. The host emits acceptance, starts and
+polls that handler, and performs external work. `Provider::invoke` is a convenience
+for in-process consumers that do not observe acknowledgement. Immediate providers need not
 suspend. This replaces hand-maintained workflow stages without giving providers
 control of an executor or introducing capability-specific branches in the scheduler.
 

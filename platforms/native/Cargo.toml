@@ -10,6 +10,7 @@ snap-oidc.workspace = true
 snap-protocol.workspace = true
 snap-identity.workspace = true
 snap-store.workspace = true
+snap-memory.workspace = true
 snap-web.workspace = true
 snap-runtime.workspace = true
 snap-client.workspace = true

@@ -9,12 +9,15 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
     fn operations(&self) -> impl Iterator<Item = Operation> {
         self.0.operations()
     }
-    fn invoke(
+    fn prepare(
         &mut self,
         invocation: Invocation,
         token: Option<String>,
-    ) -> impl core::future::Future<Output = Self::Output> + 'static {
-        let future = self.0.invoke(
+    ) -> impl core::future::Future<
+        Output = Result<snap_protocol::Accepted<Self::Output>, snap_protocol::Error>,
+    > + 'static {
+        let future = snap_protocol::dispatch(
+            &mut self.0,
             invocation,
             snap_runtime::passport::Context {
                 token,
@@ -22,8 +25,7 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
             },
         );
         async move {
-            let response = future.await;
-            snap_native::Reply {
+            Ok(future.await?.map(|response| snap_native::Reply {
                 outcome: response.outcome,
                 empty: response.empty,
                 lease: response.session.map(|s| snap_native::Lease {
@@ -32,7 +34,7 @@ impl<K: snap_store::Cache> Provider for Authy<K> {
                 }),
                 cookie: response.token,
                 terminate: response.revoked,
-            }
+            }))
         }
     }
 }

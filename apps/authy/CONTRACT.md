@@ -124,6 +124,14 @@ IDs within that epoch, `transport.ack`, and `transport.complete`. Close code 400
 ends a session; 4003 indicates Build mismatch. Stale-Build sockets upgrade before
 receiving their close frame so browsers can observe the reason.
 
+Transport validates the operation's input schema and resolves its admission guards
+before emitting `transport.ack`. The acknowledgement is emitted before handler
+entry, including for handlers that suspend. Invalid input and failed admission
+produce no acknowledgement. Accepted work can still fail, reported by completion;
+the acknowledgement does not imply a successful or durable commit. Native and
+Workers use the same portable dispatch lifecycle. HTTP bindings retain their
+single completion response rather than exposing a separate acknowledgement.
+
 Each physical attachment starts a new logical epoch. Clients discard incomplete
 reads and request fresh snapshots after reconnect. Detached-operation retention
 and Message mutation replay are outside this subset.

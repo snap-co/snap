@@ -18,12 +18,15 @@ impl Provider for App {
     fn operations(&self) -> impl Iterator<Item = Operation> {
         self.0.operations()
     }
-    fn invoke(
+    fn prepare(
         &mut self,
         invocation: Invocation,
         token: Option<String>,
-    ) -> impl core::future::Future<Output = Reply> + 'static {
-        let future = self.0.invoke(
+    ) -> impl core::future::Future<
+        Output = std::result::Result<snap_protocol::Accepted<Reply>, snap_protocol::Error>,
+    > + 'static {
+        let future = snap_protocol::dispatch(
+            &mut self.0,
             invocation,
             snap_runtime::passport::Context {
                 token,
@@ -31,8 +34,7 @@ impl Provider for App {
             },
         );
         async move {
-            let reply = future.await;
-            Reply {
+            Ok(future.await?.map(|reply| Reply {
                 outcome: reply.outcome,
                 empty: reply.empty,
                 cookie: reply.token,
@@ -41,7 +43,7 @@ impl Provider for App {
                     id: s.session_id,
                     expires_at: s.expires_at,
                 }),
-            }
+            }))
         }
     }
 }

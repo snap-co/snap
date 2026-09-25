@@ -13,6 +13,7 @@ members = [
     "crates/client",
     "bindings/wasm",
     "platforms/native",
+    "platforms/memory",
     "platforms/browser",
     "platforms/web",
     "platforms/workers",
@@ -49,6 +50,7 @@ snap-web = { path = "platforms/web" }
 snap-workers = { path = "platforms/workers" }
 worker = "=0.8.6"
 snap-native = { path = "platforms/native" }
+snap-memory = { path = "platforms/memory" }
 snap-client-wasm = { path = "bindings/wasm" }
 wasm-bindgen = "=0.2.128"
 healthy = { path = "apps/healthy" }

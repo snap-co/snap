@@ -120,10 +120,25 @@ async fn connected(mut socket: WebSocket, host: Host, token: String) {
                 }
                 // Each frame is processed in receive order. The bounded host also
                 // bounds accepted storage work. Authy's socket bindings expose reads.
-                let result = execute(&host, invocation, Some(token.clone())).await;
+                let (accepted, mut acceptance) = tokio::sync::oneshot::channel();
+                let execution = super::execute_observed(&host, invocation, Some(token.clone()), Some(accepted));
+                tokio::pin!(execution);
+                // Acceptance is emitted by portable dispatch before handler entry.
+                // Continue polling execution even when the observer disappears.
+                let result = tokio::select! {
+                    biased;
+                    accepted = &mut acceptance => {
+                        if accepted.is_ok() && send(&mut socket, json!({"key":"transport.ack","target":target})).await.is_err() { break; }
+                        execution.await
+                    }
+                    result = &mut execution => {
+                        // The driver may have completed before this task was polled.
+                        // Its acceptance signal still precedes completion.
+                        if acceptance.await.is_ok() && send(&mut socket, json!({"key":"transport.ack","target":target})).await.is_err() { break; }
+                        result
+                    }
+                };
                 if matches!(result.outcome, Err(Error::IdentityRequiredError { .. })) { close(&mut socket, 4001, "session ended").await; break; }
-                if !matches!(result.outcome, Err(Error::InvalidInputError { .. } | Error::ContractViolationError { .. }))
-                    && send(&mut socket, json!({"key":"transport.ack","target":target})).await.is_err() { break; }
                 if send(&mut socket, serde_json::to_value(Completion::new(target, result.outcome)).expect("completion")).await.is_err() { break; }
             }
         }

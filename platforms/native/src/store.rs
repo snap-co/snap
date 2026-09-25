@@ -11,7 +11,7 @@ use std::{
 };
 
 enum Backend {
-    Memory(BTreeMap<Table, Rows>),
+    Memory(snap_memory::store::Database),
     Sqlite(Connection),
 }
 struct State {
@@ -25,7 +25,7 @@ impl Store {
     pub fn memory(schemas: &[Schema]) -> Result<Self, Error> {
         validate_schemas(schemas)?;
         Ok(Self(Arc::new(Mutex::new(State {
-            backend: Backend::Memory(schemas.iter().map(|s| (s.table, Vec::new())).collect()),
+            backend: Backend::Memory(snap_memory::store::Database::new(schemas)?),
             schemas: schemas.iter().cloned().map(|s| (s.table, s)).collect(),
         }))))
     }
@@ -265,67 +265,7 @@ impl Store {
         validate_transaction(&state.schemas, &transaction)?;
         let State { backend, schemas } = &mut *state;
         match backend {
-            Backend::Memory(data) => {
-                let mut next = data.clone();
-                for guard in transaction.guards {
-                    if !select_memory(&next, schemas, &guard.query).is_empty() != guard.exists {
-                        return Err(Error::Conflict);
-                    }
-                }
-                let mut results = Vec::new();
-                for statement in transaction.statements {
-                    match statement {
-                        Statement::Select(query) => {
-                            results.push(select_memory(&next, schemas, &query))
-                        }
-                        Statement::Delete { table, filter } => {
-                            next.get_mut(&table)
-                                .unwrap()
-                                .retain(|row| !matches(row, &filter));
-                            validate_data(&next, schemas)?;
-                            results.push(Vec::new());
-                        }
-                        Statement::Update {
-                            table,
-                            filter,
-                            changes,
-                        } => {
-                            for row in next
-                                .get_mut(&table)
-                                .unwrap()
-                                .iter_mut()
-                                .filter(|r| matches(r, &filter))
-                            {
-                                row.extend(changes.clone());
-                            }
-                            validate_data(&next, schemas)?;
-                            results.push(Vec::new());
-                        }
-                        Statement::Insert { table, row } => {
-                            let schema = &schemas[&table];
-                            let rows = next.get_mut(&table).unwrap();
-                            for keys in core::iter::once(schema.primary).chain(
-                                schema
-                                    .indexes
-                                    .iter()
-                                    .filter(|i| i.unique)
-                                    .map(|i| i.columns),
-                            ) {
-                                if rows.iter().any(|other| {
-                                    keys.iter().all(|key| other.get(*key) == row.get(*key))
-                                }) {
-                                    return Err(Error::Constraint);
-                                }
-                            }
-                            rows.push(row);
-                            validate_data(&next, schemas)?;
-                            results.push(Vec::new());
-                        }
-                    }
-                }
-                *data = next;
-                Ok(results)
-            }
+            Backend::Memory(data) => data.execute(transaction),
             Backend::Sqlite(db) => {
                 let tx = db
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -447,50 +387,6 @@ fn quote(value: &str) -> String {
 fn columns(names: &[&str]) -> String {
     names.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",")
 }
-fn matches(row: &Row, predicates: &[Predicate]) -> bool {
-    predicates.iter().all(|p| match p.compare {
-        Compare::Eq => row[p.column] == p.value,
-        Compare::Ne => row[p.column] != p.value,
-        Compare::Gt => row[p.column] > p.value,
-        Compare::Le => row[p.column] <= p.value,
-    })
-}
-fn validate_data(
-    data: &BTreeMap<Table, Rows>,
-    schemas: &BTreeMap<Table, Schema>,
-) -> Result<(), Error> {
-    for (table, rows) in data {
-        let schema = &schemas[table];
-        for (i, row) in rows.iter().enumerate() {
-            for keys in core::iter::once(schema.primary).chain(
-                schema
-                    .indexes
-                    .iter()
-                    .filter(|i| i.unique)
-                    .map(|i| i.columns),
-            ) {
-                if rows[..i]
-                    .iter()
-                    .any(|other| keys.iter().all(|key| other.get(*key) == row.get(*key)))
-                {
-                    return Err(Error::Constraint);
-                }
-            }
-            for foreign in schema.foreign {
-                if !data[&foreign.target].iter().any(|target| {
-                    foreign
-                        .columns
-                        .iter()
-                        .zip(foreign.references)
-                        .all(|(c, r)| row.get(*c) == target.get(*r))
-                }) {
-                    return Err(Error::Constraint);
-                }
-            }
-        }
-    }
-    Ok(())
-}
 fn order<'a>(schema: &'a Schema, query: &'a Query) -> Vec<&'static str> {
     query
         .order
@@ -498,26 +394,6 @@ fn order<'a>(schema: &'a Schema, query: &'a Query) -> Vec<&'static str> {
         .copied()
         .chain(schema.primary.iter().copied())
         .collect()
-}
-fn select_memory(
-    data: &BTreeMap<Table, Rows>,
-    schemas: &BTreeMap<Table, Schema>,
-    query: &Query,
-) -> Rows {
-    let mut rows: Rows = data[&query.table]
-        .iter()
-        .filter(|row| matches(row, &query.filter))
-        .cloned()
-        .collect();
-    let order = order(&schemas[&query.table], query);
-    rows.sort_by(|a, b| {
-        order
-            .iter()
-            .map(|c| &a[*c])
-            .cmp(order.iter().map(|c| &b[*c]))
-    });
-    rows.truncate(query.limit as usize);
-    rows
 }
 fn where_sql(filter: &[Predicate]) -> String {
     if filter.is_empty() {
