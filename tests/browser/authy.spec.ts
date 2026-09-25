@@ -1,5 +1,53 @@
 import { test, expect } from "@playwright/test";
 import { authyServer } from "../adapters/authy";
+import { authyProject } from "../adapters/project";
+import { startServer } from "../adapters/server";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+test("Authy development keeps its public origin and socket after a Rust rebuild", async ({ page }) => {
+  test.setTimeout(120_000);
+  const project = await authyProject();
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
+  const traffic: string[] = [];
+  let attachments = 0;
+  page.on("websocket", socket => {
+    if (!socket.url().includes("/_transport/ws")) return;
+    attachments++;
+    socket.on("framesent", event => traffic.push(`sent ${event.payload}`));
+    socket.on("framereceived", event => traffic.push(`received ${event.payload}`));
+    socket.on("close", () => traffic.push("closed"));
+    socket.on("socketerror", error => traffic.push(`error ${error}`));
+  });
+  try {
+    server = await startServer({ dev: true, project: project.directory, env: project.env, freshBuild: true });
+    const build = await (await page.request.get(`${server.baseUrl}/__snap/build`)).json();
+    const enrolled = await page.request.post(`${server.baseUrl}/account/create`, {
+      headers: { "x-snap-build": build.build },
+      data: { email: "idle@example.test", password: "original password" },
+    });
+    expect(enrolled.ok()).toBe(true);
+    await page.goto(server.baseUrl);
+    await expect(page.getByTestId("connection")).toHaveText("connected");
+    await expect(page.getByText("idle@example.test", { exact: true })).toBeVisible();
+    const native = resolve(project.directory, "rust/native/src/main.rs");
+    await writeFile(native, `${await readFile(native, "utf8")}\n// trigger owned native rebuild\n`);
+    await expect.poll(() => server!.logs(), { timeout: 30_000 }).toContain("Rust generation ready:");
+    await page.reload();
+    // The post-rebuild page must attach, then remain attached past the retry cap.
+    await expect(page.getByTestId("connection")).toHaveText("connected", { timeout: 10_000 });
+    await expect(page.getByText("idle@example.test", { exact: true })).toBeVisible();
+    const stable = attachments;
+    await page.waitForTimeout(11_000);
+    expect(attachments, traffic.join("\n")).toBe(stable);
+    await expect(page.getByTestId("connection")).toHaveText("connected");
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
+  } catch (error) {
+    console.error(server?.logs(), traffic.join("\n"));
+    throw error;
+  } finally { try { await page.close(); } finally { try { await server?.close(); } finally { await project.close(); } } }
+});
 
 for (const dev of [false, true]) {
   test(`Authy ${dev ? "development proxy" : "package"}: sign in, reload, reconnect and remote revocation`, async ({ browser }) => {

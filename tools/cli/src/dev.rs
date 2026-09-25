@@ -194,12 +194,19 @@ fn host_command(
     project: &Project,
     artifacts: &build::Artifacts,
     address: SocketAddr,
+    public_address: SocketAddr,
     build: &str,
 ) -> Command {
     let mut command = Command::new(&artifacts.executable);
     command
         .current_dir(&project.root)
         .env("SNAP_ADDR", address.to_string())
+        // Every launch, including native-only replacement, must retain the
+        // browser-facing origin rather than defaulting to the private IO port.
+        .env(
+            "SNAP_ORIGIN",
+            std::env::var("SNAP_ORIGIN").unwrap_or_else(|_| url(public_address)),
+        )
         .env("SNAP_BUILD", build)
         .env("SNAP_APPLICATION", &project.config.application)
         .env(
@@ -316,6 +323,7 @@ impl Running {
                         project,
                         &version.files.artifacts,
                         self.backend_address,
+                        self.address,
                         &version.build,
                     ),
                     &url(self.backend_address),
@@ -344,7 +352,6 @@ async fn launch(
     let artifacts = &version.files.artifacts;
     let build = &version.build;
     let address = addresses.map_or_else(|| project.address(), |a| Ok(a.0))?;
-    let mut command = host_command(project, artifacts, address, build);
     if let (Some(web), Some(assets)) = (&project.config.web, &artifacts.web) {
         let backend_address = addresses.map_or_else(|| project.backend_address(), |a| Ok(a.1))?;
         ensure!(
@@ -364,13 +371,7 @@ async fn launch(
         let address = public.local_addr()?;
         let backend_url = url(backend_address);
         let public_url = url(address);
-        command
-            .env("SNAP_ADDR", backend_address.to_string())
-            .env(
-                "SNAP_ORIGIN",
-                std::env::var("SNAP_ORIGIN").unwrap_or_else(|_| public_url.clone()),
-            )
-            .env("SNAP_WEB_DIR", assets);
+        let mut command = host_command(project, artifacts, backend_address, address, build);
         drop(private);
         let backend = runner.service(&mut command, &backend_url, build).await?;
         eprintln!("Backend ready at {backend_url}");
@@ -414,7 +415,7 @@ async fn launch(
     } else {
         let listener = reserve(runner, address).await?;
         let address = listener.local_addr()?;
-        command.env("SNAP_ADDR", address.to_string());
+        let mut command = host_command(project, artifacts, address, address, build);
         drop(listener);
         let backend = runner.service(&mut command, &url(address), build).await?;
         eprintln!("listening on {}", url(address));
