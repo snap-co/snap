@@ -53,6 +53,21 @@ pub fn development_control(action: &str, input: Option<String>) -> Result<String
 pub fn development_observation(encoded: &str) -> Result<String, JsValue> {
     let mut value: serde_json::Value =
         serde_json::from_str(encoded).map_err(|error| JsValue::from_str(&error.to_string()))?;
+    // HTTP reports and debugger state/result envelopes share the exact formatter.
+    let report = match value.get("type").and_then(serde_json::Value::as_str) {
+        Some("state") => "state",
+        Some("result") => "result",
+        _ => "",
+    };
+    if report.is_empty() {
+        format_observation(&mut value);
+    } else if let Some(report) = value.get_mut(report) {
+        format_observation(report);
+    }
+    Ok(value.to_string())
+}
+
+fn format_observation(value: &mut serde_json::Value) {
     for key in ["states", "trace"] {
         if let Some(records) = value.get_mut(key) {
             *records = json!(serde_json::to_string_pretty(records).unwrap());
@@ -64,7 +79,6 @@ pub fn development_observation(encoded: &str) -> Result<String, JsValue> {
     {
         *ticket = json!(ticket.to_string());
     }
-    Ok(value.to_string())
 }
 
 #[wasm_bindgen]

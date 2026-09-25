@@ -1,5 +1,6 @@
 //! Local browser host. HTTP controls and WebSockets drive the same Development
 //! instance. The listener must be loopback: these controls expose resident data.
+mod debugger;
 use crate::development::{Control, Development};
 use axum::{
     Json, Router,
@@ -18,14 +19,31 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
 
 struct Shared<P: Program, R: Authority> {
     host: Mutex<Development<P, R>>,
     clock: Instant,
     authority: String,
+    updates: watch::Sender<debugger::Report>,
 }
 type Host<P, R> = Arc<Shared<P, R>>;
+
+impl<P: Program, R: Authority> Shared<P, R> {
+    /// Publish under the host lock so concurrent controls cannot reorder reports.
+    /// The watch retains only the latest full report, never a per-observer queue.
+    fn publish(&self, host: &Development<P, R>) {
+        self.updates
+            .send_if_modified(|report| report.update(host.inspect()));
+    }
+    fn change<T>(&self, change: impl FnOnce(&mut Development<P, R>) -> T) -> T {
+        let mut host = self.host.lock().unwrap();
+        let result = change(&mut host);
+        self.publish(&host);
+        result
+    }
+}
 
 // Reject cross-origin browser control requests and DNS-rebinding Host headers.
 fn local(headers: &HeaderMap, authority: &str) -> bool {
@@ -51,12 +69,7 @@ async fn control<P: Program, R: Authority>(
     if !local(&headers, &shared.authority) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match shared
-        .host
-        .lock()
-        .unwrap()
-        .control(control, shared.clock.elapsed().as_millis() as u64)
-    {
+    match shared.change(|host| host.control(control, shared.clock.elapsed().as_millis() as u64)) {
         Ok(value) => Json(value).into_response(),
         Err(error) => (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response(),
     }
@@ -69,7 +82,7 @@ async fn upgrade<P: Program + Send + 'static, R: Authority + Send + 'static>(
     if !local(&headers, &shared.authority) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let peer = match shared.host.lock().unwrap().open() {
+    let peer = match shared.change(Development::open) {
         Ok(id) => id,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
@@ -77,11 +90,7 @@ async fn upgrade<P: Program + Send + 'static, R: Authority + Send + 'static>(
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_failed_upgrade(move |_| {
-            failed
-                .host
-                .lock()
-                .unwrap()
-                .lost(peer, failed.clock.elapsed().as_millis() as u64)
+            failed.change(|host| host.lost(peer, failed.clock.elapsed().as_millis() as u64));
         })
         .on_upgrade(move |socket| connection(socket, shared, peer))
 }
@@ -98,7 +107,7 @@ async fn connection<P: Program + Send + 'static, R: Authority + Send + 'static>(
             message = stream.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let Ok(command) = serde_json::from_str(&text) else { break; };
-                    if shared.host.lock().unwrap().send(peer, command, shared.clock.elapsed().as_millis() as u64).is_err() { break; }
+                    if shared.change(|host| host.send(peer, command, shared.clock.elapsed().as_millis() as u64)).is_err() { break; }
                 }
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {},
                 _ => break,
@@ -126,11 +135,7 @@ async fn connection<P: Program + Send + 'static, R: Authority + Send + 'static>(
             break;
         }
     }
-    shared
-        .host
-        .lock()
-        .unwrap()
-        .lost(peer, shared.clock.elapsed().as_millis() as u64);
+    shared.change(|host| host.lost(peer, shared.clock.elapsed().as_millis() as u64));
 }
 pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
     listener: tokio::net::TcpListener,
@@ -143,14 +148,17 @@ pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
             "development controls require a loopback listener",
         ));
     }
+    let (updates, _) = watch::channel(debugger::Report::new(host.inspect()));
     let shared = Arc::new(Shared {
         host: Mutex::new(host),
         clock: Instant::now(),
         authority: address.to_string(),
+        updates,
     });
     let app = Router::new()
         .route("/transport", get(upgrade::<P, R>))
         .route("/__dev", get(inspect::<P, R>).post(control::<P, R>))
+        .route("/__dev/ws", get(debugger::upgrade::<P, R>))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         )
@@ -159,11 +167,10 @@ pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         loop {
             interval.tick().await;
-            shared
-                .host
-                .lock()
-                .unwrap()
-                .tick(shared.clock.elapsed().as_millis() as u64);
+            let mut host = shared.host.lock().unwrap();
+            if host.tick(shared.clock.elapsed().as_millis() as u64) {
+                shared.publish(&host);
+            }
         }
     };
     tokio::select! { result = axum::serve(listener, app) => result, _ = sweep => unreachable!() }

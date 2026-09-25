@@ -215,6 +215,11 @@ test("execution desk displays and supplies exact i64 dependencies", async ({
   page,
   server,
 }) => {
+  const sent: string[] = [];
+  page.on("websocket", (socket) => {
+    if (socket.url().endsWith("/__dev/ws"))
+      socket.on("framesent", (frame) => sent.push(String(frame.payload)));
+  });
   await page.goto(`${server}/calc`);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByText("Committed records", { exact: true }).click();
@@ -251,16 +256,11 @@ test("execution desk displays and supplies exact i64 dependencies", async ({
     await page.getByRole("button", { name: "Supply input" }).click();
     await expect(page.getByRole("alert")).toBeVisible();
     await page.getByLabel("Dependency value").fill(value);
-    const [supply] = await Promise.all([
-      page.waitForRequest(
-        (request) =>
-          request.url().endsWith("/__dev") &&
-          request.postData()?.includes('"action":"supply"') === true,
-      ),
-      page.getByRole("button", { name: "Supply input" }).click(),
-    ]);
-    expect(supply.postData()).toContain(`"value":${value}`);
+    await page.getByRole("button", { name: "Supply input" }).click();
     await expect(page.getByLabel("Dependency value")).toHaveCount(0);
+    expect(
+      sent.filter((frame) => frame.includes('"action":"supply"')).at(-1),
+    ).toContain(`"value":${value}`);
     await page.getByLabel("Break after acceptance").click();
     await expect(page.getByLabel("Break after acceptance")).not.toBeChecked();
     await page.getByRole("button", { name: "Step once" }).click();
@@ -277,4 +277,214 @@ test("execution desk displays and supplies exact i64 dependencies", async ({
       `"Ok": ${value}`,
     );
   }
+});
+
+test("debugger pushes changes, correlates commands and has no application lifecycle", async ({
+  page,
+  server,
+}) => {
+  await page.goto(server);
+  const result = await page.evaluate(async () => {
+    async function debuggerSocket() {
+      const socket = new WebSocket(
+        `${location.origin.replace("http", "ws")}/__dev/ws`,
+      );
+      const responses = new Map<string, (frame: any) => void>();
+      const reports: any[] = [];
+      let wake: (() => void) | undefined;
+      socket.onmessage = ({ data }) => {
+        const frame = JSON.parse(data);
+        if (frame.type === "state") {
+          reports.push(frame);
+          wake?.();
+        } else {
+          const resolve = responses.get(frame.id);
+          responses.delete(frame.id);
+          resolve?.(frame);
+        }
+      };
+      async function state(predicate: (state: any) => boolean) {
+        while (!reports.length || !predicate(reports.at(-1).state))
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+        wake = undefined;
+        return reports.at(-1);
+      }
+      await state(() => true);
+      return {
+        socket,
+        reports,
+        state,
+        command(id: string, control: object) {
+          return new Promise<any>((resolve) => {
+            responses.set(id, resolve);
+            socket.send(JSON.stringify({ id, control }));
+          });
+        },
+      };
+    }
+    const first = await debuggerSocket();
+    const second = await debuggerSocket();
+    const initial = first.reports[0];
+    const commands = await Promise.all([
+      first.command("hold", { action: "mode", manual: true }),
+      first.command("invalid", { action: "does_not_exist" }),
+      first.command("save", { action: "snapshot" }),
+    ]);
+    const observed = await second.state(
+      (state) => state.manual && state.snapshot,
+    );
+    await new Promise<void>((resolve) => {
+      first.socket.onclose = () => resolve();
+      first.socket.close();
+    });
+    // An HTTP change also reaches subscribers, without a socket command or poll.
+    await fetch("/__dev", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "breakpoint", enabled: true }),
+    });
+    await second.state((state) => state.breakpoint);
+    const reconnected = await debuggerSocket();
+    const resumed = reconnected.reports[0];
+    await reconnected.command("run", { action: "mode", manual: false });
+    await second.state((state) => !state.manual);
+    second.socket.close();
+    reconnected.socket.close();
+    return { initial, commands, observed, resumed };
+  });
+  expect(result.initial.type).toBe("state");
+  expect(result.initial.state.peers).toEqual([]);
+  expect(result.commands.map((frame) => frame.id)).toEqual([
+    "hold",
+    "invalid",
+    "save",
+  ]);
+  expect(result.commands[0].result.manual).toBe(true);
+  expect(result.commands[1].error).toContain("unknown variant");
+  expect(result.commands[2].result.snapshot).toBe(true);
+  expect(BigInt(result.observed.revision)).toBeGreaterThan(
+    BigInt(result.initial.revision),
+  );
+  expect(result.resumed.state).toMatchObject({
+    manual: true,
+    snapshot: true,
+    breakpoint: true,
+    peers: [],
+    states: [],
+  });
+});
+
+test("execution desk reconnects independently and is silent while idle", async ({
+  page,
+  request,
+  server,
+}) => {
+  const polls: string[] = [];
+  let debuggerFrames = 0;
+  let appSockets = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/__dev")) polls.push(request.method());
+  });
+  page.on("websocket", (socket) => {
+    if (socket.url().endsWith("/transport")) appSockets++;
+    if (socket.url().endsWith("/__dev/ws"))
+      socket.on("framereceived", () => debuggerFrames++);
+  });
+  await page.addInitScript(() => {
+    const Native = window.WebSocket;
+    (window as any).debuggers = [];
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        if (String(url).endsWith("/__dev/ws"))
+          (window as any).debuggers.push(this);
+      }
+    };
+  });
+  await page.goto(`${server}/calc`);
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByText("Debugger: Live", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "+", exact: true }).click();
+  await expect(page.getByTestId("accumulator")).toHaveText("10");
+  await page.getByText("Committed records", { exact: true }).click();
+  await expect(page.getByTestId("host-state")).toContainText(
+    '"accumulator": 10',
+  );
+  await page.getByRole("button", { name: "Hold", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Run", exact: true }),
+  ).toBeVisible();
+  const before = await (await request.get(`${server}/__dev`)).json();
+  await page.evaluate(() => (window as any).debuggers.at(-1).close());
+  await expect
+    .poll(() => page.evaluate(() => (window as any).debuggers.length))
+    .toBe(2);
+  await expect(page.getByText("Debugger: Live", { exact: true })).toBeVisible();
+  expect(await (await request.get(`${server}/__dev`)).json()).toEqual(before);
+  expect(appSockets).toBe(1);
+  // Advance browser timers without waiting: old 250ms HTTP polling would fire.
+  await page.clock.install();
+  const framesBefore = debuggerFrames;
+  await page.clock.runFor(1100);
+  expect(polls).toEqual([]);
+  expect(debuggerFrames).toBe(framesBefore);
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await page.getByRole("button", { name: "+", exact: true }).click();
+  await expect(page.getByTestId("accumulator")).toHaveText("20");
+});
+
+test("a lost debugger response fails the command without replaying the step", async ({
+  page,
+  request,
+  server,
+}) => {
+  let dropped = false;
+  let steps = 0;
+  await page.routeWebSocket("**/__dev/ws", (socket) => {
+    const upstream = socket.connectToServer();
+    let stepID: string | undefined;
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.control.action === "step") {
+        steps++;
+        stepID = frame.id;
+      }
+      upstream.send(message);
+    });
+    upstream.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (!dropped && frame.type === "result" && frame.id === stepID) {
+        dropped = true;
+        socket.close();
+        upstream.close();
+      } else socket.send(message);
+    });
+  });
+  await page.goto(`${server}/calc`);
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Hold", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Run", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "+", exact: true }).click();
+  await expect(page.locator(".execution-status")).toContainText(
+    "1 queued operations",
+  );
+  await page.getByRole("button", { name: "Step once" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "command outcome may be unknown",
+  );
+  await expect(page.getByText("Debugger: Live", { exact: true })).toBeVisible();
+  await expect(page.locator(".execution-status")).toContainText(
+    "ready for attempt",
+  );
+  const state = await (await request.get(`${server}/__dev`)).json();
+  expect(state.states[0].state.accumulator).toBe(0);
+  expect(state.active.accepted).toBe(true);
+  expect(steps).toBe(1);
+  await page.getByRole("button", { name: "Step once" }).click();
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(page.getByTestId("accumulator")).toHaveText("10");
 });

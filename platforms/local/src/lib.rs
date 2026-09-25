@@ -41,13 +41,19 @@ impl<P: Program, R: Authority> Platform<P, R> {
         }
     }
     pub fn tick(&mut self, now: u64) {
-        self.transport.tick(now);
-        self.retire();
+        self.tick_retired(now);
     }
-    fn retire(&mut self) {
-        for connection in self.transport.take_retired() {
+    pub(crate) fn tick_retired(&mut self, now: u64) -> bool {
+        self.transport.tick(now);
+        self.retire()
+    }
+    fn retire(&mut self) -> bool {
+        let retired = self.transport.take_retired();
+        let changed = !retired.is_empty();
+        for connection in retired {
             self.execution.release(Scope(connection.0));
         }
+        changed
     }
     /// Only enqueues application work. Hosts must drive `step`, deliver its
     /// observations in order, and resolve Need outside application entry points.

@@ -4,6 +4,12 @@
   background: #f4f5f0;
   font-synthesis: none;
 }
+.development-controls {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
 * {
   box-sizing: border-box;
 }

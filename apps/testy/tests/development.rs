@@ -129,4 +129,11 @@ fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
     host.control(Control::Step, 1).unwrap();
     host.control(Control::Step, 1).unwrap();
     assert_eq!(host.inspect()["states"][0]["state"]["accumulator"], 64);
+    // Expiry changes inspection even when no client submits another operation.
+    assert!(!host.tick(300_000));
+    assert!(host.tick(300_001));
+    assert_eq!(host.inspect()["releases"], 1);
+    host.control(Control::Step, 300_001).unwrap();
+    assert_eq!(host.inspect()["states"], json!([]));
+    assert!(!host.tick(300_002));
 }

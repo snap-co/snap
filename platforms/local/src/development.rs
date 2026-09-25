@@ -148,9 +148,12 @@ impl<P: Program, R: Authority> Development<P, R> {
             .drain(..)
             .collect())
     }
-    pub fn tick(&mut self, now: u64) {
-        self.platform.tick(now);
+    /// Whether inspection may have changed. Idle sweeps need no report encoding.
+    pub fn tick(&mut self, now: u64) -> bool {
+        let expired = self.platform.tick_retired(now);
+        let before = self.trace_sequence;
         self.pump();
+        expired || before != self.trace_sequence
     }
     fn step(&mut self) -> bool {
         let Some(observation) = self.platform.step() else {

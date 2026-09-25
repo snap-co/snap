@@ -2,8 +2,9 @@
 
 Start with `./bin/dev` and open `http://127.0.0.1:3848`. `/` is the mini-app
 launcher, `/healthy` exercises anonymous health requests, and `/calc` bootstraps
-a connection-owned calculator. Browser SDK requests and HTTP tool requests share
-one transport/execution instance and its application-wide gate.
+a connection-owned calculator. Browser SDK requests and tool requests share one
+transport/execution instance. The debugger connection stays responsive while the
+application-wide execution gate is held.
 
 ## Observe and control
 
@@ -16,6 +17,65 @@ attempt data is discarded on return and cannot be inspected between entries.
 The execution desk sends dependency JSON as text through its Rust binding, which
 also formats records and trace text for display. Signed-64-bit values remain exact
 even outside JavaScript's safe-integer range; the HTTP interface still uses JSON numbers.
+
+## Live debugger channel
+
+Connect to `ws://127.0.0.1:3848/__dev/ws` for live observation and control. This is
+independent of application WebSockets at `/transport`: opening or closing a
+debugger creates no calculator session and never resets state or resumes held work.
+The execution desk uses this channel and makes no periodic HTTP requests.
+
+The host immediately sends a full inspection report:
+
+```json
+{"type":"state","revision":"0","state":{"manual":false,"breakpoint":false,"program":"standard","snapshot":false,"active":null,"queued":[],"releases":0,"states":[],"peers":[],"trace":[]}}
+```
+
+It pushes another report when inspection changes, including changes caused by
+application traffic, other debuggers, HTTP commands or connection expiry. Each
+report replaces the previous one. Revisions are increasing decimal strings scoped
+to the host process, not snapshot versions. Slow subscribers can skip revisions;
+the host retains only the latest full report rather than buffering a stream per
+debugger. The trace within it still holds only the last 256 observations. This
+channel does not promise delivery of every intermediate execution event.
+
+Send the same controls listed below inside an envelope with a unique string ID:
+
+```json
+{"id":"step-1","control":{"action":"step"}}
+```
+
+The host executes commands from that socket in receive order and returns exactly
+one correlated result for each valid envelope while the connection remains live:
+
+```json
+{"type":"result","id":"step-1","result":{"manual":true,"active":null,"queued":[],"states":[],"trace":[]}}
+```
+
+The `result` is the same value returned by HTTP controls, with the full inspection
+fields omitted in the example above. A failure instead has `"error":"..."` and
+no `result`. Invalid control actions also receive a correlated error. State reports
+may arrive between results. A step result confirms that host step has finished;
+it does not imply that the application operation has completed.
+
+IDs must be nonempty strings of at most 128 UTF-8 bytes. Malformed envelopes,
+non-text commands or input messages larger than 64 KiB close the connection.
+IDs correlate responses only; sending an ID again executes a new command. On
+connection loss, a submitted command's outcome can be unknown. Inspect the current
+state before deciding what to do next; do not blindly replay mutations.
+
+The desk reconnects with backoff from 250 ms to four seconds and gets a fresh
+report. It marks retained state as stale, disables its controls while disconnected,
+and rejects pending commands rather than replaying them. A ten-second response
+timeout also closes its socket. Host writes time out after five seconds without
+holding the application lock, so a stalled debugger cannot block execution.
+
+Both debugger and HTTP endpoints require the printed loopback Host address and,
+for browser connections, a matching Origin. Tools can omit Origin. Explicit `open`
+controls allocate tool-owned application peers; these require `drop` even if the
+debugger socket that created them closes.
+
+## HTTP controls and actions
 
 `POST /__dev` accepts JSON with an `action` field. Success returns inspection unless
 noted below. Failed controls return HTTP 409 with `{"error":"..."}`. The listener
@@ -52,7 +112,7 @@ host. Loading newly compiled modules remains a later implementation. Replay uses
 a fresh invocation ID and explicit dependency values. Restore changes authoritative
 host state; use the calculator's Refresh button to update the screen's last result.
 
-HTTP peers have no socket to detect abandonment. Drain responses and explicitly
+Tool-owned application peers have no socket to detect abandonment. Drain responses and explicitly
 drop them when done. The host bounds physical peers to 128 and buffers at most one
 outstanding operation per peer. It rejects further commands if 64 response frames
 await draining. Browser peers are detached automatically on socket loss.

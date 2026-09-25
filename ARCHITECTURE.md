@@ -157,17 +157,35 @@ stepping while continuing to admit submissions to the queue. The after-acceptanc
 breakpoint queues ACK and stops before the handler's first attempt. Each step
 performs one executor observation; pending dependency reads require supply/failure.
 
-The web host exposes these controls at `/__dev` independently of the application
-gate, so tools can inspect and resume held requests. The UI uses that same HTTP
-interface. Snapshots, restoration and program selection retain their idle-gate
+The web host exposes a dedicated development WebSocket at `/__dev/ws`, separate
+from application WebSockets at `/transport`. Both the execution desk and agents
+can subscribe and issue correlated commands. Controls bypass the application gate,
+so they remain responsive while application work is held or waiting. The existing
+`GET/POST /__dev` supports one-off HTTP tool calls against the same host.
+
+Each debugger receives a full inspection report on connection and pushed reports
+when observable state changes, including changes from HTTP tools, application
+requests and connection expiry. It does not poll. A host-wide revision orders
+reports. A single latest-report slot coalesces changes for slow observers; it is
+not an event delivery log. The existing bounded trace retains execution observations.
+Socket writes occur outside the host lock with a five-second deadline. A debugger
+cannot stall application execution through output backpressure.
+
+Debugger connections allocate no application attachment. Disconnecting one leaves
+application sessions and held work intact. Reconnection gets a fresh full report;
+the desk rejects pending commands on connection loss and never replays them. Socket
+commands execute in receive order, each with a correlated success/error response.
+Command IDs identify responses, not durable deduplication keys. Snapshots,
+restoration and program selection retain their idle-gate
 requirements. The trace and delivered client results are not rewound. Replaying
 uses a fresh invocation ID after restoring records; it is not transport redelivery.
 `standard` and `double-add` are compiled variants, not dynamic code loading.
 
 The host binds loopback only and rejects mismatched Host and browser Origin headers
 on transport/control routes. These are local development controls, with full access
-to fixture state. HTTP-owned tool peers require explicit drop; WebSocket peers
-detach when the socket closes. The host ticks connection expiry even while held.
+to fixture state. Explicitly opened tool peers require explicit drop, whether
+created over HTTP or the debugger socket. Application WebSocket peers detach when
+their socket closes. The host ticks connection expiry even while held.
 See [development controls](docs/testy-development.md) for the executable interface.
 
 ## Dependency enforcement

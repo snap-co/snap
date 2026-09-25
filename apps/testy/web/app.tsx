@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import init, {
-  Client,
-  development_control,
-  development_observation,
-} from "../.snap/web/bindings/testy_wasm.js";
+import init, { Client } from "../.snap/web/bindings/testy_wasm.js";
 import { WebChannel } from "./channel";
+import {
+  DevelopmentChannel,
+  type Host,
+  type DebuggerStatus,
+} from "./development";
 import "./style.css";
 
 type Calculator = {
@@ -17,61 +18,21 @@ type Calculator = {
     after: string;
   }[];
 };
-type Host = {
-  manual: boolean;
-  breakpoint: boolean;
-  program: string;
-  snapshot: boolean;
-  active: {
-    ticket: string;
-    operation: string;
-    accepted: boolean;
-    waiting: string | null;
-  } | null;
-  queued: unknown[];
-  states: string;
-  trace: string;
-};
-async function control(action?: object, input?: string): Promise<Host> {
-  const response = await fetch(
-    "/__dev",
-    action
-      ? {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: development_control(JSON.stringify(action), input),
-        }
-      : undefined,
-  );
-  const value = JSON.parse(development_observation(await response.text()));
-  if (!response.ok) throw new Error(value.error ?? response.statusText);
-  return value;
-}
 function Development() {
   const [host, setHost] = useState<Host>();
   const [error, setError] = useState("");
   const [ceiling, setCeiling] = useState("1000");
+  const [status, setStatus] = useState<DebuggerStatus>("Connecting");
+  const channel = useRef<DevelopmentChannel | undefined>(undefined);
   useEffect(() => {
-    let stopped = false;
-    async function refresh() {
-      try {
-        const next = await control();
-        if (!stopped) setHost(next);
-      } catch (e) {
-        if (!stopped) setError(String(e));
-      }
-    }
-    void refresh();
-    const timer = setInterval(refresh, 250);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
+    const connection = new DevelopmentChannel(setHost, setStatus);
+    channel.current = connection;
+    return () => connection.dispose();
   }, []);
   async function act(action: object, input?: string) {
     try {
       setError("");
-      setHost(await control(action, input));
+      await channel.current!.command(action, input);
     } catch (e) {
       setError(String(e));
     }
@@ -86,105 +47,118 @@ function Development() {
       </div>
       <h2>Execution desk</h2>
       <p className="muted">
-        Shared by this screen and agents at <code>/__dev</code>. Steps stop
+        Shared by this screen and agents at <code>/__dev/ws</code>. Steps stop
         between application entries.
       </p>
-      <div className="controls">
-        <button onClick={() => act({ action: "mode", manual: !host?.manual })}>
-          {host?.manual ? "Run" : "Hold"}
-        </button>
-        <button onClick={() => act({ action: "step" })}>Step once</button>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={host?.breakpoint ?? false}
-            onChange={(e) =>
-              act({ action: "breakpoint", enabled: e.target.checked })
-            }
-          />
-          Break after acceptance
-        </label>
-      </div>
-      <div className="execution-status" aria-live="polite">
-        {host?.active ? (
-          <>
-            <strong>{host.active.operation}</strong>
-            <span>
-              Ticket {host.active.ticket} ·{" "}
-              {host.active.waiting
-                ? `needs ${host.active.waiting}`
-                : host.active.accepted
-                  ? "ready for attempt"
-                  : "awaiting admission"}
-            </span>
-          </>
-        ) : (
-          <>
-            <strong>Idle</strong>
-            <span>{host?.queued.length ?? 0} queued operations</span>
-          </>
-        )}
-      </div>
-      {host?.active?.waiting && (
+      <p className="muted small" role="status">
+        Debugger: {status}
+        {status !== "Live" && host ? " · showing last report" : ""}
+      </p>
+      <fieldset className="development-controls" disabled={status !== "Live"}>
         <div className="controls">
-          <input
-            aria-label="Dependency value"
-            value={ceiling}
-            onChange={(e) => setCeiling(e.target.value)}
-          />
           <button
-            onClick={() =>
-              act(
-                {
-                  action: "supply",
+            onClick={() => act({ action: "mode", manual: !host?.manual })}
+          >
+            {host?.manual ? "Run" : "Hold"}
+          </button>
+          <button onClick={() => act({ action: "step" })}>Step once</button>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={host?.breakpoint ?? false}
+              onChange={(e) =>
+                act({ action: "breakpoint", enabled: e.target.checked })
+              }
+            />
+            Break after acceptance
+          </label>
+        </div>
+        <div className="execution-status" aria-live="polite">
+          {host?.active ? (
+            <>
+              <strong>{host.active.operation}</strong>
+              <span>
+                Ticket {host.active.ticket} ·{" "}
+                {host.active.waiting
+                  ? `needs ${host.active.waiting}`
+                  : host.active.accepted
+                    ? "ready for attempt"
+                    : "awaiting admission"}
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>Idle</strong>
+              <span>{host?.queued.length ?? 0} queued operations</span>
+            </>
+          )}
+        </div>
+        {host?.active?.waiting && (
+          <div className="controls">
+            <input
+              aria-label="Dependency value"
+              value={ceiling}
+              onChange={(e) => setCeiling(e.target.value)}
+            />
+            <button
+              onClick={() =>
+                act(
+                  {
+                    action: "supply",
+                    ticket: host.active!.ticket,
+                    key: host.active!.waiting,
+                  },
+                  ceiling,
+                )
+              }
+            >
+              Supply input
+            </button>
+            <button
+              onClick={() =>
+                act({
+                  action: "fail",
                   ticket: host.active!.ticket,
                   key: host.active!.waiting,
-                },
-                ceiling,
-              )
-            }
-          >
-            Supply input
+                })
+              }
+            >
+              Fail input
+            </button>
+          </div>
+        )}
+        <div className="controls">
+          <button onClick={() => act({ action: "snapshot" })}>
+            Save state
           </button>
           <button
-            onClick={() =>
-              act({
-                action: "fail",
-                ticket: host.active!.ticket,
-                key: host.active!.waiting,
-              })
+            disabled={!host?.snapshot}
+            onClick={() => act({ action: "restore" })}
+          >
+            Restore state
+          </button>
+          <select
+            aria-label="Program variant"
+            value={host?.program ?? "standard"}
+            onChange={(e) =>
+              act({ action: "replace", program: e.target.value })
             }
           >
-            Fail input
-          </button>
+            <option value="standard">Standard addition</option>
+            <option value="double-add">Double-add variant</option>
+          </select>
         </div>
-      )}
-      <div className="controls">
-        <button onClick={() => act({ action: "snapshot" })}>Save state</button>
-        <button
-          disabled={!host?.snapshot}
-          onClick={() => act({ action: "restore" })}
-        >
-          Restore state
-        </button>
-        <select
-          aria-label="Program variant"
-          value={host?.program ?? "standard"}
-          onChange={(e) => act({ action: "replace", program: e.target.value })}
-        >
-          <option value="standard">Standard addition</option>
-          <option value="double-add">Double-add variant</option>
-        </select>
-      </div>
-      <p className="muted small">
-        Save, restore and replace require an idle executor. Replacement selects
-        compiled code. To replay, restore and submit the calculation again.
-      </p>
-      {error && (
-        <p role="alert" className="error">
-          {error}
+        <p className="muted small">
+          Save, restore and replace require an idle executor. Replacement
+          selects compiled code. To replay, restore and submit the calculation
+          again.
         </p>
-      )}
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+      </fieldset>
       <details>
         <summary>Committed records</summary>
         <pre data-testid="host-state">{host?.states}</pre>

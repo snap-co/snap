@@ -40,7 +40,9 @@ and adjacent assets for the same local development host.
 
 The execution desk exposes hold/run, an after-acceptance breakpoint, single steps,
 dependency supply/failure, snapshots and compiled program selection. Agents use the
-same controls over HTTP. See [development controls](docs/testy-development.md) for
+same controls over a separate development WebSocket, with HTTP available for
+one-off tool calls. The desk receives pushed updates and does not poll.
+See [development controls](docs/testy-development.md) for
 the wire interface and a complete replay example.
 
 ```sh

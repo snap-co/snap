@@ -165,7 +165,11 @@ bunx playwright install chromium
 Its app-owned journeys cover routing/bootstrap, health, arithmetic, reload,
 reconnect/close, exact 64-bit values, and HTTP tools stepping a live browser request
 through a held dependency, restoring state and selecting replacement code. The
-in-process development-control journey covers stale input rejection and preservation
+development WebSocket cases cover initial/pushed reports, command correlation and
+errors, HTTP-to-subscriber updates, independent reconnect, idle silence and lost
+command responses without replay. The numeric journey supplies exact i64 inputs
+over the debugger socket. A local platform test covers latest-report coalescing
+for a slow observer. The in-process development-control journey covers stale input rejection and preservation
 of submitted work after its observer disconnects. Browser/process tests stay out
 of the warm `bin/check` loop. Healthy's legacy fixture lives under
 `tests/fixtures/healthy`; root build/dev commands now select Testy.
