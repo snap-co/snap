@@ -3,6 +3,67 @@
 Snap separates capability contracts from their providers. Applications select
 implementations and explicitly publish operations. Hosts own execution and IO.
 
+## Active slice: Testy and standalone transport
+
+`crates/transport` is the standalone `snap-transport` capability. It owns operation
+contracts, admission, client correlation and resumable logical connections, and
+compiles with `no_std` plus `alloc`. It has no dependencies on the older runtime,
+Identity, Passport, Store or Cache. Testy is Snap's permanent contract application;
+its portable server and SDK depend only on transport and serialization utilities.
+The older integrations below have not been migrated and are outside this stage.
+
+Applications own entry points and platform composition. `apps/testy/local` builds
+the memory program, native server and native SDK program. `platforms/local` supplies
+a local platform that mounts transport and selects memory or native IO. Native IO
+is feature-selected; memory builds do not compile Tokio. The native-only executable
+does not select the memory executor. A platform is not owned by transport, and
+adding another capability later must not make it a transport dependency.
+
+The single authority callback exchanges an opaque bearer for an identity string.
+No session ID or lease enters transport. Non-connection requests resolve each
+bearer; connected operations use the identity established at attachment. Reconnect
+resolves credentials again, allowing rotated tokens that resolve to the same
+identity. Wire callers cannot supply the server's attachment handle or identity.
+
+Logical connections are keyed by verified identity and client ID. Attachment is
+exclusive: an occupied connection rejects a contender without displacing its owner.
+Unexpected disconnect retains application state for five minutes by default,
+configurable by composition. Explicit close or detached expiry drops that state.
+Platforms drive the monotonic timer even without new requests. Reattachment before
+expiry restores state, but uses a new internal generation to fence old socket events.
+Connection-owned reference counts release resident application objects when their
+last owner leaves. Process shutdown loses all resident state; this is not persistence.
+
+Operation contracts include input, output and declared application-error validators,
+an identity requirement and a guard. Transport checks schemas and identity before
+the guard, queues acceptance before entering the handler, and validates completion.
+An invalid handler result is a contract failure, not a rollback of handler effects.
+Per-attachment increasing invocation IDs reject duplicates; no automatic replay or
+cross-reconnect result recovery is promised. IO failure leaves mutation outcome
+unknown. Client code must not reuse an interrupted native exchange stream.
+
+This first calculator slice uses synchronous authority, guards and handlers. Memory
+delivery and native IO are asynchronous, and acceptance is locally queued before
+handler entry. It does not yet supply suspended operation continuations. The native
+adapter uses bounded length-prefixed JSON over TCP, with one invocation at a time
+per physical connection. It is a local fixture, not a TLS or WebSocket deployment.
+Workers/WebSocket compositions and migration of the old adapters are subsequent
+stages, not dependencies of the selected build.
+
+`calc.start` is Testy's fixture bootstrap, not a transport-reserved operation. The
+SDK calls it anonymously for the constant bearer, connects with a client ID, then
+calls it on the connection to allocate the calculator. Existing calculators are
+preserved. An uninitialized connection can exist if bootstrap is interrupted.
+Calculator arithmetic is checked signed-64-bit arithmetic; division truncates
+toward zero. Failed calculations leave accumulator/history untouched. History is
+bounded to 128 successful operations for this fixture. Different logical
+connections own different calculators, even under the same identity.
+
+## Earlier integration architecture
+
+The following records the existing Authy/Chatty/Healthy implementation. It is not
+the dependency or connection model of the active Testy build.
+
 ## Ownership
 
 Protocol declares invocation contracts; Transport provides dispatch. Identity

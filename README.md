@@ -1,5 +1,34 @@
 # Snap Rust spike
 
+## Current stage: Testy transport
+
+Testy is the isolated transport contract application. Its server and SDK use no
+Identity, Passport, Store or Cache. Application-owned compositions mount transport
+in a memory or native local platform.
+
+```sh
+# Selected format, lint, behavior, portability and dependency-isolation gate:
+./bin/check
+
+# Run an SDK calculator program entirely in memory:
+mise exec -- cargo run -p testy-local --bin testy-server-memory
+
+# In separate terminals, run the native host and the same SDK journey over TCP:
+mise exec -- cargo run -p testy-local --no-default-features --features native --bin testy-server-native
+mise exec -- cargo run -p testy-local --no-default-features --features native --bin testy-client-native
+```
+
+Native programs default to `127.0.0.1:3847`; set `TESTY_ADDR` to override it. These
+are local fixtures with constant test credentials and plaintext TCP. The platform
+does not own `main()` or install other capabilities. Workers and WebSocket builds
+are not part of this stage. Cargo's default members select Testy and transport;
+older packages remain available by explicit package selection for later migration.
+
+## Earlier applications
+
+The instructions below describe the older integrations. They are outside the
+active transport check. Their historical full gate is `bash bin/check-legacy`.
+
 A local architecture experiment in IO-free Rust providers, driven by native and
 browser hosts. Healthy demonstrates a health-check client; Authy adds persistent
 password sessions, account profiles and an OIDC issuer. This is a selected Snap
@@ -33,7 +62,7 @@ exercise migrations against fixture databases first.
 ```sh
 mise exec -- ./bin/snap build apps/authy --release
 mise exec -- ./bin/snap check apps/authy
-mise exec -- ./bin/check
+mise exec -- bash ./bin/check-legacy
 ```
 
 Builds produce `.snap/build/{debug,release}` under the app, containing an executable

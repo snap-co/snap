@@ -106,6 +106,24 @@ lifecycle tests.
 
 ## Current commands
 
+The active build is now Testy and standalone `snap-transport`. Run `./bin/check`
+for selected formatting, Clippy, transport contracts, memory and native SDK tests,
+portable WASM compilation, and dependency isolation. It does not run or build
+Authy/Chatty integration suites. Cargo default members select the same four packages.
+`cargo test -p testy-local` runs the memory SDK scenarios; add `--features native`
+for the real TCP host case. Testy scenarios live in `apps/testy/tests`, registered
+by its application-owned local composition. Transport contracts live in
+`crates/transport/tests`.
+
+Memory delivery yields before dispatch and passes values without byte encoding.
+Its virtual clock drives detached-connection expiry; native tests exercise actual
+socket loss and competing attachments without waiting through expiry windows.
+Weak-reference probes verify resident data is actually released. The native case
+runs the same SDK program as memory. No test uses Identity, Store, or fixture crypto.
+
+The following commands describe the older integration slice and are not the
+active iteration gate:
+
 The memory platform rig drives real portable providers and the Identity SDK without
 network, filesystem, browser, or wall-clock IO. Run its transport contracts and
 Authy's in-process app cases with:
@@ -124,14 +142,14 @@ state; copying a database alone is not a complete platform snapshot.
 
 The command split above is the intended policy. Currently `snap check` still runs
 the commands listed in each app's `snap.toml`, including integration/browser suites,
-and `bin/check` is the full repository gate. `snap test` is the intended separate
+and `bin/check-legacy` preserves the old full repository gate. `snap test` is the intended separate
 entry point for thorough app suites; it is not implemented yet. Moving existing
 coverage to separate gates is required before these checks meet the fast-loop
 policy.
 
 ```sh
-# Full repository gate; bin/check owns the command sequence:
-mise exec -- ./bin/check
+# Historical cross-application gate, outside this stage:
+mise exec -- bash ./bin/check-legacy
 
 # Selected application's gate:
 mise exec -- ./bin/snap check apps/authy

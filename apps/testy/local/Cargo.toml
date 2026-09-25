@@ -1,0 +1,48 @@
+[package]
+name = "testy-local"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+testy = { path = ".." }
+snap-transport = { path = "../../../crates/transport" }
+snap-platform-local = { path = "../../../platforms/local" }
+futures = { version = "0.3", features = ["executor"], optional = true }
+tokio = { version = "1", features = ["rt", "net", "sync", "macros"], optional = true }
+
+[features]
+default = ["memory"]
+memory = ["dep:futures"]
+native = ["snap-platform-local/native", "dep:tokio"]
+
+[[bin]]
+name = "testy-server-memory"
+path = "src/memory.rs"
+required-features = ["memory"]
+
+[[bin]]
+name = "testy-server-native"
+path = "src/native.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "testy-client-native"
+path = "src/client.rs"
+required-features = ["native"]
+
+[lints]
+workspace = true
+
+[[test]]
+name = "memory"
+path = "../tests/memory.rs"
+required-features = ["memory"]
+
+[[test]]
+name = "native"
+path = "../tests/native.rs"
+required-features = ["native"]
+
+[package.metadata.snap]
+role = "composition"

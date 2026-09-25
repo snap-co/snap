@@ -2119,6 +2119,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap-platform-local"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "snap-transport",
+ "tokio",
+]
+
+[[package]]
 name = "snap-protocol"
 version = "0.0.0"
 dependencies = [
@@ -2140,6 +2149,14 @@ dependencies = [
 [[package]]
 name = "snap-store"
 version = "0.0.0"
+
+[[package]]
+name = "snap-transport"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "snap-web"
@@ -2294,6 +2311,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "testy"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "snap-transport",
+]
+
+[[package]]
+name = "testy-local"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "snap-platform-local",
+ "snap-transport",
+ "testy",
+ "tokio",
 ]
 
 [[package]]
