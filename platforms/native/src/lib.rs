@@ -1,8 +1,10 @@
 //! Native host execution and web carriers. Composition supplies a Protocol provider.
 pub mod client;
 pub mod cookie;
+pub mod files;
 mod http;
 pub mod oidc;
+pub mod outgoing;
 pub mod passport;
 pub mod store;
 mod websocket;

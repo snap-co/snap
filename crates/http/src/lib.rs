@@ -3,6 +3,7 @@
 //! own method, content type, origin and authorization policy for their routes.
 #![no_std]
 extern crate alloc;
+pub mod client;
 use alloc::{
     boxed::Box,
     collections::BTreeMap,

@@ -3,6 +3,10 @@ members = [
     "crates/protocol",
     "crates/http",
     "crates/oidc",
+    "crates/llm",
+    "apps/chatty",
+    "apps/chatty/native",
+    "apps/chatty/workers",
     "crates/identity",
     "crates/store",
     "crates/runtime",
@@ -33,6 +37,8 @@ publish = false
 [workspace.dependencies]
 snap-http = { path = "crates/http" }
 snap-oidc = { path = "crates/oidc" }
+snap-llm = { path = "crates/llm" }
+chatty = { path = "apps/chatty" }
 snap-protocol = { path = "crates/protocol" }
 snap-identity = { path = "crates/identity" }
 snap-store = { path = "crates/store" }

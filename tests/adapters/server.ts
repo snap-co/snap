@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 /** Owns one real host on an ephemeral port; never replaces development listeners. */
 export async function startServer(
-  options: { executable?: string; web?: boolean; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv; freshBuild?: boolean; address?: string } = {},
+  options: { executable?: string; web?: boolean; webDirectory?: string; dev?: boolean; project?: string; env?: NodeJS.ProcessEnv; freshBuild?: boolean; address?: string } = {},
 ) {
   const root = resolve(import.meta.dirname, "../..");
   const env: NodeJS.ProcessEnv = {
@@ -18,6 +18,7 @@ export async function startServer(
   let logs = "";
   let backendUrl: string | undefined;
   if (options.web) env.SNAP_WEB_DIR = resolve(root, "dist/web");
+  if (options.webDirectory) env.SNAP_WEB_DIR = options.webDirectory;
   const child = spawn(
     options.executable ??
       resolve(

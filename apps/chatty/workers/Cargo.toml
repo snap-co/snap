@@ -1,0 +1,24 @@
+[package]
+name = "chatty-workers"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chatty.workspace = true
+snap-workers.workspace = true
+snap-http.workspace = true
+snap-web.workspace = true
+snap-llm.workspace = true
+snap-store.workspace = true
+serde_json.workspace = true
+worker.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.snap]
+role = "composition"

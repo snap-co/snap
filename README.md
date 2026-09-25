@@ -15,6 +15,8 @@ mise install
 mise exec -- ./bin/snap dev apps/authy
 # Or launch Healthy:
 ./bin/dev
+# Authy + Chatty, with keys in .snap/chatty.env:
+mise exec -- bun scripts/chatty.ts
 ```
 
 Open http://127.0.0.1:3846. Authy stores accounts and sessions in
@@ -51,6 +53,9 @@ Authy's OIDC discovery is at `/.well-known/openid-configuration`. Configure
 `CHATTY_ORIGIN` for the registered relying-party origin and `CHATTY_CLIENT_SECRET`
 for confidential-client authentication. Both apps must use the same secret. The
 registered redirects are `/auth/callback` and `/auth/logged-out` on Chatty's origin.
+The pair runner opens Chatty at `http://127.0.0.1:3850`. See
+[Chatty's contract](apps/chatty/CONTRACT.md) for persistence, model/tools, limits,
+Workers composition and the Achilles launch command.
 
 ## Local Cloudflare Workers
 

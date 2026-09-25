@@ -19,7 +19,7 @@ export async function oidcServer(host: "native" | "workers", relyingPartyOrigin 
   if (host === "workers") return workersServer("authy", { CHATTY_ORIGIN: relyingPartyOrigin, CHATTY_CLIENT_SECRET: clientSecret });
   const directory = await mkdtemp("/tmp/opencode/oidc-");
   const address = `127.0.0.1:${await freePort()}`;
-  const options = { executable: resolve("target/debug/authy"), address, env: { SNAP_DATABASE: resolve(directory, "authy.sqlite"), SNAP_ORIGIN: `http://${address}`, CHATTY_ORIGIN: relyingPartyOrigin, CHATTY_CLIENT_SECRET: clientSecret } };
+  const options = { executable: resolve("target/debug/authy"), address, webDirectory: resolve("apps/authy/.snap/build/debug/web"), env: { SNAP_DATABASE: resolve(directory, "authy.sqlite"), SNAP_ORIGIN: `http://${address}`, CHATTY_ORIGIN: relyingPartyOrigin, CHATTY_CLIENT_SECRET: clientSecret } };
   try {
     let server = await startServer(options);
     return { baseUrl: server.baseUrl, logs: server.logs, restart: async () => { await server.close(); server = await startServer(options); }, close: async () => { try { await server.close(); } finally { await rm(directory, { recursive: true, force: true }); } } };

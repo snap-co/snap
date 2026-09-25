@@ -39,6 +39,15 @@ redirect/form/token protocol cannot be represented by Snap's operation envelope.
 `snap-oidc` owns issuer grant transitions and claim policy. Its injected Accounts
 interface supplies Passport-owned transaction guards; host crypto supplies RS256.
 
+Chatty selects standard HTTP for its BFF session and thread UI. `snap-http::client`
+declares bounded outgoing streams; hosts execute network requests with explicit
+deadlines and no automatic retry. `snap-llm` interprets Responses streams and opaque
+reasoning replay without owning HTTP execution or tool IO. Chatty owns session,
+thread and turn records plus tool policy. Native supplies confined workspace file
+access; Workers supplies service-bound Authy calls and disables native file tools.
+The React client renders these HTTP observations directly. It does not create a
+WASM binding for a Snap Protocol controller it does not consume.
+
 ## Host-driven execution
 
 `Provider::invoke` creates an owned future with capability-specific context and
@@ -64,11 +73,13 @@ their capacity and later delivery effects. Shutdown drops remaining continuation
 an already-started blocking Store transaction can still finish. Process failure
 does not recover or replay the workflow.
 
-The Workers Durable Object host retains accepted futures with `State::wait_until`,
-independently of the HTTP response waiter. The five-second response deadline does
-not cancel admitted work. Runtime termination can interrupt the continuation;
-there is no durable workflow recovery. Host lifetime and delivery mechanisms must
-be documented separately from the portable operation semantics.
+The Workers Durable Object host polls accepted futures independently of the HTTP
+response waiter. `State::wait_until` registers the future, but does not extend a
+Durable Object's lifetime. Ongoing work and pending IO keep the object active under
+the platform lifecycle. The five-second Snap response deadline does not cancel
+admitted work. Runtime termination can interrupt it; there is no durable workflow
+replay. Host lifetime and delivery mechanisms must be documented separately from
+the portable operation semantics.
 
 ## Storage and authority
 
