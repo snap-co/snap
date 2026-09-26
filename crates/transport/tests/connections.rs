@@ -125,3 +125,23 @@ fn requests_resolve_each_bearer_without_a_resident_scope() {
     ));
     assert_eq!(server.resident_count(), 0);
 }
+
+#[test]
+fn zero_retention_does_not_let_an_old_handle_detach_a_fresh_connection() {
+    // Reduced by Hegel while testing a deliberately removed generation fence.
+    let mut server = Server::new(
+        |_: &str| Some("alice".into()),
+        Config {
+            reconnect_ms: 0,
+            capacity: 1,
+        },
+    );
+    let (old, _) = server.connect("bearer", "tab", 0).unwrap();
+    server.disconnect(&old, 0).unwrap();
+    let (fresh, resumed) = server.connect("bearer", "tab", 0).unwrap();
+    assert!(!resumed);
+    assert_ne!(old.connection(), fresh.connection());
+    assert_eq!(server.disconnect(&old, 0), Err(Error::StaleConnection));
+    assert!(server.invoke(&fresh, call(1)).is_ok());
+    assert_eq!(server.take_retired(), vec![old.connection()]);
+}

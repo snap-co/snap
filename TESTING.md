@@ -176,3 +176,43 @@ of the warm `bin/check` loop. Healthy's legacy fixture lives under
 
 Formatting, Clippy, Rustdoc, dependency policy, and structural checks enforce
 source constraints separately from behavior tests.
+
+## Core property-testing experiment
+
+The `experiment/hegel-core-properties` branch evaluates Hegel against transport,
+execution and local composition. Run its host-only test consumer explicitly:
+
+```sh
+mise exec -- cargo test --locked -p snap-core-properties
+HEGEL_DEFAULT_PROFILE=stress HEGEL_SEED=20260926 \
+  mise exec -- cargo test --locked -p snap-core-properties -- --nocapture
+
+# One capability, with fresh deterministic generation rather than database reuse:
+HEGEL_TEST_CASES=10000 HEGEL_SEED=42 HEGEL_DATABASE=disabled \
+  mise exec -- cargo test --locked -p snap-core-properties --test transport-lifecycle
+```
+
+Tests live under their owners' `tests/properties` directories. The test-only
+`tests/properties/Cargo.toml` registers those files and owns the pinned Hegel
+dependency, using its static engine. This separate host consumer keeps that
+toolchain and longer exploration out of the default Cargo members and `bin/check`.
+It adds no production features or dependencies to portable packages.
+
+The default development/CI profiles run 200 cases per property; `stress` requests
+10,000. `tests/properties/hegel.toml` owns those settings. Environment variables
+can override case count, seed and persistence. Native Cargo tests run from the
+consumer directory, so local counterexamples go in `tests/properties/.hegel`,
+which Git ignores. Hegel's built-in CI profile disables the example database.
+Retain failure output or select an explicit database when exploring in CI.
+
+On failure, keep the reduced action trace and the printed
+`#[hegel::reproduce_failure("...")]` attribute. Temporarily add that attribute
+below the failing property's `#[hegel::test]` to replay with the pinned version.
+Once fixed, remove the attribute, rerun generation, and preserve important domain
+histories as ordinary deterministic contract tests. Reproduction blobs are
+version-specific; a seed alone is not a durable regression across code changes.
+
+These tests use sequential generated host events and check intermediate state.
+They do not exercise OS thread schedules or real network timing. The existing
+native/browser gates still own those adapter promises. See the
+[Hegel evaluation](docs/hegel-testing-research.md) for scope and measured results.

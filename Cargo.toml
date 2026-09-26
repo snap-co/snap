@@ -25,6 +25,7 @@ members = [
     "platforms/workers",
     "tests/fixtures/healthy/workers",
     "tests/workers",
+    "tests/properties",
     "tests/fixtures/healthy",
     "tests/fixtures/healthy/native",
     "tests/fixtures/healthy/wasm",
