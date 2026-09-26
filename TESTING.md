@@ -179,6 +179,17 @@ source constraints separately from behavior tests.
 
 ## Core property-testing experiment
 
+Store's ordinary contracts live in `crates/store/tests/resident.rs`; its SQLite
+adapter owns `platforms/sqlite/tests`, including real-file restart, migration and
+exclusive-owner tests. Testy's opt-in `store` feature exercises cross-module signup
+through transport and is included in `bin/check`. The migration CLI integration
+test runs with `mise exec -- cargo test -p snap-cli --test migrate`.
+
+The property consumer also registers `store-properties`, owned by
+`crates/store/tests/properties/resident.rs`. It compares a simple record model with
+SQLite-backed transactions, resident indexes, aborts, cold/NX reads, and injected
+backend commit failures. Run it explicitly, as described in [Store usage](docs/store.md).
+
 The `experiment/hegel-core-properties` branch evaluates Hegel against transport,
 execution and local composition. Run its host-only test consumer explicitly:
 

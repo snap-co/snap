@@ -12,6 +12,8 @@ hegeltest = { version = "=0.47.4", features = ["static-engine"] }
 snap-transport = { path = "../../crates/transport" }
 snap-execution = { path = "../../crates/execution" }
 snap-platform-local = { path = "../../platforms/local" }
+snap-store = { path = "../../crates/store" }
+snap-sqlite = { path = "../../platforms/sqlite" }
 
 [[test]]
 name = "transport-lifecycle"
@@ -31,6 +33,10 @@ path = "../../platforms/local/tests/properties/lifecycle.rs"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "store-properties"
+path = "../../crates/store/tests/properties/resident.rs"
 
 [package.metadata.snap]
 role = "tool"

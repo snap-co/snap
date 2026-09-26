@@ -3,6 +3,7 @@ members = [
     "crates/execution",
     "crates/transport",
     "platforms/local",
+    "platforms/sqlite",
     "apps/testy",
     "apps/testy/local",
     "apps/testy/wasm",
@@ -37,6 +38,8 @@ members = [
 ]
 resolver = "3"
 default-members = [
+    "crates/store",
+    "platforms/sqlite",
     "crates/execution",
     "crates/transport",
     "platforms/local",

@@ -4,16 +4,19 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 cargo_cmd=(cargo)
 if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
-packages=(-p snap-execution -p snap-transport -p snap-platform-local -p testy -p testy-local -p testy-wasm)
+packages=(-p snap-execution -p snap-transport -p snap-store -p snap-sqlite -p snap-platform-local -p testy -p testy-local -p testy-wasm)
 "${cargo_cmd[@]}" fmt "${packages[@]}" -- --check
 "${cargo_cmd[@]}" clippy "${packages[@]}" --all-targets --features testy-local/native,testy-local/web -- -D warnings
 "${cargo_cmd[@]}" test "${packages[@]}" --features testy-local/native,testy-local/web
-"${cargo_cmd[@]}" check -p snap-execution -p snap-transport -p testy --target wasm32v1-none
-for features in memory native web; do
+"${cargo_cmd[@]}" check -p snap-execution -p snap-transport -p snap-store -p testy --all-features --target wasm32v1-none
+"${cargo_cmd[@]}" clippy -p testy-local --features store --all-targets -- -D warnings
+"${cargo_cmd[@]}" test -p testy-local --features store --test store
+for features in memory native web store; do
   tree=$("${cargo_cmd[@]}" tree -p testy-local --no-default-features --features "$features" --edges normal --prefix none)
   while read -r name _; do
     case "$name" in
       snap-execution|snap-transport|snap-platform-local) ;;
+      snap-store|snap-sqlite) if [[ "$features" != store ]]; then echo "Unexpected Store dependency: $name" >&2; exit 1; fi ;;
       snap-*) echo "Unexpected Testy dependency: $name" >&2; exit 1 ;;
     esac
   done <<< "$tree"

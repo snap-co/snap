@@ -18,6 +18,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "si
 nix = { version = "0.30", features = ["signal", "user"] }
 reqwest = { version = "0.12", default-features = false }
 notify = "8"
+snap-store.workspace = true
+snap-sqlite = { path = "../../platforms/sqlite" }
 
 [lints]
 workspace = true

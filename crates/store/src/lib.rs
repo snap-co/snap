@@ -2,6 +2,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod resident;
 pub mod validation;
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::future::Future;
@@ -12,13 +13,15 @@ pub struct Table {
     pub name: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
     Text,
     Integer,
     Bytes,
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum Value {
     Text(String),
     Integer(i64),

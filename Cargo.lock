@@ -2140,6 +2140,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "snap-sqlite",
+ "snap-store",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -2172,6 +2174,8 @@ dependencies = [
  "hegeltest",
  "snap-execution",
  "snap-platform-local",
+ "snap-sqlite",
+ "snap-store",
  "snap-transport",
 ]
 
@@ -2298,8 +2302,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap-sqlite"
+version = "0.0.0"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+ "snap-store",
+]
+
+[[package]]
 name = "snap-store"
 version = "0.0.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "snap-transport"
@@ -2477,6 +2493,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snap-execution",
+ "snap-store",
  "snap-transport",
 ]
 
@@ -2487,9 +2504,12 @@ dependencies = [
  "futures",
  "snap-execution",
  "snap-platform-local",
+ "snap-sqlite",
+ "snap-store",
  "snap-transport",
  "testy",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

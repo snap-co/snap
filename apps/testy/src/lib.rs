@@ -1,9 +1,11 @@
-//! Snap's transport/execution contract application. No Identity, Store or host dependencies.
+//! Snap's portable contract application. Store is an opt-in consumer; hosts own IO.
 #![no_std]
 extern crate alloc;
 
 mod client;
 mod program;
+#[cfg(feature = "store")]
+pub mod store;
 
 pub use client::{Client, journey};
 pub use program::{App, CEILING};

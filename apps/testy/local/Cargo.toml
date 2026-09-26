@@ -11,12 +11,26 @@ snap-transport = { path = "../../../crates/transport" }
 snap-platform-local = { path = "../../../platforms/local" }
 futures = { version = "0.3", features = ["executor"], optional = true }
 tokio = { version = "1", features = ["rt", "net", "sync", "macros"], optional = true }
+snap-store = { workspace = true, optional = true }
+snap-sqlite = { path = "../../../platforms/sqlite", optional = true }
+toml = { version = "0.9", optional = true }
 
 [features]
 default = ["memory"]
 memory = ["dep:futures"]
 native = ["snap-platform-local/native", "dep:tokio"]
 web = ["snap-platform-local/web", "dep:tokio"]
+store = ["testy/store", "dep:snap-store", "dep:snap-sqlite", "dep:toml"]
+
+[[bin]]
+name = "testy-store-demo"
+path = "src/store_demo.rs"
+required-features = ["store"]
+
+[[test]]
+name = "store"
+path = "../tests/store.rs"
+required-features = ["store"]
 
 [[bin]]
 name = "testy-web"

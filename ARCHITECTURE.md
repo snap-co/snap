@@ -16,6 +16,10 @@ independent consumer or enforceable dependency/portability rule requires it.
   serialized host execution and in-memory commit. `src/program.rs` defines the
   application interface; `src/executor.rs` implements the host state machine.
 - `platforms/local` composes transport and execution with memory or native IO.
+- `crates/store::resident` owns portable server-side resident transactions,
+  index knowledge, miss diagnostics and explicit schema migration declarations.
+- `platforms/sqlite` implements Store's host IO and database-backed durability.
+  It is separately consumable by the CLI without importing application execution.
 - `apps/testy` defines the calculator, operation contracts and SDK.
 - `apps/testy/local` owns the executable entry points and selects the platform,
   authority, application implementation and host input resolver.
@@ -109,6 +113,69 @@ record before emitting completion. No other operation can see a partial update.
 This is in-memory atomic publication, not a database transaction. Dependency
 requests are reads, never irreversible effects. External write reconciliation and
 multiple-object memory graphs are not implemented.
+
+## Resident Store and durability
+
+Store is a server-side Tier 0 capability. It has no dependency on transport,
+execution, Identity, Access, Document or any host. Its active interface is
+`snap_store::resident`; the crate-root asynchronous Store/Cache contracts remain
+for the earlier Authy/Chatty flow. These are distinct contracts, not interchangeable
+implementations. New consumers use resident Store. Cache expiry/eviction, authn,
+authz, OLAP and distributed commit are outside this capability.
+
+Portable module code receives one `resident::Transaction` shared across its module
+calls. Reads are synchronous and access resident data only. A read returns rows,
+known absence, or `Error::Miss` with the lookup. A miss poisons the transaction even
+if application code catches the error. The attempt returns and all staged writes
+are discarded. This is NOT `execution::Need`: there is no suspended invocation,
+automatic loading, or automatic retry. A separate host action can `Store::load` a
+table; a later explicit invocation may succeed. Miss diagnostics retain a lifetime
+count and the latest 128 operation/lookup records, exportable by the host.
+
+Phase one loads complete tables. Before loading, a Store knows only its own
+committed inserts/deletes, not the rest of that table. Exact primary-key reads can
+hit known records. Secondary-index or prefix reads require complete residency, so
+a partially loaded set cannot be mistaken for a complete empty result. Loading an
+empty table establishes known nonexistence. There is no resident eviction policy.
+Indexes support ordered prefix lookups, including composite keys, with primary-key
+tie breaking. Values are non-null text, signed 64-bit integers, or bytes.
+
+`Store::run` holds an exclusive mutable borrow across the whole operation, database
+commit and resident publication. An operation owns a deep-cloned scratch record
+set and indexes. This intentionally favors simple isolation over memory efficiency;
+it is not an arena allocator. Read-your-writes works across modules. Complete
+inserts do not require a resident read; updates/deletes that depend on existing
+rows do. All write statements commit together in one backend transaction.
+Constraints can reject commit even after the handler returns successfully.
+
+SQLite is the durability authority in phase one. Its adapter holds an exclusive
+SQLite lock for its entire lifetime, uses rollback journaling with synchronous
+EXTRA, and refuses concurrent owners or migrations. It validates unique and foreign
+keys, deferring FK checks until transaction commit. No external writer may bypass
+Store. In-memory SQLite is explicitly ephemeral and only used for experiments/tests.
+
+A successful `Committed<T>` is returned after durable commit and publication of
+the complete staged resident state. All allocation/index construction for that
+publication precedes disk commit. No reader can enter between disk commit and
+publication. A confirmed backend rejection preserves old memory. An indeterminate
+commit fences the Store; reads, writes and loads fail until it is reopened and
+recovered. An unknown outcome must not trigger a blind retry of a non-idempotent
+operation. Restart starts cold and loads SQLite's committed state.
+
+External services do not participate in Store's transaction. Callers may start
+effects after `Committed`, but crash-safe delivery needs an outbox row written in
+the same transaction and a separately designed delivery worker. Store does not
+claim exactly-once email delivery or client-request deduplication.
+
+Migrations are explicit, ordered portable declarations translated to SQLite DDL.
+The CLI creates templates and applies a pending batch atomically with its history.
+Applied definitions cannot be changed, removed or reordered. Startup verifies the
+recorded DDL shape; it never guesses migrations or adopts an unmanaged database.
+Migrations run with Store closed. See [Store usage](docs/store.md).
+
+The later effect-WAL/ring-buffer phase can change the backend durability authority
+while retaining the transaction contract. No custom WAL, log shipping, consensus,
+multi-writer execution or online schema change is implemented in phase one.
 
 ## Replacement and snapshots
 

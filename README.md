@@ -67,6 +67,20 @@ The native programs use `127.0.0.1:3847` by default; `TESTY_ADDR` overrides it. 
 are local fixtures using constant credentials and plaintext TCP. The server's
 immediate input resolver supplies a ceiling of 1000 for `calc.add_checked`.
 
+## Resident Store experiment
+
+The SQLite-backed Store supports resident hit/miss reads, cross-module transactions
+and explicit schema migrations. A miss returns and discards the operation; the host
+loads separately and the caller chooses whether to submit another operation.
+
+```sh
+./bin/snap migrate --database .snap/testy-store.sqlite --migrations apps/testy/migrations
+mise exec -- cargo run -p testy-local --features store --bin testy-store-demo -- .snap/testy-store.sqlite 1
+```
+
+See [Store usage and guarantees](docs/store.md) for migrations, indexes, commit
+semantics, miss diagnostics and verification commands.
+
 ## Source map
 
 | Location | Responsibility |

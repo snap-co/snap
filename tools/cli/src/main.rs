@@ -5,6 +5,7 @@ mod cargo;
 mod check;
 mod config;
 mod dev;
+mod migrate;
 mod process;
 mod watch;
 
@@ -24,6 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create or apply explicit Store schema migrations
+    Migrate(migrate::Args),
     /// Verify the selected project's Rust packages and declared consumer checks
     Check {
         /// Start discovery here instead of the current directory
@@ -56,6 +59,7 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
+            Command::Migrate(args) => migrate::run(args),
             Command::Check {
                 project,
                 structure_only,
