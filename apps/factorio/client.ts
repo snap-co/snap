@@ -2,7 +2,9 @@
 export type Ticket = { id: string; title: string; description: string; modules: string[]; status: "draft" | "ready" | "done" | "cancelled"; notes: string; parent: string | null; blockers: string[] };
 export type Candidate = { commit: string; target: string; evidence: string; findings: { text: string; disposition: string }[]; approval: { human: string; at: number; commit: string } | null };
 export type Session = { id: string; owner: string; prompt: string; tickets: string[]; modules: string[]; phase: string; base: string; branch: string; worktree: string; data: string; port: number; conversation: string; candidate: Candidate | null; integration: string | null; error: string };
-export type Workspace = { config: { repository: string; mainline: string; modules: Record<string, string> }; tickets: Record<string, Ticket>; sessions: Record<string, Session> };
+export type Intake = { id: string; owner: string; description: string; conversation: string; route: "explore" | "grill" | "triage" | "wayfinder" | "implement"; rationale: string; tickets: string[]; revision: number };
+export type Workspace = { config: { repository: string; mainline: string; modules: Record<string, string> }; tickets: Record<string, Ticket>; sessions: Record<string, Session>; intakes?: Record<string, Intake> };
+export function randomID() { return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""); }
 export type Identity = { identified: boolean; csrf?: string; owner?: string; human?: boolean };
 export class Factorio {
   identity: Identity = { identified: false };
@@ -22,6 +24,8 @@ export class Factorio {
   approve(id: string, commit: string) { return this.request<Workspace>("/api/approve", { id, commit }); }
   agentToken() { return this.request<{ token: string }>("/api/token", {}); }
   logout() { return this.request<{ redirect: string }>("/auth/logout", {}); }
+  intake(id: string, description: string) { return this.request<Intake>("/api/intakes", { id, description }); }
+  intakeAction(id: string, action: Record<string, unknown>) { return this.request<unknown>(`/api/intakes/${encodeURIComponent(id)}`, action); }
 }
 type Binding = { connect(id: string): string; receive(text: string): string; free(): void };
 /** Browser-owned socket; the portable Document client validates and recovers state. */
@@ -31,7 +35,7 @@ export async function subscribe(client: Factorio, update: (workspace: Workspace 
   await module.default({ module_or_path: "/bindings/factorio_wasm_bg.wasm" });
   let binding: Binding | undefined, socket: WebSocket | undefined, timer: ReturnType<typeof setTimeout> | undefined, closed = false;
   // getRandomValues also works on HTTP tailnet origins, unlike randomUUID.
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
+  const id = randomID();
   async function connect() {
     try {
       const identity = await client.identify();

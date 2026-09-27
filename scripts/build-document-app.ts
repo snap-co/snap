@@ -33,6 +33,12 @@ export async function build(app: "authy" | "chatty" | "factorio", entry: "app" |
     await mkdir(`dist/${app}`, { recursive: true });
     await copyFile(`target/debug/${app}`, `dist/${app}/${app}`);
     await cp(outdir, `dist/${app}/web`, { recursive: true });
+    if (app === "factorio") {
+      for (const [entrypoint, name] of [["scripts/factorio-opencode.ts", "opencode-bridge.js"], ["apps/factorio/cli.ts", "factory.js"]]) {
+        const result = await Bun.build({ entrypoints: [entrypoint!], outdir: "dist/factorio", target: "bun", naming: name! });
+        if (!result.success) throw new AggregateError(result.logs, "Factorio adapter build failed");
+      }
+    }
   }
   console.log(`${app} web assets: ${outdir}`);
 }

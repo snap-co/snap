@@ -55,6 +55,16 @@ pre { background: #f4f6f2; padding: 16px; border-radius: 6px; }
 .candidate { border-top: 1px solid #dce2dc; margin-top: 16px; padding-top: 16px; }
 [role=alert] { color: #9c3735; background: #fff0ee; border: 1px solid #efcfca; border-radius: 8px; padding: 12px 16px; overflow-wrap: anywhere; }
 [role=status] { color: #657169; padding: 24px 0; }
+.intake-desk { max-width: 820px; margin: 28px auto 40px; }
+.intake-desk [role=status] { padding: 0; font-size: 13px; }
+.conversation { max-height: 65vh; overflow-y: auto; overscroll-behavior: contain; margin: 20px 0; }
+.conversation article { margin-bottom: 12px; padding: 16px 20px; }
+.chat-user { background: #edf3ed; }
+.conversation strong { display: block; font-size: 13px; margin-bottom: 8px; }
+.conversation p:last-child { margin-bottom: 0; }
+.tool-status, .field-hint { display: block; font-size: 13px; color: #657169; font-weight: 400; }
+.draft-summary { padding: 20px; background: #edf3ed; border-radius: 8px; margin-bottom: 20px; }
+.question select[multiple] { min-height: 100px; }
 @media (max-width: 700px) {
   main { padding: 24px 16px; }
   header { align-items: flex-start; flex-direction: column; gap: 20px; }

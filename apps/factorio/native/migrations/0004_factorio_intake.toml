@@ -1,0 +1,8 @@
+id = "0004_factorio_intake"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "factorio.intake_keys"
+columns = [{ name = "id", kind = "text" }, { name = "session", kind = "text" }, { name = "intake", kind = "text" }]
+primary = ["id"]

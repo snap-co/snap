@@ -130,6 +130,13 @@ repository configuration, Authy registration, explicit migration and launch.
 `bin/factory help` lists its CLI. `.opencode/commands/factory.md` provides the
 repo-local OpenCode V2 command.
 
+In the browser, describe new work to start an OpenCode-backed intake conversation.
+The agent explores the repository and saves ticket drafts through Factorio's scoped
+tool endpoint. Review the drafts and mark implementation leaves ready. The CLI
+equivalent, `bin/factory intake -- <description>`, opens the same conversation in
+OpenCode's own terminal UI. Intake requires Bun and an authenticated OpenCode V2
+service with a configured model; packaged builds include its client adapter.
+
 ## Resident Store
 
 The SQLite-backed Store supports resident hit/miss reads, cross-module transactions

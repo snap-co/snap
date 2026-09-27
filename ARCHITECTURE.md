@@ -49,6 +49,10 @@ independent consumer or enforceable dependency/portability rule requires it.
   before Git or OpenCode IO and reconciles the exact planned integration commit
   after restart. Cookie-authenticated human approval is separate from agent-token
   commands. CLI and browser share the TypeScript carrier; Rust owns domain rules.
+  Conversational intake uses the existing OpenCode V2 service through its official
+  client. OpenCode owns execution and history; Factorio keeps intake metadata and
+  validates scoped, revision-guarded draft writes in Store. Native SSE projects
+  owner-authorized conversation snapshots after OpenCode events and reconnects.
 - `crates/http` declares bounded outbound IO. `platforms/model` builds and consumes
   Responses streams through that contract. Neither is a portable application
   executor; model IO runs outside Chatty's Store transaction.

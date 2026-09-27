@@ -162,6 +162,103 @@ fn revocation_during_preparation_prevents_new_publication_and_integration_intent
 fn view(db: &mut Database) -> Workspace {
     db.run("view", factorio::load).unwrap().value
 }
+
+#[test]
+fn intake_batches_are_atomic_revision_guarded_and_only_single_module_leaves_become_ready() {
+    use factorio::intake::{self, Drafts, Route};
+    let mut db = fixture();
+    let session = rp::digest("alice");
+    let actor = || Actor {
+        session: &session,
+        human: false,
+        now: 101,
+    };
+    db.run("create-intake", |tx| {
+        intake::create(tx, actor(), "idea", "Improve navigation")
+    })
+    .unwrap();
+    let mut parent = ticket("idea-parent", &[]);
+    parent.status = Status::Draft;
+    parent.modules = vec!["a".into(), "b".into()];
+    let mut child = ticket("idea-child", &[]);
+    child.status = Status::Draft;
+    child.parent = Some(parent.id.clone());
+    let mut bad = child.clone();
+    bad.modules = vec!["missing".into()];
+    assert!(
+        db.run("bad-batch", |tx| intake::drafts(
+            tx,
+            actor(),
+            "idea",
+            Drafts {
+                revision: 0,
+                route: Route::Grill,
+                rationale: "Need details".into(),
+                tickets: vec![parent.clone(), bad]
+            }
+        ))
+        .is_err()
+    );
+    assert!(view(&mut db).tickets.is_empty());
+    assert_eq!(view(&mut db).intakes["idea"].revision, 0);
+    db.run("good-batch", |tx| {
+        intake::drafts(
+            tx,
+            actor(),
+            "idea",
+            Drafts {
+                revision: 0,
+                route: Route::Implement,
+                rationale: "Scope agreed".into(),
+                tickets: vec![parent, child.clone()],
+            },
+        )
+    })
+    .unwrap();
+    assert!(
+        db.run("stale", |tx| intake::drafts(
+            tx,
+            actor(),
+            "idea",
+            Drafts {
+                revision: 0,
+                route: Route::Explore,
+                rationale: "Old reply".into(),
+                tickets: vec![]
+            }
+        ))
+        .is_err()
+    );
+    db.run("ready", |tx| intake::ready(tx, actor(), "idea", 1))
+        .unwrap();
+    let w = view(&mut db);
+    assert_eq!(w.tickets["idea-parent"].status, Status::Draft);
+    assert_eq!(w.tickets["idea-child"].status, Status::Ready);
+    assert!(
+        db.run("late-agent", |tx| intake::drafts(
+            tx,
+            actor(),
+            "idea",
+            Drafts {
+                revision: 2,
+                route: Route::Grill,
+                rationale: "Late tool".into(),
+                tickets: vec![child]
+            }
+        ))
+        .is_err()
+    );
+    db.run("revoke", |tx| rp::revoke(tx, "alice")).unwrap();
+    assert!(
+        db.run("expired", |tx| intake::create(
+            tx,
+            actor(),
+            "other",
+            "Another request"
+        ))
+        .is_err()
+    );
+}
 fn ticket(id: &str, blockers: &[&str]) -> Ticket {
     Ticket {
         id: id.into(),

@@ -1,4 +1,5 @@
 mod effects;
+mod intake;
 #[cfg(test)]
 mod tests;
 use axum::{
@@ -20,6 +21,7 @@ use tower_http::services::{ServeDir, ServeFile};
 struct App {
     oauth: Arc<OAuth>,
     effects: tokio::sync::Mutex<()>,
+    intake_gate: tokio::sync::Mutex<()>,
 }
 impl App {
     fn workspace(&self) -> Result<Workspace, Error> {
@@ -297,6 +299,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         rp::MIGRATION,
         snap_oauth_local::MIGRATION,
         include_str!("../migrations/0003_factorio_agents.toml"),
+        include_str!("../migrations/0004_factorio_intake.toml"),
     ]
     .into_iter()
     .map(|s| toml::from_str(s).unwrap())
@@ -374,7 +377,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .chain(snap_document::server::TABLES.iter())
         .chain(rp::TABLES.iter())
-        .chain(["factorio.agents"].iter())
+        .chain(["factorio.agents", "factorio.intake_keys"].iter())
     {
         store.load(table)?;
     }
@@ -403,6 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Arc::new(App {
         oauth: oauth.clone(),
         effects: tokio::sync::Mutex::new(()),
+        intake_gate: tokio::sync::Mutex::new(()),
     });
     // Only reconcile committed integration/cleanup at boot. Interrupted setup is
     // visible and requires explicit recovery before any hook is run again.
@@ -437,6 +441,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/command", post(command))
         .route("/api/approve", post(approve))
         .route("/api/token", post(token))
+        .route("/api/intakes", post(intake::create))
+        .route("/api/intakes/{id}", post(intake::action))
+        .route("/api/intakes/{id}/events", get(intake::events))
+        .route("/api/intake-tool", post(intake::tool))
         .with_state(app)
         .merge(oauth.routes())
         .merge(snap_document_local::web::router(documents.clone()))

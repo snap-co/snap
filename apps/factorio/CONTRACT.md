@@ -49,6 +49,57 @@ configuration and OAuth environment.
 
 ## Work
 
+### Conversational intake
+
+The web starts with a description and an OpenCode V2 conversation. Factorio saves
+the original request before external IO, assigns a stable conversation and initial
+message ID, and allows recovery after an interrupted create. OpenCode owns model
+execution, repository exploration, tool calls, questions and conversation history.
+The intake prompt uses Ask Matt to choose exploration, grilling, triage, wayfinder
+or implementation-ready work. The configured OpenCode model and installed skills
+are used without changing global configuration.
+`FACTORIO_INTAKE_MODEL=provider/model` optionally selects the model for new intake
+sessions. Existing conversations retain their OpenCode model selection.
+
+The official `@opencode/client` discovers/authenticates the local OpenCode service.
+The native host runs a small Bun adapter, not another agent harness. Install Bun
+on the host, or set `FACTORIO_BUN` to its executable. Packaged builds include
+`opencode-bridge.js` and `factory.js` alongside the native executable. Dev uses
+the repository scripts. `FACTORIO_OPENCODE_BRIDGE` overrides the adapter path for
+isolated contract fixtures.
+
+Intake metadata and resulting tickets belong to the shared workspace. Only the
+initiating Authy identity can read or control its OpenCode conversation through
+Factorio. Browser requests use the existing cookie and CSRF policy. OpenCode
+service credentials stay server-side. The browser sees projected text/tool status,
+pending questions and permission requests, not opaque provider state or shell
+environment. SSE is event-driven; reconnect loads an authoritative snapshot of the
+latest 100 messages and pending forms/permissions. Full history remains in
+OpenCode. Open event streams recheck OAuth authority at most every ten seconds.
+
+The agent writes through OpenCode's shell tool invoking `factory intake-save`.
+The host installs a narrowly scoped credential in that conversation's shell
+environment. It can read workspace ticket context and atomically save only the
+intake's own draft tickets. It cannot start work, approve a candidate, integrate,
+or mark tickets ready. Its authority expires/revokes with the initiating local
+OAuth session. A subsequent message or explicit reconnect provisions a current
+credential. The [intake tool contract](INTAKE.md) is included in the initial
+prompt. Draft saves require the current intake revision; a stale revision or any
+invalid ticket rejects the whole batch. Saved drafts survive host restarts.
+
+Multi-module work is broken into a draft parent and single-module implementation
+leaves, with explicit blockers. Parent tickets are not actionable. Users mark
+implementation leaves ready after reviewing the agent's recommendation; this
+does not start execution. Intake is instructed to explore and draft, with edits
+denied through OpenCode's edit permission. As with the rest of Factorio, a local
+agent's shell access is cooperative, not a filesystem sandbox.
+
+From an authenticated CLI, `bin/factory intake -- <description>` creates an intake
+and opens OpenCode's own terminal UI. `bin/factory intake --resume <intake-id>`
+resumes it. The web and CLI share the same conversation. If the initial request
+fails, the printed intake ID can be resumed; prompts use stable IDs rather than
+blindly replaying uncertain submissions.
+
 Sign in through the browser, then create an agent token and export it as
 `FACTORIO_TOKEN` in the CLI environment. Tokens are stored as digests and refer to
 the authenticated OAuth session. Logout/expiry ends their authority. Keep the

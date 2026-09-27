@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, rm, chmod, cp, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { host } from "../apps/authy/tests/support/upgraded-host";
+import { openCodeFixture } from "../apps/factorio/tests/opencode-fixture";
 const root = resolve(process.env.FACTORIO_SOURCE_ROOT ?? resolve(import.meta.dir, "..")); process.chdir(root);
 if (process.argv.includes("--dev") && !process.env.FACTORIO_SOURCE_ROOT) {
   const copy = await mkdtemp("/tmp/opencode/factorio-dev-source-");
@@ -30,14 +31,15 @@ const repository = `${directory}/repo`, resources = `${directory}/resources`;
 async function stop() { if (child?.exitCode === null) { child.kill("SIGTERM"); await child.exited; } }
 async function start() {
   logs = "";
-  child = Bun.spawn(process.env.FACTORIO_TEST_DEV ? [`${root}/target/debug/snap`,"dev",`${root}/apps/factorio`] : [`${root}/target/debug/factorio`], { cwd: root, env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, FACTORIO_FIXTURE: directory, FACTORIO_CONFIG: `${directory}/config.json`, SNAP_DATABASE: `${directory}/factorio.sqlite`, FACTORIO_WEB_ADDR: new URL(base).host, FACTORIO_ADDR: new URL(base).host, SNAP_ORIGIN: base, AUTHY_ORIGIN: authy!.base, FACTORIO_CLIENT_SECRET: secret, SNAP_WEB_DIR: `${root}/apps/factorio/.snap/web` }, stdout: "pipe", stderr: "pipe" });
+  child = Bun.spawn(process.env.FACTORIO_TEST_DEV ? [`${root}/target/debug/snap`,"dev",`${root}/apps/factorio`] : [`${root}/target/debug/factorio`], { cwd: root, env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, FACTORIO_OPENCODE_BRIDGE: `${root}/apps/factorio/tests/opencode-bridge.ts`, FACTORIO_FIXTURE_API: `http://127.0.0.1:${control.port}`, FACTORIO_FIXTURE: directory, FACTORIO_CONFIG: `${directory}/config.json`, SNAP_DATABASE: `${directory}/factorio.sqlite`, FACTORIO_WEB_ADDR: new URL(base).host, FACTORIO_ADDR: new URL(base).host, SNAP_ORIGIN: base, AUTHY_ORIGIN: authy!.base, FACTORIO_CLIENT_SECRET: secret, SNAP_WEB_DIR: `${root}/apps/factorio/.snap/web` }, stdout: "pipe", stderr: "pipe" });
   const running = child;
   for (const stream of [child.stdout, child.stderr]) void (async()=>{for await (const b of stream as ReadableStream<Uint8Array>) logs += new TextDecoder().decode(b);})();
   const until = Date.now()+60000;
   while (Date.now()<until && running.exitCode===null) { try { if (logs.includes(process.env.FACTORIO_TEST_DEV ? "Factorio dev http" : "Factorio http") && (await fetch(`${base}/api/session`)).ok) return; } catch {} await Bun.sleep(20); }
   throw new Error(`Factorio startup failed: ${logs}`);
 }
-const control = Bun.serve({hostname:"127.0.0.1",port:0,async fetch(request) { const path=new URL(request.url).pathname;if(path==="/build-state")return Response.json({failed:logs.includes("Rebuild failed; previous generation retained"),generations:(logs.match(/generation ready/g)??[]).length});if(path!=="/restart")return new Response("missing",{status:404});await stop();await start();return new Response("restarted"); }});
+const opencodeFixture = openCodeFixture();
+const control = Bun.serve({hostname:"127.0.0.1",port:0, idleTimeout: 0, async fetch(request) { const fixture=await opencodeFixture(request);if(fixture)return fixture;const path=new URL(request.url).pathname;if(path==="/build-state")return Response.json({failed:logs.includes("Rebuild failed; previous generation retained"),generations:(logs.match(/generation ready/g)??[]).length});if(path!=="/restart")return new Response("missing",{status:404});await stop();await start();return new Response("restarted"); }});
 try {
   await mkdir(`${repository}/crates/a`,{recursive:true});await mkdir(`${repository}/crates/b`,{recursive:true});await mkdir(`${directory}/bin`);
   await Bun.write(`${repository}/crates/a/file`,"base a");await Bun.write(`${repository}/crates/b/file`,"base b");
@@ -46,6 +48,7 @@ try {
   await Bun.write(`${directory}/bin/opencode`, `#!/usr/bin/env bun
 const fs = await import('node:fs/promises');
 const [api,method,path,...rest]=process.argv.slice(2);
+if(api==='--session'){console.log(JSON.stringify({resumed:method}));process.exit(0);}
 if(api!=='api')process.exit(2);
 const file=process.env.FACTORIO_FIXTURE+'/conversations.json';
 let sessions={};try{sessions=JSON.parse(await fs.readFile(file,'utf8'));}catch{}

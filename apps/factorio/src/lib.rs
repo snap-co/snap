@@ -11,6 +11,7 @@ use snap_oidc::relying_party as rp;
 use snap_store::{Error, Transaction};
 
 pub const WORKSPACE: &str = "faca0000-0000-4000-8000-000000000001";
+pub mod intake;
 const OWNER: &str = "factorio-service";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +110,8 @@ pub struct Workspace {
     pub tickets: BTreeMap<String, Ticket>,
     pub sessions: BTreeMap<String, Session>,
     pub next_port: u32,
+    #[serde(default)]
+    pub intakes: BTreeMap<String, intake::Intake>,
 }
 pub fn registry() -> Registry {
     Registry::new(vec![Definition {
@@ -144,6 +147,7 @@ pub fn initialize(tx: &mut Transaction<'_>, config: &Config) -> Result<(), Error
                 tickets: BTreeMap::new(),
                 sessions: BTreeMap::new(),
                 next_port: config.first_port as u32,
+                intakes: BTreeMap::new(),
             };
             document().create(
                 tx,
@@ -191,6 +195,11 @@ fn overlaps(a: &[String], b: &[String]) -> bool {
 }
 pub fn actionable(w: &Workspace, t: &Ticket) -> bool {
     t.status == Status::Ready
+        && t.modules.len() == 1
+        && !w
+            .tickets
+            .values()
+            .any(|child| child.parent.as_ref() == Some(&t.id))
         && t.blockers
             .iter()
             .all(|id| w.tickets.get(id).is_some_and(|b| b.status == Status::Done))
@@ -279,6 +288,9 @@ pub fn command(
                 return Err(Error::Invalid);
             }
             scope(&w, &ticket.modules)?;
+            if ticket.status == Status::Ready && ticket.modules.len() != 1 {
+                return Err(Error::Constraint);
+            }
             let old = w.tickets.get(&ticket.id);
             if ticket.status == Status::Done && old.is_none_or(|t| t.status != Status::Done) {
                 return Err(Error::Constraint);
@@ -303,6 +315,13 @@ pub fn command(
             if cycles(&w, &id, false, &mut vec![]) || cycles(&w, &id, true, &mut vec![]) {
                 return Err(Error::Constraint);
             }
+            for item in w
+                .intakes
+                .values_mut()
+                .filter(|item| item.tickets.contains(&id))
+            {
+                item.revision = item.revision.checked_add(1).ok_or(Error::Constraint)?;
+            }
         }
         Command::DeleteTicket { id } => {
             if w.tickets
@@ -313,6 +332,14 @@ pub fn command(
                 return Err(Error::Constraint);
             }
             w.tickets.remove(&id).ok_or(Error::NotFound)?;
+            for item in w
+                .intakes
+                .values_mut()
+                .filter(|item| item.tickets.contains(&id))
+            {
+                item.tickets.retain(|ticket| ticket != &id);
+                item.revision = item.revision.checked_add(1).ok_or(Error::Constraint)?;
+            }
         }
         Command::Start {
             id,
