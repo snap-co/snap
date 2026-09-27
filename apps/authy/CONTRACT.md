@@ -157,10 +157,11 @@ Explicit close cancels owned IO/timers and rejects pending commands. Observation
 are immutable with stable identity between notifications. SDK close does not sign
 out the persisted server session.
 
-Shared native/browser assertions live in `tests/sdk/identity.contract.ts` and
-`identity-recovery.test.ts`; wire/migration assertions live in `tests/protocol`.
-`tests/browser/authy.spec.ts` covers the UI and development proxy.
-`scripts/authy-reference.ts` checks the selected TypeScript SDK against Rust.
+Authy-owned tests live under `apps/authy/tests`. Shared native/browser assertions
+live in `sdk/identity.contract.ts` and `sdk/identity-recovery.test.ts`;
+wire/migration assertions live in `integration`. `browser/authy.spec.ts` covers
+the UI and development proxy. `memory.rs` covers policy without external IO.
+`apps/authy/tests/reference.ts` checks the selected TypeScript SDK against Rust.
 
 ## Workers host
 
@@ -186,7 +187,7 @@ native host's physical-write deadline. Expiry rejects operations against current
 authority; idle socket closure uses Durable Object alarms and their scheduling
 latency. These are host delivery differences, not extended session validity.
 
-`tests/protocol/authy.test.ts`, `tests/protocol/carriers.test.ts`, and the Authy
+`apps/authy/tests/integration/authy.test.ts`, `tests/protocol/carriers.test.ts`, and the Authy
 browser journey run against both native and Workers hosts. The shared Store
 contract also runs inside workerd, including rollback, coherent reads, concurrent
 claims, advisory caches, binary values, and full-width integers. Tests use temporary

@@ -18,17 +18,33 @@ address = "127.0.0.1:3846"
 backend-address = "127.0.0.1:3847"
 
 [check]
-architecture = true
-rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+rust = ["Cargo.toml"]
+
+[test.memory]
+commands = [["cargo", "test", "-p", "authy", "--", "--include-ignored"]]
+
+[test.native]
 build = true
 commands = [
   ["cargo", "build", "-p", "authy-native", "--examples"],
-  ["cargo", "build", "-p", "snap-native", "--example", "carrier-contract"],
-  ["cargo", "test", "-p", "snap-native", "--test", "store-contract"],
+  ["bun", "test", "./tests/integration/authy.test.ts", "./tests/integration/oidc.test.ts", "./tests/integration/migration.test.ts", "./tests/integration/cookies.test.ts", "./tests/integration/sdk.test.ts", "./tests/sdk/identity-recovery.test.ts"],
+]
+
+[test.workers]
+build = true
+commands = [["bun", "test", "./tests/integration/authy.test.ts", "./tests/integration/oidc.test.ts"]]
+
+[test.browser]
+build = true
+commands = [
+  ["cargo", "build", "-p", "authy-native", "--examples"],
   ["bun", "../../scripts/check-client.ts"],
-  ["bun", "test", "../../tests/protocol/authy.test.ts"],
-  ["bun", "test", "../../tests/protocol/oidc.test.ts"],
-  ["bun", "test", "../../tests/protocol/carriers.test.ts", "../../tests/protocol/migration.test.ts", "../../tests/protocol/passport-policy.test.ts"],
-  ["bun", "test", "../../tests/sdk/identity-recovery.test.ts"],
-  ["bunx", "playwright", "test", "--config", "../../playwright.config.ts", "authy.spec.ts", "oidc.spec.ts", "identity-sdk.spec.ts"],
+  ["bun", "test", "./tests/sdk/identity-recovery.test.ts"],
+  ["bunx", "playwright", "test", "--config", "tests/playwright.config.ts"],
+]
+
+[test.full]
+commands = [
+  ["cargo", "doc", "-p", "authy", "--no-deps"],
+  ["bun", "tests/reference.ts"],
 ]

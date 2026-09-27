@@ -10,8 +10,9 @@ address = "127.0.0.1:3850"
 backend-address = "127.0.0.1:3851"
 
 [check]
-architecture = true
-rust = ["Cargo.toml", "native/Cargo.toml", "workers/Cargo.toml"]
+rust = ["Cargo.toml"]
+
+[test.full]
 commands = [
   ["cargo", "build", "-p", "chatty-native", "-p", "authy-native"],
   ["../../bin/snap", "build", "apps/authy"],
