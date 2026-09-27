@@ -91,9 +91,16 @@ because Workers and browser have different host contracts; Testy has no Workers 
 Slow memory cases may use `#[ignore = "memory suite"]` and an explicit `--include-ignored`
 suite. Browser and stress cases belong in separate targets.
 
-The CLI no longer packages or watches applications. Use `bin/build` and `bin/dev` for
-Testy. Former `[server]`, `[web]`, `[prepare]`, `[dev]` and suite `build` configuration
-are rejected instead of silently selecting the removed host workflow.
+`snap build apps/testy` and `snap dev apps/testy` run the app's `[build].commands`
+and `[dev].commands`. These use the same literal command and process-group ownership
+as test suites. Testy's dev driver provides frontend HMR and Rust/Wasm rebuilds.
+Former `[server]`, `[web]`, `[prepare]` and suite `build` configuration remain rejected.
+
+Run `mise exec -- cargo test -p snap-cli` for CLI dispatch and migration coverage.
+After building the CLI, `bun test tests/cli/dev.test.ts` is the explicit development
+workflow gate (requires installed Playwright Chromium). It uses a disposable source
+copy and migrated database, shares the build cache, and checks CSS/React hot reload,
+failed-build retention, Rust/Wasm replacement, login survival and process shutdown.
 
 ```sh
 # Portable behavior and Testy's in-process SDK:

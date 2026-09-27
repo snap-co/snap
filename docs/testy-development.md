@@ -1,6 +1,6 @@
 # Testy development controls
 
-After the [Identity database setup](../README.md#run-testy), start with `./bin/dev`
+After the [Identity database setup](../README.md#run-testy), start with `./bin/snap dev apps/testy`
 and open `http://127.0.0.1:3848`. `/` is the mini-app
 launcher, `/healthy` exercises anonymous health requests, and `/calc` bootstraps
 a login-required, connection-owned calculator. Browser SDK requests and tool requests share one
@@ -10,6 +10,34 @@ Identity requests run synchronously outside the calculator stepping queue, under
 host exclusion. Password hashing briefly occupies that host; it cannot be stepped.
 Identity requests/results are excluded from retained traces. Socket loss, logout or
 expiry discards Calc and fails its unfinished work even while the debugger is held.
+
+## Build and reload
+
+`snap dev` discovers `snap.toml` from the current directory, or takes an explicit
+app directory. The checkout wrapper runs from the repository root, so use
+`./bin/snap dev apps/testy` (also available as `./bin/dev`). Ctrl-C stops the watcher,
+Vite, the native host and any compiler children.
+
+Vite serves frontend source with React refresh and CSS hot replacement. Rust source,
+Cargo manifests and lockfile changes under Testy, `crates/` and `platforms/` trigger
+a debounced build of the native host and Wasm SDK. Builds run serially into private
+generations. A compile failure leaves the previous host and bindings active; a later
+edit retries. Changes arriving during compilation supersede that build. After a
+successful build the host restarts and browsers reload. If host startup fails, the
+driver restarts the previous executable. Rust replacement has a short outage and
+loses calculators and debugger state. Persisted accounts/sessions survive, and the
+browser retains its tab-scoped bearer. This is process replacement, not in-process
+Rust code hot swapping.
+
+`TESTY_WEB_ADDR` sets Vite's public loopback address (default `127.0.0.1:3848`). The
+Rust host uses a private loopback port; Vite proxies transport and debugger HTTP/WS
+after checking the public Host/Origin. An occupied public port fails startup.
+`TESTY_DATABASE` selects an already-migrated database. Stop development before
+running migrations. Changes to the dev/build scripts require restarting `snap dev`.
+
+`./bin/snap build apps/testy` (or `./bin/build`) produces `dist/testy-web` and `dist/web`.
+The packaged executable serves adjacent assets without Vite. It uses `TESTY_WEB_ADDR`,
+`TESTY_WEB_DIR` and `TESTY_DATABASE` as documented in the README.
 
 ## Observe and control
 

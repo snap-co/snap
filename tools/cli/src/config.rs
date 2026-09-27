@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub version: u32,
     pub application: String,
+    pub build: Option<TestSuite>,
+    pub dev: Option<TestSuite>,
     #[serde(default)]
     pub check: Check,
     #[serde(default)]
@@ -65,6 +67,15 @@ impl Project {
                         "application must not be empty"
                     );
                     validate_commands("check", &config.check.commands)?;
+                    for (name, workflow) in [("build", &config.build), ("dev", &config.dev)] {
+                        if let Some(workflow) = workflow {
+                            ensure!(
+                                !workflow.commands.is_empty(),
+                                "{name}.commands must not be empty"
+                            );
+                            validate_commands(name, &workflow.commands)?;
+                        }
+                    }
                     for (name, suite) in &config.test {
                         ensure!(
                             matches!(
@@ -99,7 +110,7 @@ impl Project {
             }
         }
         bail!(
-            "No snap.toml found from {}. Create one at the application root or pass its directory to snap check or snap test.",
+            "No snap.toml found from {}. Create one at the application root or pass its directory to snap.",
             start.display()
         )
     }

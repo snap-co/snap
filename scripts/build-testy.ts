@@ -57,7 +57,7 @@ await run([
   "--target",
   "wasm32-unknown-unknown",
 ]);
-const outdir = resolve("apps/testy/.snap/web");
+const outdir = resolve(process.env.TESTY_BUILD_DIR ?? "apps/testy/.snap/web");
 await mkdir(outdir, { recursive: true });
 await run([
   bindgen,
@@ -67,15 +67,17 @@ await run([
   `${outdir}/bindings`,
   "target/wasm32-unknown-unknown/debug/testy_wasm.wasm",
 ]);
-const result = await Bun.build({
-  entrypoints: ["apps/testy/web/app.tsx"],
-  outdir,
-  target: "browser",
-  sourcemap: "linked",
-  naming: "[name].[ext]",
-  define: { "process.env.NODE_ENV": JSON.stringify("development") },
-});
-if (!result.success)
-  throw new AggregateError(result.logs, "Testy web build failed");
-await copyFile("apps/testy/web/index.html", `${outdir}/index.html`);
+if (!process.argv.includes("--bindings-only")) {
+  const result = await Bun.build({
+    entrypoints: ["apps/testy/web/app.tsx"],
+    outdir,
+    target: "browser",
+    sourcemap: "linked",
+    naming: "[name].[ext]",
+    define: { "process.env.NODE_ENV": JSON.stringify("development") },
+  });
+  if (!result.success)
+    throw new AggregateError(result.logs, "Testy web build failed");
+  await copyFile("apps/testy/web/index.html", `${outdir}/index.html`);
+}
 console.log(`Testy web assets: ${outdir}`);

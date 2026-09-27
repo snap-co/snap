@@ -44,13 +44,16 @@ For the browser host, install Bun dependencies and the browser Wasm target once:
 bun install
 mise exec -- rustup target add wasm32-unknown-unknown
 ./bin/snap migrate --database .snap/testy-identity.sqlite --migrations crates/identity/migrations
-./bin/dev
+./bin/snap dev apps/testy
 ```
 
 Open `http://127.0.0.1:3848`. The runner builds the Rust SDK binding and web assets,
-then starts the host. Re-run it after source changes. `TESTY_WEB_ADDR` overrides the
-loopback address; `TESTY_WEB_DIR` overrides assets. `bin/build` creates `dist/testy-web`
-and adjacent assets for the same local development host.
+then starts the host and Vite. Frontend edits hot-reload; Rust edits rebuild the
+native host and Wasm SDK, restart the host and reload the browser. Failed builds
+keep the previous generation running. Restart/reload discards Calc state while
+retaining the tab's login. `TESTY_WEB_ADDR` overrides the public loopback address.
+`./bin/snap build apps/testy` creates `dist/testy-web` and adjacent assets for the
+same local development host. Run `./dist/testy-web` from the repository root.
 `TESTY_DATABASE` selects the explicitly migrated Identity database. Startup loads
 Identity's tables; it never creates or migrates them. Close the host before migrations.
 See [Identity](docs/identity.md) for operation and session contracts.
@@ -134,5 +137,7 @@ Authy, Chatty and the HTTP/LLM sources remain outside the Cargo workspace for la
 rewrites. They are not runnable, and their app-local documents describe the old
 apps rather than current Snap contracts. Their missing dependencies are intentional.
 
-Use `bin/dev` and `bin/build` for Testy. The CLI owns `check`, `test` and `migrate`;
-the previous `snap dev/build` packaging workflow has been removed.
+The CLI owns `dev`, `build`, `check`, `test` and `migrate`. Applications declare
+literal `[dev].commands` and `[build].commands` in `snap.toml`; the CLI runs them
+from the app directory and owns their process groups. Testy's dev driver owns its
+Vite and Rust/Wasm reload workflow. `bin/dev` and `bin/build` remain Testy shortcuts.

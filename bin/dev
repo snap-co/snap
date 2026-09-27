@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build and run Testy's local web host.
+# Compatibility shortcut for Testy's watched development workflow.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-bun scripts/build-testy.ts
-exec mise exec -- cargo run -p testy-local --no-default-features --features web --bin testy-web -- "$@"
+exec "$root/bin/snap" dev apps/testy "$@"

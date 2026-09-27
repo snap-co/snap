@@ -1,4 +1,5 @@
 //! Local developer tooling. Application execution stays in the selected host executable.
+mod application;
 mod architecture;
 mod cargo;
 mod check;
@@ -14,7 +15,7 @@ use std::{path::PathBuf, process::ExitCode};
 #[command(
     name = "snap",
     version,
-    about = "Check Snap applications and migrate Store databases"
+    about = "Build, develop and check Snap applications"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -23,6 +24,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build the application's configured artifacts
+    Build { project: Option<PathBuf> },
+    /// Run the application's development server and reload workflow
+    Dev { project: Option<PathBuf> },
     /// Create or apply explicit Store schema migrations
     Migrate(migrate::Args),
     /// Run a project's tests; defaults to the memory platform
@@ -51,6 +56,12 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
+            Command::Build { project } => {
+                application::run(config::Project::discover(project)?, &runner, false).await
+            }
+            Command::Dev { project } => {
+                application::run(config::Project::discover(project)?, &runner, true).await
+            }
             Command::Migrate(args) => migrate::run(args),
             Command::Test {
                 project_or_platform,

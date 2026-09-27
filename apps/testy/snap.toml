@@ -1,6 +1,12 @@
 version = 1
 application = "testy"
 
+[build]
+commands = [["../../bin/build"]]
+
+[dev]
+commands = [["bun", "../../scripts/dev-testy.ts"]]
+
 [check]
 rust = ["Cargo.toml", "local/Cargo.toml"]
 
