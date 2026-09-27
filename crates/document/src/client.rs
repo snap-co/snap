@@ -62,8 +62,9 @@
 //!   clears the tombstones. Reconciliation itself is the full permitted set,
 //!   so clearing there cannot reintroduce revoked data.
 //! * Replay errors never silently drop the journal: the journal is retained and
-//!   the error is surfaced as `Err`, with the view holding the authoritative
-//!   base plus the successfully replayed prefix.
+//!   the error is surfaced as `Err`, or alongside recovered outcomes in
+//!   `Reconciled::replay_error`, with the view holding the authoritative base
+//!   plus the successfully replayed prefix.
 
 use crate::{ClientMessage, Completion, Replication, ServerMessage, digest};
 use crate::{Error, Holding, Intent, Manifest, Reconciliation, Registry, Snapshot};
@@ -100,7 +101,16 @@ pub enum Outcome {
     Replicated { document: String, revision: u64 },
     /// An authoritative replacement was installed. `completed` counts journal
     /// entries removed by carried receipts (their snapshots were ignored).
-    Reconciled { documents: usize, completed: usize },
+    /// `outcomes` reports Completed, Rejected or Forbidden for each recovered
+    /// pending intent, so losing its original completion never hides rejection.
+    /// A replay failure retains unresolved intents and is reported alongside
+    /// the recovered outcomes rather than hiding them behind a returned error.
+    Reconciled {
+        documents: usize,
+        completed: usize,
+        outcomes: Vec<Outcome>,
+        replay_error: Option<Error>,
+    },
     /// Revocation applied; tombstones now block reintroduction.
     Removed { documents: Vec<String> },
     /// Expiry applied; all local state was cleared.
@@ -592,6 +602,8 @@ impl Client {
         }
         self.authoritative = authoritative;
         let mut removed = 0_usize;
+        let mut outcomes = Vec::new();
+        let mut forbidden = BTreeSet::new();
         for completion in &reconciliation.completed {
             if let Some(index) = self
                 .pending
@@ -600,14 +612,38 @@ impl Client {
             {
                 // Receipts only dedup the journal; their snapshots never
                 // replace the newer replacement documents above.
-                let _ = index;
                 self.pending.remove(index);
+                outcomes.push(match &completion.result {
+                    Ok(Some(_)) => Outcome::Completed { id: completion.id },
+                    Ok(None) => {
+                        forbidden.insert(completion.document.clone());
+                        Outcome::Forbidden {
+                            id: completion.id,
+                            document: completion.document.clone(),
+                        }
+                    }
+                    Err(error) => Outcome::Rejected {
+                        id: completion.id,
+                        error: error.clone(),
+                    },
+                });
                 self.acked.remove(&completion.id);
                 if self.awaiting_ack == Some(completion.id) {
                     self.awaiting_ack = None;
                 }
                 removed += 1;
             }
+        }
+        // The replacement is newer than the receipts. Discard dependent intents
+        // only when the latest authorized holdings still omit a forbidden doc.
+        self.pending.retain(|intent| {
+            !forbidden.contains(&intent.document)
+                || self.authoritative.contains_key(&intent.document)
+        });
+        let remaining: BTreeSet<u64> = self.pending.iter().map(|intent| intent.id).collect();
+        self.acked.retain(|id| remaining.contains(id));
+        if self.awaiting_ack.is_some_and(|id| !remaining.contains(&id)) {
+            self.awaiting_ack = None;
         }
         if requested {
             // Correlated answer: requeue what the server has not resolved by
@@ -625,19 +661,14 @@ impl Client {
         self.revoked
             .retain(|document| !permitted.contains(document));
         let documents = self.authoritative.len();
-        match self.rebuild_view(registry) {
-            Ok(()) => {
-                self.bump();
-                Ok(Outcome::Reconciled {
-                    documents,
-                    completed: removed,
-                })
-            }
-            Err(error) => {
-                self.bump();
-                Err(error)
-            }
-        }
+        let replay_error = self.rebuild_view(registry).err();
+        self.bump();
+        Ok(Outcome::Reconciled {
+            documents,
+            completed: removed,
+            outcomes,
+            replay_error,
+        })
     }
 
     fn handle_removed(

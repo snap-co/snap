@@ -30,6 +30,22 @@ impl App {
             .run("factorio.effect", |tx| factorio::effect(tx, id, effect))
             .map_err(|e| format!("{e:?}"))
     }
+    fn intent(&self, session: &rp::Session, id: &str, effect: Effect) -> Result<Workspace, String> {
+        self.oauth
+            .run("factorio.authorized-intent", |tx| {
+                factorio::authorized_intent(
+                    tx,
+                    Actor {
+                        session: &session.id,
+                        human: false,
+                        now: now(),
+                    },
+                    id,
+                    effect,
+                )
+            })
+            .map_err(|e| format!("{e:?}"))
+    }
     async fn actor(
         &self,
         headers: &HeaderMap,
@@ -104,7 +120,8 @@ impl App {
                         serde_json::from_value(input.get("findings").cloned().unwrap_or(json!([])))
                             .map_err(|_| "Invalid findings")?;
                     let (commit, target) = effects::candidate(&w.config, s).await?;
-                    self.effect(
+                    self.intent(
+                        session,
                         &id,
                         Effect::Published {
                             commit,
@@ -121,7 +138,7 @@ impl App {
                             return Err("Awaiting explicit human approval in the browser".into());
                         }
                         let commit = effects::prepare(&w.config, s).await?;
-                        self.effect(&id, Effect::Integrating { commit })?;
+                        self.intent(session, &id, Effect::Integrating { commit })?;
                     } else if !matches!(s.phase, Phase::Integrating | Phase::Cleanup) {
                         return Err("Session cannot be accepted in this phase".into());
                     }

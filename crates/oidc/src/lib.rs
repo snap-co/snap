@@ -617,9 +617,11 @@ pub fn resume(
     };
     // The continuation only completes with a *different* session than the one
     // that requested it: the browser must finish a fresh password login first.
-    // Digest difference (not timestamps) decides, so a fresh login in the same
-    // Unix second succeeds while the original session is always rejected.
+    // It must also have authenticated at or after the continuation was created.
+    // Equal timestamps permit a genuinely fresh login in the same Unix second;
+    // a different session created earlier does not establish fresh authentication.
     if valid.session == decode_b64_opt(&flow.data.session)?
+        || valid.auth_time < flow.data.auth_time
         || (!flow.data.subject.is_empty() && flow.data.subject != valid.subject)
     {
         return Ok(ResumeOutcome::LoginRequired);
@@ -1316,7 +1318,15 @@ fn sign_claims(
         .ok_or(Error::Invalid)?
         .into();
     value["auth_time"] = data.auth_time.into();
-    value["sid"] = encode_b64(session).into();
+    // Public correlation is domain- and client-separated from the private
+    // Identity lookup handle. No internal digest enters the signed payload.
+    value["sid"] = encode_b64(&host.digest(&alloc::format!(
+        "snap-oidc/public-session/v1\0{}\0{}\0{}",
+        config.issuer,
+        data.client,
+        encode_b64(session)
+    )))
+    .into();
     value["at_hash"] = URL_SAFE_NO_PAD.encode(&digest[..16]).into();
     if !data.nonce.is_empty() {
         value["nonce"] = data.nonce.clone().into();
@@ -1350,6 +1360,9 @@ fn authorize_redirect(base: &str, code: &str, state: &str, issuer: &str) -> Stri
     alloc::format!(
         "{base}{sep}code={code}&state={state}&iss={issuer}",
         sep = if base.contains('?') { "&" } else { "?" },
+        code = query_value(code),
+        state = query_value(state),
+        issuer = query_value(issuer),
     )
 }
 
@@ -1357,7 +1370,23 @@ fn logout_redirect(base: &str, state: &str) -> String {
     alloc::format!(
         "{base}{sep}state={state}",
         sep = if base.contains('?') { "&" } else { "?" },
+        state = query_value(state),
     )
+}
+
+fn query_value(value: &str) -> String {
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 15) as usize] as char);
+        }
+    }
+    encoded
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {

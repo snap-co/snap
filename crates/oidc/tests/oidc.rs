@@ -250,7 +250,15 @@ fn consent(
         .next()
         .unwrap();
     assert!(uri.contains("state=test-state"));
-    assert!(uri.contains("iss=http://authy.test"));
+    assert_eq!(
+        url::Url::parse(&uri)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "iss")
+            .unwrap()
+            .1,
+        ISSUER
+    );
     assert!(uri.starts_with(CALLBACK));
     code.to_string()
 }
@@ -767,7 +775,7 @@ fn id_token_preserves_nonce_and_auth_time_with_at_hash() {
     };
     let config = config();
     let mut crypto = IdCrypto::new();
-    let (_session, tokens) =
+    let (session, tokens) =
         full_grant(&mut store, &mut host, &authority, &config, &mut crypto, NOW);
     let id_claims: serde_json::Value = serde_json::from_str(&tokens.id_token).unwrap();
     assert_eq!(id_claims["iss"], ISSUER);
@@ -779,6 +787,15 @@ fn id_token_preserves_nonce_and_auth_time_with_at_hash() {
     );
     assert!(id_claims["sub"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(id_claims["sid"].as_str().is_some_and(|s| !s.is_empty()));
+    {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        assert_ne!(
+            URL_SAFE_NO_PAD
+                .decode(id_claims["sid"].as_str().unwrap())
+                .unwrap(),
+            session.session
+        );
+    }
     let expected = {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         URL_SAFE_NO_PAD.encode(&Sha256::digest(tokens.access.as_bytes())[..16])
@@ -809,7 +826,200 @@ fn id_token_preserves_nonce_and_auth_time_with_at_hash() {
     let rotated_claims: serde_json::Value = serde_json::from_str(&rotated.id_token).unwrap();
     assert_eq!(rotated_claims["auth_time"], auth_time);
     assert_eq!(rotated_claims["nonce"], "test-nonce");
+    assert_eq!(rotated_claims["sid"], id_claims["sid"]);
     assert_ne!(rotated.refresh, tokens.refresh);
+}
+
+#[test]
+fn opaque_state_round_trips_success_and_logout_with_existing_queries() {
+    let mut store = store();
+    let mut crypto = IdCrypto::new();
+    let (_, session) = enroll(&mut store, &mut crypto);
+    let authority = TestAuthority {
+        identity: snap_identity::Identity::default(),
+    };
+    let mut host = TestHost::new();
+    let mut config = config();
+    let callback = format!("{CALLBACK}?registered=keep");
+    let logged_out = format!("{LOGGED_OUT}?registered=keep");
+    config.clients[0].redirect_uri = callback.clone();
+    config.clients[0].post_logout_redirect_uri = logged_out.clone();
+    let mut req = authorize_request();
+    req.redirect_uri = &callback;
+    req.state = "opaque &+suffix=1%# fragment λ";
+    let outcome = store
+        .run("authorize", |tx| {
+            snap_oidc::authorize(
+                tx,
+                &mut host,
+                &authority,
+                &config,
+                &req,
+                Some(&session),
+                NOW,
+            )
+        })
+        .unwrap()
+        .value;
+    let AuthorizeOutcome::ShowConsent { handle } = outcome else {
+        panic!("consent")
+    };
+    let outcome = store
+        .run("consent", |tx| {
+            snap_oidc::consent(
+                tx,
+                &mut host,
+                &authority,
+                &config,
+                &snap_oidc::ConsentRequest {
+                    handle: &handle,
+                    decision: "allow",
+                    origin: ISSUER,
+                },
+                Some(&session),
+                NOW,
+            )
+        })
+        .unwrap()
+        .value;
+    let ConsentOutcome::Redirect { uri } = outcome else {
+        panic!("redirect")
+    };
+    let url = url::Url::parse(&uri).unwrap();
+    let pairs: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(pairs["state"], req.state);
+    assert_eq!(pairs["registered"], "keep");
+    assert_eq!(pairs["iss"], ISSUER);
+    assert_eq!(pairs.len(), 4);
+    assert!(url.fragment().is_none());
+    let outcome = store
+        .run("logout", |tx| {
+            snap_oidc::logout(
+                tx,
+                &mut host,
+                &authority,
+                &config,
+                &LogoutRequest {
+                    client_id: Some("chatty"),
+                    post_logout_redirect_uri: Some(&logged_out),
+                    hint: None,
+                    state: req.state,
+                    session: None,
+                },
+                NOW,
+            )
+        })
+        .unwrap()
+        .value;
+    let LogoutOutcome::Redirect { uri } = outcome else {
+        panic!("redirect")
+    };
+    let url = url::Url::parse(&uri).unwrap();
+    let pairs: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(pairs["state"], req.state);
+    assert_eq!(pairs["registered"], "keep");
+    assert_eq!(pairs.len(), 2);
+    assert!(url.fragment().is_none());
+}
+
+#[test]
+fn fresh_login_rejects_an_old_second_session_for_prompt_and_max_age() {
+    for prompt in ["login", "select_account", ""] {
+        let mut store = store();
+        let mut crypto = IdCrypto::new();
+        let (_, first) = enroll(&mut store, &mut crypto);
+        let old = store
+            .run("old-login", |tx| {
+                snap_identity::Identity::default().login(
+                    tx,
+                    &mut crypto,
+                    "oidc@example.test",
+                    "password for oidc",
+                    NOW + 1,
+                )
+            })
+            .unwrap()
+            .value;
+        let second = BrowserSession {
+            subject: old.session.identity,
+            session: crypto.digest(&old.bearer),
+            auth_time: NOW + 1,
+        };
+        let authority = TestAuthority {
+            identity: snap_identity::Identity::default(),
+        };
+        let mut host = TestHost::new();
+        let config = config();
+        let mut req = authorize_request();
+        req.prompt = prompt;
+        if prompt.is_empty() {
+            req.max_age = Some("0");
+        }
+        let outcome = store
+            .run("force", |tx| {
+                snap_oidc::authorize(
+                    tx,
+                    &mut host,
+                    &authority,
+                    &config,
+                    &req,
+                    Some(&first),
+                    NOW + 100,
+                )
+            })
+            .unwrap()
+            .value;
+        let AuthorizeOutcome::RequireLogin { handle, .. } = outcome else {
+            panic!("fresh login")
+        };
+        let outcome = store
+            .run("old-resume", |tx| {
+                snap_oidc::resume(
+                    tx,
+                    &mut host,
+                    &authority,
+                    &config,
+                    &snap_oidc::ResumeRequest { handle: &handle },
+                    Some(&second),
+                    NOW + 100,
+                )
+            })
+            .unwrap()
+            .value;
+        assert!(matches!(outcome, ResumeOutcome::LoginRequired));
+        let new = store
+            .run("fresh-login", |tx| {
+                snap_identity::Identity::default().login(
+                    tx,
+                    &mut crypto,
+                    "oidc@example.test",
+                    "password for oidc",
+                    NOW + 100,
+                )
+            })
+            .unwrap()
+            .value;
+        let fresh = BrowserSession {
+            subject: new.session.identity,
+            session: crypto.digest(&new.bearer),
+            auth_time: NOW + 100,
+        };
+        let outcome = store
+            .run("fresh-resume", |tx| {
+                snap_oidc::resume(
+                    tx,
+                    &mut host,
+                    &authority,
+                    &config,
+                    &snap_oidc::ResumeRequest { handle: &handle },
+                    Some(&fresh),
+                    NOW + 100,
+                )
+            })
+            .unwrap()
+            .value;
+        assert!(matches!(outcome, ResumeOutcome::ShowConsent { .. }));
+    }
 }
 
 #[test]

@@ -5,6 +5,172 @@ use snap_document::{
     ServerMessage, Snapshot, digest,
 };
 
+#[test]
+fn recovered_rejections_are_observable_without_replaying_stale_snapshots() {
+    let registry = registry();
+    let mut client = Client::new("alice".into());
+    install(&mut client, &registry, vec![snapshot("doc-a", 1, 0)]);
+    let first = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.next_submission().unwrap();
+    client
+        .handle(&registry, ServerMessage::Accepted { id: first })
+        .unwrap();
+    let second = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.next_submission().unwrap();
+    client
+        .handle(&registry, ServerMessage::Accepted { id: second })
+        .unwrap();
+    let third = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.begin_reconnect();
+    let outcome = client
+        .handle(
+            &registry,
+            ServerMessage::Manifest(Reconciliation {
+                documents: vec![snapshot("doc-a", 10, 20)],
+                completed: vec![
+                    Completion {
+                        id: first,
+                        document: "doc-a".into(),
+                        result: Err(Error::Rejected("changed".into())),
+                    },
+                    Completion {
+                        id: second,
+                        document: "doc-a".into(),
+                        result: Ok(Some(snapshot("doc-a", 2, 1))),
+                    },
+                ],
+            }),
+        )
+        .unwrap();
+    let Outcome::Reconciled {
+        outcomes,
+        replay_error,
+        completed,
+        ..
+    } = outcome
+    else {
+        panic!("reconciliation")
+    };
+    assert_eq!(completed, 2);
+    assert_eq!(
+        outcomes,
+        vec![
+            Outcome::Rejected {
+                id: first,
+                error: Error::Rejected("changed".into())
+            },
+            Outcome::Completed { id: second }
+        ]
+    );
+    assert_eq!(replay_error, None);
+    assert_eq!(client.get("doc-a").unwrap().value["count"], 21);
+    assert_eq!(client.pending()[0].id, third);
+}
+
+#[test]
+fn recovered_forbidden_completion_removes_dependent_journal_and_reports_access_loss() {
+    let registry = registry();
+    let mut client = Client::new("alice".into());
+    install(&mut client, &registry, vec![snapshot("doc-a", 1, 0)]);
+    let id = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.next_submission().unwrap();
+    client
+        .handle(&registry, ServerMessage::Accepted { id })
+        .unwrap();
+    client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.begin_reconnect();
+    let outcome = client
+        .handle(
+            &registry,
+            ServerMessage::Manifest(Reconciliation {
+                documents: vec![],
+                completed: vec![Completion {
+                    id,
+                    document: "doc-a".into(),
+                    result: Ok(None),
+                }],
+            }),
+        )
+        .unwrap();
+    let Outcome::Reconciled {
+        outcomes,
+        replay_error,
+        ..
+    } = outcome
+    else {
+        panic!("reconciliation")
+    };
+    assert_eq!(
+        outcomes,
+        vec![Outcome::Forbidden {
+            id,
+            document: "doc-a".into()
+        }]
+    );
+    assert_eq!(replay_error, None);
+    assert!(client.pending().is_empty());
+    assert!(client.view().is_empty());
+}
+
+#[test]
+fn recovered_rejection_survives_a_later_optimistic_replay_failure() {
+    let registry = registry();
+    let mut client = Client::new("alice".into());
+    install(&mut client, &registry, vec![snapshot("doc-a", 1, 0)]);
+    let id = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.next_submission().unwrap();
+    client
+        .handle(&registry, ServerMessage::Accepted { id })
+        .unwrap();
+    let later = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.begin_reconnect();
+    let outcome = client
+        .handle(
+            &registry,
+            ServerMessage::Manifest(Reconciliation {
+                documents: vec![snapshot("doc-a", 10, i64::MAX)],
+                completed: vec![Completion {
+                    id,
+                    document: "doc-a".into(),
+                    result: Err(Error::Denied),
+                }],
+            }),
+        )
+        .unwrap();
+    let Outcome::Reconciled {
+        outcomes,
+        replay_error,
+        ..
+    } = outcome
+    else {
+        panic!("reconciliation")
+    };
+    assert_eq!(
+        outcomes,
+        vec![Outcome::Rejected {
+            id,
+            error: Error::Denied
+        }]
+    );
+    assert_eq!(replay_error, Some(Error::Invalid));
+    assert_eq!(client.pending()[0].id, later);
+    assert_eq!(client.get("doc-a").unwrap().value["count"], i64::MAX);
+}
+
 fn validate_counter(value: &Value) -> bool {
     value
         .get("count")

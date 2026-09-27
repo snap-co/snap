@@ -83,6 +83,9 @@ presence against software controlling that browser.
 `accept` requires that approval, checks both recorded OIDs, constructs a merge commit
 without changing the worktree, then durably records its OID before fast-forwarding
 mainline. Candidate or target movement requires a new publication and approval.
+Publication and new integration intent recheck the initiating OAuth session inside
+their write transaction after preparatory Git IO. Recovery of committed integration
+intent remains host-owned after the initiating session ends.
 Conflicts stop for inspection. Mainline integration is serialized across sessions.
 No remote push, PR, deployment or external tracker is involved.
 

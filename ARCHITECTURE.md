@@ -305,7 +305,9 @@ The manifest presents holdings and unresolved intents. The initial server always
 chooses complete authoritative replacement, including all Access-permitted documents,
 and returns matching receipts for unresolved intents. It retains no replication
 history. Recovered receipts remove journal entries without replacing newer manifest
-snapshots with older completion snapshots. Client state is ephemeral; a persistent
+snapshots with older completion snapshots. Reconciliation exposes each recovered
+completion, rejection or forbidden result. A later journal replay failure is
+reported alongside those outcomes rather than hiding them. Client state is ephemeral; a persistent
 journal is future work.
 
 Compatible mutations apply to the latest state in server FIFO order. There is no

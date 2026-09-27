@@ -493,7 +493,23 @@ upgrade gates 1–6 verified. Live OpenCode V2 execution remains unverified.
 - Disposable dev verification passed CSS/React HMR, failed-build retention,
   native/Wasm replacement, OAuth/workspace persistence and restart. The fixture
   closes its owned servers. Log: `/tmp/opencode/snap-factorio-dev.log`.
-  The bounded implementation review is still outstanding at this checkpoint.
+  Packaging was also rebuilt and launched from an independent temporary cwd;
+  startup required explicit migration and adjacent web assets were served.
+  Log: `/tmp/opencode/snap-factorio-package-smoke.log`.
+- Local implementation committed as `628b215e99a719dc2a985bb5ae9573269613719d`.
+  Initial independent Standards and Spec reviews completed against that revision.
+  Six distinct in-scope defects were accepted for one repair batch: public OIDC
+  session identifiers, opaque redirect state encoding, fresh-login authentication
+  time, recovered mutation outcome reporting, Authy decimal revision projection,
+  and transaction-local Factorio publication/integration authority. Fixes and
+  focused regression tests are implemented. Fix verification passed `bin/check`,
+  required workspace structure, and Authy, Chatty and Factorio full suites.
+  Logs: `/tmp/opencode/snap-upgrade-fix-{unit,check,structure,authy,chatty,factorio}.log`.
+  Four targeted Document recovery tests also passed after adding a combined
+  recovered-rejection/later-replay-failure regression case.
+  Review ledger and full reports are in `/tmp/opencode/snap-upgrade-review.md`.
+  One bounded validation round remains. Exact reviewer model pinning was unavailable
+  under the harness's model-override rule; configured default reviewers were used.
 - No real implementation candidate has been approved or integrated by Factorio.
   Automated approval was confined to disposable fixture repositories.
 

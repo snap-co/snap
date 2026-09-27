@@ -77,6 +77,26 @@ impl ChattyClient {
                     failure = Some(format!("Edit rejected: {error:?}"))
                 }
                 Outcome::Forbidden { .. } => failure = Some("Document access ended".into()),
+                Outcome::Reconciled {
+                    outcomes,
+                    replay_error,
+                    ..
+                } => {
+                    for outcome in outcomes {
+                        match outcome {
+                            Outcome::Rejected { error, .. } => {
+                                failure = Some(format!("Edit rejected: {error:?}"))
+                            }
+                            Outcome::Forbidden { .. } => {
+                                failure = Some("Document access ended".into())
+                            }
+                            _ => {}
+                        }
+                    }
+                    if failure.is_none() {
+                        failure = replay_error.map(|error| format!("Replay failed: {error:?}"));
+                    }
+                }
                 _ => {}
             }
         }

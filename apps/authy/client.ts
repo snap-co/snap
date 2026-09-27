@@ -32,7 +32,7 @@ export interface Account {
 export interface ProfileView {
   name: string;
   bio: string;
-  revision: number;
+  revision: string;
 }
 
 export type ConnectionState = "disconnected" | "connecting" | "connected";
@@ -62,7 +62,7 @@ export interface AuthySnapshot {
   readonly saving: boolean;
   readonly error: string | null;
   /** Client publication counter for reactive refresh. */
-  readonly revision: number;
+  readonly revision: string;
   /** Signed-in session list; null while signed out or not yet loaded. */
   readonly sessions: readonly SessionSummary[] | null;
   /** Credential labels; null while signed out or not yet loaded. */
@@ -98,14 +98,14 @@ interface WasmResult {
       id: string;
       kind: string;
       version: string;
-      revision: number;
+      revision: string;
       value: { name?: unknown; bio?: unknown };
     } | null;
     pending: number;
-    awaiting_ack: number | null;
+    awaiting_ack: string | null;
     reconciling: boolean;
     needs_recovery: boolean;
-    revision: number;
+    revision: string;
   };
   send: string[];
   error: string | null;
@@ -196,7 +196,7 @@ export async function startAuthy(): Promise<AuthyClient> {
     connection: "disconnected",
     saving: false,
     error: null,
-    revision: 0,
+    revision: "0",
     sessions: null,
     credentials: null,
   };

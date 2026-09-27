@@ -449,6 +449,34 @@ pub enum Effect {
     Failed(String),
 }
 pub fn effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Workspace, Error> {
+    if matches!(
+        effect,
+        Effect::Published { .. } | Effect::Integrating { .. }
+    ) {
+        return Err(Error::Constraint);
+    }
+    apply_effect(tx, id, effect)
+}
+
+/// Publication and new integration intent require current initiating authority
+/// after preparatory IO. Recovery of already committed intent uses `effect`.
+pub fn authorized_intent(
+    tx: &mut Transaction<'_>,
+    actor: Actor<'_>,
+    id: &str,
+    effect: Effect,
+) -> Result<Workspace, Error> {
+    if !matches!(
+        effect,
+        Effect::Published { .. } | Effect::Integrating { .. }
+    ) {
+        return Err(Error::Invalid);
+    }
+    rp::lease(tx, actor.session, actor.now)?;
+    apply_effect(tx, id, effect)
+}
+
+fn apply_effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Workspace, Error> {
     let mut w = load(tx)?;
     if matches!(effect, Effect::Integrating { .. })
         && w.sessions

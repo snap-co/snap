@@ -73,7 +73,7 @@ function ProfileEditor({ client }: { client: AuthyClient }) {
   const server = snapshot.profile;
   const [name, setName] = useState(server?.name ?? "");
   const [bio, setBio] = useState(server?.bio ?? "");
-  const [lastSyncedRevision, setLastSyncedRevision] = useState<number | null>(
+  const [lastSyncedRevision, setLastSyncedRevision] = useState<string | null>(
     server ? server.revision : null,
   );
 

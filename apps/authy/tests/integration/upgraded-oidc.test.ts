@@ -11,7 +11,8 @@ test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revoca
   const basic = `Basic ${Buffer.from(`chatty:${server.clientSecret}`).toString("base64")}`;
   const request = (path: string, init: RequestInit = {}) => fetch(`${base}${path}`, { ...init, redirect: "manual" });
   const form = (path: string, body: Record<string,string>, headers: Record<string,string> = {}) => request(path, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, body: new URLSearchParams(body) });
-  const params = (extra: Record<string,string> = {}) => new URLSearchParams({ client_id: "chatty", redirect_uri: redirect, response_type: "code", scope: "openid profile email", state: "fixture-state", nonce: "fixture-nonce", code_challenge: challenge, code_challenge_method: "S256", ...extra });
+  const state = "fixture &+suffix=value%# fragment λ";
+  const params = (extra: Record<string,string> = {}) => new URLSearchParams({ client_id: "chatty", redirect_uri: redirect, response_type: "code", scope: "openid profile email", state, nonce: "fixture-nonce", code_challenge: challenge, code_challenge_method: "S256", ...extra });
   const handle = (html: string) => { const match = /name="?request"?\s+value="([^"]+)"/.exec(html); expect(match).not.toBeNull(); return match![1]; };
   let cookie = "";
   async function login(signup = false) {
@@ -29,7 +30,7 @@ test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revoca
     expect(approved.status).toBe(303);
     const location = new URL(approved.headers.get("location")!);
     expect(location.origin).toBe("http://127.0.0.1:3850");
-    expect(location.searchParams.get("state")).toBe("fixture-state");
+    expect(location.searchParams.get("state")).toBe(state);
     expect(location.searchParams.get("iss")).toBe(base);
     expect((await form("/oauth/authorize",{request:ticket,decision:"allow"},{cookie,origin:base})).status).toBe(400);
     return location.searchParams.get("code")!;
@@ -47,6 +48,7 @@ test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revoca
     expect(badRedirect.status).toBe(400); expect(badRedirect.headers.get("location")).toBeNull();
     const silent = await request(`/oauth/authorize?${params({prompt:"none"})}`);
     expect(new URL(silent.headers.get("location")!).searchParams.get("error")).toBe("login_required");
+    expect(new URL(silent.headers.get("location")!).searchParams.get("state")).toBe(state);
     const account = await login(true);
     const tampered = cookie.slice(0,-1) + (cookie.endsWith("A") ? "B" : "A");
     expect((await (await request("/api/session",{headers:{cookie:tampered}})).json()).account).toBeNull();
@@ -63,6 +65,8 @@ test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revoca
     expect(claims).toMatchObject({iss:base,aud:"chatty",sub:account.identity,nonce:"fixture-nonce",email:"oidc@example.test",email_verified:false});
     expect(claims.at_hash).toBe(createHash("sha256").update(tokens.access_token).digest().subarray(0,16).toString("base64url"));
     expect(claims.exp-claims.iat).toBe(600);
+    const privateDigest = createHash("sha256").update(cookie.split("=")[1].split(".")[0]).digest("base64url");
+    expect(claims.sid).not.toBe(privateDigest);
     expect((await info(tokens.access_token)).status).toBe(200);
     await server.restart();
     expect(await (await request("/oauth/jwks")).json()).toEqual(jwks);
@@ -70,6 +74,7 @@ test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revoca
     expect((await (await request("/api/session",{headers:{cookie}})).json()).account.identity).toBe(account.identity);
     const rotatedResponse = await refresh(tokens.refresh_token); expect(rotatedResponse.status).toBe(200);
     const rotated = await rotatedResponse.json(); expect(rotated.refresh_token).not.toBe(tokens.refresh_token);
+    expect(JSON.parse(Buffer.from(rotated.id_token.split(".")[1],"base64url").toString()).sid).toBe(claims.sid);
     expect((await refresh(tokens.refresh_token)).status).toBe(400);
     expect((await info(rotated.access_token)).status).toBe(401);
     expect((await refresh(rotated.refresh_token)).status).toBe(400);
@@ -88,12 +93,12 @@ test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revoca
     await login();
     expect((await request(resume,{headers:{cookie}})).status).toBe(200);
     const active = await (await exchange(await authorize())).json();
-    const logout = await form("/oauth/logout",{client_id:"chatty",post_logout_redirect_uri:"http://127.0.0.1:3850/auth/logged-out",id_token_hint:active.id_token,state:"logout-state"},{cookie});
+    const logout = await form("/oauth/logout",{client_id:"chatty",post_logout_redirect_uri:"http://127.0.0.1:3850/auth/logged-out",id_token_hint:active.id_token,state},{cookie});
     expect(logout.status).toBe(200); const logoutTicket=handle(await logout.text());
     expect((await form("/oauth/logout",{request:logoutTicket},{cookie,origin:"https://attacker.invalid"})).status).toBe(403);
     const ended=await form("/oauth/logout",{request:logoutTicket},{cookie,origin:base});
     expect(ended.status).toBe(303); expect(ended.headers.get("set-cookie")).toContain("Max-Age=0");
-    expect(new URL(ended.headers.get("location")!).searchParams.get("state")).toBe("logout-state");
+    expect(new URL(ended.headers.get("location")!).searchParams.get("state")).toBe(state);
     expect((await info(active.access_token)).status).toBe(401);
   } finally { await server.close(); }
 },120000);

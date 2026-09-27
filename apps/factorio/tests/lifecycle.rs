@@ -100,8 +100,64 @@ fn command(db: &mut Database, cmd: Command, human: bool) -> Result<Workspace, Er
     .map(|c| c.value)
 }
 fn effect(db: &mut Database, id: &str, e: Effect) -> Result<Workspace, Error> {
-    db.run("effect", |tx| factorio::effect(tx, id, e))
-        .map(|c| c.value)
+    db.run("effect", |tx| {
+        if matches!(e, Effect::Published { .. } | Effect::Integrating { .. }) {
+            factorio::authorized_intent(
+                tx,
+                Actor {
+                    session: &rp::digest("alice"),
+                    human: false,
+                    now: 101,
+                },
+                id,
+                e,
+            )
+        } else {
+            factorio::effect(tx, id, e)
+        }
+    })
+    .map(|c| c.value)
+}
+
+#[test]
+fn revocation_during_preparation_prevents_new_publication_and_integration_intent() {
+    for integrating in [false, true] {
+        let mut db = fixture();
+        command(&mut db, start("work", &["a"], &[]), false).unwrap();
+        effect(&mut db, "work", Effect::Started).unwrap();
+        if integrating {
+            publish(&mut db, "work", "b");
+            command(
+                &mut db,
+                Command::Approve {
+                    id: "work".into(),
+                    commit: "b".repeat(40),
+                },
+                true,
+            )
+            .unwrap();
+        }
+        // Host has read the attempt and is outside Store preparing Git results.
+        let before = view(&mut db);
+        db.run("logout-during-preparation", |tx| rp::revoke(tx, "alice"))
+            .unwrap();
+        let prepared = if integrating {
+            Effect::Integrating {
+                commit: "c".repeat(40),
+            }
+        } else {
+            Effect::Published {
+                commit: "b".repeat(40),
+                target: "a".repeat(40),
+                evidence: "checks".into(),
+                findings: vec![],
+            }
+        };
+        assert!(effect(&mut db, "work", prepared).is_err());
+        let after = view(&mut db);
+        assert_eq!(after.sessions["work"].phase, before.sessions["work"].phase);
+        assert!(after.sessions["work"].integration.is_none());
+    }
 }
 fn view(db: &mut Database) -> Workspace {
     db.run("view", factorio::load).unwrap().value
