@@ -232,6 +232,21 @@ impl<P: Program> Executor<P> {
     /// Performs one observable transition. None means idle or waiting on a read.
     /// Call again after Accepted to enter the handler, or after supply to retry.
     pub fn step(&mut self) -> Option<Event> {
+        // Discarded queued work is already terminal. Deliver its failure even
+        // while another scope owns the application gate and waits for input.
+        if let Some(index) = self
+            .queue
+            .iter()
+            .position(|entry| matches!(entry, Queued::Run(job) if job.failure.is_some()))
+        {
+            let Queued::Run(job) = self.queue.remove(index).unwrap() else {
+                unreachable!()
+            };
+            return Some(Event::Completed {
+                ticket: job.ticket,
+                outcome: Err(self.checked_error(job.failure.unwrap())),
+            });
+        }
         while self.active.is_none() {
             match self.queue.pop_front()? {
                 Queued::Run(job) => self.active = Some(job),

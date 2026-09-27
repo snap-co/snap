@@ -96,3 +96,40 @@ fn identity_inputs_on_wrong_command_kind_never_enter_execution_diagnostics() {
     );
     assert!(memory.trace().is_empty());
 }
+
+#[test]
+fn revoked_queued_work_completes_while_another_session_waits() {
+    let sessions = Sessions::new(
+        support::store(true),
+        support::Fake::default(),
+        snap_identity::Identity::default(),
+        || 0,
+    );
+    let memory = Memory::new(platform(sessions));
+    let mut first = testy::Client::new(memory.channel());
+    block_on(first.authenticate(true, "a@b", "password1")).unwrap();
+    block_on(first.start("one")).unwrap();
+    let mut second = testy::Client::new(memory.channel());
+    let token = block_on(second.authenticate(false, "a@b", "password1")).unwrap();
+    block_on(second.start("two")).unwrap();
+    let mut logout = testy::Client::new(memory.channel());
+    logout.use_session(&token).unwrap();
+    let waker = noop_waker();
+    let mut cx = core::task::Context::from_waker(&waker);
+    let mut held = Box::pin(first.add_checked(5));
+    assert!(held.poll_unpin(&mut cx).is_pending());
+    assert!(held.poll_unpin(&mut cx).is_pending());
+    let (ticket, key) = memory.pending_read().unwrap();
+    let mut queued = Box::pin(second.add(3));
+    assert!(queued.poll_unpin(&mut cx).is_pending());
+    assert!(queued.poll_unpin(&mut cx).is_pending());
+    block_on(logout.logout()).unwrap();
+    assert_eq!(
+        queued.poll_unpin(&mut cx),
+        core::task::Poll::Ready(Err(Error::IdentityRequired))
+    );
+    assert!(held.poll_unpin(&mut cx).is_pending());
+    assert_eq!(memory.residents(), 1);
+    memory.supply(ticket, &key, Ok(json!(100))).unwrap();
+    assert_eq!(block_on(held), Ok(5));
+}

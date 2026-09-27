@@ -218,8 +218,14 @@ impl<R: Authority> Server<R> {
     ) -> Result<Dispatch, Error> {
         if self.live_authority {
             let bearer = self.resident(attachment)?.bearer.clone();
-            if self.authority.identify(&bearer)? != attachment.key.0 {
-                return Err(Error::InvalidBearer);
+            let validation = match self.authority.identify(&bearer) {
+                Ok(identity) if identity == attachment.key.0 => Ok(()),
+                Ok(_) => Err(Error::InvalidBearer),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = validation {
+                self.close(attachment)?;
+                return Err(error);
             }
         }
         let entry = self.resident(attachment)?;

@@ -10,6 +10,48 @@ fn call(id: u64) -> Invocation {
 }
 
 #[test]
+fn failed_live_validation_retires_once_and_requires_fresh_attachment() {
+    struct Live<'a>(&'a Cell<u8>);
+    impl Authority for Live<'_> {
+        fn identify(&self, _: &str) -> Result<String, Error> {
+            match self.0.get() {
+                0 => Ok("alice".into()),
+                1 => Err(Error::Unavailable),
+                2 => Err(Error::InvalidBearer),
+                _ => Ok("bob".into()),
+            }
+        }
+    }
+    for fault in 1..=3 {
+        let state = Cell::new(0);
+        let mut server = Server::new(Live(&state), Config::default()).with_live_authority();
+        let (old, _) = server.connect("token", "tab", 0).unwrap();
+        state.set(fault);
+        let expected = if fault == 1 {
+            Error::Unavailable
+        } else {
+            Error::InvalidBearer
+        };
+        assert!(matches!(server.invoke(&old, call(1)), Err(error) if error == expected));
+        assert!(!server.attached(&old));
+        assert_eq!(server.take_retired().len(), 1);
+        state.set(0);
+        assert!(matches!(
+            server.invoke(&old, call(2)),
+            Err(Error::StaleConnection)
+        ));
+        assert!(server.take_retired().is_empty());
+        let (fresh, resumed) = server.connect("token", "tab", 1).unwrap();
+        assert!(!resumed);
+        assert!(matches!(
+            server.invoke(&old, call(3)),
+            Err(Error::StaleConnection)
+        ));
+        assert!(server.invoke(&fresh, call(1)).is_ok());
+    }
+}
+
+#[test]
 fn rotation_identity_isolation_and_stale_attachment_fencing() {
     let calls = Cell::new(0);
     let token = RefCell::new("old");
