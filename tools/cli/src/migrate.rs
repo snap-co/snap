@@ -61,7 +61,33 @@ pub fn run(args: Args) -> Result<()> {
         );
         std::fs::create_dir_all(&args.migrations)?;
         let millis = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-        let id = format!("{millis:020}_{name}");
+        let mut id = format!("{millis:020}_{name}");
+        let mut latest = None;
+        for entry in std::fs::read_dir(&args.migrations)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|e| e == "toml") {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .context("migration filenames must be UTF-8")?
+                    .to_owned();
+                latest = Some(latest.map_or(stem.clone(), |old: String| old.max(stem)));
+            }
+        }
+        if let Some(latest) = latest
+            && id <= latest
+        {
+            // Preserve short numbered histories instead of introducing a padded
+            // timestamp that sorts before them. Never rewrite an applied ID.
+            let prefix = latest.split('_').next().unwrap_or_default();
+            let next = prefix.parse::<u128>().ok().and_then(|n| n.checked_add(1))
+                .context("automatic migration naming needs a numeric prefix; add a lexically later migration file manually")?;
+            id = format!("{next:0width$}_{name}", width = prefix.len());
+            ensure!(
+                id > latest,
+                "migration number width exhausted; add a lexically later migration file manually"
+            );
+        }
         let path = args.migrations.join(format!("{id}.toml"));
         let mut file = std::fs::OpenOptions::new()
             .write(true)

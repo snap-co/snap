@@ -315,3 +315,54 @@ fn rejection_and_lost_commit_acknowledgement_never_serve_stale_memory(tc: TestCa
         (fault != 1).then(|| row((1, 1), group))
     );
 }
+
+#[hegel::test]
+fn migration_indexes_require_their_columns_at_each_step(tc: TestCase) {
+    let initial = migrations().remove(0);
+    let catalog = initial.apply(&Catalog::default()).unwrap();
+    let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
+    let mut pending: Vec<_> = (0..count)
+        .flat_map(|id| [(false, id), (true, id)])
+        .collect();
+    let mut available = std::collections::BTreeSet::new();
+    let mut valid = true;
+    let mut changes = Vec::new();
+    while !pending.is_empty() {
+        let choice = tc.draw(gs::integers::<usize>().max_value(pending.len() - 1));
+        let (index, id) = pending.remove(choice);
+        let name = format!("field_{id}");
+        if index {
+            valid &= available.contains(&id);
+            changes.push(Change::CreateIndex {
+                table: "left.records".into(),
+                index: Index {
+                    name: format!("index_{id}"),
+                    columns: vec![name],
+                    unique: false,
+                },
+            });
+        } else {
+            available.insert(id);
+            changes.push(Change::AddColumn {
+                table: "left.records".into(),
+                column: Column {
+                    name,
+                    kind: Kind::Integer,
+                },
+                fill: 0.into(),
+            });
+        }
+    }
+    tc.note(&format!("changes={changes:?}"));
+    tc.event(if valid {
+        "valid ordered DDL"
+    } else {
+        "forward column reference rejected"
+    });
+    let next = Migration {
+        id: "0002_indexes".into(),
+        changes,
+    };
+    assert_eq!(next.apply(&catalog).is_ok(), valid);
+    assert_eq!(Sqlite::memory(&[initial, next]).is_ok(), valid);
+}

@@ -51,6 +51,10 @@ impl Sqlite {
 }
 
 fn configure(connection: &Connection) -> Result<(), MigrationError> {
+    // A missing quoted identifier must be an error, never a string constant in
+    // an index expression. SQLite otherwise accepts some invalid DDL silently.
+    connection.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)?;
+    connection.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DML, false)?;
     connection.busy_timeout(std::time::Duration::ZERO)?;
     connection.execute_batch(
         "PRAGMA foreign_keys=ON; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE;",

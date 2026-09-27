@@ -41,6 +41,7 @@ fn crash_child() {
 }
 
 #[test]
+#[ignore = "cross-process recovery gate; run explicitly with --ignored"]
 fn abrupt_process_exit_preserves_commits_and_discards_uncommitted_attempts() {
     for phase in ["before", "after"] {
         let path = std::env::temp_dir().join(format!(

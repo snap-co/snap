@@ -193,3 +193,88 @@ fn out_of_band_ddl_is_rejected_instead_of_silently_adopted() {
     assert!(migrate(&path, &[initial()]).is_err());
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn indexes_cannot_refer_to_columns_added_later_in_the_migration() {
+    let path = path("index-order");
+    let first = initial();
+    migrate(&path, std::slice::from_ref(&first)).unwrap();
+    let mut store = Sqlite::open(&path).unwrap();
+    store
+        .run("create", |tx| {
+            tx.insert(
+                "identity.people",
+                Row::from([("id".into(), 1.into()), ("name".into(), "Alice".into())]),
+            )
+        })
+        .unwrap();
+    drop(store);
+    let mut second = Migration {
+        id: "0002_email".into(),
+        changes: vec![
+            Change::CreateIndex {
+                table: "identity.people".into(),
+                index: Index {
+                    name: "email".into(),
+                    columns: vec!["email".into()],
+                    unique: true,
+                },
+            },
+            Change::AddColumn {
+                table: "identity.people".into(),
+                column: Column {
+                    name: "email".into(),
+                    kind: Kind::Text,
+                },
+                fill: "alice".into(),
+            },
+        ],
+    };
+    assert!(migrate(&path, &[first.clone(), second.clone()]).is_err());
+    assert_eq!(
+        status(&path, std::slice::from_ref(&first)).unwrap().applied,
+        vec!["0001_people"]
+    );
+    let mut store = Sqlite::open(&path).unwrap();
+    store.load("identity.people").unwrap();
+    assert_eq!(
+        store
+            .run("unchanged", |tx| tx.get("identity.people", &[1.into()]))
+            .unwrap()
+            .value
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(store);
+
+    second.changes.reverse();
+    migrate(&path, &[first, second]).unwrap();
+    let mut store = Sqlite::open(&path).unwrap();
+    let duplicate = store.run("duplicate", |tx| {
+        tx.insert(
+            "identity.people",
+            Row::from([
+                ("id".into(), 2.into()),
+                ("name".into(), "Bob".into()),
+                ("email".into(), "alice".into()),
+            ]),
+        )
+    });
+    assert!(matches!(duplicate, Err(Error::Constraint)));
+    store.load("identity.people").unwrap();
+    assert_eq!(
+        store
+            .run("one", |tx| tx.find(
+                "identity.people",
+                "email",
+                &["alice".into()]
+            ))
+            .unwrap()
+            .value
+            .len(),
+        1
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}

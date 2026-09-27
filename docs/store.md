@@ -97,7 +97,11 @@ are not durable idempotency keys.
 ```
 
 Migration IDs must match filenames and sort in strictly increasing order. The
-generator uses a timestamp prefix. Keep the entire applied history in source control.
+generator uses a timestamp prefix, or increments an existing numeric prefix at its
+current width when a timestamp would sort before it. It refuses to generate an
+out-of-order ID. Histories with nonnumeric prefixes or exhausted number widths can
+be extended with an explicitly named, lexically later file. Keep the entire applied
+history in source control.
 The adapter records canonical definitions rather than whitespace-sensitive file bytes.
 Editing, deleting or inserting an older applied migration is rejected; add a new one.
 Status validates history and pending declarations without applying DDL. It requires
@@ -138,6 +142,10 @@ Store inserts still require full rows. Column removal, type conversion, arbitrar
 SQL/data migrations and down-migration automation are not yet exposed. Explicit
 forward declarations are the phase-one scope; destructive reversal is not guessed.
 
+Local columns must exist at the step that declares an index or key using them.
+Foreign target tables may be declared later in the same migration. SQLite's legacy
+interpretation of unknown quoted identifiers as string literals is disabled.
+
 All pending migrations apply in one SQLite transaction, including history and DDL
 shape recording. A constraint/DDL failure rolls the batch back. Startup detects
 out-of-band DDL rather than serving resident data against an unrecognized schema.
@@ -148,6 +156,7 @@ exercise restart behavior, not every possible hardware or power-loss fault.
 
 ```sh
 mise exec -- cargo test -p snap-store -p snap-sqlite
+mise exec -- cargo test -p snap-sqlite --test recovery -- --ignored
 mise exec -- cargo test -p snap-cli --test migrate
 mise exec -- cargo test -p testy-local --features store --test store
 mise exec -- cargo test -p snap-core-properties --test store-properties
@@ -157,7 +166,8 @@ HEGEL_TEST_CASES=10000 HEGEL_SEED=42 HEGEL_DATABASE=disabled HEGEL_STATISTICS=1 
 
 The generated suite compares transactions and index results with a plain record
 model, checks cold/NX behavior, and injects confirmed rollback or lost commit replies
-at the backend interface. Real SQLite tests cover constraints, migration rollback,
+at the backend interface. A separate generated migration property checks column/index
+dependency ordering. Real SQLite tests cover constraints, migration rollback,
 exclusive ownership and abrupt-process restart. The fast repository gate includes
 ordinary Store tests; Hegel stays opt-in.
 
@@ -168,3 +178,8 @@ faults were caught and shrunk: allowing a swallowed miss to commit, skipping ind
 maintenance on update, and failing to fence an unknown commit outcome. The swallowed
 miss's reproduction blob replayed the failure. All mutations were removed.
 These counts describe tested histories, not a proof of correctness.
+
+After fixing a review-discovered index-before-column migration defect, the new
+migration-order property passed another 10,000 generated cases at seed `42`.
+The populated-table regression also verifies rejection without changing schema or
+history, followed by correctly ordered DDL that genuinely enforces uniqueness.

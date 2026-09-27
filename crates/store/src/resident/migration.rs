@@ -135,6 +135,11 @@ impl Migration {
                     target.indexes.retain(|i| i.name != *index);
                 }
             }
+            // Validate local DDL dependencies at THIS step, not just the final
+            // shape. Cross-table FK targets may still be introduced later.
+            for table in &catalog.tables {
+                table.validate_local()?;
+            }
         }
         catalog.validate()?;
         Ok(catalog)

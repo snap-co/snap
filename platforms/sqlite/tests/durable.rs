@@ -161,6 +161,8 @@ fn cross_module_constraints_roll_back_every_write_including_memory() {
             }],
         },
     });
+    // Forward table references remain legal within the same migration.
+    migrations[0].changes.reverse();
     let mut store = Sqlite::memory(&migrations).unwrap();
     for table in ["identity.accounts", "access.grants"] {
         store.load(table).unwrap();

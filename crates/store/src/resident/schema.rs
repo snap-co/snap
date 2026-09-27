@@ -78,43 +78,13 @@ impl Catalog {
     pub fn validate(&self) -> Result<(), Error> {
         let mut names = BTreeSet::new();
         for table in &self.tables {
-            let parts: Vec<_> = table.name.split('.').collect();
-            if parts.len() != 2
-                || parts[0] == "snap"
-                || !parts.iter().all(|n| identifier(n))
-                || !names.insert(&table.name)
-                || table.columns.is_empty()
-            {
+            table.validate_local()?;
+            if !names.insert(&table.name) {
                 return Err(Error::Invalid);
-            }
-            let mut columns = BTreeSet::new();
-            for column in &table.columns {
-                if !identifier(&column.name) || !columns.insert(&column.name) {
-                    return Err(Error::Invalid);
-                }
-            }
-            let valid_key = |key: &[String]| {
-                !key.is_empty()
-                    && key.iter().all(|c| columns.contains(c))
-                    && key.iter().collect::<BTreeSet<_>>().len() == key.len()
-            };
-            if !valid_key(&table.primary) {
-                return Err(Error::Invalid);
-            }
-            let mut indexes = BTreeSet::new();
-            for index in &table.indexes {
-                if !identifier(&index.name)
-                    || index.name == "primary"
-                    || !indexes.insert(&index.name)
-                    || !valid_key(&index.columns)
-                {
-                    return Err(Error::Invalid);
-                }
             }
             for foreign in &table.foreign {
                 let target = self.table(&foreign.table)?;
-                if !valid_key(&foreign.columns)
-                    || foreign.references != target.primary
+                if foreign.references != target.primary
                     || foreign.columns.len() != foreign.references.len()
                 {
                     return Err(Error::Invalid);
@@ -131,6 +101,47 @@ impl Catalog {
 }
 
 impl Table {
+    /// Validate one DDL step without requiring foreign target tables to have been
+    /// created yet. Local columns MUST exist when keys/indexes are declared.
+    pub(super) fn validate_local(&self) -> Result<(), Error> {
+        let parts: Vec<_> = self.name.split('.').collect();
+        if parts.len() != 2
+            || parts[0] == "snap"
+            || !parts.iter().all(|n| identifier(n))
+            || self.columns.is_empty()
+        {
+            return Err(Error::Invalid);
+        }
+        let mut columns = BTreeSet::new();
+        for column in &self.columns {
+            if !identifier(&column.name) || !columns.insert(&column.name) {
+                return Err(Error::Invalid);
+            }
+        }
+        let valid_key = |key: &[String]| {
+            !key.is_empty()
+                && key.iter().all(|c| columns.contains(c))
+                && key.iter().collect::<BTreeSet<_>>().len() == key.len()
+        };
+        if !valid_key(&self.primary) {
+            return Err(Error::Invalid);
+        }
+        let mut indexes = BTreeSet::new();
+        for index in &self.indexes {
+            if !identifier(&index.name)
+                || index.name == "primary"
+                || !indexes.insert(&index.name)
+                || !valid_key(&index.columns)
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        if self.foreign.iter().any(|f| !valid_key(&f.columns)) {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+
     pub fn column(&self, name: &str) -> Result<&Column, Error> {
         self.columns
             .iter()
