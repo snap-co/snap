@@ -1,194 +1,122 @@
-# Authy compatibility contract
+# Authy
 
-Authy selects the `user` identity kind and `account.create`; Passport owns shared
-password/session behavior. It supports account creation, password sign-in, sign-out,
-identity recovery, credential/session reads, reconnect, and session revocation.
-It also owns editable account documents and an OAuth 2.0 / OpenID Connect code-flow
-issuer. Password reset/change, passkeys, email delivery, and multi-realm federation
-are outside this slice. See [architecture](../../ARCHITECTURE.md) for composition.
+Authy composes Identity credentials/sessions, Access-protected Document profiles
+and a portable OAuth 2.0 / OpenID Connect issuer over one Store. Its supported host
+is native SQLite with a browser UI. Workers is not a supported target.
 
-## Accounts and OIDC
+## Accounts and profiles
 
-An account has a stable identity ID and a versioned document containing display
-name and bio. Passport credentials remain separate. New documents commit with
-credential registration and the first session. Existing identities receive their
-initial document on first profile access under a current-session guard. Profile
-updates require the current revision and return 409 on conflict. Email comes from
-Passport; `email_verified` is false until an actual verification flow exists.
+Enrollment atomically creates the identity, credential, first session, profile and
+Access ownership. Email normalization and password policy belong to
+[Identity](../../docs/identity.md). Password change/reset, passkeys and email
+verification are not implemented. `email_verified` is false.
 
-The `/api/account` GET/POST routes expose the current account only. Writes require
-same-origin JSON. The issuer uses standard HTTP bodies, forms and redirects rather
-than Snap Build headers or completion envelopes:
+The browser uses these same-origin HTTP routes:
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/signup` | Create an account and first session |
+| `POST /api/login` | Create an independent session |
+| `GET /api/session` | Current account or null |
+| `GET /api/sessions` | Current identity's session summaries |
+| `GET /api/credentials` | Credential labels without hashes |
+| `POST /api/logout` | Revoke `current`, `others` or `all` sessions |
+
+Account responses contain identity and profile IDs, not bearer material. Mutating
+HTTP routes require the canonical Origin. Session cookies are signed, HttpOnly,
+SameSite=Lax and Path=/. HTTPS selects `__Host-authy_session` with Secure; local
+HTTP selects `authy_session`. Invalid signatures and duplicate active cookies do
+not authenticate. Sessions have a 30-day absolute lifetime.
+
+Profiles contain name and bio. The Rust Document SDK owns optimistic edits,
+ACK-paced submission, revision guards, reconciliation and replication over
+`/transport`. The browser owns socket IO and React subscriptions. A profile edit
+uses its projected revision; conflicting concurrent edits reject and reconcile.
+HTTP account APIs are not a second profile-write path.
+
+The WebSocket host reads the signed cookie when a browser Connect carries an
+empty bearer. It revalidates session authority during dispatch and delivery.
+Revocation clears the visible profile and stops authenticated delivery. Ordinary
+reconnect recovers a surviving logical connection. Expired connections clear
+pending writes and reload a fresh manifest. Closing the SDK does not revoke the
+persisted session. HTTP mutations are never automatically replayed.
+
+## OAuth and OIDC
 
 | Endpoint | Behavior |
 | --- | --- |
 | `/.well-known/openid-configuration` | Issuer metadata |
-| `/oauth/jwks` | Public RS256 signing keys |
+| `/oauth/jwks` | Public RS256 key |
 | `/oauth/authorize` | Code authorization and explicit consent |
+| `/oauth/resume` | Resume after password authentication |
 | `/oauth/token` | Code redemption and refresh rotation |
 | `/oauth/userinfo` | GET/POST with an access-token Bearer header |
-| `/oauth/revoke` | Revoke the token's complete grant family |
+| `/oauth/revoke` | Revoke a token's grant family |
 | `/oauth/logout` | RP-initiated logout with browser confirmation |
 
-Chatty is statically registered as client `chatty`. `CHATTY_ORIGIN` selects its
-origin, defaulting to `http://127.0.0.1:3850` on native and port 8789 on Workers.
-Its exact redirects are `/auth/callback` and `/auth/logged-out` at that origin.
-When `CHATTY_CLIENT_SECRET` is configured, Chatty is confidential and must use
-`client_secret_basic`; without it the explicit development registration is public
-and uses PKCE only. Deployment configuration must select the intended client type.
+Chatty is registered as `chatty`. `CHATTY_ORIGIN` defaults to
+`http://127.0.0.1:3850`; exact redirects are `/auth/callback` and
+`/auth/logged-out` at that origin. Configuring `CHATTY_CLIENT_SECRET` with at
+least 32 bytes selects confidential `client_secret_basic`; otherwise it is a
+public PKCE client.
 
-All code requests require PKCE S256. Supported scopes are `openid`, `profile` and
-`email`; every authorization displays consent. `prompt=none` returns an interaction
-error, never UI. `prompt=login`, `select_account`, and stale `max_age` require a
-fresh password login before authorization resumes. Authentication time is preserved
-through refresh. Display/locale/ACR hints are accepted; ACR values are not asserted.
-Request objects, dynamic registration, implicit/hybrid flows and encrypted ID tokens
-are not implemented. This local implementation is not OIDC-certified.
+Every code flow requires PKCE S256. Scopes are `openid`, `profile` and `email`.
+Every authorization displays consent. `prompt=none` returns an interaction error;
+`prompt=login`, `select_account` and stale `max_age` require fresh authentication.
+Codes expire after 60 seconds, continuations after five minutes, access/ID tokens
+after ten minutes, and refresh families after 30 days. Refresh authority depends
+on the originating Identity session. There is no `offline_access`.
 
-Authorization codes expire after 60 seconds. Consent and login continuations expire
-after five minutes. Access tokens and ID tokens last up to ten minutes. Refresh
-families have a 30-day absolute lifetime and depend on the originating Passport
-session. Authy does not advertise `offline_access`. Raw codes/access/refresh tokens
-never enter issuer storage. Their digests and consumed-token lineage support
-single-use redemption, rotation and family revocation on replay, including concurrent
-redemption. Tokens are released only after guarded Store commit.
+Issuer tables retain digests and consumed-token lineage, not raw codes or access/
+refresh tokens. Code/refresh replay revokes the grant family. Session validation,
+fresh profile claims and token issuance share the caller's transaction. Tokens
+leave the host only after durable commit. RS256 and cookie keys persist in Store;
+JWKS exposes only public parameters. Native signing currently runs synchronously.
+Unavailable profile timestamps are omitted rather than fabricated.
 
-RS256 keys are generated by the host and persisted separately from cookie signing
-keys. Native uses blocking workers for signing; Workers uses Web Crypto. JWKS only
-contains public parameters. Automatic key rotation is not implemented; preserve
-the database to preserve signing identity across restart.
+Consent/logout POSTs require the exact issuer Origin and a session-bound handle.
+Their pages use `Referrer-Policy: same-origin` and restrict CSP form navigation to
+the issuer and configured RP origins. The issuer still checks exact registered
+redirect URIs. Logout accepts relevant signed expired ID-token hints and revokes
+the current session after explicit confirmation. Applications enforce their own
+local-session lifetimes.
 
-Logout requires browser confirmation, accepts relevant expired signed ID-token
-hints, and only redirects to a registered RP target. It ends the current Passport
-session and therefore its issuer grants. Front/back-channel logout notifications
-and token introspection are not implemented. Other applications must enforce their
-own local-session lifecycle; an OIDC logout endpoint alone is not universal SSO logout.
+Dynamic registration, request objects, implicit/hybrid flows, encrypted ID tokens,
+key rotation, introspection and front/back-channel logout are not implemented.
 
-Issuer and browser origins must be HTTPS for a standards deployment. Local HTTP on
-loopback/LAN/tailnet is an explicit development mode, including non-Secure cookies.
-No cloud deployment or general OIDC conformance result is implied by local tests.
+## Run and verify
 
-## Persistence and deployment
+From the repository root, after installing the tools described in the README:
 
-`SNAP_DATABASE` selects SQLite, default `.snap/authy.sqlite` under the working
-directory. Dev runs in the app directory. Accounts, password hashes, sessions, and
-the signing key survive rebuilds/restarts. New database files use mode 0600 on Unix.
+```sh
+mise exec -- cargo build -p authy-native
+SNAP_DATABASE=apps/authy/.snap/authy-store.sqlite target/debug/authy --migrate
+./bin/snap dev apps/authy
+./bin/snap build apps/authy
+SNAP_DATABASE=apps/authy/.snap/authy-store.sqlite ./dist/authy/authy
+./bin/snap test apps/authy full
+TMPDIR=/tmp/opencode mise exec -- bun test tests/cli/authy-dev.test.ts
+```
 
-Passwords use Argon2id; salts and session tokens use OS randomness. Only token
-digests enter session storage. HMAC-SHA256 signs cookies using a key persisted in
-SQLite unless `SNAP_SESSION_KEY` supplies an explicit key of at least 32 bytes.
-Preserve that key and the database across deployments. Sessions last 30 days.
+Dev opens `http://127.0.0.1:3846`; `AUTHY_WEB_ADDR` overrides it. Vite owns frontend
+HMR; successful Rust builds replace both native host and Wasm SDK, then reload.
+Failed builds retain the previous generation. Persisted accounts/profiles survive.
+The package places web assets beside `dist/authy/authy`.
 
-`SNAP_ORIGIN` is the canonical public origin. Dev supplies its public frontend
-origin unless overridden. Standalone hosts default to the resolved listen address;
-TLS/proxy deployments must supply the public HTTPS origin. WebSocket upgrades
-require that Origin. Dev proxies only `/_transport/ws` to the backend, preserving
-Host, Origin, cookies, and upgrade bytes separately from Vite HMR.
+`SNAP_DATABASE` selects the database. Dev defaults to
+`apps/authy/.snap/authy-store.sqlite`; standalone defaults to
+`.snap/authy-store.sqlite` relative to its working directory. Startup verifies and
+loads an explicitly migrated database. Close the host before migrations. There is
+no automatic import from old Passport databases; preserve those files separately.
 
-## Authority and accepted work
+`AUTHY_ADDR` sets the native loopback listener. `SNAP_ORIGIN` sets the canonical
+browser/issuer origin; dev supplies its public Vite origin. `SNAP_WEB_DIR` overrides
+assets. `SNAP_SESSION_KEY` may override the persisted cookie key with at least
+32 bytes; changing it invalidates existing cookies. Preserve SQLite to retain
+credentials, sessions and signing identity. Local tests do not establish a public
+deployment or OIDC certification.
 
-Credential claims and the first session commit together; duplicate normalized
-emails fail. Session creation rechecks the credential/hash used for password
-verification. Each operation resolves authority; protected reads and revocation
-recheck it transactionally. Sockets expire and terminate after local revocation.
-
-Accepted writes may finish after an HTTP observer disappears. Admission capacity
-remains held until completion. Clients never automatically retry mutations. The
-host admits 64 operations and at most 128 live sockets, bounds HTTP bodies and
-socket messages to 64 KiB, and applies write deadlines.
-
-## Wire subset
-
-Reference revision and checkout are recorded in [ARCHITECTURE.md](../../ARCHITECTURE.md).
-
-| Operation | Carrier | Identity |
-| --- | --- | --- |
-| `account.create` | HTTP Submit | optional |
-| `identity.fetch` | HTTP Query | optional |
-| `identity.password.acquire` | HTTP Submit | forbidden |
-| `identity.release` | HTTP Submit | required |
-| `identity.credentials` | WebSocket Message | required |
-| `identity.sessions` | WebSocket Message | required |
-
-Preserve path projection, Build negotiation, operation correlation, completion
-envelopes, failures inside `OperationError.failure`, Approved password results,
-void outputs, credential/session summary fields, and `sessionChanged`. Password
-bounds use JS UTF-16 length; emails are trimmed and lowercased.
-
-Cookies use `authy_session` for HTTP and `__Host-authy_session` for HTTPS, with
-Path=/, HttpOnly, SameSite=Lax, matching Max-Age, and Secure for HTTPS. Duplicate
-active cookie names are rejected; invalid signatures cannot identify a caller.
-
-WebSockets use `/_transport/ws?clientId=...&build=...`, `transport.epoch`, sequence
-IDs within that epoch, `transport.ack`, and `transport.complete`. Close code 4001
-ends a session; 4003 indicates Build mismatch. Stale-Build sockets upgrade before
-receiving their close frame so browsers can observe the reason.
-
-Transport validates the operation's input schema and resolves its admission guards
-before emitting `transport.ack`. The acknowledgement is emitted before handler
-entry, including for handlers that suspend. Invalid input and failed admission
-produce no acknowledgement. Accepted work can still fail, reported by completion;
-the acknowledgement does not imply a successful or durable commit. Native and
-Workers use the same portable dispatch lifecycle. HTTP bindings retain their
-single completion response rather than exposing a separate acknowledgement.
-An admission refusal for a stale signed session still clears the cookie and marks
-`sessionChanged`. A host response deadline ends that invocation's observation;
-late admission must not emit acknowledgement after its timeout completion.
-
-Each physical attachment starts a new logical epoch. Clients discard incomplete
-reads and request fresh snapshots after reconnect. Detached-operation retention
-and Message mutation replay are outside this subset.
-
-## Client lifecycle
-
-Observations distinguish loading, anonymous, identified, error, and closed state;
-connection status is separate. Rust owns pending commands, observations, coalesced
-reads, five-second read deadlines, reconnect backoff, and late-result fencing.
-Passwords never enter observations. React owns forms and rendering.
-
-HTTP and socket generations are independent. Recoverable socket drops cannot
-erase in-flight HTTP commands; reconnect backs off from 250 ms to 5 seconds.
-Revocation clears authenticated observations immediately. If release closes the
-socket before its HTTP response, the client waits for that result, then resolves
-identity. An unknown mutation outcome triggers a refetch, never a resend.
-
-Build mismatch requests browser reload or terminates the native client runtime.
-Explicit close cancels owned IO/timers and rejects pending commands. Observations
-are immutable with stable identity between notifications. SDK close does not sign
-out the persisted server session.
-
-Authy-owned tests live under `apps/authy/tests`. Shared native/browser assertions
-live in `sdk/identity.contract.ts` and `sdk/identity-recovery.test.ts`;
-wire/migration assertions live in `integration`. `browser/authy.spec.ts` covers
-the UI and development proxy. `memory.rs` covers policy without external IO.
-`apps/authy/tests/reference.ts` checks the selected TypeScript SDK against Rust.
-
-## Workers host
-
-`workers/` composes the same Passport provider and browser client with
-`snap-workers`. One `SNAP_REALM` identifies one SQLite-backed Durable Object.
-That object owns credential uniqueness, sessions, signing-key persistence, and
-socket revocation for the realm. NoCache remains selected. Changing the realm or
-Durable Object namespace selects different data. Native SQLite files are not
-automatically imported into Workers storage.
-
-The host uses local Rust futures and Workers bindings. Password hashing retains
-the native Argon2id policy but executes synchronously in Wasm; it blocks that
-isolate while hashing and requires an adequate deployment CPU/memory budget.
-The local workerd tests prove functionality, not edge throughput or plan capacity.
-
-Sockets use hibernation attachments to retain the token, lease, Build, and receive
-fence across object eviction. Reconstructing a host with a different Build closes
-old attachments with 4003. Each new physical connection still receives a fresh
-epoch. Accepted operations are bounded at 64, sockets at 128, and pending frame
-callbacks at 64. HTTP bodies and incoming text frames are bounded at 64 KiB.
-Workers queues outgoing frames through its WebSocket API; it does not expose the
-native host's physical-write deadline. Expiry rejects operations against current
-authority; idle socket closure uses Durable Object alarms and their scheduling
-latency. These are host delivery differences, not extended session validity.
-
-`apps/authy/tests/integration/authy.test.ts`, `tests/protocol/carriers.test.ts`, and the Authy
-browser journey run against both native and Workers hosts. The shared Store
-contract also runs inside workerd, including rollback, coherent reads, concurrent
-claims, advisory caches, binary values, and full-width integers. Tests use temporary
-storage and exercise process restart. They do not require Cloudflare credentials.
+Portable tests cover account atomicity and issuer state transitions. Native tests
+verify real HTTP, independent RSA verification, restart, replay and revocation.
+Browser journeys exercise profile replication, login, consent and forced login.
+The disposable-source dev gate covers rebuilds, HMR and owned-process shutdown.

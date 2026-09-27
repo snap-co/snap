@@ -1,124 +1,125 @@
 # Chatty
 
-Chatty is a personal assistant with Authy sign-in and private persistent threads.
-Its portable Rust application runs on native and local Workers. The browser uses
-ordinary same-origin JSON endpoints and polls persisted turn progress every 700 ms.
-Chatty's browser bundle has no Passport or model-provider credentials.
+Chatty uses Authy OAuth and Access-protected Documents for private conversations.
+Its portable application is synchronous `no_std` + `alloc`. Native hosts own IO;
+the browser uses the Rust Document SDK through Wasm. Updates are pushed, not polled.
 
-## Login and account ownership
+## Login and authority
 
-Chatty is Authy's statically registered confidential `chatty` client. Both apps must
-receive the same `CHATTY_CLIENT_SECRET`, at least 32 characters. Login uses code +
-PKCE S256 with separate state, nonce and browser-correlation cookie. The server
-validates the configured issuer, pinned RS256 signature/JWKS, audience, time claims,
-nonce, optional authorized party/access-token hash, and UserInfo subject agreement.
-Issuer metadata endpoints must stay on the configured issuer origin. It does not
-discover an issuer supplied by a browser or token.
+Both apps share `CHATTY_CLIENT_SECRET`, at least 32 bytes. Chatty is the confidential
+`chatty` client. Code flow uses PKCE S256, state, nonce and a separate signed
+browser-correlation cookie. The RP checks the configured issuer, pinned RS256/JWKS,
+audience, time claims, nonce, optional authorized party/access-token hash and
+UserInfo subject. Discovery endpoints stay on the issuer origin. HTTP does not
+follow redirects or retry exchanges automatically.
 
-The browser holds an opaque, signed, HttpOnly, SameSite=Lax local session cookie.
-OAuth access/refresh/ID tokens stay in server-side Store. Session rows are keyed by
-bearer digest. Owner IDs derive from the configured issuer and case-sensitive
-subject. Every thread operation checks current owner/session authority. Mutations
-also require the exact Origin and a session-bound CSRF header. There is no CORS API.
+The browser receives a signed HttpOnly, SameSite=Lax local session cookie. HTTPS
+selects a Secure `__Host-` cookie. Access, refresh and ID tokens remain in private
+Store rows. Owner IDs derive from issuer plus case-sensitive subject. Chatty has
+no passwords, direct Authy database access or shared Authy bearer.
 
-Local sessions last at most 30 days. Access tokens refresh before expiry, serialized
-through a Store guard. Failed or interrupted refresh requires a new login; a lost
-exchange is never replayed. Authy revocation is observed on the next refresh, so an
-independent Chatty session may remain usable for up to ten minutes. Chatty logout
-first deletes its local session, then directs the browser to Authy confirmation.
-It cancels the current browser's outstanding login attempt. Logout callbacks require
-their own single-use state and browser correlation.
+Each protected write rechecks authority under the serialized Store gate. Mutating
+HTTP calls require canonical Origin and session-bound `x-snap-csrf`. WebSockets
+validate Origin and resolve the cookie in the same host.
 
-HTTP on loopback/LAN/tailnet is an explicit development mode. Set HTTPS origins in
-a deployment so cookies become Secure. General OIDC conformance and cloud deployment
-are not established by local tests.
+Local sessions last at most 30 days. Refresh commits a consumption fence before
+HTTP; failed/uncertain exchanges require a fresh login. Restart retires in-flight
+exchange authority instead of retrying it. Accepted work can survive an active
+refresh while its previous access token remains valid. Authy revocation is observed
+on refresh or access expiry, up to ten minutes with Authy's token lifetime.
 
-## Threads and generation
+Logout revokes the local session first and cancels its previous continuation. It
+navigates to Authy confirmation using client, registered redirect and single-use
+state. ID tokens do not enter browser URLs. The callback checks browser correlation.
 
-Each owner can keep 200 threads, each with up to 200 turns. Messages are limited to
-32 KiB. Threads have an editable title and reasoning effort. Each turn persists the
-user message, display answer, optional provider summary, opaque provider output,
-tool calls/results, usage and completion status. Opaque reasoning never enters the
-browser response. No raw thinking transcript is claimed.
+## Threads and external work
 
-`/api/send` requires a per-message request ID. Acceptance commits the user message
-and active-turn fence before starting retained work, then returns 202. Repeating the
-same ID/message returns that turn; changing its message is a conflict. A thread
-admits one generation at a time, and a host instance admits four. Generation uses
-at most five model steps and eight tool calls, with 8192 output tokens per step.
-These are execution bounds, not a separate spending approval policy.
+Each owner can keep 200 threads with 200 turns each; messages are at most 32 KiB.
+The `rename` Document mutation updates title/effort optimistically. Creation,
+deletion, message acceptance and cancellation are application HTTP operations.
 
-The default provider is OpenCode Go's `muse-spark-1.3-contributor` at
-`https://opencode.ai/zen/go/v1/responses`. `CHATTY_MODEL` and
-`CHATTY_MODEL_ENDPOINT` are server configuration overrides. Requests send
-`store:false`, encrypted reasoning inclusion and a stable thread session header.
-Model streams are consumed incrementally; terminal output preserves provider item
-ordering, encrypted reasoning, assistant phase and tool call/result pairing.
-Summaries display only when supplied. Usage separates reasoning/output/input/cache
-counts. Contributor data handling follows the chosen provider's terms.
+`/api/send` requires a request ID. Message, active-turn fence and request receipt
+commit before the host starts work. Repeating the same ID/message returns its turn
+without IO; changing the message conflicts. One turn per thread and four model
+tasks per host are admitted. A cancelled task retains its host IO permit until exit.
 
-Context retains the most recent complete turns up to a 192 KiB serialized budget.
-It drops whole older turns and shows the omitted count. Failed, cancelled and
-interrupted turns stay visible but are omitted from subsequent model context.
-Context overflow after tool results ends that reply with an explicit error.
+Generation runs at most five model steps and eight tool calls, with 8192 output
+tokens per step. The default provider is OpenCode Go's `muse-spark-1.3-contributor`
+at `https://opencode.ai/zen/go/v1/responses`. Server settings `CHATTY_MODEL` and
+`CHATTY_MODEL_ENDPOINT` override these. Requests use `store:false`, encrypted
+reasoning inclusion and a stable thread session header.
 
-Accepted work survives HTTP observer loss in the current host. It is not a durable
-workflow: process/isolate loss marks running turns interrupted at next startup and
-never repeats model requests or file writes. Cancel/delete fences reject later
-progress. Already-started external work may still finish and be billed; stopping
-the UI does not prove remote cancellation. Logout prevents further commits and
-releases the old turn's active slot. Network failures and provider rate limits are
-visible errors, without automatic retries or tool re-execution.
+Streaming progress publishes display text, explicit provider summaries, tool
+results, usage and completion through Documents. Opaque provider output stays in
+private Store rows. Provider ordering, assistant phase and tool call/result pairing
+survive subsequent requests. No raw thinking transcript is exposed.
+
+Context retains complete recent turns within 192 KiB, dropping whole older turns
+with a visible omitted count. Failed/cancelled/interrupted turns stay visible but
+do not become model context. Expanded context after tools is bounded to 320 KiB;
+display text plus summaries are bounded to 512 KiB.
+
+Each progress/result publication checks current session, owner and the accepted
+turn fence. Cancel/delete/logout reject late results. Retained work survives HTTP
+observer loss. Startup marks unfinished turns interrupted and never repeats model
+requests or file writes. Already-started remote work may still finish. Errors are
+visible without automatic retry.
 
 ## Tools
 
-Native exposes list/read/write tools in a dedicated per-owner workspace. cap-std
-confines path resolution to that directory. Paths are relative, at most eight
-components; files are UTF-8 and at most 64 KiB, with 200 files per workspace. Writes
-replace via a temporary file and rename. Tools cannot run shell commands. Local
-administrators remain trusted to control workspace roots and file permissions.
+File tools list/read/write a dedicated per-owner workspace. cap-std confines path
+resolution. Paths are relative with at most eight components; files are UTF-8,
+at most 64 KiB, with at most 200 files. Writes use a temporary file and rename.
+Tools do not run shell commands. Local administrators remain trusted.
 
-Exa search is available when `EXA_API_KEY` is set. Each call requests five results,
-with bounded excerpts and source URLs persisted in the tool result. The assistant
-is instructed to cite those URLs. Retrieved text is untrusted source material.
-Workers currently omits file tools; account/login/chat/search use the shared core.
+`EXA_API_KEY` enables search with five results, bounded excerpts and source URLs.
+The model is instructed to cite them and treat retrieved text as untrusted. Tools
+run outside Store after progress commits. A crash after an external write records
+uncertainty rather than repeating the tool.
 
-## Hosts and development
+## Local operation
 
-Run the native pair from the repository root:
+From the repository root:
 
 ```sh
+# Explicit setup: builds, migrations and local client-secret creation if absent.
+mise exec -- bun scripts/chatty.ts --migrate
 mise exec -- bun scripts/chatty.ts
 ```
 
-The runner builds both apps, loads `.snap/chatty.env`, creates the shared client
-secret there if absent, and passes secrets through process environments. It binds
-Authy to 3846 and Chatty to 3850. `--no-build` reuses artifacts. For another device:
+The runner reads `.snap/chatty.env`, with environment overrides. Authy defaults to
+`127.0.0.1:3846` and Chatty to `127.0.0.1:3850`; `AUTHY_WEB_ADDR` and
+`CHATTY_WEB_ADDR` change loopback ports. Startup never silently migrates or replaces
+an occupied listener. Dev supports frontend HMR and native/Wasm replacement;
+failed builds retain the previous generation.
+
+Independent `./bin/snap dev apps/chatty` needs `AUTHY_ORIGIN` and the matching
+`CHATTY_CLIENT_SECRET`. `./bin/snap build apps/chatty` produces `dist/chatty/chatty`
+and adjacent assets. Standalone use:
 
 ```sh
-CHATTY_HOST=achilles CHATTY_BIND=0.0.0.0 mise exec -- bun scripts/chatty.ts
+SNAP_DATABASE=apps/chatty/.snap/chatty-store.sqlite ./dist/chatty/chatty --migrate
+SNAP_DATABASE=apps/chatty/.snap/chatty-store.sqlite ./dist/chatty/chatty
 ```
 
-It does not replace occupied ports. Stop the existing process before restarting.
-Native data lives in `apps/authy/.snap/authy.sqlite`,
-`apps/chatty/.snap/chatty.sqlite`, and `apps/chatty/.snap/files`.
-`SNAP_DATABASE`, `CHATTY_FILES`, `SNAP_ORIGIN` and `AUTHY_ORIGIN` select standalone
-native configuration. The runner also accepts `AUTHY_PORT` and `CHATTY_PORT`.
+`CHATTY_ADDR` selects the native loopback listener. `SNAP_ORIGIN`, `AUTHY_ORIGIN`,
+`SNAP_WEB_DIR` and `CHATTY_FILES` select origins, assets and file storage. Standalone
+database defaults to `.snap/chatty-store.sqlite` relative to cwd; dev uses
+`apps/chatty/.snap/chatty-store.sqlite`. Preserve SQLite for sessions, keys and
+threads. Old databases are not automatically imported. Workers and public
+deployment are not supported targets.
 
-Chatty uses a plain React HTTP client, rather than a dummy WASM binding for the
-existing Snap Protocol client. `bun scripts/build-chatty.ts` writes its browser
-bundle to `apps/chatty/.snap/web`; set `SNAP_WEB_DIR` to that directory for the
-standalone native binary. The app's `snap.toml` selects server/check commands; the
-pair runner owns this browser build and launch procedure.
+## Verification
 
-The Workers composition keeps one realm's sessions and threads in one SQLite
-Durable Object. It uses an `AUTHY` service binding for server-to-server OIDC calls.
-For local mixed-host tests only, `CHATTY_AUTHY_HTTP=1` selects ordinary HTTP to the
-configured issuer. Set matching origins and client secrets on both Workers; store
-keys in ignored `.dev.vars`, never in Wrangler config. Model/search keys belong only
-to Chatty. Build browser assets before Wrangler starts. Work remains active while
-the object has pending IO, but runtime eviction/reset still has uncertain outcomes.
+```sh
+./bin/snap test apps/chatty full
+TMPDIR=/tmp/opencode mise exec -- bun test tests/cli/chatty-dev.test.ts
+# Explicit paid-provider gate, using configured model and Exa keys:
+TMPDIR=/tmp/opencode mise exec -- bun scripts/check-chatty-live.ts
+```
 
-Tests use fresh fixture data and no paid keys by default. `bin/check-legacy` runs the
-native/workerd thread contract, independent RP validation/refresh tests and both
-browser journeys. Live Go/Exa checks are deliberate one-off integrations.
+Default tests use temporary stores, real Authy OAuth and a deterministic streaming
+provider. Core tests cover rollback, deduplication, private context and lifecycle
+fences. Native gates cover file confinement and RSA verification. Browser tests
+cover Document edits, streaming, tools, isolation, restart and logout. The live
+gate requires an actual model answer citing a returned search source.

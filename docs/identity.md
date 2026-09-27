@@ -46,8 +46,17 @@ lifetime is 30 days; tests select shorter lifetimes and a controlled clock. Expi
 rows may remain in storage but grant no authority. Password verification and session
 creation run under the same Store exclusion, so verified credentials cannot change
 between the check and commit. Synchronous native hashing currently blocks the local
-host during the operation. Password change, reset, rotation, session management UI,
-OIDC and additional credential types are not implemented in this slice.
+host during the operation. Password change/reset and additional credential types
+are not implemented. Authy exposes session summaries and current/others/all
+revocation. `Identity::revoke_session` also supports individual owned sessions.
+Credential summaries contain labels, never password hashes.
+
+The internal `resolve_digest` method validates a persisted session reference in
+the same transaction as protected work. OIDC uses it to bind grants to sessions.
+Digest handles are not wire credentials and must never enter client observations.
+Authy's signed HttpOnly cookie carries the raw bearer; its Document browser SDK
+does not receive that bearer. See [Authy](../apps/authy/CONTRACT.md) for HTTP/OIDC
+and cookie behavior. Testy's browser policy below is separate.
 
 ## Calculator lifetime
 

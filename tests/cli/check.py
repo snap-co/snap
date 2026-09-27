@@ -145,10 +145,6 @@ class CheckContract(ProjectContract):
                 result = self.run_cli("check")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("unknown field", result.stderr)
-        for command in ["dev", "build"]:
-            result = self.run_cli(command)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("unrecognized subcommand", result.stderr)
 
 
 if __name__ == "__main__":

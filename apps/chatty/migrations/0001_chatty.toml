@@ -1,0 +1,18 @@
+id = "0001_chatty"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "chatty.threads"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "owner", kind = "text" }]
+indexes = [{ name = "owner", columns = ["owner"] }]
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "chatty.turns"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "thread", kind = "text" }, { name = "request", kind = "text" }, { name = "session", kind = "text" }, { name = "output", kind = "text" }]
+indexes = [{ name = "thread", columns = ["thread"] }, { name = "request", columns = ["thread", "request"], unique = true }]
+foreign = [{ columns = ["thread"], table = "chatty.threads", references = ["id"] }]

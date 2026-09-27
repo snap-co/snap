@@ -1,0 +1,15 @@
+id = "0001_oidc_rp"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "oidc_rp.attempts"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "data", kind = "text" }]
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "oidc_rp.sessions"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "data", kind = "text" }]

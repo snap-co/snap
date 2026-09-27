@@ -1,0 +1,16 @@
+id = "0001_document"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "document.documents"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "kind", kind = "text" }, { name = "version", kind = "text" }, { name = "revision", kind = "integer" }, { name = "value", kind = "text" }]
+indexes = [{ name = "kind", columns = ["kind"] }]
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "document.receipts"
+primary = ["lifetime", "intent"]
+columns = [{ name = "lifetime", kind = "text" }, { name = "intent", kind = "integer" }, { name = "actor", kind = "text" }, { name = "document", kind = "text" }, { name = "version", kind = "text" }, { name = "mutation", kind = "text" }, { name = "args", kind = "text" }, { name = "completion", kind = "text" }]

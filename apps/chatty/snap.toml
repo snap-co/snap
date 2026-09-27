@@ -1,23 +1,20 @@
 version = 1
 application = "chatty"
 
-[server]
-manifest = "native/Cargo.toml"
-bin = "chatty"
+[build]
+commands = [["bun", "../../scripts/build-chatty.ts", "--package"]]
 
 [dev]
-address = "127.0.0.1:3850"
-backend-address = "127.0.0.1:3851"
+commands = [["bun", "../../scripts/dev-chatty.ts"]]
 
 [check]
-rust = ["Cargo.toml"]
+rust = ["Cargo.toml", "native/Cargo.toml"]
 
-[test.full]
-commands = [
-  ["cargo", "build", "-p", "chatty-native", "-p", "authy-native"],
-  ["../../bin/snap", "build", "apps/authy"],
-  ["bun", "../../scripts/build-chatty.ts"],
-  ["bun", "../../scripts/check-client.ts"],
-  ["bun", "test", "../../tests/protocol/chatty.test.ts", "../../tests/protocol/chatty-session.test.ts"],
-  ["bunx", "playwright", "test", "--config", "../../playwright.config.ts", "chatty.spec.ts"]
-]
+[test.memory]
+commands = [["cargo", "test", "-p", "chatty"]]
+
+[test.browser]
+commands = [["../../bin/check-chatty-web"]]
+
+[test.native]
+commands = [["cargo", "test", "-p", "chatty-native", "--", "--ignored"], ["cargo", "test", "-p", "snap-oauth-local", "--test", "crypto", "--", "--ignored"]]

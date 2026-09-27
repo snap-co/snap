@@ -13,8 +13,8 @@ pub struct Outgoing {
     /// Total deadline including connect, response headers and body consumption.
     pub timeout_ms: u64,
 }
-pub trait Body {
-    fn chunk(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
+pub trait Body: Send {
+    fn chunk(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>, String>> + Send;
 }
 pub struct Incoming<B> {
     pub status: u16,
@@ -23,10 +23,12 @@ pub struct Incoming<B> {
 }
 /// Implementations must not follow redirects or retry requests automatically.
 /// A timeout/disconnect after sending does not prove a remote mutation was undone.
-pub trait Client: Clone + 'static {
+pub trait Client: Clone + Send + Sync + 'static {
     type Body: Body;
-    fn send(&self, request: Outgoing)
-    -> impl Future<Output = Result<Incoming<Self::Body>, String>>;
+    fn send(
+        &self,
+        request: Outgoing,
+    ) -> impl Future<Output = Result<Incoming<Self::Body>, String>> + Send;
 }
 pub async fn collect(body: &mut impl Body, max: usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();

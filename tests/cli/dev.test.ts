@@ -21,9 +21,9 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
   }
   try {
     for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates",
-      "platforms", "tools/cli", "apps/testy", "tests/properties"])
+      "platforms", "tools/cli", "apps", "tests/properties"])
       await cp(`${root}/${path}`, `${fixture}/${path}`, {
-        recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target)(\/|$)/.test(path),
+        recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path),
       });
     // Share build caches/tools, never application data or editable source.
     for (const path of ["node_modules", ".tools", "target"])

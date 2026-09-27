@@ -4,7 +4,7 @@
 extern crate alloc;
 pub mod operation;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use snap_store::{Error, Row, Transaction, Value};
 
 pub const MIGRATION: &str = include_str!("../migrations/0001_identity.toml");
@@ -27,6 +27,14 @@ pub trait Crypto {
 pub struct Session {
     pub identity: String,
     pub expires: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionSummary {
+    /// Domain-separated digest identifier, never a bearer or stored session key.
+    pub id: String,
+    pub expires: i64,
+    pub current: bool,
 }
 
 /// Deliberately has no Debug/Serialize implementation. Release the bearer only
@@ -144,8 +152,23 @@ impl Identity {
         if bearer.len() != 64 || !bearer.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::NotFound);
         }
+        self.resolve_digest(tx, &crypto.digest(bearer), now)
+    }
+
+    /// Internal durable session reference for modules such as OAuth grant
+    /// families. A digest is not a wire credential: hosts must never accept a
+    /// caller-supplied digest in place of a bearer or expose it in client views.
+    pub fn resolve_digest(
+        &self,
+        tx: &mut Transaction<'_>,
+        digest: &[u8],
+        now: i64,
+    ) -> Result<Session, Error> {
+        if now < 0 || digest.is_empty() {
+            return Err(Error::Invalid);
+        }
         let session = tx
-            .get(TABLES[2], &[Value::Bytes(crypto.digest(bearer))])?
+            .get(TABLES[2], &[Value::Bytes(digest.into())])?
             .ok_or(Error::NotFound)?;
         let Some(Value::Integer(expires)) = session.get("expires") else {
             return Err(Error::Invalid);
@@ -172,6 +195,115 @@ impl Identity {
         tx.delete(TABLES[2], &[Value::Bytes(crypto.digest(bearer))])
             .map(|_| ())
     }
+
+    pub fn sessions(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        now: i64,
+    ) -> Result<Vec<SessionSummary>, Error> {
+        let actor = self.resolve(tx, crypto, bearer, now)?;
+        let current = crypto.digest(bearer);
+        let mut sessions = Vec::new();
+        for row in tx.find(TABLES[2], "primary", &[])? {
+            if text(&row, "identity")? != actor.identity {
+                continue;
+            }
+            let (Some(Value::Bytes(digest)), Some(Value::Integer(expires))) =
+                (row.get("digest"), row.get("expires"))
+            else {
+                return Err(Error::Invalid);
+            };
+            if *expires <= now {
+                continue;
+            }
+            sessions.push(SessionSummary {
+                id: session_id(crypto, digest),
+                expires: *expires,
+                current: *digest == current,
+            });
+        }
+        Ok(sessions)
+    }
+
+    /// Credential labels only. Password hashes and bearer material never leave
+    /// this transaction boundary as part of account observations.
+    pub fn credentials(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        now: i64,
+    ) -> Result<Vec<String>, Error> {
+        let actor = self.resolve(tx, crypto, bearer, now)?;
+        let mut labels = Vec::new();
+        for row in tx.find(TABLES[1], "primary", &[])? {
+            if text(&row, "identity")? == actor.identity {
+                labels.push(text(&row, "email")?.into());
+            }
+        }
+        Ok(labels)
+    }
+
+    /// Revoke current, other or all sessions under the caller's current authority.
+    pub fn revoke_scope(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        scope: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        if !["current", "others", "all"].contains(&scope) {
+            return Err(Error::Invalid);
+        }
+        let actor = self.resolve(tx, crypto, bearer, now)?;
+        let current = crypto.digest(bearer);
+        for row in tx.find(TABLES[2], "primary", &[])? {
+            if text(&row, "identity")? != actor.identity {
+                continue;
+            }
+            let Some(Value::Bytes(digest)) = row.get("digest") else {
+                return Err(Error::Invalid);
+            };
+            if scope == "all"
+                || (scope == "current" && *digest == current)
+                || (scope == "others" && *digest != current)
+            {
+                tx.delete(TABLES[2], &[Value::Bytes(digest.clone())])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn revoke_session(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        id: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        let actor = self.resolve(tx, crypto, bearer, now)?;
+        for row in tx.find(TABLES[2], "primary", &[])? {
+            if text(&row, "identity")? != actor.identity {
+                continue;
+            }
+            let Some(Value::Bytes(digest)) = row.get("digest") else {
+                return Err(Error::Invalid);
+            };
+            if session_id(crypto, digest) == id {
+                tx.delete(TABLES[2], &[Value::Bytes(digest.clone())])?;
+                return Ok(());
+            }
+        }
+        Err(Error::NotFound)
+    }
+}
+
+fn session_id(crypto: &impl Crypto, digest: &[u8]) -> String {
+    hex(&crypto.digest(&format!("identity.session-id:{}", hex(digest))))
 }
 
 fn password_input(password: &str) -> Result<(), Error> {

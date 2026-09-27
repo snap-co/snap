@@ -1,0 +1,23 @@
+[package]
+name = "factorio"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+snap-store.workspace = true
+snap-oidc.workspace = true
+snap-access.workspace = true
+snap-document.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+snap-sqlite = { path = "../../platforms/sqlite" }
+toml = "0.9"
+
+[lints]
+workspace = true
+
+[package.metadata.snap]
+role = "application"

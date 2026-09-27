@@ -1,50 +1,20 @@
 version = 1
 application = "authy"
 
-[server]
-manifest = "native/Cargo.toml"
-bin = "authy"
-
-[web]
-package-dir = "../.."
-application = "web/app.tsx"
-host = "../../clients/react/main.tsx"
-html = "../../clients/react/index.html"
-wasm-manifest = "wasm/Cargo.toml"
-bindings = ".snap/bindings"
+[build]
+commands = [["bun", "../../scripts/build-authy.ts", "--package"]]
 
 [dev]
-address = "127.0.0.1:3846"
-backend-address = "127.0.0.1:3847"
+commands = [["bun", "../../scripts/dev-authy.ts"]]
 
 [check]
-rust = ["Cargo.toml"]
+rust = ["Cargo.toml", "native/Cargo.toml"]
 
 [test.memory]
-commands = [["cargo", "test", "-p", "authy", "--", "--include-ignored"]]
-
-[test.native]
-build = true
-commands = [
-  ["cargo", "build", "-p", "authy-native", "--examples"],
-  ["bun", "test", "./tests/integration/authy.test.ts", "./tests/integration/oidc.test.ts", "./tests/integration/migration.test.ts", "./tests/integration/cookies.test.ts", "./tests/integration/sdk.test.ts", "./tests/sdk/identity-recovery.test.ts"],
-]
-
-[test.workers]
-build = true
-commands = [["bun", "test", "./tests/integration/authy.test.ts", "./tests/integration/oidc.test.ts"]]
+commands = [["cargo", "test", "-p", "authy", "-p", "snap-oidc"]]
 
 [test.browser]
-build = true
-commands = [
-  ["cargo", "build", "-p", "authy-native", "--examples"],
-  ["bun", "../../scripts/check-client.ts"],
-  ["bun", "test", "./tests/sdk/identity-recovery.test.ts"],
-  ["bunx", "playwright", "test", "--config", "tests/playwright.config.ts"],
-]
+commands = [["../../bin/check-authy-web"]]
 
-[test.full]
-commands = [
-  ["cargo", "doc", "-p", "authy", "--no-deps"],
-  ["bun", "tests/reference.ts"],
-]
+[test.native]
+commands = [["cargo", "build", "-p", "authy-native"], ["bun", "test", "tests/integration"]]

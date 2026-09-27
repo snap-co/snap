@@ -60,9 +60,8 @@ stalled tests; virtual time exercises elapsed-time behavior where the interface 
 
 ## Current commands
 
-The active Cargo workspace contains transport, execution, Store, Identity, local/SQLite/
-crypto adapters, Testy, the CLI and property consumers. Authy, Chatty and HTTP/LLM sources
-are excluded pending rewrites. Their tests and dependencies are outside this gate.
+The active workspace includes the shared capabilities, OIDC issuer/relying party,
+native adapters, Testy, Authy, Chatty, the CLI and property consumers.
 
 ```sh
 ./bin/check
@@ -71,6 +70,9 @@ are excluded pending rewrites. Their tests and dependencies are outside this gat
 ./bin/snap test apps/testy native
 ./bin/snap test apps/testy browser
 ./bin/snap test apps/testy full
+./bin/snap test apps/authy full
+./bin/snap test apps/chatty full
+./bin/snap test apps/factorio full
 ```
 
 `bin/check` formats, lints and tests the default packages, compiles portable libraries
@@ -78,6 +80,32 @@ for `wasm32v1-none`, checks feature dependency isolation, and runs Testy's opt-i
 and Identity compositions. It excludes real password hashing, browser/process tests
 and Hegel exploration. Memory execution fixtures explicitly select a fixed test authority;
 the Identity composition tests use real SQLite with deterministic test crypto.
+
+Authy's app gate runs portable account/issuer tests, real HTTP OIDC integration
+with independent signature verification, and browser account/consent journeys.
+`bin/check-authy-web` builds bindings/assets and typechecks before Chromium.
+`TMPDIR=/tmp/opencode mise exec -- bun test tests/cli/authy-dev.test.ts` exercises
+failed-build retention, native/Wasm replacement, profile/session persistence,
+CSS/React HMR and process shutdown in a disposable source copy. Authy tests own
+fresh explicitly migrated databases and ephemeral listeners. Workers is unsupported.
+
+Chatty's core tests cover acceptance deduplication, atomic rollback, ownership,
+private provider context, cancellation/logout fences and interrupted-host recovery.
+Its native gate checks file confinement and pinned RSA verification. Its browser
+gate starts real Authy and Chatty hosts with an isolated streaming model fixture,
+covering OAuth, Document updates, tools, cancellation, duplicate requests, isolation,
+restart and logout. `bun test tests/cli/chatty-dev.test.ts` covers the shared dev
+driver. Set `TMPDIR=/tmp/opencode` for disposable filesystem gates.
+
+`bun scripts/check-chatty-live.ts` is an explicit paid-provider gate using keys from
+the environment or `.snap/chatty.env`. It creates temporary accounts/stores, invokes
+the model and Exa search, and requires a returned source citation. It is separate
+from deterministic application gates and retains no provider response payload.
+
+Factorio's full gate covers portable claim/graph/lifecycle rules, native Git effects,
+and a real Authy OAuth CLI/browser journey in disposable repositories. The journey
+uses an explicit OpenCode V2 contract fixture. Candidate approval is a fixture-only
+browser action. Live V2 service compatibility requires an installed V2 CLI.
 
 The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper runs from
 the repository root, so pass the app directory. `[check].rust` selects fast packages,
@@ -114,6 +142,9 @@ mise exec -- cargo test -p snap-sqlite --test recovery -- --ignored
 mise exec -- cargo test -p snap-cli
 mise exec -- cargo test -p testy-local --features store --test store
 mise exec -- cargo test -p snap-identity
+mise exec -- cargo test -p snap-access
+mise exec -- cargo test -p snap-document -p snap-document-local
+mise exec -- cargo test -p snap-document-local --test lifecycle -- --ignored
 mise exec -- cargo test -p testy-local --features identity --test identity
 mise exec -- cargo test -p snap-crypto --test native -- --ignored
 

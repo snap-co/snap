@@ -1,7 +1,8 @@
 # Snap Rust spike
 
 Snap is a local experiment in portable transport, serialized application execution,
-durable resident Store and Identity. Testy exercises those contracts with application-owned hosts.
+durable resident Store, Identity, Access, Document and OIDC. Testy and Authy exercise
+those contracts with application-owned hosts.
 
 ## Start
 
@@ -15,8 +16,8 @@ mise exec -- rustup target add wasm32v1-none
 ```
 
 `bin/check` runs the selected formatting, lint, behavior, portability and dependency
-checks. Cargo's default members select execution, transport, Store, Identity, host
-crypto, the local and SQLite platforms, and Testy's library/composition. See [TESTING.md](TESTING.md) for
+checks. Cargo's default members include the shared capabilities, native platforms,
+Testy and Authy. See [TESTING.md](TESTING.md) for
 narrower commands and the explicit Hegel property suite.
 
 App-scoped gates select Testy's memory, native or browser suites:
@@ -91,6 +92,44 @@ immediate input resolver supplies a ceiling of 1000 for `calc.add_checked`.
 The in-process memory/execution demos explicitly select a fixed test authority;
 network hosts accept only Store-backed sessions.
 
+## Run Authy
+
+```sh
+mise exec -- cargo build -p authy-native
+SNAP_DATABASE=apps/authy/.snap/authy-store.sqlite target/debug/authy --migrate
+./bin/snap dev apps/authy
+```
+
+Open `http://127.0.0.1:3846` to create an account and edit its private profile.
+Authy persists credentials, sessions, profile documents and OIDC signing keys in
+SQLite. Frontend HMR and native/Wasm rebuilds retain the account and profile.
+`./bin/snap build apps/authy` creates `dist/authy/authy` with adjacent web assets.
+See [Authy's contract](apps/authy/CONTRACT.md) for OAuth registration, configuration,
+packaged launch and verification commands.
+
+## Run Authy and Chatty together
+
+```sh
+# Explicitly build and migrate fresh stores, generating a local client secret if needed:
+mise exec -- bun scripts/chatty.ts --migrate
+# Start both dev servers, with frontend HMR and native/Wasm rebuilds:
+mise exec -- bun scripts/chatty.ts
+```
+
+Open `http://127.0.0.1:3850` and choose Continue with Authy. The runner reads
+`.snap/chatty.env`; environment variables override it. `OPENCODE_API_KEY` enables
+live model replies and `EXA_API_KEY` enables search. Default tests use a local
+provider fixture. See [Chatty](apps/chatty/CONTRACT.md) for configuration, thread
+recovery, file tools and explicit live verification.
+
+## Run Factorio
+
+Factorio coordinates local tickets, exclusive crate claims, Git worktrees and
+human-approved integration. See [Factorio](apps/factorio/CONTRACT.md) for the
+repository configuration, Authy registration, explicit migration and launch.
+`bin/factory help` lists its CLI. `.opencode/commands/factory.md` provides the
+repo-local OpenCode V2 command.
+
 ## Resident Store
 
 The SQLite-backed Store supports resident hit/miss reads, cross-module transactions
@@ -128,14 +167,13 @@ execution are independent crates; neither requires Store. See
 
 ## Scope
 
-The previous Protocol/runtime/client stack, async Store/Cache, Identity/Passport,
-OIDC, and their host adapters have been removed. There is one transport and one
-Store implementation to build on. The new Identity crate uses those contracts;
-Access and Document are future work. Passport is not a separate concept.
+Transport and Store underpin the current Identity, Access, Document and OIDC
+capabilities. Identity owns credentials and sessions; Passport is not a separate
+concept. Document owns optimistic client state and recovery.
 
-Authy, Chatty and the HTTP/LLM sources remain outside the Cargo workspace for later
-rewrites. They are not runnable, and their app-local documents describe the old
-apps rather than current Snap contracts. Their missing dependencies are intentional.
+Testy, Authy and Chatty have supported native hosts. The obsolete Authy/Chatty
+Workers compositions have been removed. Outbound HTTP has a portable contract;
+streamed model generation and tools run in native hosts.
 
 The CLI owns `dev`, `build`, `check`, `test` and `migrate`. Applications declare
 literal `[dev].commands` and `[build].commands` in `snap.toml`; the CLI runs them

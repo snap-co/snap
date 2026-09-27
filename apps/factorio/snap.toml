@@ -1,0 +1,20 @@
+version = 1
+application = "factorio"
+
+[check]
+rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+
+[dev]
+commands = [["bun", "../../scripts/dev-factorio.ts"]]
+
+[build]
+commands = [["bun", "../../scripts/build-factorio.ts", "--package"]]
+
+[test.memory]
+commands = [["cargo", "test", "-p", "factorio"]]
+
+[test.native]
+commands = [["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
+
+[test.browser]
+commands = [["bun", "../../scripts/test-factorio.ts"]]

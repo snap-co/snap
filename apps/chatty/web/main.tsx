@@ -1,11 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./style.css";
-
-type Session = { identified: boolean; csrf?: string; account?: { id: string; name: string; email: string }; model: string; model_ready: boolean; files_available: boolean; search_available: boolean };
-type Thread = { id: string; title: string; effort: string; active_turn: string; updated: number };
-type Turn = { id: string; user: string; text: string; summary: string; status: string; error: string; tools: { call_id: string; name: string; arguments: unknown; status: string; result?: unknown }[]; usage: { input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; context_omitted?: number } };
-type View = { thread: Thread; turns: Turn[] };
+import { Chatty, type Session, type Thread, type View } from "../client";
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -19,61 +15,44 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [sidebar, setSidebar] = useState(false);
   const [effort, setEffort] = useState("medium");
-  const sessionRef = useRef(session); sessionRef.current = session;
+  const client = useRef<Chatty | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
   const pendingSend = useRef<{ thread: string; message: string; id: string } | null>(null);
-  async function api<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const response = await fetch(path, { signal, ...(body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-chatty-csrf": sessionRef.current?.csrf ?? "" }, body: JSON.stringify(body) }) });
-    const data = await response.json();
-    if (!response.ok) {
-      if (response.status === 401) setSession(s => s && ({ ...s, identified: false }));
-      throw new Error(data.error_description ?? "Request failed");
-    }
-    return data as T;
+  async function api<T>(path: string, body?: unknown): Promise<T> {
+    if (!client.current) throw new Error("Chatty is still connecting");
+    return client.current.command<T>(path, body ?? {});
   }
   useEffect(() => {
-    const controller = new AbortController();
-    api<Session>("/api/session", undefined, controller.signal).then(setSession).catch(e => { if (!controller.signal.aborted) setError(String(e)); });
-    return () => controller.abort();
-  }, []);
-  useEffect(() => {
-    if (!session?.identified) { setThreads([]); setView(null); return; }
-    const chosen = selection.current;
-    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const list = await api<{ threads: Thread[] }>("/api/threads", undefined, controller.signal);
-        if (controller.signal.aborted) return;
-        setThreads(list.threads);
-        if (selected) {
-          const next = await api<View>(`/api/thread?id=${encodeURIComponent(selected)}`, undefined, controller.signal);
-          if (!controller.signal.aborted && selection.current === chosen) setView(next);
-        }
-      } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e)); }
-      finally { if (!controller.signal.aborted) timer = setTimeout(poll, 700); }
+    const sdk = new Chatty(); client.current = sdk;
+    const update = () => {
+      const snapshot = sdk.getSnapshot();
+      setSession(snapshot.session);
+      setThreads(snapshot.documents.map(d => ({ id: d.id, ...d.value })).sort((a,b) => b.updated - a.updated || a.id.localeCompare(b.id)));
+      setView(selection.current.id ? sdk.view(selection.current.id) : null);
+      if (snapshot.error) setError(snapshot.error);
     };
-    void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [session?.identified, selected]);
+    const unsubscribe = sdk.subscribe(update);
+    void sdk.start();
+    return () => { unsubscribe(); sdk.close(); if (client.current === sdk) client.current = null; };
+  }, []);
   useEffect(() => { if (nearBottom.current) end.current?.scrollIntoView({ behavior: "instant" }); }, [view?.turns]);
   const choose = (id: string | null) => {
     if (selection.current.id === id) { setSidebar(false); return; }
     selection.current = { id, generation: selection.current.generation + 1 };
-    setSelected(id); setView(null); setError(""); setSidebar(false); nearBottom.current = true;
+    setSelected(id); setView(id ? client.current?.view(id) ?? null : null); setError(""); setSidebar(false); nearBottom.current = true;
     history.replaceState(null, "", id ? `/?thread=${encodeURIComponent(id)}` : "/");
   };
   async function action(work: () => Promise<void>) { setBusy(true); setError(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   const create = async () => {
     const chosen = selection.current;
-    const thread = await api<Thread>("/api/thread/create", { effort });
-    setThreads(t => [thread, ...t]); if (selection.current === chosen) choose(thread.id); return thread.id;
+    const thread = await api<{ id: string }>("/api/thread/create", { effort });
+    if (selection.current === chosen) choose(thread.id); return thread.id;
   };
   async function editThread(thread: Thread, title: string, effort: string) {
     const chosen = selection.current;
     if (chosen.id !== thread.id) return;
-    const next = await api<View>("/api/thread/rename", { thread_id: thread.id, title, effort });
-    if (selection.current === chosen) setView(next);
+    client.current?.rename(thread.id, title, effort);
   }
   async function deleteThread() {
     const chosen = selection.current;
@@ -93,14 +72,12 @@ function App() {
       pendingSend.current = null;
       if (selection.current === chosen && chosen.id === thread) {
         setDraft(current => current === draft ? "" : current); nearBottom.current = true;
-        const next = await api<View>(`/api/thread?id=${encodeURIComponent(thread)}`);
-        if (selection.current === chosen) setView(next);
+        if (selection.current === chosen) setView(client.current?.view(thread) ?? null);
       }
     });
   }
   const logout = () => action(async () => {
-    const result = await api<{ redirect: string }>("/auth/logout", {});
-    location.assign(result.redirect);
+    await client.current?.logout();
   });
   if (!session) return <main className="welcome"><div className="mark">c</div><h1>Chatty</h1><p>{error || "Opening your workspace…"}</p>{error && <button onClick={() => location.reload()}>Retry</button>}</main>;
   if (!session.identified) return <main className="welcome"><div className="mark">c</div><span className="eyebrow">YOUR PERSONAL ASSISTANT</span><h1>A place to think<br />things through.</h1><p>Conversations that stay with you. A private workspace for notes, questions, and the next idea.</p><a className="primary" href="/auth/login">Continue with Authy <span>↗</span></a><small>Sign in or create an account at Authy.</small>{error && <p role="alert">{error}</p>}<footer>CHATTY · POWERED BY MUSE SPARK</footer></main>;

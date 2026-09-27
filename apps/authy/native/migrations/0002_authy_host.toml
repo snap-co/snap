@@ -1,0 +1,8 @@
+id = "0002_authy_host"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "authy.host_keys"
+columns = [{ name = "purpose", kind = "text" }, { name = "key", kind = "bytes" }]
+primary = ["purpose"]

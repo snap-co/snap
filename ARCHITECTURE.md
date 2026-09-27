@@ -18,11 +18,40 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `platforms/local` composes transport and execution with memory or native IO.
 - `crates/store` owns portable server-side resident transactions,
   index knowledge, miss diagnostics and explicit schema migration declarations.
+- `crates/access` owns resource registration, direct grants, parent links and
+  authorization evaluation in the caller's Store transaction. It has no host IO
+  or dependency on Document.
+- `crates/document` owns whole-document definitions, deterministic mutations,
+  guarded Store writes, receipts, intent replication and the optimistic client SDK.
+- `platforms/document` composes Document, Store and transport with a globally
+  serialized FIFO and a local WebSocket carrier. Testy's ephemeral Executor host
+  remains its separate application-selected composition.
 - `platforms/sqlite` implements Store's host IO and database-backed durability.
   It is separately consumable by the CLI without importing application execution.
 - `crates/identity` owns credentials, sessions and their operation dispatch using
   transport values and the caller's Store transaction. `platforms/crypto` supplies
   native cryptography; Testy's local composition connects Identity to transport.
+- `crates/oidc` owns issuer protocol state, code/refresh lineage, consent and logout
+  through caller-owned Store transactions. Its host supplies randomness, digests,
+  signing and session authority.
+- `crates/oidc::relying_party` owns private local OAuth sessions and continuation
+  fences. `platforms/oauth` supplies native code/refresh HTTP, signed browser
+  cookies and pinned RS256 verification. Applications compose its migrations with
+  their own Store and use the Document host's serialized transaction gate.
+- `apps/authy` composes atomic enrollment and Access-owned profile Documents.
+  `apps/authy/native` owns HTTP, signed cookies, persisted RS256 keys and the
+  serialized Document host. `apps/authy/wasm` binds the Document SDK for React.
+- `apps/chatty` owns synchronous thread acceptance, cancellation and result
+  publication. Conversations are private Documents; opaque provider context lives
+  in server-only Store tables. Its native host owns retained model/tool tasks.
+- `apps/factorio` owns the shared workspace Document, ticket graphs, exclusive module
+  claims and candidate/approval lifecycle. Its native host journals effect intent
+  before Git or OpenCode IO and reconciles the exact planned integration commit
+  after restart. Cookie-authenticated human approval is separate from agent-token
+  commands. CLI and browser share the TypeScript carrier; Rust owns domain rules.
+- `crates/http` declares bounded outbound IO. `platforms/model` builds and consumes
+  Responses streams through that contract. Neither is a portable application
+  executor; model IO runs outside Chatty's Store transaction.
 - `apps/testy` defines the calculator, operation contracts and SDK.
 - `apps/testy/local` owns the executable entry points and selects the platform,
   authority, application implementation and host input resolver.
@@ -36,9 +65,8 @@ feature-selected; memory builds do not compile Tokio, and native-only builds do
 not select the memory executor. A platform is not owned by transport. Adding a
 capability must not make it an unconditional dependency of other capabilities.
 
-Authy, Chatty and their HTTP/LLM sources are outside the workspace pending rewrites.
-Their former shared transport, storage, identity and host implementations have been
-deleted. The new Identity uses these contracts; Access and Document are future work.
+The supported applications use the current Store and transport. Authy and Chatty
+have native hosts; their superseded Workers compositions have been removed.
 
 ## Transport and connection lifetime
 
@@ -67,14 +95,19 @@ queued and active calls fail, and late input cannot recreate the scope. Testy se
 this policy for disconnect, revocation, expiry and authority failure. The local host
 revalidates authority before each executor step, including after held dependencies.
 
-Increasing invocation IDs reject duplicates per attachment. Transport does not
-replay commands after IO failure or provide cross-reconnect result recovery. Its
+Increasing invocation IDs reject duplicates per attachment. Transport itself does not
+replay commands after IO failure or provide cross-reconnect result recovery. Document
+adds transactionally persisted receipts with IDs scoped to a logical connection. Its
+wire driver assigns separate increasing physical invocation IDs. The exchange-style
+transport
 client must replace an interrupted native stream. Dropping a memory client future
 after submission discards observation interest, not host-owned work.
 
 The native adapter uses bounded length-prefixed JSON over TCP. The web development
 host carries the same commands and observations as JSON text over WebSocket. Both
-permit one outstanding command per physical connection. WebSocket messages are
+permit one outstanding exchange-style command per physical connection in Testy.
+The Document host accepts pipelined invocations, queues ACK separately from execution,
+and publishes capability pushes using `Response::Notification`. WebSocket messages are
 bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preserving
 64-bit integers. Rust SDK results cross the UI binding as decimal strings.
 Development controls also use the Rust binding to validate supplied JSON text and
@@ -187,9 +220,21 @@ The later effect-WAL/ring-buffer phase can change the backend durability authori
 while retaining the transaction contract. No custom WAL, log shipping, consensus,
 multi-writer execution or online schema change is implemented in phase one.
 
-## Access and Document direction
+## Access and Document
 
-Access and Document are not implemented in this workspace yet. The initial client
+Access composes with other modules through one caller-owned Store transaction.
+Resource, grant and link changes become visible only after that transaction commits.
+Hosts derive delivery invalidations from committed changes; a rejected attempt must
+not publish invalidations or application effects. Store residency misses abort the
+attempt and never trigger an implicit load or retry.
+
+Graph evaluation favors correctness over caching. Direct and inherited grants combine
+using the strongest role. Audience-derived viewing is separate from grant authority,
+so public readability cannot authorize ownership or link edits. Authority checks use
+the pre-change state of each Access operation. Applications must not expose raw Store
+writes as an alternate path around these checks.
+
+Access is implemented over Store. Document's initial client
 loading policy is to load every document the client is authorized to read, including
 its complete contents. Access supplies the authorized set; Document reconciles that
 set with the client's holdings. Gaining access adds desired state; losing access
@@ -231,37 +276,57 @@ yet. Entries clear on authoritative completion, not acceptance ACK; a rejection
 must also be surfaced and reconciled with remaining optimistic work. Future offline
 retention will require revisiting the initial connection-expiry reset policy.
 
-The SDK applies local mutations optimistically as they arrive and paces outgoing
+The Document SDK applies local mutations optimistically as they arrive and paces outgoing
 mutation submissions by acceptance acknowledgements: the next submission can leave
 after the preceding acknowledgement, without waiting for completion. Acceptance
 does not confirm a commit and does not clear optimistic state. Server dispatch
 remains globally serialized initially; acknowledgement-paced submission does not
-permit concurrent mutation execution. The current carriers allow one outstanding
-command per physical connection, so this pacing requires carrier/dispatch integration
-rather than only an SDK queue change.
+permit concurrent mutation execution. `document::wire::Wire` correlates physical
+transport IDs separately from retained mutation IDs. `document_local::Host::submit`
+queues acceptance; `Host::step` executes one operation under the global gate.
+The WebSocket reader and dispatcher run independently, so the next submission can
+arrive after ACK while earlier completion is held. Exchange-style Testy clients
+retain their existing one-command API.
 
 Intent replay requires a matching authoritative base and compatible mutation
-behavior. A replay mismatch is an explicit observable replication error, followed
-by authoritative resynchronization, not silently accepted divergence. Detection and
-recovery will be refined during the port; identical state is the intended invariant.
+behavior. A replay mismatch is an explicit observable replication error. The SDK
+pauses submissions and requests authoritative replacement through a manifest.
 
 Mutation recovery is scoped to a surviving logical connection. Mutation receipts
-must commit atomically with their writes so an interrupted call can recover its
+commit atomically with their writes so an interrupted call can recover its
 result without executing twice. Expiry of the logical connection clears client
 document and optimistic state and starts a fresh manifest exchange; pending writes
 from the expired lifetime are not replayed. This reset does not undo server commits.
-Current transport does not supply this result-recovery behavior; Document's port
-must add the required recovery protocol.
+Document's manifest protocol supplies recovery; generic transport alone does not.
+The host prefixes receipt lifetimes with a fresh random boot namespace, so a process
+restart cannot reuse an earlier logical connection's receipt IDs.
 
-The manifest presents what the client holds. The server chooses catch-up or a
-replacement according to available history, compatibility and cost; replaying every
-intermediate write is not required. Client state is initially ephemeral. Persistent
-client Store support is a later extension of this exchange.
+The manifest presents holdings and unresolved intents. The initial server always
+chooses complete authoritative replacement, including all Access-permitted documents,
+and returns matching receipts for unresolved intents. It retains no replication
+history. Recovered receipts remove journal entries without replacing newer manifest
+snapshots with older completion snapshots. Client state is ephemeral; a persistent
+journal is future work.
+
+Compatible mutations apply to the latest state in server FIFO order. There is no
+blanket stale-base rejection. Applications can declare mutation-specific guards.
+Replication carries the verified actor, base revision and canonical SHA-256 digests
+of the base and result. A mismatch reports divergence and requests a manifest.
+Delivery rechecks current authorization for each frame before handing it to socket
+IO. Queued completions suppress revoked payloads; queued unauthorized intents are
+discarded. Bytes already handed to a socket cannot be retracted.
 
 `document.mutate` invokes one named mutation on one document. Applications needing
 atomic multi-document changes publish custom transport operations and compose the
 document mutations through one caller-owned Store transaction. General optimistic
 multi-document mutation is not part of `document.mutate`.
+
+Trusted application operations can `Document::replace` or `Document::remove` in
+their own transaction, for example when publishing an external model result. Both
+require pre-change Owner authority; replacement validates the registered schema
+and advances the revision. They are not client wire operations or optimistic
+intents. Applications must check live session authority and their domain guards
+in the same transaction. The host publishes authoritative holdings after commit.
 
 ## Replacement and snapshots
 

@@ -1,8 +1,8 @@
 # Snap Rust spike
 
-This is a local transport, Store and Identity experiment, exercised through Testy.
-Authy, Chatty and their HTTP/LLM code are excluded source awaiting rewrites.
-Access and Document will be built on the current transport and Store.
+This is a local portable-capability experiment, exercised through Testy, Authy and
+Chatty. Authy owns accounts and OIDC issuance. Chatty uses Authy OAuth and private
+Document conversations, with host-owned model and file-tool IO.
 
 - For setup and development commands, read [README.md](README.md).
 - Before changing package boundaries, provider composition, carriers, storage, or

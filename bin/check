@@ -4,11 +4,11 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 cargo_cmd=(cargo)
 if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
-packages=(-p snap-execution -p snap-transport -p snap-store -p snap-identity -p snap-crypto -p snap-sqlite -p snap-platform-local -p testy -p testy-local)
+packages=(-p snap-execution -p snap-transport -p snap-store -p snap-access -p snap-document -p snap-document-local -p snap-oauth-local -p snap-model-local -p snap-http -p snap-identity -p snap-oidc -p snap-crypto -p snap-sqlite -p snap-platform-local -p testy -p testy-local -p authy -p authy-native -p authy-wasm -p chatty -p chatty-native -p chatty-wasm -p factorio -p factorio-native -p factorio-wasm)
 "${cargo_cmd[@]}" fmt "${packages[@]}" -- --check
 "${cargo_cmd[@]}" clippy "${packages[@]}" --all-targets -- -D warnings
 "${cargo_cmd[@]}" test "${packages[@]}"
-"${cargo_cmd[@]}" check -p snap-execution -p snap-transport -p snap-store -p snap-identity -p testy --all-features --target wasm32v1-none
+"${cargo_cmd[@]}" check -p snap-execution -p snap-transport -p snap-store -p snap-access -p snap-document -p snap-identity -p snap-oidc -p snap-http -p testy -p authy -p chatty -p factorio --all-features --target wasm32v1-none
 "${cargo_cmd[@]}" clippy -p testy-local --features identity --all-targets -- -D warnings
 "${cargo_cmd[@]}" test -p testy-local --features identity --test store --test identity
 for features in memory native web store; do

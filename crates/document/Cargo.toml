@@ -1,0 +1,23 @@
+[package]
+name = "snap-document"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+snap-store.workspace = true
+snap-access.workspace = true
+snap-transport = { path = "../transport" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+snap-sqlite = { path = "../../platforms/sqlite" }
+toml = "0.9"
+
+[lints]
+workspace = true
+
+[package.metadata.snap]
+role = "core"

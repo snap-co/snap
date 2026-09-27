@@ -57,10 +57,17 @@ pub enum Event {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Response {
-    Attached { resumed: bool },
+    Attached {
+        resumed: bool,
+    },
     Detached,
     Events(Vec<Event>),
     Failed(Error),
+    /// Capability-owned server push. It is not an invocation completion.
+    Notification {
+        operation: String,
+        input: Value,
+    },
 }
 
 /// Host IO boundary. An exchange delivers one command's ordered observations.

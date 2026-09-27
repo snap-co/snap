@@ -1,0 +1,8 @@
+id = "0002_oauth_host"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "oauth_host.keys"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "key", kind = "bytes" }]

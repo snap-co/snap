@@ -4,6 +4,112 @@ use snap_store::{Error, Value};
 use support::{Fake, store};
 
 #[test]
+fn session_management_is_owner_scoped_and_summaries_are_not_credentials() {
+    use snap_identity::Crypto;
+    let mut store = store(true);
+    let identity = Identity::default();
+    let mut crypto = Fake::default();
+    let first = store
+        .run("enroll", |tx| {
+            identity.enroll(tx, &mut crypto, "a@example.test", "password1", 0)
+        })
+        .unwrap()
+        .value;
+    let second = store
+        .run("login", |tx| {
+            identity.login(tx, &mut crypto, "a@example.test", "password1", 1)
+        })
+        .unwrap()
+        .value;
+    let other = store
+        .run("other", |tx| {
+            identity.enroll(tx, &mut crypto, "b@example.test", "password2", 1)
+        })
+        .unwrap()
+        .value;
+    let summaries = store
+        .run("sessions", |tx| {
+            identity.sessions(tx, &crypto, &first.bearer, 2)
+        })
+        .unwrap()
+        .value;
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries.iter().filter(|s| s.current).count(), 1);
+    let current = summaries.iter().find(|s| s.current).unwrap();
+    assert_ne!(current.id, first.bearer);
+    assert!(matches!(
+        store.run("not-a-bearer", |tx| identity.resolve(
+            tx,
+            &crypto,
+            &current.id,
+            2
+        )),
+        Err(Error::NotFound)
+    ));
+    assert!(matches!(
+        store.run("cross-owner-revoke", |tx| identity.revoke_session(
+            tx,
+            &crypto,
+            &other.bearer,
+            &current.id,
+            2
+        )),
+        Err(Error::NotFound)
+    ));
+    let digest = crypto.digest(&first.bearer);
+    assert_eq!(
+        store
+            .run("internal-reference", |tx| identity
+                .resolve_digest(tx, &digest, 2))
+            .unwrap()
+            .value
+            .identity,
+        first.session.identity
+    );
+    store
+        .run("others", |tx| {
+            identity.revoke_scope(tx, &crypto, &first.bearer, "others", 2)
+        })
+        .unwrap();
+    assert!(matches!(
+        store.run("other-revoked", |tx| identity.resolve(
+            tx,
+            &crypto,
+            &second.bearer,
+            2
+        )),
+        Err(Error::NotFound)
+    ));
+    store
+        .run("unrelated-live", |tx| {
+            identity.resolve(tx, &crypto, &other.bearer, 2)
+        })
+        .unwrap();
+    assert_eq!(
+        store
+            .run("labels", |tx| identity.credentials(
+                tx,
+                &crypto,
+                &first.bearer,
+                2
+            ))
+            .unwrap()
+            .value,
+        vec!["a@example.test"]
+    );
+    store
+        .run("all", |tx| {
+            identity.revoke_scope(tx, &crypto, &first.bearer, "all", 2)
+        })
+        .unwrap();
+    assert!(matches!(
+        store.run("grant-reference-revoked", |tx| identity
+            .resolve_digest(tx, &digest, 2)),
+        Err(Error::NotFound)
+    ));
+}
+
+#[test]
 fn credentials_sessions_and_expiry_are_transactional() {
     let mut store = store(true);
     let identity = Identity::new(10).unwrap();

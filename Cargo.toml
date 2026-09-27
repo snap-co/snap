@@ -1,23 +1,53 @@
 [workspace]
 members = [
+    "apps/factorio",
+    "apps/factorio/native",
+    "apps/factorio/wasm",
     "crates/execution",
     "crates/transport",
     "platforms/local",
+    "platforms/document",
+    "platforms/oauth",
+    "platforms/model",
+    "crates/http",
     "platforms/sqlite",
     "apps/testy",
     "apps/testy/local",
     "apps/testy/wasm",
     "apps/testy/properties",
     "crates/store",
+    "crates/access",
+    "crates/document",
+    "crates/oidc",
+    "apps/authy",
+    "apps/authy/native",
+    "apps/authy/wasm",
+    "apps/chatty",
+    "apps/chatty/native",
+    "apps/chatty/wasm",
     "crates/identity",
     "platforms/crypto",
     "tests/properties",
     "tools/cli",
 ]
-# App rewrites and their HTTP/LLM code are outside the transport/Store spike.
-exclude = ["apps/authy", "apps/chatty", "crates/http", "crates/llm"]
 resolver = "3"
 default-members = [
+    "apps/factorio",
+    "apps/factorio/native",
+    "apps/factorio/wasm",
+    "crates/http",
+    "platforms/oauth",
+    "platforms/model",
+    "apps/chatty",
+    "apps/chatty/native",
+    "apps/chatty/wasm",
+    "crates/oidc",
+    "platforms/document",
+    "apps/authy",
+    "apps/authy/native",
+    "apps/authy/wasm",
+    "crates/document",
+    "crates/access",
     "crates/identity",
     "platforms/crypto",
     "crates/store",
@@ -35,6 +65,14 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+snap-http = { path = "crates/http" }
+snap-model-local = { path = "platforms/model" }
+chatty = { path = "apps/chatty" }
+snap-access = { path = "crates/access" }
+snap-document = { path = "crates/document" }
+snap-identity = { path = "crates/identity" }
+snap-oidc = { path = "crates/oidc" }
+authy = { path = "apps/authy" }
 snap-store = { path = "crates/store" }
 wasm-bindgen = "=0.2.128"
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }

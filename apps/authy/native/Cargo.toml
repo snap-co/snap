@@ -11,15 +11,27 @@ doc = false
 
 [dependencies]
 authy.workspace = true
-snap-native.workspace = true
-snap-protocol.workspace = true
-snap-runtime.workspace = true
 snap-store.workspace = true
+snap-identity.workspace = true
+snap-access.workspace = true
+snap-document.workspace = true
 snap-oidc.workspace = true
-
-[dev-dependencies]
+snap-transport = { path = "../../../crates/transport" }
+snap-document-local = { path = "../../../platforms/document" }
+snap-sqlite = { path = "../../../platforms/sqlite" }
+snap-crypto = { path = "../../../platforms/crypto" }
+serde.workspace = true
 serde_json.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+axum = { version = "0.8", features = ["ws", "form", "query"] }
+tower-http = { version = "0.6", features = ["fs"] }
+base64 = "0.22"
+sha2 = { version = "0.10", features = ["oid"] }
+hmac = "0.12"
+rsa = { version = "0.9", features = ["sha2"] }
+rand = "0.8"
+url = "2"
+toml = "0.9"
 
 [lints]
 workspace = true

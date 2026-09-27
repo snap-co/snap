@@ -1,0 +1,38 @@
+[package]
+name = "factorio-native"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "factorio"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+factorio = { path = ".." }
+snap-document.workspace = true
+snap-document-local = { path = "../../../platforms/document" }
+snap-oauth-local = { path = "../../../platforms/oauth" }
+snap-sqlite = { path = "../../../platforms/sqlite" }
+snap-access.workspace = true
+snap-oidc.workspace = true
+snap-store.workspace = true
+snap-transport = { path = "../../../crates/transport" }
+serde_json.workspace = true
+serde.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "net", "sync", "process", "io-util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+toml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+nix = { version = "0.30", features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
+
+[package.metadata.snap]
+role = "composition"

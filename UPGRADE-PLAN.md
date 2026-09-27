@@ -2,10 +2,9 @@
 
 ## Purpose and execution status
 
-This is the user's requested working brief for the upcoming unattended implementation
-session, expected to last roughly five hours. It records the agreed scope before the
-user supplies an additional application project. Writing this brief does not start
-the implementation run. Incorporate the next project before beginning that run.
+This is the working record for the unattended implementation session started on
+2026-09-27. The agreed scope includes Factorio and its repo-local OpenCode V2 factory
+command. Follow the ordered gates below.
 
 Work through the sequence below to completion, verifying behavior as it lands.
 Elapsed time is not evidence of completion. Report unfinished work and blockers
@@ -63,7 +62,40 @@ decisions and operating instructions in their existing authoritative documents.
 
 ## 1. Port Access onto Store
 
-Status: not started.
+Status: verified.
+
+Starting checkpoint, 2026-09-27:
+- Read AGENTS.md, README.md, ARCHITECTURE.md, TESTING.md, docs/store.md and
+  docs/identity.md. Starting commit is `6bf894c`; working tree and index were clean.
+  Restored tooling and Authy test work are already committed and will be preserved.
+- Baseline `mise exec -- ./bin/check` passed, including selected formatting, Clippy,
+  behavior tests, portable target checks and feature isolation. Full output is at
+  `/tmp/opencode/snap-baseline.log`. Excluded Authy/Chatty are not covered by this gate.
+- Access implementation delegated with exclusive ownership of `crates/access/**`.
+  Coordinator owns workspace wiring, documentation and integration verification.
+- Next action: integrate and verify Access against the stage gate before Document.
+- Additional baseline gates passed: `mise exec -- ./bin/snap test apps/testy full`
+  including eight real-browser journeys and native crypto/TCP, log
+  `/tmp/opencode/snap-baseline-testy-full.log`; `mise exec -- cargo test --locked
+  -p snap-core-properties -p testy-properties`, log
+  `/tmp/opencode/snap-baseline-properties.log`; `TMPDIR=/tmp/opencode mise exec --
+  cargo test -p snap-sqlite --test recovery -- --ignored`, log
+  `/tmp/opencode/snap-baseline-recovery.log`.
+- Dev baseline `TMPDIR=/tmp/opencode mise exec -- bun test tests/cli/dev.test.ts`
+  passed, including failed-build retention, CSS/React refresh, Rust/Wasm replacement,
+  login survival and owned process shutdown. Log: `/tmp/opencode/snap-baseline-dev.log`.
+- Workspace/default membership and `bin/check` now select the forthcoming Access
+  crate. Structural verification follows completion of its manifest and behavior.
+- Additional baseline exposed one pre-existing stale assertion: `TMPDIR=/tmp/opencode
+  mise exec -- python3 tests/cli/check.py` failed 1 of 7 tests. The committed
+  `test_removed_host_workflow_is_rejected` still expects `dev` and `build` to be
+  unrecognized, although restored CLI supports them. Confirmed against `git show
+  6bf894c:tests/cli/check.py`; no implementation regression. Log:
+  `/tmp/opencode/snap-baseline-cli.log`. Reconcile this assertion during first cleanup.
+- `TMPDIR=/tmp/opencode mise exec -- cargo test -p snap-cli` attempted after workspace
+  wiring could not start because Access's manifest was not yet written. This is an
+  intermediate integration state, not a baseline failure; rerun after Access lands.
+  Log: `/tmp/opencode/snap-baseline-cli-rust.log`.
 
 Preserve the original authorization semantics while removing its redundant storage,
 residency, locking and transaction-publication infrastructure.
@@ -84,9 +116,63 @@ residency, locking and transaction-publication infrastructure.
 Done when meaningful tests cover inheritance, multiple paths, revocation, cycles,
 audiences, transfers, authority checks and rollback with another module's writes.
 
+Completion checkpoint, 2026-09-27:
+- Added `crates/access` with Store migrations, resource kinds/audiences, grants,
+  graph inheritance, pre-change authorization, transfer, enumeration and removal.
+  One caller-owned transaction composes Access and other module writes. Hosts
+  publish invalidations only from committed results.
+- 17 behavioral tests passed, covering the stage gate plus wrong-kind references,
+  cold-table misses, pruning and explicit migration application.
+- `TMPDIR=/tmp/opencode mise exec -- cargo test -p snap-access`, `cargo clippy
+  -p snap-access --all-targets -- -D warnings`, `cargo fmt -p snap-access -- --check`,
+  and `cargo check -p snap-access --target wasm32v1-none` passed through the same
+  mise/TMPDIR environment. Required workspace structural check passed.
+- Integrated `TMPDIR=/tmp/opencode mise exec -- ./bin/check` passed, log
+  `/tmp/opencode/snap-access-check.log`; the previously deferred `cargo test -p
+  snap-cli` passed, log `/tmp/opencode/snap-cli-rust.log`.
+- Identity IDs remain opaque strings, matching current Identity; resource IDs retain
+  UUID shape. Access denials use Store `Invalid`; misses retain their distinct error.
+  Access is a trusted module interface, not a raw client grant-management endpoint.
+
 ## 2. Port Document onto Store and Access
 
-Status: not started. Depends on Access.
+Status: verified.
+
+Implementation checkpoint:
+- Added shared Document protocol, deterministic definition registry, canonical
+  snapshot fingerprints and a pipelined transport correlator. Stable mutation IDs
+  are distinct from physical transport invocation IDs.
+- Store/receipt implementation and optimistic client implementation have disjoint
+  delegated ownership. Coordinator owns protocol, definitions and the local host.
+- Added a Store-backed local host with an explicit FIFO step, separate ACK delivery,
+  transaction-local authentication, reconnect lifetimes and delivery-time authorization
+  filtering. Real WebSocket carrier integration is in progress.
+- Chosen initial conflict policy: apply compatible intents in server FIFO order to
+  the latest authoritative state; mutation-specific guards can reject conflicts.
+  Manifest recovery uses complete authoritative replacement. These choices avoid
+  stale-base rejection breaking causal ACK-paced edits and avoid speculative history.
+- Integration verification completed below.
+
+Completion checkpoint:
+- `crates/document` has 25 client tests, 15 Store/server tests and four wire tests.
+  Includes 64 deterministic 12-edit schedules, guard rejection, cross-module rollback,
+  real SQLite commit rejection discarding both write and receipt, restart receipt
+  recovery, mismatch reporting, optimistic replay and expiry/reset behavior.
+- `platforms/document` has five in-process host tests, including two actual SDKs
+  with interleaved edits and lost-result recovery. A separate real WebSocket test
+  proves a second command is accepted while the first completion is held.
+- Added explicit `Holdings` pushes distinct from correlated `Manifest` results.
+  An unsolicited refresh cannot open recovery or double-apply a pending committed edit.
+  The SDK pauses submissions during divergence recovery.
+- `TMPDIR=/tmp/opencode mise exec -- ./bin/check` passed, including all new behavior,
+  formatting, Clippy and portable compilation: `/tmp/opencode/snap-document-check.log`.
+- `TMPDIR=/tmp/opencode mise exec -- ./bin/snap check apps/testy --structure-only
+  --workspace` passed: `/tmp/opencode/snap-document-structure.log`.
+- `TMPDIR=/tmp/opencode mise exec -- cargo test -p snap-document-local --test
+  lifecycle -- --ignored` passed: `/tmp/opencode/snap-document-websocket.log`.
+- Earlier integration attempts caught a missing generic Backend bound and formatting
+  errors, now fixed. One structural attempt ran during the client's active edit;
+  the completed integration above passed. No external blocker for Stage 2.
 
 ### Ownership and loading
 
@@ -162,7 +248,53 @@ Use deterministic/property testing for the interacting state machines as appropr
 
 ## 3. Upgrade Authy
 
-Status: not started. Depends on Access and Document.
+Status: verified. Access and Document gates verified.
+
+Implementation checkpoint:
+- Disjoint work: portable OIDC issuer in `crates/oidc`; portable Authy account/profile
+  composition in `apps/authy/src`; Rust Document browser binding and React UI in
+  `apps/authy/wasm` and `web`. Coordinator owns native HTTP composition, persisted
+  signing/cookie keys, dev/build drivers and host/browser integration tests.
+- Native startup uses explicitly migrated SQLite. `authy --migrate` will compose
+  module-owned declarations without copying or changing already-applied migrations.
+- Added Identity's internal `resolve_digest` for durable OAuth session references;
+  digest handles are never accepted as wire credentials or put in client views.
+- Browser transport can use an HttpOnly signed cookie at upgrade; empty Connect
+  bearer is filled by the host, so the browser SDK does not receive bearer material.
+- Authy retains an app-specific revision guard on profile edits. The Rust binding
+  supplies the projected revision, preserving causal optimistic edits without a
+  blanket Document stale-base policy.
+- Authy host, browser, OIDC and dev gates are not yet verified.
+- This initial unverified checkpoint is superseded by the completion evidence below.
+- Subsequent integration: native OIDC gate passed 75 assertions, including independent
+  RSA verification, restart persistence and replay/revocation. Browser account and
+  OAuth login/consent/forced-login/denial journeys now pass. Browser consent required
+  `Referrer-Policy: same-origin` to preserve POST Origin and CSP allowance for configured
+  callback origins. Exact redirect validation remains in the portable issuer.
+- Authy/OIDC Clippy passes after replacing oversized HTTP parsing errors and removing
+  two inspected examples that depended on deleted native SDK/cache implementations.
+  Logs: `/tmp/opencode/snap-authy-clippy-fixed.log` and
+  `/tmp/opencode/snap-authy-web-final.log`.
+- Dev gate found and fixed Vite's static binding-import resolution failure. The test
+  now waits for the replacement page load before testing React HMR. Two subsequent
+  dev runs passed, but an earlier replacement run still lost the profile after reload;
+  investigate that intermittent result before declaring the dev gate verified.
+  Evidence: `/tmp/opencode/snap-authy-dev.log`, `snap-authy-dev-diagnostic.log` and
+  `snap-authy-dev-diagnostic2.log` in `/tmp/opencode`.
+- Added Authy/OIDC to `bin/check` and the real OIDC native suite to Authy's app gate.
+  Aggregate, packaging and structural verification follow. All work is uncommitted;
+  stages 4–7 and bounded pre-handoff review remain outstanding.
+- Completion: `bin/check`, `snap build apps/authy`, real packaged startup/assets/
+  discovery after explicit migration, `snap test apps/authy native`, the browser
+  gate, and required workspace structural check passed. Five consecutive disposable
+  dev runs passed with `bun test --rerun-each 5 tests/cli/authy-dev.test.ts` after
+  synchronizing on page replacement. Logs: `/tmp/opencode/snap-authy-check.log`,
+  `snap-authy-package.log`, `snap-authy-native-gate.log`, `snap-authy-structure.log`,
+  `snap-authy-dev-repeat.log`. No intentionally retained owned services.
+- An ignored `apps/authy/.snap/authy.sqlite` already exists. It has not been opened,
+  migrated or overwritten. The upgraded default is `.snap/authy-store.sqlite` to
+  preserve that existing database. Integration tests use fresh `/tmp/opencode`
+  databases. No legacy data-import result is claimed.
 
 - Make Authy runnable on current transport, Store and Identity, with Access-protected
   Document profiles and the Document client SDK for profile interaction.
@@ -186,7 +318,24 @@ refresh/revocation flows work through real hosts and browser journeys.
 
 ## 4. First code and documentation cleanup
 
-Status: not started. Follows Authy upgrade.
+Status: verified. Authy gate verified.
+
+- Removed inspected obsolete Authy Workers composition and legacy SDK/wire tests
+  that depended on deleted runtime/provider packages. Current account/Identity,
+  Document, OIDC native/browser and dev gates own their replacement coverage.
+  Legacy Passport database import is not implemented or claimed; existing ignored
+  databases remain untouched. Removed the pre-existing stale CLI assertion that
+  rejected the restored `dev`/`build` commands.
+- Updated Authy's contract, root setup/testing/architecture, Identity documentation
+  and AGENTS.md to match the supported native host. Added Authy/OIDC to default
+  workspace members. Cleanup verification and remaining coverage audit follow.
+- Coverage audit preserved HTTPS cookie naming/origin normalization, session
+  summaries, credential labels, current/others revocation and restart in the new
+  HTTP account integration suite. Browser OAuth now also verifies confirmed logout.
+  This caught and fixed canonical-origin normalization in the native host.
+- `snap test apps/authy full`, Python CLI checks and required workspace structure
+  passed after cleanup. Logs: `/tmp/opencode/snap-authy-full-cleanup.log`,
+  `/tmp/opencode/snap-cleanup-cli.log`, `/tmp/opencode/snap-cleanup-structure.log`.
 
 - Remove superseded implementations, unused dependencies, old configuration paths,
   obsolete generated bindings and tests that only assert deleted behavior.
@@ -201,7 +350,62 @@ Status: not started. Follows Authy upgrade.
 
 ## 5. Upgrade Chatty, using only Authy OAuth for login
 
-Status: not started. Depends on upgraded Authy and shared capabilities.
+Status: verified. Authy and first cleanup gates verified.
+
+- Inspected the old Chatty contract, native composition, storage and OAuth session
+  implementation. They depend on deleted async Store/runtime/native packages and
+  require replacement rather than compatibility adapters. Preserve the listed
+  OAuth validation, uncertain-effect handling, generation and file-tool semantics.
+- Inspected thread/tool/model behavior. Added shared relying-party transactions in
+  `crates/oidc/src/relying_party.rs` and native HTTP/cookie/RS256 adapter in
+  `platforms/oauth`. They will serve Chatty and Factorio. Code/refresh consumption
+  commits before external exchange; restart removes uncertain authority. Local
+  logout keeps upstream tokens server-side, including ID tokens.
+- Added five portable RP tests, including rollback, browser binding, replay,
+  expiry, claim validation and refresh/restart fences. Native OAuth compiles but
+  its real Authy integration is not yet exercised. Chatty itself remains excluded
+  and unported. No model/provider or file-tool success is claimed.
+- Added trusted application Document replacement/removal APIs for external results,
+  with Owner checks, schema validation, revision advance and transaction rollback
+  coverage. They are not wire operations. Hosts publish holdings after commit.
+- Foundation tests, Clippy and workspace structure passed, logs
+  `/tmp/opencode/snap-chatty-foundation-tests.log`,
+  `/tmp/opencode/snap-chatty-foundation-clippy.log`, `/tmp/opencode/snap-oauth-structure.log`.
+- Next: replace Chatty's async Store behavior with synchronous portable thread
+  transactions, wire native OAuth/model/tool effects and Document browser SDK,
+  then exercise Authy+Chatty end to end. All changes remain uncommitted; stages 6–7
+  and bounded implementation review are still outstanding.
+- Subsequent implementation: Chatty now has synchronous Store/Access/Document
+  transactions, private provider-context tables, an OAuth-only native host, Rust
+  Document Wasm binding and pushed React views. The obsolete Workers target is
+  removed. Outbound HTTP is a portable contract; streamed generation moved to
+  `platforms/model`, with native file/search tools outside transactions.
+- Five Chatty core tests pass for rollback/deduplication, ownership, private context,
+  cancel/delete/logout fences, startup interruption and bounded acceptance.
+  Shared RP has five tests; Document has its added replacement/removal test.
+  Native RSA and filesystem gates and two streamed-model adapter tests pass.
+- `snap test apps/chatty full` passed: real Authy OAuth, optimistic rename, streaming,
+  duplicate submission without another model call, cancellation, file-tool execution,
+  cross-account isolation, restart and confirmed logout. Logs:
+  `/tmp/opencode/snap-chatty-full.log`, `snap-chatty-native.log`, `snap-chatty-check.log`.
+- Shared dev/build drivers now serve Authy and Chatty. Both disposable dev gates
+  passed after the refactor, including CSS/React HMR, failed-build retention,
+  native/Wasm replacement, persisted state and shutdown. Logs:
+  `/tmp/opencode/snap-authy-shared-dev.log`, `/tmp/opencode/snap-chatty-dev.log`.
+- Local provider/search credentials were available in repository configuration.
+  An isolated live Authy/Chatty journey passed actual generation, Exa search and
+  citation of a returned source. No credentials or provider payload were logged.
+  The first live assertion assumed one exact Rust-book URL; the maintained gate
+  instead verifies a citation matches a successful search's returned source URL.
+  Successful evidence: `/tmp/opencode/snap-chatty-live.log`.
+- Added explicit pair setup/dev runner `scripts/chatty.ts`; standalone packaging
+  and app workflows work. Pair-runner fresh setup/shutdown still needs a disposable
+  smoke check before moving to final upgrade verification. Updated maintained
+  architecture, setup/testing and app contracts. All work remains uncommitted.
+- Pair-runner smoke passed in a disposable source copy: startup did not migrate,
+  explicit `--migrate` built and migrated both apps, both dev servers served their
+  session endpoints, and SIGTERM closed both listeners. Evidence:
+  `/tmp/opencode/snap-pair-smoke.ts`, `/tmp/opencode/snap-pair-smoke.log`.
 
 - Replace all old runtime/storage/authentication compositions with current systems.
 - Authy OAuth/OIDC is Chatty's sole login path. No local password registration, direct
@@ -229,7 +433,19 @@ that specific live verification as blocked rather than claiming it passed.
 
 ## 6. Final cleanup and verification
 
-Status: not started. Follows Chatty upgrade.
+Status: verified. Chatty upgrade gate verified.
+
+- Both legacy Workers compositions and the old Chatty runtime/Store code are gone.
+  Maintained contracts now describe native hosts, shared OAuth, Document state and
+  host-owned effects. Required workspace structure and broad Testy/regression gates
+  follow before Factorio. No review rounds or commits have occurred yet.
+- Final upgrade gates passed: `bin/check`, required workspace structure,
+  `cargo test --locked -p snap-core-properties -p testy-properties`, SQLite's
+  ignored crash-recovery test, Testy full, Authy full, Testy dev/hot-reload,
+  Python architecture enforcement, Rust CLI tests and `git diff --check`.
+  Logs are `/tmp/opencode/snap-upgrade-final-{check,structure,properties,recovery,
+  testy,authy,testy-dev,architecture,cli}.log`. Chatty full and both app dev gates
+  passed immediately before this regression gate. No intentionally retained services.
 
 - Repeat code/dependency/config cleanup across the entire migrated workspace.
 - Prune stale concepts and misleading commands from all maintained documentation.
@@ -250,7 +466,36 @@ Status: not started. Follows Chatty upgrade.
 
 ## 7. Build Factorio in `apps/factorio`
 
-Status: not started. Depends on the upgraded shared capabilities.
+Status: implemented; local verification and bounded review in progress. Ordered
+upgrade gates 1–6 verified. Live OpenCode V2 execution remains unverified.
+
+- Implemented the portable shared workspace, ticket CRUD/graphs, atomic crate and
+  repository claims, scope expansion, immutable candidate records with retained
+  publication history, authenticated human approval and atomic merge completion.
+- Added native Git worktrees, isolated data/port allocation, bounded argv hooks,
+  persisted effect intent, exact-commit merge reconciliation, dirty-work preservation,
+  process-group birth records and startup retirement of interrupted hooks.
+- Added Authy registration, shared CLI/browser SDK, pushed Document workspace UI,
+  Wasm bindings, native dev/build workflows and `.opencode/commands/factory.md`.
+- Read staged factory/command references and current V2 API, client, commands and
+  OpenAPI schema. The V2 adapter uses stable session IDs and explicit movement.
+  `opencode --help` on this host exposes the older CLI without `api`; a real V2
+  adapter run is blocked until `FACTORIO_OPENCODE` selects a compatible executable.
+  The disposable journey uses an explicitly labelled V2 contract fixture.
+- Passed four portable lifecycle tests, native real-Git and abrupt-process recovery
+  tests, and the full CLI/browser fixture journey with actual Authy OAuth. The
+  journey checks blocked/overlapping work, disjoint isolation, fixture-only browser
+  approval, deterministic merge completion, dependent readiness, restart and
+  failed-setup recovery. Log: `/tmp/opencode/snap-factorio-full.log`.
+- Workspace structure, `bin/check`, Factorio packaging and Authy full regression
+  passed. Logs: `/tmp/opencode/snap-factorio-{structure,check,build}.log` and
+  `/tmp/opencode/snap-factorio-authy-regression.log`.
+- Disposable dev verification passed CSS/React HMR, failed-build retention,
+  native/Wasm replacement, OAuth/workspace persistence and restart. The fixture
+  closes its owned servers. Log: `/tmp/opencode/snap-factorio-dev.log`.
+  The bounded implementation review is still outstanding at this checkpoint.
+- No real implementation candidate has been approved or integrated by Factorio.
+  Automated approval was confined to disposable fixture repositories.
 
 Factorio is a Snap application for local software development, likely to ship with
 Snap and remaining in this monorepo. It runs alongside OpenCode V2 on the same host
