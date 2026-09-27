@@ -267,7 +267,13 @@ pub async fn action(
                 return error(e);
             }
             let result = app.oauth.run("intake.delete", |tx| {
-                factorio::intake::delete(tx, actor(&s), &id)
+                factorio::intake::delete(tx, actor(&s), &id)?;
+                for row in tx.find("factorio.intake_keys", "primary", &[])? {
+                    if row["intake"] == snap_store::Value::Text(id.clone()) {
+                        tx.delete("factorio.intake_keys", &[row["id"].clone()])?;
+                    }
+                }
+                Ok(())
             });
             if let Err(e) = result {
                 return failure(e);

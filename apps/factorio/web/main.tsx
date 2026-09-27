@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Factorio, subscribe, type Workspace, type Ticket, type Session } from "../client";
 import { IntakeDesk } from "./intake";
@@ -50,6 +50,11 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [hash, setHash] = useState(location.hash);
   useEffect(() => { const changed = () => setHash(location.hash); window.addEventListener("hashchange", changed); return () => window.removeEventListener("hashchange", changed); }, []);
+  // Thread routes unmount workspace anchors. Scroll only after the destination
+  // DOM exists, including direct links restored after the initial snapshot.
+  useLayoutEffect(() => {
+    if (workspace && !hash.startsWith("#intake-")) document.getElementById(hash.slice(1))?.scrollIntoView({block:"start"});
+  }, [hash, Boolean(workspace)]);
   useEffect(() => {
     let close: (() => void) | undefined, disposed = false;
     void client.identify().then(async identity => {
