@@ -1,13 +1,13 @@
 # Snap Rust spike
 
-This is a local architecture experiment. Work within the selected consumer flow.
+This is a local transport and Store experiment, exercised through Testy.
+Authy, Chatty and their HTTP/LLM code are excluded source awaiting rewrites.
+Identity, Access and Document will be built on the current transport and Store.
 
 - For setup and development commands, read [README.md](README.md).
 - Before changing package boundaries, provider composition, carriers, storage, or
   porting a capability, read [ARCHITECTURE.md](ARCHITECTURE.md).
 - Before adding or changing tests, read [TESTING.md](TESTING.md).
-- Before changing authentication, session recovery, or Authy's persistence/wire
-  behavior, read [apps/authy/CONTRACT.md](apps/authy/CONTRACT.md).
 - After package/dependency changes, run
   `mise exec -- ./bin/snap check apps/testy --structure-only --workspace`.
 - Keep portable behavior `no_std` with `alloc`; hosts own execution and external IO.

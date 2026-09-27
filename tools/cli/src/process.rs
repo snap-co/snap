@@ -1,5 +1,5 @@
-//! Every external command gets an owned process group, including build tools and hooks.
-use anyhow::{Context, Result, bail};
+//! Every external check/test command gets an owned process group.
+use anyhow::{Context, Result};
 use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, Command},
+    io::AsyncReadExt,
+    process::Command,
     signal::unix::{SignalKind, signal},
     sync::watch,
 };
@@ -30,78 +30,6 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// Readiness is HTTP Build discovery, independent of the service's logging.
-    /// One deadline bounds all probes; child exit and interruption remain observable.
-    /// Dropping a partially started service releases its entire process group.
-    pub async fn service(&self, command: &mut Command, url: &str, build: &str) -> Result<Service> {
-        let mut service = self.start(command)?;
-        self.ready(&mut service, url, build).await?;
-        Ok(service)
-    }
-
-    pub fn start(&self, command: &mut Command) -> Result<Service> {
-        self.check()?;
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("Could not launch {:?}", command.as_std().get_program()))?;
-        let group = Group(Pid::from_raw(
-            child.id().context("Missing service PID")? as i32
-        ));
-        let stderr = child.stderr.take().context("Missing service stderr")?;
-        let logs = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Some(line) = lines.next_line().await? {
-                eprintln!("[service] {line}");
-            }
-            Ok::<_, std::io::Error>(())
-        });
-        Ok(Service {
-            input: child.stdin.take(),
-            child,
-            group: Some(group),
-            logs: Some(logs),
-        })
-    }
-
-    async fn ready(&self, service: &mut Service, url: &str, build: &str) -> Result<()> {
-        let mut stopped = self.stopped.clone();
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(1))
-            .build()?;
-        let readiness = async {
-            loop {
-                if let Ok(reply) = client.get(format!("{url}/__snap/build")).send().await
-                    && reply.status().is_success()
-                    && let Ok(body) = reply.bytes().await
-                    && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body)
-                    && value["build"].as_str() == Some(build)
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        };
-        tokio::select! {
-            value = tokio::time::timeout(Duration::from_secs(20), readiness) => {
-                value.context("Service readiness timed out")?;
-            }
-            status = service.child.wait() => {
-                let status = status?;
-                service.finish().await?;
-                successful(status)?;
-                anyhow::bail!("Service exited before readiness");
-            }
-            _ = stopped.changed() => { service.stop().await?; return Err(Failed(*stopped.borrow()).into()); }
-        };
-        Ok(())
-    }
     pub fn new() -> Result<Self> {
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut terminate = signal(SignalKind::terminate())?;
@@ -129,11 +57,7 @@ impl Runner {
         Ok(output)
     }
 
-    pub async fn status(
-        &self,
-        command: &mut Command,
-        capture: bool,
-    ) -> Result<(ExitStatus, Vec<u8>)> {
+    async fn status(&self, command: &mut Command, capture: bool) -> Result<(ExitStatus, Vec<u8>)> {
         let mut stopped = self.stopped.clone();
         self.check()?;
         command
@@ -175,81 +99,6 @@ impl Runner {
         drop(group);
         let output = reader.await??;
         Ok((status, output))
-    }
-
-    pub async fn pause(&self) -> Result<()> {
-        let mut stopped = self.stopped.clone();
-        self.check()?;
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(100)) => Ok(()),
-            _ = stopped.changed() => bail!(Failed(*stopped.borrow())),
-        }
-    }
-}
-
-pub struct Service {
-    // Child::wait closes stdin even when its future is cancelled. Keep the
-    // resident frontend control channel independent of supervision waits.
-    input: Option<ChildStdin>,
-    child: Child,
-    group: Option<Group>,
-    logs: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
-}
-
-impl Service {
-    pub async fn send(&mut self, message: &str) -> Result<()> {
-        let input = self
-            .input
-            .as_mut()
-            .context("Service control input closed")?;
-        input.write_all(message.as_bytes()).await?;
-        input.write_all(b"\n").await?;
-        input.flush().await?;
-        Ok(())
-    }
-    pub async fn wait(&mut self, runner: &Runner) -> Result<()> {
-        let mut stopped = runner.stopped.clone();
-        let status = if *stopped.borrow() != 0 {
-            self.terminate().await?
-        } else {
-            tokio::select! {
-                status = self.child.wait() => status?,
-                _ = stopped.changed() => self.terminate().await?,
-            }
-        };
-        self.finish().await?;
-        successful(status)
-    }
-
-    pub async fn stop(&mut self) -> Result<()> {
-        self.terminate().await?;
-        self.finish().await
-    }
-
-    async fn terminate(&mut self) -> Result<ExitStatus> {
-        if let Some(status) = self.child.try_wait()? {
-            return Ok(status);
-        }
-        if let Some(group) = &self.group {
-            let _ = killpg(group.0, Signal::SIGTERM);
-        }
-        match tokio::time::timeout(Duration::from_secs(6), self.child.wait()).await {
-            Ok(status) => Ok(status?),
-            Err(_) => {
-                if let Some(group) = &self.group {
-                    let _ = killpg(group.0, Signal::SIGKILL);
-                }
-                Ok(self.child.wait().await?)
-            }
-        }
-    }
-
-    async fn finish(&mut self) -> Result<()> {
-        self.group.take();
-        if let Some(logs) = self.logs.take() {
-            logs.await??;
-        }
-        Ok(())
     }
 }
 

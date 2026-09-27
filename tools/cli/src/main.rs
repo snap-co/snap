@@ -1,13 +1,11 @@
 //! Local developer tooling. Application execution stays in the selected host executable.
 mod architecture;
-mod build;
 mod cargo;
 mod check;
 mod config;
-mod dev;
 mod migrate;
 mod process;
-mod watch;
+mod test;
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -16,7 +14,7 @@ use std::{path::PathBuf, process::ExitCode};
 #[command(
     name = "snap",
     version,
-    about = "Build and run local Snap applications"
+    about = "Check Snap applications and migrate Store databases"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -27,6 +25,13 @@ struct Cli {
 enum Command {
     /// Create or apply explicit Store schema migrations
     Migrate(migrate::Args),
+    /// Run a project's tests; defaults to the memory platform
+    Test {
+        /// Project directory or platform (memory, native, workers, browser, full)
+        project_or_platform: Option<String>,
+        /// Platform when a project directory is supplied
+        platform: Option<String>,
+    },
     /// Verify the selected project's Rust packages and declared consumer checks
     Check {
         /// Start discovery here instead of the current directory
@@ -38,19 +43,6 @@ enum Command {
         #[arg(long, requires = "structure_only")]
         workspace: bool,
     },
-    /// Build a runnable package for the nearest snap.toml project
-    Build {
-        /// Start discovery here instead of the current directory
-        project: Option<PathBuf>,
-        /// Optimize native, WASM, and browser code
-        #[arg(long)]
-        release: bool,
-    },
-    /// Build, watch, and run the nearest snap.toml project
-    Dev {
-        /// Start discovery here instead of the current directory
-        project: Option<PathBuf>,
-    },
 }
 
 #[tokio::main]
@@ -60,6 +52,13 @@ async fn main() -> ExitCode {
         let runner = process::Runner::new()?;
         match cli.command {
             Command::Migrate(args) => migrate::run(args),
+            Command::Test {
+                project_or_platform,
+                platform,
+            } => {
+                let (project, platform) = test::selection(project_or_platform, platform)?;
+                test::run(config::Project::discover(project)?, &runner, &platform).await
+            }
             Command::Check {
                 project,
                 structure_only,
@@ -72,24 +71,6 @@ async fn main() -> ExitCode {
                     workspace,
                 )
                 .await
-            }
-            Command::Build { project, release } => {
-                let project = config::Project::discover(project)?;
-                let profile = if release {
-                    build::Profile::Release
-                } else {
-                    build::Profile::Debug
-                };
-                let artifacts = build::run(&project, &runner, profile).await?;
-                println!("Package: {}", artifacts.directory.display());
-                println!("Executable: {}", artifacts.executable.display());
-                if let Some(web) = artifacts.web {
-                    println!("Web assets: {}", web.display());
-                }
-                Ok(())
-            }
-            Command::Dev { project } => {
-                dev::run(config::Project::discover(project)?, &runner).await
             }
         }
     }

@@ -1,12 +1,12 @@
 # Hegel for Snap core testing
 
-Evaluated on 2026-09-26, on branch `experiment/hegel-core-properties`.
-The initial source review was followed by native Rust runs, mutation probes and
-replay checks. This remains an opt-in experiment.
+Initial evaluation on 2026-09-26, subsequently merged into `main` and extended with
+Store properties. The measurements below describe the original transport/execution
+campaign. Current commands and ownership are in [TESTING.md](../TESTING.md#property-testing).
 
 ## Recommendation
 
-Keep the experiment as an explicit core property suite. Transport's public
+Keep Hegel as an explicit core property suite. Transport's public
 connection API works well with Hegel's state-machine runner. Execution and local
 composition also expose the controls needed to check intermediate committed state.
 
@@ -158,10 +158,9 @@ evaluated version. [Manifest][h-manifest], [compatibility][h-compatibility]
 
 ## Where it fits in this repository
 
-The active core is `snap-execution` and `snap-transport`, composed by
-`snap-platform-local`. Store, Identity and the earlier runtime are separate,
-older integrations. Do not pull those packages into Testy's core tests merely to
-exercise them. [Local architecture](../ARCHITECTURE.md)
+The active core includes `snap-execution`, `snap-transport` and `snap-store`.
+Each owns its tests; `snap-platform-local` owns transport/execution composition.
+Store's generated model uses `snap-sqlite`. [Local architecture](../ARCHITECTURE.md)
 
 | Owner | Generated inputs and actions | Contract to check |
 | --- | --- | --- |
@@ -171,7 +170,7 @@ exercise them. [Local architecture](../ARCHITECTURE.md)
 | `crates/transport` client | Generated response event lists and IDs | Incorrect correlation, duplicate acceptance and invalid completion order produce protocol errors |
 | `platforms/local` | Interleave peer loss, virtual expiry, held reads and submitted work | Transport retirement revokes dispatch immediately while execution releases data only after owned work; observer loss does not cancel submitted work |
 | `apps/testy/tests` | Arithmetic sequences, boundary integers, ceilings, failed operations | Checked arithmetic matches an independent numeric model; failed operations preserve accumulator/history; history stays within 128 entries; read retries do not duplicate history |
-| Store contract and adapters | Small schemas, guarded transactions, reads/writes, constraint failures | Atomic rollback, reads of prior writes, declared ordering and constraint behavior match a reference model; run a selected corpus against each real adapter |
+| Store contract and SQLite adapter | Transactions, cold/resident reads, index queries, commit failures and migrations | Misses discard every write; committed writes become resident; unknown commit outcomes fence access; records and indexes match a reference model |
 
 These are proposed properties derived from the public contracts, not findings of
 bugs. Existing examples cover many individual cases; generation explores their
@@ -185,7 +184,7 @@ combinations. Sources: [execution interface](../crates/execution/src/program.rs)
 [Testy program](../apps/testy/src/program.rs),
 [Testy memory tests](../apps/testy/tests/memory.rs),
 [Store contract](../crates/store/src/lib.rs) and
-[existing Store adapter tests](../tests/store/contract.rs).
+[Store adapter tests](../platforms/sqlite/tests/durable.rs).
 
 ## Test design
 

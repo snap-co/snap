@@ -1,7 +1,6 @@
 /target/
 /.tmp/
 /.tools/
-/clients/typescript/wasm/
 /node_modules/
 /dist/
 /test-results/

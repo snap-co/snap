@@ -5,7 +5,7 @@
 mod migration;
 pub use migration::{MigrationError, MigrationReport, migrate, status};
 use rusqlite::{Connection, params_from_iter};
-use snap_store::resident::{Backend, Catalog, CommitError, Error, Store, Table, Write};
+use snap_store::{Backend, Catalog, CommitError, Error, Store, Table, Write};
 use snap_store::{Kind, Row, Rows, Value};
 use std::path::Path;
 
@@ -33,7 +33,7 @@ impl Sqlite {
     /// Ephemeral SQLite for tests/experiments. Same SQL/transaction semantics,
     /// explicitly no persistence across process termination.
     pub fn memory(
-        migrations: &[snap_store::resident::migration::Migration],
+        migrations: &[snap_store::migration::Migration],
     ) -> Result<Store<Self>, MigrationError> {
         let mut connection = Connection::open_in_memory()?;
         configure(&connection)?;

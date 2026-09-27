@@ -1,5 +1,5 @@
 use super::*;
-use snap_store::resident::migration::{Change, Migration};
+use snap_store::migration::{Change, Migration};
 
 #[derive(Debug)]
 pub struct MigrationError(pub String);
@@ -179,7 +179,7 @@ fn index_name(table: &str, index: &str) -> String {
 fn create_index(
     connection: &Connection,
     table: &str,
-    index: &snap_store::resident::Index,
+    index: &snap_store::Index,
 ) -> Result<(), MigrationError> {
     connection.execute_batch(&format!(
         "CREATE {} INDEX {} ON {} ({})",

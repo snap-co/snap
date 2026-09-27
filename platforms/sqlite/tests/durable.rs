@@ -1,6 +1,6 @@
 use snap_sqlite::{Sqlite, migrate};
-use snap_store::resident::{migration::*, *};
 use snap_store::{Kind, Row, Value};
+use snap_store::{migration::*, *};
 
 fn migrations() -> Vec<Migration> {
     vec![Migration {

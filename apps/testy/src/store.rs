@@ -1,7 +1,7 @@
 //! A portable multi-module signup. Every helper shares the caller's transaction.
 //! No host callbacks or database handles enter application code.
 use alloc::vec;
-use snap_store::resident::{Error, Transaction};
+use snap_store::{Error, Transaction};
 use snap_store::{Row, Value};
 
 pub const TABLES: [&str; 5] = [

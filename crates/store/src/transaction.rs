@@ -2,15 +2,12 @@
 //! a backend. A miss poisons the attempt, even if its Result is caught. There is
 //! no suspension or implicit retry. Hosts explicitly load, then callers may retry.
 //! This is cooperative IO isolation, not a sandbox for arbitrary Rust callbacks.
-pub mod migration;
-mod schema;
-use crate::{Row, Rows, Value};
+use crate::{Catalog, Row, Rows, Table, Value, kind};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,
     vec::Vec,
 };
-pub use schema::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lookup {

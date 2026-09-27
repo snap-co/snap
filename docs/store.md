@@ -1,7 +1,7 @@
 # Resident Store
 
 Store gives server-side modules synchronous resident reads and one transaction
-across their writes. Portable code uses `snap_store::resident`; SQLite IO lives in
+across their writes. Portable code uses `snap_store`; SQLite IO lives in
 `snap_sqlite`. This is the database-backed durability phase.
 
 ## Run the consumer

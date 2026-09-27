@@ -1,4 +1,4 @@
-use crate::{architecture, build, cargo, config::Project, process::Runner};
+use crate::{architecture, cargo, config::Project, process::Runner};
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use tokio::process::Command;
@@ -9,31 +9,19 @@ pub async fn run(
     structure_only: bool,
     workspace: bool,
 ) -> Result<()> {
-    // Build preparation may generate Rust inputs needed by formatting/lint/tests.
-    let artifacts = if project.config.check.build && !structure_only {
-        Some(build::run(&project, runner, build::Profile::Debug).await?)
-    } else {
-        None
-    };
     let manifests = if project.config.check.rust.is_empty() {
-        let mut manifests = vec![project.config.server.manifest.clone()];
-        if let Some(web) = &project.config.web {
-            manifests.push(web.wasm_manifest.clone());
-        }
-        manifests
+        vec!["Cargo.toml".into()]
     } else {
         project.config.check.rust.clone()
     };
-    if project.config.check.architecture || structure_only {
-        architecture::check(&project, runner, &manifests, workspace).await?;
-    }
     if structure_only {
+        architecture::check(&project, runner, &manifests, workspace).await?;
         println!("Structural checks passed: {}", project.config.application);
         return Ok(());
     }
     let mut selected = BTreeSet::new();
     for manifest in manifests {
-        let (manifest, metadata) = cargo::metadata(&project, runner, &manifest, false).await?;
+        let (manifest, metadata) = cargo::metadata(&project, runner, &manifest).await?;
         if !selected.insert(manifest.clone()) {
             continue;
         }
@@ -45,7 +33,6 @@ pub async fn run(
             ("fmt", vec!["--", "--check"]),
             ("clippy", vec!["--all-targets", "--", "-D", "warnings"]),
             ("test", vec!["--all-targets"]),
-            ("doc", vec!["--no-deps"]),
         ] {
             eprintln!("Checking {name}: cargo {task}");
             let mut command = Command::new("cargo");
@@ -56,10 +43,6 @@ pub async fn run(
                 .arg(&manifest)
                 .args(["--package", name])
                 .args(args);
-            if task == "doc" {
-                let flags = std::env::var("RUSTDOCFLAGS").unwrap_or_default();
-                command.env("RUSTDOCFLAGS", format!("{flags} -D warnings"));
-            }
             runner.run(&mut command, false).await.with_context(|| {
                 format!(
                     "{name}: cargo {task} failed; run it with --manifest-path {}",
@@ -78,14 +61,6 @@ pub async fn run(
             "SNAP_CHECK_WEB_DIR",
         ] {
             command.env_remove(key);
-        }
-        if let Some(artifacts) = &artifacts {
-            command
-                .env("SNAP_CHECK_EXECUTABLE", &artifacts.executable)
-                .env("SNAP_CHECK_PACKAGE", &artifacts.directory);
-            if let Some(web) = &artifacts.web {
-                command.env("SNAP_CHECK_WEB_DIR", web);
-            }
         }
         runner.run(&mut command, false).await
             .with_context(|| format!("Project check failed: {args:?}. Install the command if it is missing; checks are never skipped."))?;

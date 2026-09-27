@@ -2,231 +2,174 @@
 
 ## Fast iteration
 
-The active `bin/check` should maximize useful coverage per second. The target
-is a few seconds on a warm build, roughly two to five, rather than a fixed deadline
-for cold compilation. Measure test execution and fixture setup separately from
-builds. Investigate individual tests taking more than 100 ms, including setup and
-cleanup; this is a design signal, not a timing assertion to put in a test.
+`snap check` and `bin/check` must stay within single-digit seconds on a warm build,
+ideally two to five. Measure cold compilation separately. Investigate individual
+tests taking more than 100 ms, including setup and cleanup; this is a design signal,
+not a timing assertion to put in a test.
 
-The default check should run source checks and fast behavior tests. Real browser,
-development-server, cross-process, and cross-host suites run separately as explicit
-integration or end-to-end gates before integration, release, or deployment. A slow
-test does not belong in the iteration loop merely because it covers important
-behavior.
+The default gate runs source checks and fast behavior tests. Browser, real-network,
+cross-process and property exploration suites run as explicit gates. A slow test
+does not belong in the iteration loop merely because it covers important behavior.
 
 ## Ownership and interfaces
 
-Assign each promise to the package that owns its behavior. Snap's reusable Store,
-Passport, OIDC, transport, and client-controller guarantees belong to Snap tests.
-Authy and Chatty tests own their application policy, composition, and user-facing
-behavior. Using an app as an integration fixture does not make the underlying
-platform guarantee an app responsibility.
+Assign each promise to the package that owns it. Transport, execution and Store
+contracts live under their crates. Host adapters own real IO and durability tests.
+Testy owns its application policy, composition and browser journeys under
+`apps/testy/tests`. Root tests cover CLI tooling and the shared property runner.
 
-App-owned tests and fixtures live under `apps/<app>/tests`, so they can move with
-the app into an independent consumer repository. Shared Rust contracts live with
-their owning packages; root-level tests are reserved for Snap-wide integration
-and tooling. Snap's test support must not depend on Authy, Chatty, or Healthy.
-Cross-app journeys belong to the consuming app when that app owns the journey.
-The current root-level app suites still need to move to this layout.
+Use Cargo's native runner for Rust behavior without launching the CLI, an app server
+or a browser. Portable production code stays `no_std` with `alloc`; tests may use
+host executors and dependencies. Choose the cheapest public interface that owns the
+promise:
 
-Use Cargo's native test runner for Rust core behavior, without launching the Snap
-CLI, an application server, or a browser. Portable production code stays `no_std`
-with `alloc`; test code may use host executors and test dependencies.
+- In-process contracts exercise behavior with controlled clocks, state and failures.
+- SDK tests exercise commands, observations, errors and lifetime. Shared cases need
+  not run through every network adapter.
+- Wire tests use independent encoding examples. Round trips alone can let an encoder
+  and decoder agree on the same mistake.
+- Adapter tests exercise real sockets, persistence and host compatibility.
+- CLI/browser tests cover commands, rendering, packaging and process lifetime.
 
-Choose the cheapest public interface that owns the promise:
+Keep one primary home for each promise. A small composition test checks wiring;
+it does not repeat every dependency's contracts. Assert observable results rather
+than private state, SQL text, helper calls or incidental event ordering.
 
-- In-process provider and controller tests exercise real behavior with controlled
-  clocks, randomness, crypto, and storage where those dependencies are not the
-  subject. Calling `Provider::invoke` is appropriate for a provider's contract.
-- SDK tests cover the SDK's commands, observations, errors, and lifetime. Shared
-  controller cases need not be repeated through every native/browser adapter.
-- Protocol tests check encoding, headers, and admission, with independent examples
-  so a shared encoding bug cannot make both sides agree on the wrong behavior.
-  Use in-process request/response interfaces where possible; use real sockets for
-  promises that depend on socket behavior.
-- Adapter integration tests verify actual crypto, storage, carrier, and host
-  compatibility. Keep the host matrix here rather than in every behavior test.
-- CLI and browser tests cover real commands, packaging, rendering, process
-  lifetime, and development reload behavior.
+## Journeys and fixtures
 
-Keep one primary home for each promise. A small composition test verifies that the
-app wires its dependencies together; it does not repeat their full contract suites.
-Tests assert observable results, not private state, SQL text, helper calls, or
-incidental event ordering. Assertions should survive internal implementation
-changes while the public contract stays the same.
+End-to-end journeys follow frequent user processes in their natural order. Let
+failed operations, panics and timeouts fail the journey. An expected failure that
+returns a value rather than throwing needs an explicit check. Keep detailed edge
+cases in focused tests at their owning interface.
 
-## User journeys
+In-process fixtures run the real portable behavior with controlled time, randomness,
+external results and scheduling. Simulated faults must respect dependency contracts.
+Seeds and schedules should be reproducible. Test host obligations separately against
+real adapters, sharing scenarios where the host-independent promise is the same.
 
-End-to-end journeys follow frequent user processes in their natural order. Chain
-the actions a user would take, let failed operations, panics, exceptions, and
-timeouts fail the journey, and verify the final observable result. Avoid repeating
-fine-grained contract assertions at every step. Actions must propagate failures;
-an expected failure that returns a value rather than throwing needs an explicit
-check. Readiness waits synchronize the journey, rather than re-proving each
-component's behavior.
+Prefer in-process construction/reset. When reusing a live server, reset all relevant
+state, including caches, clocks, pending work and observations. Transaction rollback
+alone is sufficient only if all changes participate. Expensive fixtures may provide
+isolated copies of a verified non-empty baseline; cases must not mutate a shared
+baseline or depend on another test running first. Provisioning and migration tests
+still exercise fresh setup.
 
-Keep detailed edge cases and failure rules in focused tests at their owning
-interface. Journeys verify that the assembled system delivers a complete result.
-
-## Fixtures and reset points
-
-Test both sides of the application/platform seam. A test platform runs the real
-portable application with controlled storage, time, randomness, external results,
-and scheduling. It can drive public operations or in-memory HTTP requests without
-networking or disk IO. Fault scenarios must respect the dependency contracts,
-including their defined failure modes; simulated runs should have reproducible
-seeds and schedules.
-
-Conversely, a platform-neutral contract application exercises host obligations
-against each real platform adapter. Keep its scenarios shared across hosts and
-its construction host-specific. It verifies the contracts that applications rely
-on, rather than using a product app as the universal host fixture. Host-specific
-behavior still needs host-specific tests. Neither direction requires dynamic
-library loading; an in-process Rust composition can exercise the same seam.
-
-Prefer in-process construction and reset for fast behavior tests. When a live
-server is needed, a fixture may reuse it if it can restore a known state quickly
-and completely. Transaction rollback is sufficient only when all relevant writes
-participate; also reset caches, sessions, clocks, pending work, and observations
-that could leak between cases. Keep reset controls in test fixtures.
-
-Expensive preparation may produce a reusable non-empty baseline. Build and verify
-that baseline once, save it, and give each dependent test an isolated copy or a
-complete reset to it. For example, later phases can start with enrolled accounts
-and provisioned test signing keys. Tests must not depend on another test running
-first or mutate a shared baseline. Rebuild saved fixtures when their schema,
-configuration, or preparation inputs change. Use test-only identities and keys.
-Tests of fresh provisioning or migrations must still exercise those paths.
-
-Fixtures own temporary data and processes, use ephemeral ports, and clean up on
-failure. Synchronize on readiness or completion rather than fixed sleeps; timeouts
-bound stalled tests. Tests of elapsed-time behavior should control time where the
-interface permits it. Development-port replacement belongs only in the runner's
-lifecycle tests.
+Fixtures own temporary data and processes, use ephemeral ports and clean up on
+failure. Synchronize on readiness/completion rather than fixed sleeps. Timeouts bound
+stalled tests; virtual time exercises elapsed-time behavior where the interface allows.
 
 ## Current commands
 
-The active build is Testy, `snap-transport` and `snap-execution`. Run `./bin/check`
-for selected formatting, Clippy, transport contracts, memory/native SDK and development-control tests,
-portable WASM compilation, and dependency isolation. It does not run or build
-Authy/Chatty integration suites. Cargo default members select the five portable/local
-packages; the check also compiles the browser binding.
-`cargo test -p testy-local` runs the memory SDK scenarios; add `--features native`
-for the real TCP host case. Testy scenarios live in `apps/testy/tests`, registered
-by its application-owned local composition. Transport contracts live in
-`crates/transport/tests`. Execution contracts live in `crates/execution/tests`.
-
-Memory delivery yields before dispatch and passes values without byte encoding.
-Its virtual clock drives detached-connection expiry; native tests exercise actual
-socket loss and competing attachments without waiting through expiry windows.
-Execution tests verify the whole-operation gate, admission ordering, repeated
-read misses after tentative edits, rollback of bad commits, FIFO writes, deferred
-scope release, stale dependency responses, code replacement and snapshot replay.
-Memory SDK tests hold a read while another client's operation queues, then supply
-it without wall-clock waits. Cancellation after submission leaves work owned by
-the host; connection expiry releases its state after that work finishes. The native
-case runs the same SDK journey plus a checked calculation using immediate host
-inputs. No test uses Identity, Store, or fixture crypto.
-
-Run `mise exec -- cargo run -p testy-local --bin testy-execution-demo` for a short
-asserting demonstration of rollback, serialized writes, retained-state code
-replacement, and replay from an in-memory snapshot. It loads no dynamic module.
-
-Focused commands:
+The active Cargo workspace contains transport, execution, Store, their local/SQLite
+adapters, Testy, the CLI and the property consumer. Authy, Chatty and HTTP/LLM sources
+are excluded pending rewrites. Their tests and dependencies are outside this gate.
 
 ```sh
-# Portable capability contracts:
-mise exec -- cargo test -p snap-execution -p snap-transport
+./bin/check
+./bin/snap check apps/testy
+./bin/snap test apps/testy             # memory
+./bin/snap test apps/testy native
+./bin/snap test apps/testy browser
+./bin/snap test apps/testy full
+```
 
-# Testy SDK scenarios:
+`bin/check` formats, lints and tests the default packages, compiles portable libraries
+for `wasm32v1-none`, checks feature dependency isolation, and runs Testy's opt-in Store
+composition. It excludes browser/process tests and Hegel exploration.
+
+The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper runs from
+the repository root, so pass the app directory. `[check].rust` selects fast packages,
+defaulting to the application's `Cargo.toml`; `[check].commands` adds source checks.
+Each `[test.<platform>]` declares nonempty literal `commands`, run from the app directory
+with `SNAP_TEST_PLATFORM` set. The commands own any required build preparation.
+
+`test` defaults to memory. `full` runs check, then declared memory/native/workers/browser/
+full suites in that order. Unsupported suites fail rather than skip. `wasm` is rejected
+because Workers and browser have different host contracts; Testy has no Workers suite.
+Slow memory cases may use `#[ignore = "memory suite"]` and an explicit `--include-ignored`
+suite. Browser and stress cases belong in separate targets.
+
+The CLI no longer packages or watches applications. Use `bin/build` and `bin/dev` for
+Testy. Former `[server]`, `[web]`, `[prepare]`, `[dev]` and suite `build` configuration
+are rejected instead of silently selecting the removed host workflow.
+
+```sh
+# Portable behavior and Testy's in-process SDK:
+mise exec -- cargo test -p snap-execution -p snap-transport -p snap-store
 mise exec -- cargo test -p testy-local --test memory
 mise exec -- cargo test -p testy-local --features native --test native
+
+# SQLite, migrations and cross-module signup:
+mise exec -- cargo test -p snap-sqlite
+mise exec -- cargo test -p snap-sqlite --test recovery -- --ignored
+mise exec -- cargo test -p snap-cli
+mise exec -- cargo test -p testy-local --features store --test store
+
+# CLI checks, suite selection, cancellation and dependency enforcement:
+mise exec -- cargo build -p snap-cli
+mise exec -- python3 tests/cli/check.py
+mise exec -- python3 tests/cli/architecture.py
 
 # Required after package/dependency changes:
 mise exec -- ./bin/snap check apps/testy --structure-only --workspace
 
-# Optional network-backed dependency advisory check:
+# Optional dependency advisory check:
 mise exec -- ./bin/check-deps --audit
 ```
 
-The structure-only workspace check is required after package/dependency changes.
-It compiles portable legacy packages too, but runs no legacy application suites.
-Browser/Workers prerequisites, the earlier memory rig, `snap check` and
-`bin/check-legacy` belong to [legacy development](docs/legacy-development.md).
+SQLite's abrupt-process recovery test is an explicit pre-handoff gate. Ordinary Store
+tests cover resident reads, rollback and publication. SQLite tests cover constraints,
+migration rollback, restart and exclusive ownership. See [Store](docs/store.md) for
+the durability contract and the generated model.
 
-The separate browser gate builds the Wasm SDK and assets, typechecks the Testy UI,
-and runs real Chromium against an ephemeral WebSocket host:
+Memory delivery passes values without encoding and yields before dispatch. A virtual
+clock drives connection expiry. Execution contracts cover the whole-operation gate,
+admission, repeated dependency requests, rollback, deferred scope release, replacement
+and replay. Native tests own socket loss and competing attachments.
+
+The browser gate builds the Wasm SDK and assets, typechecks the UI, then runs Chromium
+against an ephemeral WebSocket host:
 
 ```sh
 bunx playwright install chromium
 ./bin/check-testy-web
 ```
 
-Its app-owned journeys cover routing/bootstrap, health, arithmetic, reload,
-reconnect/close, exact 64-bit values, and HTTP tools stepping a live browser request
-through a held dependency, restoring state and selecting replacement code. The
-development WebSocket cases cover initial/pushed reports, command correlation and
-errors, HTTP-to-subscriber updates, independent reconnect, idle silence and lost
-command responses without replay. The numeric journey supplies exact i64 inputs
-over the debugger socket. A local platform test covers latest-report coalescing
-for a slow observer. The in-process development-control journey covers stale input rejection and preservation
-of submitted work after its observer disconnects. Browser/process tests stay out
-of the warm `bin/check` loop. Healthy's legacy fixture lives under
-`tests/fixtures/healthy`; root build/dev commands now select Testy.
+Testy's journeys cover routing/bootstrap, health, arithmetic, reload, reconnect/close,
+exact 64-bit values, and the execution desk. Development-control tests cover stepping,
+dependency supply, snapshots, replacement, pushed reports, command correlation and
+disconnects without replay. Latest-report coalescing has an in-process platform test.
 
-Formatting, Clippy, Rustdoc, dependency policy, and structural checks enforce
-source constraints separately from behavior tests.
+## Property testing
 
-## Core property-testing experiment
-
-Store's ordinary contracts live in `crates/store/tests/resident.rs`; its SQLite
-adapter owns `platforms/sqlite/tests`, including real-file restart, migration and
-exclusive-owner tests. Cross-process crash recovery runs separately with
-`mise exec -- cargo test -p snap-sqlite --test recovery -- --ignored` before handoff;
-it is excluded from the fast gate. Testy's opt-in `store` feature exercises cross-module signup
-through transport and is included in `bin/check`. The migration CLI integration
-test runs with `mise exec -- cargo test -p snap-cli --test migrate`.
-
-The property consumer also registers `store-properties`, owned by
-`crates/store/tests/properties/resident.rs`. It compares a simple record model with
-SQLite-backed transactions, resident indexes, aborts, cold/NX reads, and injected
-backend commit failures, plus generated migration dependency ordering. Run it
-explicitly, as described in [Store usage](docs/store.md).
-
-The `experiment/hegel-core-properties` branch evaluates Hegel against transport,
-execution and local composition. Run its host-only test consumer explicitly:
+`snap-core-properties` registers transport, execution, local-platform and Store
+properties. Cases live in their owners' `tests/properties` directories; the separate
+`tests/properties/Cargo.toml` owns the pinned host-only Hegel dependency and static
+engine. Hegel adds no production dependency or portable feature.
 
 ```sh
 mise exec -- cargo test --locked -p snap-core-properties
 HEGEL_DEFAULT_PROFILE=stress HEGEL_SEED=20260926 \
   mise exec -- cargo test --locked -p snap-core-properties -- --nocapture
 
-# One capability, with fresh deterministic generation rather than database reuse:
+# One target, with fresh generation instead of database reuse:
 HEGEL_TEST_CASES=10000 HEGEL_SEED=42 HEGEL_DATABASE=disabled \
-  mise exec -- cargo test --locked -p snap-core-properties --test transport-lifecycle
+  mise exec -- cargo test --locked -p snap-core-properties --test store-properties
 ```
 
-Tests live under their owners' `tests/properties` directories. The test-only
-`tests/properties/Cargo.toml` registers those files and owns the pinned Hegel
-dependency, using its static engine. This separate host consumer keeps that
-toolchain and longer exploration out of the default Cargo members and `bin/check`.
-It adds no production features or dependencies to portable packages.
+`tests/properties/hegel.toml` defines 200 cases per property for development/CI and
+10,000 for stress. Environment variables can override count, seed and persistence.
+Local counterexamples live in Git-ignored `tests/properties/.hegel`; Hegel's built-in
+CI profile disables that database. Retain failure output when exploring in CI.
 
-The default development/CI profiles run 200 cases per property; `stress` requests
-10,000. `tests/properties/hegel.toml` owns those settings. Environment variables
-can override case count, seed and persistence. Native Cargo tests run from the
-consumer directory, so local counterexamples go in `tests/properties/.hegel`,
-which Git ignores. Hegel's built-in CI profile disables the example database.
-Retain failure output or select an explicit database when exploring in CI.
+On failure, keep the reduced trace and printed `#[hegel::reproduce_failure("...")]`
+attribute. Temporarily add it below the failing property's `#[hegel::test]` to replay
+with the pinned version. Remove it after fixing the defect, rerun generation, and
+preserve important histories as deterministic contract tests. Reproduction blobs are
+version-specific; seeds alone do not preserve regressions across code changes.
 
-On failure, keep the reduced action trace and the printed
-`#[hegel::reproduce_failure("...")]` attribute. Temporarily add that attribute
-below the failing property's `#[hegel::test]` to replay with the pinned version.
-Once fixed, remove the attribute, rerun generation, and preserve important domain
-histories as ordinary deterministic contract tests. Reproduction blobs are
-version-specific; a seed alone is not a durable regression across code changes.
-
-These tests use sequential generated host events and check intermediate state.
-They do not exercise OS thread schedules or real network timing. The existing
-native/browser gates still own those adapter promises. See the
-[Hegel evaluation](docs/hegel-testing-research.md) for scope and measured results.
+Generated tests drive sequential host events and check intermediate state. They do
+not establish OS scheduling, network timing or crash recovery. Keep those adapter
+gates. The dated [Hegel evaluation](docs/hegel-testing-research.md) records the original
+transport/execution campaign; [Store verification](docs/store.md#verification) records
+the Store campaign and mutation probes.

@@ -1,8 +1,7 @@
 # Snap Rust spike
 
-Snap is a local architecture experiment in portable capabilities and
-application-owned hosts. Testy is the current contract application for transport
-and serialized, IO-free application execution.
+Snap is a local experiment in portable transport, serialized application execution,
+and durable resident Store. Testy exercises those contracts with application-owned hosts.
 
 ## Start
 
@@ -16,8 +15,20 @@ mise exec -- rustup target add wasm32v1-none
 ```
 
 `bin/check` runs the selected formatting, lint, behavior, portability and dependency
-checks. Cargo's default members select execution, transport, the local platform
-and Testy's library/composition. See [TESTING.md](TESTING.md) for narrower commands.
+checks. Cargo's default members select execution, transport, Store, the local and
+SQLite platforms, and Testy's library/composition. See [TESTING.md](TESTING.md) for
+narrower commands and the explicit Hegel property suite.
+
+App-scoped gates select Testy's memory, native or browser suites:
+
+```sh
+./bin/snap check apps/testy
+./bin/snap test apps/testy
+./bin/snap test apps/testy native
+./bin/snap test apps/testy full
+```
+
+See [test gates](TESTING.md#current-commands) for configuration.
 
 ## Run Testy
 
@@ -67,7 +78,7 @@ The native programs use `127.0.0.1:3847` by default; `TESTY_ADDR` overrides it. 
 are local fixtures using constant credentials and plaintext TCP. The server's
 immediate input resolver supplies a ceiling of 1000 for `calc.add_checked`.
 
-## Resident Store experiment
+## Resident Store
 
 The SQLite-backed Store supports resident hit/miss reads, cross-module transactions
 and explicit schema migrations. A miss returns and discards the operation; the host
@@ -88,6 +99,8 @@ semantics, miss diagnostics and verification commands.
 | [`crates/execution/src/program.rs`](crates/execution/src/program.rs) | Application interface: admission, private attempts, input requests and outcomes |
 | [`crates/execution/src/executor.rs`](crates/execution/src/executor.rs) | Host-owned state, global gate, commits, replacement and snapshots |
 | [`crates/transport/src`](crates/transport/src) | Verified connection context, lifecycle, envelopes and client correlation |
+| [`crates/store/src`](crates/store/src) | Resident transactions, indexes and migration declarations |
+| [`platforms/sqlite/src`](platforms/sqlite/src) | Durable commits and explicit database migrations |
 | [`platforms/local/src`](platforms/local/src) | Composition of transport/execution with memory or native IO |
 | [`apps/testy/src/program.rs`](apps/testy/src/program.rs) | Calculator application implementation |
 | [`apps/testy/src/client.rs`](apps/testy/src/client.rs) | SDK and shared calculator journey |
@@ -95,16 +108,18 @@ semantics, miss diagnostics and verification commands.
 | [`apps/testy/tests`](apps/testy/tests) | Memory/native SDK scenarios |
 
 The SDK and server remain modules of one portable Testy crate. Transport and
-execution are independent crates; neither requires Identity, Passport, Store or
-Cache. See [ARCHITECTURE.md](ARCHITECTURE.md) for ownership and execution guarantees.
+execution are independent crates; neither requires Store. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for ownership and execution guarantees.
 
-## Earlier integrations
+## Scope
 
-Authy and Chatty remain available by explicit package selection. Healthy's former
-implementation is retained at `tests/fixtures/healthy` for legacy CLI and carrier
-contracts; its active health operation now belongs to Testy. The older apps'
-development commands, CLI configuration, browser/Workers setup and full gate are
-documented in [legacy development](docs/legacy-development.md). Their earlier
-future-based execution model is in [legacy architecture](docs/legacy-architecture.md).
-The active Testy flow uses Cargo and `bin/dev`. Its `snap.toml` supports structural
-checks; the older `snap dev/build` workflow remains specific to legacy integrations.
+The previous Protocol/runtime/client stack, async Store/Cache, Identity/Passport,
+OIDC, and their host adapters have been removed. There is one transport and one
+Store implementation to build on. Identity, Access and Document are future work.
+
+Authy, Chatty and the HTTP/LLM sources remain outside the Cargo workspace for later
+rewrites. They are not runnable, and their app-local documents describe the old
+apps rather than current Snap contracts. Their missing dependencies are intentional.
+
+Use `bin/dev` and `bin/build` for Testy. The CLI owns `check`, `test` and `migrate`;
+the previous `snap dev/build` packaging workflow has been removed.

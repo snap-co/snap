@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Compatibility alias: all application builds now use the shared CLI builder.
-set -euo pipefail
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-exec "$root/bin/build" "$@"

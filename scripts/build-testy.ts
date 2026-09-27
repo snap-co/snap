@@ -15,11 +15,6 @@ const candidates = [
   process.env.WASM_BINDGEN,
   Bun.which("wasm-bindgen"),
   resolve(`.tools/wasm-bindgen-${version}/bin/wasm-bindgen`),
-  ...Array.from(
-    new Bun.Glob(
-      `{apps,tests}/**/.snap/tools/wasm-bindgen-${version}/bin/wasm-bindgen`,
-    ).scanSync({ dot: true }),
-  ).map((path) => resolve(path)),
 ].filter((path): path is string => !!path);
 let bindgen: string | undefined;
 for (const candidate of candidates) {

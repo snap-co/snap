@@ -7,21 +7,8 @@
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
-    "types": ["bun"],
+    "types": ["bun", "react", "react-dom"],
     "skipLibCheck": true
   },
-  "include": [
-    "clients/**/*.ts",
-    "clients/**/*.tsx",
-    "tests/fixtures/healthy/web/**/*.tsx",
-    "tests/fixtures/healthy/web/**/*.ts",
-    "tests/fixtures/healthy/client.ts",
-    "apps/authy/web/**/*.tsx",
-    "apps/authy/client.ts",
-    "apps/chatty/web/**/*.tsx",
-    "scripts/build-chatty.ts",
-    "scripts/build-web.ts",
-    "scripts/dev-web.ts",
-    "tests/browser/**/*.ts"
-  ]
+  "include": ["apps/testy/web/**/*.ts", "apps/testy/web/**/*.tsx", "apps/testy/tests/**/*.ts", "scripts/build-testy.ts"]
 }

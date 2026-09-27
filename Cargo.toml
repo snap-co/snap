@@ -7,35 +7,12 @@ members = [
     "apps/testy",
     "apps/testy/local",
     "apps/testy/wasm",
-    "crates/protocol",
-    "crates/http",
-    "crates/oidc",
-    "crates/llm",
-    "apps/chatty",
-    "apps/chatty/native",
-    "apps/chatty/workers",
-    "crates/identity",
     "crates/store",
-    "crates/runtime",
-    "crates/client",
-    "bindings/wasm",
-    "platforms/native",
-    "platforms/memory",
-    "platforms/browser",
-    "platforms/web",
-    "platforms/workers",
-    "tests/fixtures/healthy/workers",
-    "tests/workers",
     "tests/properties",
-    "tests/fixtures/healthy",
-    "tests/fixtures/healthy/native",
-    "tests/fixtures/healthy/wasm",
-    "apps/authy",
-    "apps/authy/native",
-    "apps/authy/wasm",
-    "apps/authy/workers",
     "tools/cli",
 ]
+# App rewrites and their HTTP/LLM code are outside the transport/Store spike.
+exclude = ["apps/authy", "apps/chatty", "crates/http", "crates/llm"]
 resolver = "3"
 default-members = [
     "crates/store",
@@ -53,25 +30,8 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-snap-http = { path = "crates/http" }
-snap-oidc = { path = "crates/oidc" }
-snap-llm = { path = "crates/llm" }
-chatty = { path = "apps/chatty" }
-snap-protocol = { path = "crates/protocol" }
-snap-identity = { path = "crates/identity" }
 snap-store = { path = "crates/store" }
-snap-runtime = { path = "crates/runtime" }
-snap-client = { path = "crates/client" }
-snap-browser = { path = "platforms/browser" }
-snap-web = { path = "platforms/web" }
-snap-workers = { path = "platforms/workers" }
-worker = "=0.8.6"
-snap-native = { path = "platforms/native" }
-snap-memory = { path = "platforms/memory" }
-snap-client-wasm = { path = "bindings/wasm" }
 wasm-bindgen = "=0.2.128"
-healthy = { path = "tests/fixtures/healthy" }
-authy = { path = "apps/authy" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

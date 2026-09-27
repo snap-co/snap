@@ -1,87 +1,33 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
-use std::{
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     pub application: String,
-    pub server: Server,
-    pub web: Option<Web>,
-    #[serde(default)]
-    pub prepare: Prepare,
-    #[serde(default)]
-    pub dev: Dev,
     #[serde(default)]
     pub check: Check,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Server {
-    pub manifest: PathBuf,
-    pub bin: Option<String>,
-    pub example: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct Web {
-    /// Directory containing the JS package manifest and lockfile.
-    pub package_dir: PathBuf,
-    pub application: PathBuf,
-    pub host: PathBuf,
-    pub html: PathBuf,
-    /// Cargo manifest for the application's WASM binding crate.
-    pub wasm_manifest: PathBuf,
-    /// Output location imported by the project's TypeScript facade.
-    pub bindings: PathBuf,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Prepare {
     #[serde(default)]
-    pub build: Vec<Vec<String>>,
-    #[serde(default)]
-    pub dev: Vec<Vec<String>>,
+    pub test: std::collections::BTreeMap<String, TestSuite>,
 }
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
-    #[serde(default)]
-    pub architecture: bool,
-    /// Empty means the server and optional WASM packages selected above.
+    /// Empty selects the application root Cargo.toml.
     #[serde(default)]
     pub rust: Vec<PathBuf>,
-    #[serde(default)]
-    pub build: bool,
     #[serde(default)]
     pub commands: Vec<Vec<String>>,
 }
 
+/// Suites own literal commands, including any host preparation they require.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct Dev {
-    pub address: SocketAddr,
-    #[serde(default = "default_backend_address")]
-    pub backend_address: SocketAddr,
-}
-fn default_backend_address() -> SocketAddr {
-    "127.0.0.1:3847".parse().expect("default backend address")
-}
-impl Default for Dev {
-    fn default() -> Self {
-        Self {
-            address: "127.0.0.1:3846".parse().expect("default address"),
-            backend_address: default_backend_address(),
-        }
-    }
+#[serde(deny_unknown_fields)]
+pub struct TestSuite {
+    pub commands: Vec<Vec<String>>,
 }
 
 pub struct Project {
@@ -102,7 +48,7 @@ impl Project {
         );
         for root in start.ancestors() {
             let path = root.join("snap.toml");
-            // Even a broken symlink or unreadable config takes precedence over ancestors.
+            // A broken symlink or unreadable config takes precedence over ancestors.
             match std::fs::symlink_metadata(&path) {
                 Ok(_) => {
                     let text = std::fs::read_to_string(&path)
@@ -118,54 +64,30 @@ impl Project {
                         !config.application.trim().is_empty(),
                         "application must not be empty"
                     );
-                    ensure!(
-                        matches!(
-                            (&config.server.bin, &config.server.example),
-                            (Some(_), None) | (None, Some(_))
-                        ),
-                        "server must select exactly one bin or example"
-                    );
-                    let name = config
-                        .server
-                        .bin
-                        .as_ref()
-                        .or(config.server.example.as_ref())
-                        .unwrap();
-                    ensure!(!name.trim().is_empty(), "server target must not be empty");
-                    for (name, commands) in [
-                        ("build", &config.prepare.build),
-                        ("dev", &config.prepare.dev),
-                    ] {
-                        for command in commands {
-                            ensure!(
-                                command.first().is_some_and(|s| !s.trim().is_empty()),
-                                "prepare.{name} commands must contain a nonempty executable"
-                            );
-                        }
-                    }
-                    for command in &config.check.commands {
+                    validate_commands("check", &config.check.commands)?;
+                    for (name, suite) in &config.test {
                         ensure!(
-                            command.first().is_some_and(|s| !s.trim().is_empty()),
-                            "check.commands must contain a nonempty executable"
+                            matches!(
+                                name.as_str(),
+                                "memory" | "native" | "workers" | "browser" | "full"
+                            ),
+                            "Unknown test platform {name}; use memory, native, workers, browser or full"
                         );
+                        ensure!(
+                            !suite.commands.is_empty(),
+                            "test.{name}.commands must not be empty"
+                        );
+                        validate_commands(&format!("test.{name}"), &suite.commands)?;
                     }
                     let project = Self {
                         root: root.to_owned(),
                         config,
                     };
-                    project.file(&project.config.server.manifest)?;
+                    if project.config.check.rust.is_empty() {
+                        project.file(Path::new("Cargo.toml"))?;
+                    }
                     for manifest in &project.config.check.rust {
                         project.file(manifest)?;
-                    }
-                    if let Some(web) = &project.config.web {
-                        for path in [&web.application, &web.host, &web.html, &web.wasm_manifest] {
-                            project.file(path)?;
-                        }
-                        project.file(&web.package_dir.join("package.json"))?;
-                        ensure!(
-                            !web.bindings.as_os_str().is_empty(),
-                            "web.bindings must not be empty"
-                        );
                     }
                     return Ok(project);
                 }
@@ -177,43 +99,17 @@ impl Project {
             }
         }
         bail!(
-            "No snap.toml found from {}. Create one at the application root or pass its directory to snap build, snap check, or snap dev.",
+            "No snap.toml found from {}. Create one at the application root or pass its directory to snap check or snap test.",
             start.display()
         )
     }
 
-    pub fn path(&self, path: &Path) -> PathBuf {
-        self.root.join(path)
-    }
-    pub fn address(&self) -> Result<SocketAddr> {
-        match std::env::var("SNAP_ADDR") {
-            Ok(address) => address
-                .parse()
-                .context("SNAP_ADDR must be an IP address and port"),
-            Err(std::env::VarError::NotPresent) => Ok(self.config.dev.address),
-            Err(error) => Err(error.into()),
-        }
-    }
-    pub fn backend_address(&self) -> Result<SocketAddr> {
-        let address = match std::env::var("SNAP_BACKEND_ADDR") {
-            Ok(value) => value
-                .parse()
-                .context("SNAP_BACKEND_ADDR must be an IP address and port")?,
-            Err(std::env::VarError::NotPresent) => self.config.dev.backend_address,
-            Err(error) => return Err(error.into()),
-        };
-        ensure!(
-            address.ip().is_loopback(),
-            "Development backend address must be loopback"
-        );
-        Ok(address)
-    }
     pub fn file(&self, path: &Path) -> Result<PathBuf> {
         ensure!(
             !path.as_os_str().is_empty(),
             "Configured file path must not be empty"
         );
-        let path = self.path(path);
+        let path = self.root.join(path);
         ensure!(
             path.is_file(),
             "Configured file does not exist: {}",
@@ -221,4 +117,14 @@ impl Project {
         );
         Ok(path.canonicalize()?)
     }
+}
+
+fn validate_commands(name: &str, commands: &[Vec<String>]) -> Result<()> {
+    for command in commands {
+        ensure!(
+            command.first().is_some_and(|s| !s.trim().is_empty()),
+            "{name}.commands must contain a nonempty executable"
+        );
+    }
+    Ok(())
 }

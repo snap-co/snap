@@ -1,4 +1,4 @@
-use snap_store::resident::*;
+use snap_store::*;
 use snap_store::{Kind, Row, Value};
 
 #[derive(Default)]

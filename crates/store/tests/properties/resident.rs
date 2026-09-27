@@ -2,8 +2,8 @@
 //! The model has no indexes, residency implementation, or SQL translation.
 use hegel::{TestCase, generators as gs};
 use snap_sqlite::Sqlite;
-use snap_store::resident::{migration::*, *};
 use snap_store::{Kind, Row};
+use snap_store::{migration::*, *};
 use std::collections::BTreeMap;
 
 fn migrations() -> Vec<Migration> {

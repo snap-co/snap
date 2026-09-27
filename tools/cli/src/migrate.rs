@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Args as ClapArgs, Subcommand};
-use snap_store::resident::{identifier, migration::Migration};
+use snap_store::{identifier, migration::Migration};
 use std::{
     io::Write,
     path::{Path, PathBuf},

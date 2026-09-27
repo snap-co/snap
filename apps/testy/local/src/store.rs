@@ -1,6 +1,6 @@
 //! A small host consumer connecting verified transport requests to Store's gate.
 //! Store misses are terminal responses, never execution::Need or hidden retries.
-use snap_store::resident::{Backend, Store};
+use snap_store::{Backend, Store};
 use snap_transport::{
     Command, Error, Event, Response, json,
     server::{Config, Server},
@@ -44,7 +44,7 @@ impl<B: Backend> Host<B> {
             })
             .map(|_| json!({"created": account}))
             .map_err(|error| match error {
-                snap_store::resident::Error::Miss(lookup) => Error::Application(
+                snap_store::Error::Miss(lookup) => Error::Application(
                     json!({"code": "StoreMiss", "table": lookup.table, "index": lookup.index}),
                 ),
                 other => Error::Application(json!({"code": format!("{other:?}")})),
@@ -56,7 +56,7 @@ impl<B: Backend> Host<B> {
     }
 }
 
-pub fn migration() -> snap_store::resident::migration::Migration {
+pub fn migration() -> snap_store::migration::Migration {
     toml::from_str(include_str!("../../migrations/0001_signup.toml"))
         .expect("Testy migration declaration")
 }

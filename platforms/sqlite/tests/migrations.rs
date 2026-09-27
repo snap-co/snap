@@ -1,6 +1,6 @@
 use snap_sqlite::{Sqlite, migrate, status};
-use snap_store::resident::{migration::*, *};
 use snap_store::{Kind, Row};
+use snap_store::{migration::*, *};
 
 fn path(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(

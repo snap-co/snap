@@ -1,7 +1,7 @@
 """Architecture diagnostics are promises of the project check command."""
 import unittest
 
-from dev import ProjectContract, ROOT
+from support import ProjectContract, ROOT
 
 
 class ArchitectureContract(ProjectContract):

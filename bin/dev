@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Checkout convenience. The installed `snap dev` needs no wrapper.
+# Build and run Testy's local web host.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-exec bash "$root/bin/testy" "$@"
+cd "$root"
+bun scripts/build-testy.ts
+exec mise exec -- cargo run -p testy-local --no-default-features --features web --bin testy-web -- "$@"

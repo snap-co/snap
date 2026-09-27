@@ -16,7 +16,7 @@ independent consumer or enforceable dependency/portability rule requires it.
   serialized host execution and in-memory commit. `src/program.rs` defines the
   application interface; `src/executor.rs` implements the host state machine.
 - `platforms/local` composes transport and execution with memory or native IO.
-- `crates/store::resident` owns portable server-side resident transactions,
+- `crates/store` owns portable server-side resident transactions,
   index knowledge, miss diagnostics and explicit schema migration declarations.
 - `platforms/sqlite` implements Store's host IO and database-backed durability.
   It is separately consumable by the CLI without importing application execution.
@@ -27,14 +27,15 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `apps/testy/web` owns the launcher, Healthy and calculator screens, and the
   development execution desk. Routing into `/calc` bootstraps the SDK.
 
-Transport and execution do not depend on each other or on the earlier runtime,
-Identity, Passport, Store or Cache. Testy selects both capabilities. Native IO is
+Transport and execution do not depend on each other or on Store. Testy selects
+transport and execution. Native IO is
 feature-selected; memory builds do not compile Tokio, and native-only builds do
 not select the memory executor. A platform is not owned by transport. Adding a
 capability must not make it an unconditional dependency of other capabilities.
 
-The earlier Authy/Chatty implementation and `tests/fixtures/healthy` use a different execution model.
-Its reference is [legacy architecture](docs/legacy-architecture.md).
+Authy, Chatty and their HTTP/LLM sources are outside the workspace pending rewrites.
+Their former shared transport, storage, identity and host implementations have been
+deleted. Identity, Access and Document will build on the contracts in this document.
 
 ## Transport and connection lifetime
 
@@ -67,7 +68,7 @@ bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preservi
 64-bit integers. Rust SDK results cross the UI binding as decimal strings.
 Development controls also use the Rust binding to validate supplied JSON text and
 format inspection records/trace without passing integers through JavaScript numbers.
-Workers, TLS deployment and migration of the earlier hosts are subsequent work.
+Workers and TLS deployment are subsequent work.
 
 ## Application interface and global gate
 
@@ -117,13 +118,11 @@ multiple-object memory graphs are not implemented.
 ## Resident Store and durability
 
 Store is a server-side Tier 0 capability. It has no dependency on transport,
-execution, Identity, Access, Document or any host. Its active interface is
-`snap_store::resident`; the crate-root asynchronous Store/Cache contracts remain
-for the earlier Authy/Chatty flow. These are distinct contracts, not interchangeable
-implementations. New consumers use resident Store. Cache expiry/eviction, authn,
+execution, Identity, Access, Document or any host. Its interface is `snap_store`.
+Cache expiry/eviction, authn,
 authz, OLAP and distributed commit are outside this capability.
 
-Portable module code receives one `resident::Transaction` shared across its module
+Portable module code receives one `snap_store::Transaction` shared across its module
 calls. Reads are synchronous and access resident data only. A read returns rows,
 known absence, or `Error::Miss` with the lookup. A miss poisons the transaction even
 if application code catches the error. The attempt returns and all staged writes

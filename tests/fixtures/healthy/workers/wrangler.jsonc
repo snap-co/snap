@@ -1,9 +1,0 @@
-{
-  "$schema": "../../../../node_modules/wrangler/config-schema.json",
-  "name": "snap-healthy",
-  "main": "build/index.js",
-  "compatibility_date": "2026-09-24",
-  "build": { "command": "worker-build --release" },
-  "observability": { "enabled": true },
-  "dev": { "ip": "127.0.0.1", "port": 8787 }
-}
