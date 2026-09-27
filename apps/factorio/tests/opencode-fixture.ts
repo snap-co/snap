@@ -41,7 +41,14 @@ export function openCodeFixture() {
         if (body.metadata?.factorio_initial) {
           s.messages.push({ id: body.id, role: "user", text: "Improve navigation on my phone" });
           s.messages.push({ id: "msg_fixture_question", role: "assistant", parts: [{ type: "text", text: "Which navigation outcome matters most?" }] });
-          s.forms = [{ id: "frm_scope", title: "Clarify navigation", fields: [{ key: "outcome", type: "string", title: "Desired outcome", required: true }] }];
+          s.forms = [{ id: "frm_scope", title: "Clarify navigation", fields: [
+            { key: "scope", type: "multiselect", title: "Scope", required: true, custom: true, options: [{value:"known",label:"Known scope"}], default:["other"] },
+            { key: "outcome", type: "string", title: "Desired outcome", required: true, when:[{key:"scope",op:"eq",value:"other"}] },
+            { key: "alternate", type: "string", title: "Alternate outcome", default:"stale default", when:[{key:"scope",op:"neq",value:"other"}] },
+            { key: "inactive", type: "string", hidden: true, default:"must not submit", when:[{key:"scope",op:"neq",value:"other"}] },
+            { key: "unanswered", type: "string", title: "Optional detail" },
+            { key: "followup", type: "string", title: "Unanswered follow-up", required:true, when:[{key:"unanswered",op:"neq",value:"no"}] },
+          ] }];
           s.permissions = [{ id: "per_read", action: "read", resources: ["crates/a"] }];
         } else {
           s.messages.push({ id: body.id, role: "user", text: body.text });
@@ -49,7 +56,7 @@ export function openCodeFixture() {
         }
       }
     } else if (api.includes("/form/") && api.endsWith("/reply")) {
-      if (!body.answer.outcome) return new Response("invalid", { status: 400 });
+      if (!body.answer.outcome || JSON.stringify(body.answer.scope)!=='["other"]' || Object.keys(body.answer).some(k=>!["scope","outcome"].includes(k))) return new Response("invalid", { status: 400 });
       s.forms = []; await save(s);
     } else if (api.includes("/permission/") && api.endsWith("/reply")) s.permissions = [];
     notify(id);

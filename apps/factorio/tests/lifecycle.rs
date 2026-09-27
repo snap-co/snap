@@ -271,6 +271,72 @@ fn ticket(id: &str, blockers: &[&str]) -> Ticket {
         blockers: blockers.iter().map(|s| (*s).into()).collect(),
     }
 }
+
+#[test]
+fn intake_readiness_preserves_settled_leaves_and_accepts_later_drafts() {
+    use factorio::intake::{self, Drafts, Route};
+    let mut db = fixture();
+    let session = rp::digest("alice");
+    let actor = || Actor {
+        session: &session,
+        human: false,
+        now: 101,
+    };
+    let draft = |id: &str| {
+        let mut t = ticket(id, &[]);
+        t.status = Status::Draft;
+        t
+    };
+    db.run("create", |tx| {
+        intake::create(tx, actor(), "mixed", "Several small changes")
+    })
+    .unwrap();
+    db.run("drafts", |tx| {
+        intake::drafts(
+            tx,
+            actor(),
+            "mixed",
+            Drafts {
+                revision: 0,
+                route: Route::Implement,
+                rationale: "Agreed".into(),
+                tickets: vec![draft("mixed-one"), draft("mixed-two"), draft("mixed-three")],
+            },
+        )
+    })
+    .unwrap();
+    let mut first = draft("mixed-one");
+    first.status = Status::Ready;
+    command(&mut db, Command::Ticket { ticket: first }, false).unwrap();
+    let mut cancelled = draft("mixed-two");
+    cancelled.status = Status::Cancelled;
+    command(&mut db, Command::Ticket { ticket: cancelled }, false).unwrap();
+    db.run("ready-rest", |tx| intake::ready(tx, actor(), "mixed", 3))
+        .unwrap();
+    let w = view(&mut db);
+    assert_eq!(w.tickets["mixed-one"].status, Status::Ready);
+    assert_eq!(w.tickets["mixed-two"].status, Status::Cancelled);
+    assert_eq!(w.tickets["mixed-three"].status, Status::Ready);
+    db.run("later-draft", |tx| {
+        intake::drafts(
+            tx,
+            actor(),
+            "mixed",
+            Drafts {
+                revision: 4,
+                route: Route::Implement,
+                rationale: "Another scoped change".into(),
+                tickets: vec![draft("mixed-four")],
+            },
+        )
+    })
+    .unwrap();
+    db.run("ready-new", |tx| intake::ready(tx, actor(), "mixed", 5))
+        .unwrap();
+    let w = view(&mut db);
+    assert_eq!(w.tickets["mixed-four"].status, Status::Ready);
+    assert_eq!(w.tickets["mixed-two"].status, Status::Cancelled);
+}
 fn start(id: &str, modules: &[&str], tickets: &[&str]) -> Command {
     Command::Start {
         id: id.into(),

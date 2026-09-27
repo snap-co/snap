@@ -138,7 +138,10 @@ pub fn ready(
             continue;
         }
         let mut ticket = w.tickets.get(key).ok_or(Error::NotFound)?.clone();
-        if ticket.modules.len() != 1 || ticket.status != Status::Draft {
+        if ticket.status != Status::Draft {
+            continue;
+        }
+        if ticket.modules.len() != 1 {
             return Err(Error::Constraint);
         }
         ticket.status = Status::Ready;

@@ -13,13 +13,27 @@ type Conversation = {
 
 function QuestionForm({ question, reply, busy }: { question: Question; reply: (answer: Answer) => void; busy: boolean }) {
   const [answer, setAnswer] = useState<Answer>(() => Object.fromEntries(question.fields.filter(f => f.default !== undefined).map(f => [f.key, f.default!])));
-  const visible = (f: Field) => !f.hidden && (f.when ?? []).every(w => w.op === "eq" ? answer[w.key] === w.value : answer[w.key] !== w.value);
-  return <form className="question" onSubmit={event => { event.preventDefault(); reply(Object.fromEntries(Object.entries(answer).filter(([key]) => { const field = question.fields.find(f => f.key === key)!; return field.hidden || visible(field); }))); }}>
+  const [custom, setCustom] = useState<Record<string, string>>(() => Object.fromEntries(question.fields.filter(f => f.type === "multiselect" && f.custom).map(f => [f.key, (Array.isArray(f.default) ? f.default : []).filter(v => !f.options?.some(o => o.value === v)).join(", ")])));
+  const customValues = (value: string) => value.split(",").map(s => s.trim()).filter(Boolean);
+  // OpenCode conditions are evaluated against earlier active answers. Hidden
+  // presentation does not override conditional activity or make a field answerable.
+  const active = new Set<string>(), activeAnswers: Answer = {};
+  for (const field of question.fields) {
+    if (!(field.when ?? []).every(w => {
+      const value = activeAnswers[w.key];
+      if (value === undefined) return false;
+      const equal = Array.isArray(value) ? value.some(v => v === w.value) : value === w.value;
+      return w.op === "eq" ? equal : !equal;
+    })) continue;
+    active.add(field.key);
+    if (answer[field.key] !== undefined) activeAnswers[field.key] = answer[field.key]!;
+  }
+  return <form className="question" onSubmit={event => { event.preventDefault(); reply(activeAnswers); }}>
     <h4>{question.title}</h4><fieldset disabled={busy}>
-    {question.fields.filter(visible).map(f => <label key={f.key}>{f.title ?? f.key}{f.description && <span className="field-hint">{f.description}</span>}
-      {f.type === "boolean" ? <select value={String(answer[f.key] ?? "")} required={f.required} onChange={e => setAnswer({ ...answer, [f.key]: e.target.value === "true" })}><option value="">Choose</option><option value="true">Yes</option><option value="false">No</option></select>
-      : f.type === "multiselect" ? <><select multiple required={f.required} value={Array.isArray(answer[f.key]) ? answer[f.key] as string[] : []} onChange={e => setAnswer({ ...answer, [f.key]: Array.from(e.target.selectedOptions, o => o.value) })}>{f.options?.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>{f.custom && <input aria-label={`${f.title ?? f.key} custom choices`} placeholder="Other choices, comma separated" onBlur={e => setAnswer({ ...answer, [f.key]: [...(Array.isArray(answer[f.key]) ? answer[f.key] as string[] : []), ...e.target.value.split(",").map(s => s.trim()).filter(Boolean)] })}/>}</>
-      : f.type === "string" && f.options && !f.custom ? <select required={f.required} value={String(answer[f.key] ?? "")} onChange={e => setAnswer({ ...answer, [f.key]: e.target.value })}><option value="">Choose</option>{f.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+    {question.fields.filter(f => active.has(f.key) && !f.hidden).map(f => <label key={f.key}>{f.title ?? f.key}{f.description && <span className="field-hint">{f.description}</span>}
+      {f.type === "boolean" ? <select value={String(answer[f.key] ?? "")} required={f.required} onChange={e => { const next = { ...answer }; if (e.target.value === "") delete next[f.key]; else next[f.key] = e.target.value === "true"; setAnswer(next); }}><option value="">Choose</option><option value="true">Yes</option><option value="false">No</option></select>
+      : f.type === "multiselect" ? <><select multiple aria-label={f.title ?? f.key} required={f.required && (!f.custom || customValues(custom[f.key] ?? "").length === 0)} value={(Array.isArray(answer[f.key]) ? answer[f.key] as string[] : []).filter(v => f.options?.some(o => o.value === v))} onChange={e => setAnswer({ ...answer, [f.key]: [...new Set([...Array.from(e.target.selectedOptions, o => o.value), ...(f.custom ? customValues(custom[f.key] ?? "") : [])])] })}>{f.options?.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>{f.custom && <input aria-label={`${f.title ?? f.key} custom choices`} placeholder="Other choices, comma separated" value={custom[f.key] ?? ""} onChange={e => { setCustom({ ...custom, [f.key]: e.target.value }); setAnswer({ ...answer, [f.key]: [...new Set([...(Array.isArray(answer[f.key]) ? answer[f.key] as string[] : []).filter(v => f.options?.some(o => o.value === v)), ...customValues(e.target.value)])] }); }}/>}</>
+      : f.type === "string" && f.options && !f.custom ? <select required={f.required} value={String(answer[f.key] ?? "")} onChange={e => { const next = { ...answer }; if (e.target.value === "") delete next[f.key]; else next[f.key] = e.target.value; setAnswer(next); }}><option value="">Choose</option>{f.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
       : f.type === "external" ? (f.url && /^https?:\/\//.test(f.url) ? <a href={f.url} target="_blank" rel="noreferrer">Open in a new tab</a> : <span>Continue this step in OpenCode.</span>)
       : ["string", "number", "integer"].includes(f.type) ? <input type={f.type === "string" ? "text" : "number"} step={f.type === "integer" ? 1 : "any"} required={f.required} value={String(answer[f.key] ?? "")} onChange={e => { const next = { ...answer }; if (e.target.value === "") delete next[f.key]; else next[f.key] = f.type === "string" ? e.target.value : Number(e.target.value); setAnswer(next); }}/>
       : <span>Continue this step in OpenCode.</span>}
