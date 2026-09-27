@@ -6,17 +6,34 @@ import { resolve } from "node:path";
 const exec = promisify(execFile);
 const base=process.env.FACTORIO_TEST_URL!, dir=process.env.FACTORIO_FIXTURE_DIR!, root=resolve(import.meta.dirname,"../../../..");
 test("fixture-only human acceptance, CLI/UI records, exclusions and restart recovery",async({page})=>{
+  await page.setViewportSize({width:390,height:844});
+  // HTTP tailnet origins lack randomUUID, including in mobile Safari.
+  await page.addInitScript(()=>Reflect.deleteProperty(Object.getPrototypeOf(crypto),"randomUUID"));
   const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
   await page.goto(base);await page.getByRole("link",{name:"Continue with Authy"}).click();
   await page.getByRole("button",{name:"New here? Create account",exact:true}).click();
   await page.getByLabel("Email",{exact:true}).fill(`factorio-${Date.now()}@example.test`);await page.getByLabel("Password",{exact:true}).fill("Factorio fixture password");
   await page.getByRole("button",{name:"Create account",exact:true}).click();await page.getByRole("button",{name:"Allow",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
+  await expect(page.getByText("What should we work on first?")).toBeVisible();
+  await page.getByLabel("id",{exact:true}).fill("ui-draft");
+  await page.getByLabel("title",{exact:true}).fill("Capture an idea from my phone");
+  await page.getByLabel("description",{exact:true}).fill("Keep this in draft until the scope is clear.");
+  await page.getByLabel("Modules",{exact:true}).fill("a");
+  await page.getByRole("button",{name:"Save ticket",exact:true}).click();
+  const draft=page.locator("#ticket-ui-draft");
+  await expect(draft.getByRole("heading",{name:"Capture an idea from my phone"})).toBeVisible();
+  await draft.getByRole("link",{name:"Edit",exact:true}).click();
+  await expect(page.getByLabel("description",{exact:true})).toHaveValue("Keep this in draft until the scope is clear.");
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:"/tmp/opencode/factorio-mobile-ui.png",fullPage:true});
+  await draft.getByRole("button",{name:"Delete",exact:true}).click();
+  await expect(draft).toHaveCount(0);
   await page.getByRole("button",{name:"Create agent token",exact:true}).click();const token=await page.getByLabel("Agent token",{exact:true}).inputValue();expect(token.length).toBeGreaterThan(32);await page.getByRole("button",{name:"Dismiss token"}).click();
   async function cli(args:string[]){const {stdout}=await exec("bun",[`${root}/apps/factorio/cli.ts`,...args],{cwd:root,env:{...process.env,FACTORIO_ORIGIN:base,FACTORIO_TOKEN:token}});return JSON.parse(stdout);}
   const ticket=(id:string,blockers:string[]=[])=>({id,title:id,description:"Fixture implementation",modules:["a"],status:"ready",notes:"",parent:null,blockers});
   for(const t of [ticket("first"),ticket("dependent",["first"])]){const file=`${dir}/${t.id}.json`;await writeFile(file,JSON.stringify(t));await cli(["ticket",file]);}
-  await expect(page.getByRole("heading",{name:"first: first",exact:true})).toBeVisible();await expect(page.getByRole("link",{name:"first (ready)"})).toBeVisible();
+  await expect(page.locator("#ticket-first").getByRole("heading",{name:"first",exact:true})).toBeVisible();await expect(page.getByRole("link",{name:"first (ready)"})).toBeVisible();
   await expect(cli(["start","--id","blocked","--tickets","dependent","--modules","a","--","blocked"])).rejects.toThrow();
   const a=(await cli(["start","--id","one","--tickets","first","--modules","a","--","first change"])).session;
   const b=(await cli(["start","--id","two","--modules","b","--","parallel change"])).session;
@@ -33,14 +50,14 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   page.once("dialog",d=>d.accept());await page.getByRole("button",{name:"Approve candidate as human"}).click();
   await expect.poll(async()=>Boolean((await cli(["status"])).sessions.one.candidate.approval)).toBe(true);
   await cli(["accept","one"]);expect(await readFile(`${dir}/repo/crates/a/file`,"utf8")).toBe("implemented");
-  await expect(page.getByRole("heading",{name:"one · complete",exact:true})).toBeVisible();
+  await expect(page.locator("article").filter({has:page.getByRole("heading",{name:"one",exact:true})}).getByText("complete",{exact:true})).toBeVisible();
   await expect(page.getByRole("link",{name:"first (done)"})).toBeVisible();
   const dependent=(await cli(["start","--id","next","--tickets","dependent","--modules","a","--","dependent now ready"])).session;expect(dependent.phase).toBe("active");
   await cli(["abandon","two"]);await expect(cli(["start","--id","fail","--modules","b","--","failed setup"])).rejects.toThrow(/fixture setup failure/);
   await fetch(`${process.env.FACTORIO_FIXTURE_URL}/restart`);await expect(cli(["start","--id","collision","--modules","b","--","collision"])).rejects.toThrow();
   const failed=(await cli(["status"])).sessions.fail;expect(failed.phase).toBe("starting");await writeFile(`${failed.data}/permit`,"retry fixture hook");
   await cli(["recover","fail"]);expect((await cli(["status"])).sessions.fail.phase).toBe("active");
-  await page.reload();await expect(page.getByRole("heading",{name:"fail · active",exact:true})).toBeVisible();
+  await page.reload();const failedCard=page.locator("article").filter({has:page.getByRole("heading",{name:"fail",exact:true})});await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
   if(process.env.FACTORIO_TEST_DEV){
     const css=`${root}/apps/factorio/web/style.css`;await writeFile(css,await readFile(css,"utf8")+"\nbody { --factorio-probe: active; }\n");
     await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.body).getPropertyValue("--factorio-probe").trim())).toBe("active");
@@ -48,11 +65,11 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
     await writeFile(source,original+'\ncompile_error!("fixture failure");\n');
     const state=async()=>await(await fetch(`${process.env.FACTORIO_FIXTURE_URL}/build-state`)).json();
     await expect.poll(async()=>(await state()).failed,{timeout:60000}).toBe(true);
-    await page.reload();await expect(page.getByRole("heading",{name:"fail · active",exact:true})).toBeVisible();
+    await page.reload();await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
     const generations=(await state()).generations;await writeFile(source,original);
     await expect.poll(async()=>(await state()).generations,{timeout:60000}).toBeGreaterThan(generations);
-    await expect(page.getByRole("heading",{name:"fail · active",exact:true})).toBeVisible();
-    const ui=`${root}/apps/factorio/web/main.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Local tickets, isolated work and human acceptance.","Updated Factorio development UI."));
+    await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
+    const ui=`${root}/apps/factorio/web/main.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Track work from idea to review.","Updated Factorio development UI."));
     await expect(page.getByText("Updated Factorio development UI.")).toBeVisible();
   }
   await writeFile(`${failed.worktree}/dirty`,"keep");
