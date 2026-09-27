@@ -65,6 +65,25 @@ pre { background: #f4f6f2; padding: 16px; border-radius: 6px; }
 .tool-status, .field-hint { display: block; font-size: 13px; color: #657169; font-weight: 400; }
 .draft-summary { padding: 20px; background: #edf3ed; border-radius: 8px; margin-bottom: 20px; }
 .question select[multiple] { min-height: 100px; }
+.thread-list { display: grid; gap: 8px; margin-bottom: 24px; }
+.thread-list a { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; border: 1px solid #dce2dc; border-radius: 10px; background: white; text-decoration: none; }
+.thread-shell { position: fixed; top: var(--thread-top, 0px); left: 0; width: 100%; max-width: none; height: var(--thread-height, 100dvh); padding: 0; }
+.intake-thread { display: flex; flex-direction: column; height: 100%; margin: 0; min-height: 0; }
+.thread-header { flex: none; flex-direction: row; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #dce2dc; background: #fff; }
+.thread-header > div { flex: 1; min-width: 0; }
+.thread-header h1 { font-size: 16px; line-height: 1.4; letter-spacing: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-header [role=status] { font-size: 12px; padding: 0; }
+.thread-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.thread-content { max-width: 820px; margin: auto; padding: 16px; }
+.intake-thread .conversation { max-height: none; overflow: visible; margin: 16px 0; }
+.thread-details { border-top: 0; padding: 0; }
+.thread-bottom { flex: none; border-top: 1px solid #dce2dc; background: white; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); }
+.thread-bottom > * { max-width: 788px; margin-inline: auto; }
+.thread-composer { margin-bottom: 0; border: 0; border-radius: 0; padding: 0; }
+.thread-composer label { margin: 0; font-size: 12px; }
+.thread-composer textarea { max-height: 25dvh; min-height: 64px; resize: none; margin-top: 4px; }
+.thread-composer .actions { margin-top: 8px; justify-content: flex-end; }
+.latest-message { position: absolute; align-self: center; bottom: 195px; box-shadow: 0 2px 10px #0002; }
 @media (max-width: 700px) {
   main { padding: 24px 16px; }
   header { align-items: flex-start; flex-direction: column; gap: 20px; }

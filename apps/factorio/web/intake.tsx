@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Factorio, randomID, type Intake, type Workspace } from "../client";
+import { Factorio, randomID, type Workspace } from "../client";
 
 type Answer = Record<string, string | number | boolean | string[]>;
 type Field = { key: string; type: string; title?: string; description?: string; required?: boolean; hidden?: boolean; default?: Answer[string]; options?: { value: string; label: string }[]; custom?: boolean; url?: string; when?: { key: string; op: "eq" | "neq"; value: unknown }[] };
@@ -41,8 +41,7 @@ function QuestionForm({ question, reply, busy }: { question: Question; reply: (a
   </form>;
 }
 
-export function IntakeDesk({ client, workspace }: { client: Factorio; workspace: Workspace }) {
-  const [selected, select] = useState(() => location.hash.startsWith("#intake-") ? location.hash.slice(1) : "");
+export function IntakeDesk({ client, workspace, selected = "" }: { client: Factorio; workspace: Workspace; selected?: string }) {
   const [description, setDescription] = useState("");
   const [text, setText] = useState("");
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -51,13 +50,25 @@ export function IntakeDesk({ client, workspace }: { client: Factorio; workspace:
   const [busy, setBusy] = useState(false);
   const pending = useRef<{ id: string; text: string } | null>(null);
   const creating = useRef<{ id: string; text: string } | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  const [newMessages, setNewMessages] = useState(false);
   const intakes = Object.values(workspace.intakes ?? {}).filter(i => i.owner === client.identity.owner);
   const intake = intakes.find(i => i.id === selected);
   useEffect(() => {
-    const changed = () => { if (location.hash === "#intake") select(""); else if (location.hash.startsWith("#intake-")) select(location.hash.slice(1)); };
-    window.addEventListener("hashchange", changed);
-    return () => window.removeEventListener("hashchange", changed);
-  }, []);
+    if (!selected) return;
+    const viewport = window.visualViewport;
+    const resize = () => {
+      document.documentElement.style.setProperty("--thread-height", `${viewport?.height ?? window.innerHeight}px`);
+      document.documentElement.style.setProperty("--thread-top", `${viewport?.offsetTop ?? 0}px`);
+    };
+    resize(); viewport?.addEventListener("resize", resize); viewport?.addEventListener("scroll", resize);
+    return () => { viewport?.removeEventListener("resize", resize); viewport?.removeEventListener("scroll", resize); document.documentElement.style.removeProperty("--thread-height"); document.documentElement.style.removeProperty("--thread-top"); };
+  }, [selected]);
+  useEffect(() => {
+    if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+    else setNewMessages(true);
+  }, [conversation]);
   useEffect(() => {
     setConversation(null);
     if (!intake) return;
@@ -70,32 +81,40 @@ export function IntakeDesk({ client, workspace }: { client: Factorio; workspace:
     return () => events.close();
   }, [client, intake?.id]);
   async function run(action: () => Promise<unknown>) { setBusy(true); setError(""); try { await action(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
-  function open(item: Intake) { select(item.id); location.hash = item.id; setText(""); pending.current = null; }
   async function start() {
     if (!creating.current || creating.current.text !== description) creating.current = { id: `intake-${randomID()}`, text: description };
-    select(creating.current.id); location.hash = creating.current.id;
     await client.intake(creating.current.id, description);
+    location.hash = creating.current.id;
     setDescription(""); creating.current = null;
   }
   const action = (value: Record<string, unknown>) => client.intakeAction(intake!.id, value);
-  return <section id="intake" className="intake-desk">
-    <div className="section-heading"><h2>What would you like to work on?</h2>{intake && <button onClick={() => { select(""); location.hash = "intake"; }}>New conversation</button>}</div>
+  if (selected && !intake) return <section className="intake-desk"><a href="#intake">← Workspace</a><p role="status">Conversation unavailable. Return to the workspace to refresh or start again.</p></section>;
+  return <section id="intake" className={intake ? "intake-thread" : "intake-desk"}>
+    {!intake && <><div className="section-heading"><h2>What would you like to work on?</h2></div>
     <p className="muted">Describe the change. The agent will explore the code, ask what it needs to know, and draft the tickets.</p>
-    {intakes.length > 0 && <label>Conversations<select value={selected} onChange={e => { const item = intakes.find(i => i.id === e.target.value); if (item) open(item); else {select(""); location.hash="intake";} }}><option value="">New conversation</option>{intakes.map(i => <option key={i.id} value={i.id}>{i.description.slice(0, 90)}</option>)}</select></label>}
+    {intakes.length > 0 && <nav className="thread-list" aria-label="Conversations">{intakes.map(i => <a key={i.id} href={`#${i.id}`}><span>{i.description.slice(0, 120)}</span><span className="badge">{i.route}</span></a>)}</nav>}
     {!intake && <form onSubmit={e => { e.preventDefault(); void run(start); }}><label>Your idea<textarea aria-label="Your idea" rows={4} required maxLength={16384} placeholder="What should change, and why? Rough ideas are welcome." value={description} onChange={e => setDescription(e.target.value)}/></label><button className="primary" disabled={busy}>{busy ? "Starting…" : "Work through this"}</button></form>}
-    {error && <p role="alert">{error}</p>}
-    {intake && <div id={intake.id}>
-      <div className="ticket-meta"><span className="badge">{intake.route}</span><span className="muted" role="status">{connection}</span></div>
+    {error && <p role="alert">{error}</p>}</>}
+    {intake && <>
+      <header className="thread-header"><a className="button quiet" href="#intake" aria-label="Back to workspace">← Back</a><div><h1>{intake.description}</h1><span role="status">{connection}</span></div><span className="badge">{intake.route}</span></header>
+      <div className="thread-scroll" ref={scroller} onScroll={() => { const s = scroller.current!; follow.current = s.scrollHeight - s.scrollTop - s.clientHeight < 80; if (follow.current) setNewMessages(false); }}>
+      <div className="thread-content">
+      <details className="thread-details"><summary>Drafts and session details{intake.tickets.length ? ` · ${intake.tickets.length}` : ""}</summary>
       {intake.rationale && <p>{intake.rationale}</p>}
+      {intake.tickets.map(id => <p key={id}><a href={`#ticket-${id}`}>{workspace.tickets[id]?.title ?? id}</a> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}
+      <p>Full history in OpenCode:</p><code>opencode --session {intake.conversation}</code><p><button disabled={busy} onClick={() => void run(() => action({ action: "resume" }))}>Reconnect session</button></p>
+      <button className="danger quiet" disabled={busy} onClick={() => { if (window.confirm("Delete this conversation? Any saved tickets will remain.")) void run(async () => { await action({action:"delete"}); location.hash="intake"; }); }}>Delete conversation</button>
+      </details>
       <div className="conversation" aria-label="Intake conversation">
         {!conversation?.messages.length && <article className="chat-user"><strong>You</strong><p className="prose">{intake.description}</p></article>}
         {conversation?.messages.map(message => <article className={`chat-${message.role}`} key={message.id}><strong>{message.role === "user" ? "You" : "OpenCode"}</strong>{message.text && <p className="prose">{message.text}</p>}{message.parts?.map((part, index) => part.type === "text" ? <p className="prose" key={index}>{part.text}</p> : <p className="tool-status" key={index}>{part.name ?? "Tool"} · {part.status ?? "working"}</p>)}{message.error && <p role="alert">{message.error}</p>}</article>)}
       </div>
       {conversation?.forms.map(q => <QuestionForm key={q.id} question={q} busy={busy} reply={answer => void run(() => action({ action: "form", id: q.id, reply: { answer } }))}/>)}
       {conversation?.permissions.map(p => <article key={p.id}><h4>OpenCode needs permission</h4><p>{p.action}</p><pre>{p.resources.join("\n")}</pre><div className="actions"><button disabled={busy} onClick={() => void run(() => action({ action: "permission", id: p.id, reply: "once" }))}>Allow once</button><button disabled={busy} onClick={() => void run(() => action({ action: "permission", id: p.id, reply: "reject" }))}>Decline</button></div></article>)}
-      <form onSubmit={e => { e.preventDefault(); void run(async () => { if (!pending.current || pending.current.text !== text) pending.current = { id: `msg_${randomID()}`, text }; await action({ action: "message", ...pending.current }); setText(""); pending.current = null; }); }}><label>Reply<textarea aria-label="Reply" rows={3} maxLength={16384} required value={text} onChange={e => setText(e.target.value)} placeholder="Answer a question or add more context…"/></label><div className="actions"><button className="primary" disabled={busy}>Send reply</button><button type="button" disabled={busy} onClick={() => void run(() => action({ action: "interrupt" }))}>Stop</button></div></form>
       {intake.tickets.length > 0 && <div className="draft-summary"><h3>Drafted tickets</h3>{intake.tickets.map(id => <p key={id}><a href={`#ticket-${id}`}>{workspace.tickets[id]?.title ?? id}</a> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}{intake.route === "implement" && intake.tickets.some(id => workspace.tickets[id]?.status === "draft" && !Object.values(workspace.tickets).some(t => t.parent === id)) && <button disabled={busy} className="primary" onClick={() => void run(() => action({ action: "ready", revision: intake.revision }))}>Mark implementation tickets ready</button>}</div>}
-      <details><summary>OpenCode session and recovery</summary><p>The latest 100 messages appear here. Continue with the full history in OpenCode:</p><code>opencode --session {intake.conversation}</code><p><button disabled={busy} onClick={() => void run(() => action({ action: "resume" }))}>Reconnect session</button></p></details>
-    </div>}
+      </div></div>
+      {newMessages && <button className="latest-message" onClick={() => { follow.current = true; setNewMessages(false); scroller.current?.scrollTo({top:scroller.current.scrollHeight}); }}>Latest messages ↓</button>}
+      <div className="thread-bottom">{error && <p role="alert">{error}</p>}<form className="thread-composer" onSubmit={e => { e.preventDefault(); void run(async () => { if (!pending.current || pending.current.text !== text) pending.current = { id: `msg_${randomID()}`, text }; await action({ action: "message", ...pending.current }); setText(""); pending.current = null; follow.current = true; }); }}><label className="reply-label">Reply<textarea aria-label="Reply" rows={2} maxLength={16384} required value={text} onChange={e => setText(e.target.value)} placeholder="Reply or add context…"/></label><div className="actions"><button type="button" disabled={busy} onClick={() => void run(() => action({ action: "interrupt" }))}>Stop</button><button className="primary" disabled={busy || !text.trim()}>Send reply</button></div></form></div>
+    </>}
   </section>;
 }

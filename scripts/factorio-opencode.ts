@@ -11,6 +11,7 @@ async function request(path: string, method = "GET", body?: unknown) {
     method, headers: { ...headers, "content-type": "application/json" },
     body: body == null ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30000),
   });
+  if (method === "DELETE" && response.status === 404) return null;
   if (!response.ok) throw new Error(`OpenCode returned ${response.status}`);
   return response.status === 204 ? null : await response.json();
 }

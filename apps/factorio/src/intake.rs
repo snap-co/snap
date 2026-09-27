@@ -165,3 +165,16 @@ pub fn ready(
     save(tx, &w)?;
     Ok(item)
 }
+
+/// Removing a conversation leaves its tickets in the shared workspace. Scoped
+/// tools require the intake to exist, so outstanding credentials stop working.
+pub fn delete(tx: &mut Transaction<'_>, actor: Actor<'_>, id: &str) -> Result<(), Error> {
+    let who = rp::lease(tx, actor.session, actor.now)?;
+    let mut w = load(tx)?;
+    let item = w.intakes.get(id).ok_or(Error::NotFound)?;
+    if item.owner != who.owner {
+        return Err(Error::NotFound);
+    }
+    w.intakes.remove(id);
+    save(tx, &w)
+}

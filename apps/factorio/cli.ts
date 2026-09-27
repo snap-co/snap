@@ -19,10 +19,12 @@ Acceptance requires a human to approve the exact candidate in the browser first.
   } else if (command === "login") {
     console.log(`Open ${origin}/auth/login, then create an agent token. Set FACTORIO_TOKEN in your shell. The token cannot approve candidates.`);
   } else if (command === "intake-read" || command === "intake-save") {
-    const token = process.env.FACTORIO_INTAKE_TOKEN;
+    const configPath = option("intake-config");
+    const config = configPath ? await Bun.file(configPath).json() as { origin: string; token: string } : undefined;
+    const token = config?.token ?? process.env.FACTORIO_INTAKE_TOKEN;
     if (!token) throw new Error("This tool requires a Factorio intake session");
     const body = command === "intake-read" ? { action: "read" } : id === "-" ? await Bun.stdin.json() : await Bun.file(id!).json();
-    const response = await fetch(`${origin}/api/intake-tool`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const response = await fetch(`${config?.origin ?? origin}/api/intake-tool`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error_description ?? "Draft rejected. Reread and reconcile.");
     console.log(JSON.stringify(value, null, 2));

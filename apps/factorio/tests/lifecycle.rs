@@ -336,6 +336,25 @@ fn intake_readiness_preserves_settled_leaves_and_accepts_later_drafts() {
     let w = view(&mut db);
     assert_eq!(w.tickets["mixed-four"].status, Status::Ready);
     assert_eq!(w.tickets["mixed-two"].status, Status::Cancelled);
+    db.run("delete-intake", |tx| intake::delete(tx, actor(), "mixed"))
+        .unwrap();
+    let w = view(&mut db);
+    assert!(!w.intakes.contains_key("mixed"));
+    assert_eq!(w.tickets["mixed-four"].status, Status::Ready);
+    assert!(
+        db.run("retired-intake-tool", |tx| intake::drafts(
+            tx,
+            actor(),
+            "mixed",
+            Drafts {
+                revision: 6,
+                route: Route::Grill,
+                rationale: String::new(),
+                tickets: vec![draft("mixed-late")]
+            }
+        ))
+        .is_err()
+    );
 }
 fn start(id: &str, modules: &[&str], tickets: &[&str]) -> Command {
     Command::Start {

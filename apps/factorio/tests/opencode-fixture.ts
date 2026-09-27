@@ -1,4 +1,4 @@
-type FixtureSession = { data: Record<string, unknown>; environment: Record<string, string>; messages: Record<string, unknown>[]; forms: Record<string, unknown>[]; permissions: Record<string, unknown>[]; seen: Set<string> };
+type FixtureSession = { data: Record<string, unknown>; environment: Record<string, string>; tool?: string; messages: Record<string, unknown>[]; forms: Record<string, unknown>[]; permissions: Record<string, unknown>[]; seen: Set<string> };
 export function openCodeFixture() {
   const sessions = new Map<string, FixtureSession>();
   const watchers = new Map<string, Set<ReadableStreamDefaultController<Uint8Array>>>();
@@ -6,9 +6,14 @@ export function openCodeFixture() {
   function notify(id: string) { const s = sessions.get(id)!; for (const sink of watchers.get(id) ?? []) sink.enqueue(new TextEncoder().encode(JSON.stringify(snapshot(s)) + "\n")); }
   async function save(s: FixtureSession) {
     const tool = async (body: unknown) => {
-      const r = await fetch(`${s.environment.FACTORIO_ORIGIN}/api/intake-tool`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${s.environment.FACTORIO_INTAKE_TOKEN}` }, body: JSON.stringify(body) });
-      if (!r.ok) throw new Error(`Fixture draft tool failed: ${r.status}`);
-      return r.json();
+      if (!s.tool) throw new Error("Missing explicit intake command");
+      const command = (body as {action?:string}).action === "read" ? s.tool : s.tool.replace(" intake-read ", " intake-save - ");
+      // OpenCode may lose overrides between calls. Exercise the actual supplied
+      // command with neither PATH nor Factorio credentials in the environment.
+      const child = Bun.spawn(["/bin/bash", "-c", command], {env:{},stdin:new Blob([JSON.stringify(body)]),stdout:"pipe",stderr:"pipe"});
+      const output = await new Response(child.stdout).text();
+      if (await child.exited) throw new Error("Fixture scoped CLI failed with an empty environment");
+      return JSON.parse(output);
     };
     const state = await tool({ action: "read" });
     const denied = await fetch(`${s.environment.FACTORIO_ORIGIN}/api/command`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${s.environment.FACTORIO_INTAKE_TOKEN}` }, body: JSON.stringify({ command: "delete_ticket", id: "unrelated" }) });
@@ -33,12 +38,14 @@ export function openCodeFixture() {
       return Response.json({ data: body });
     }
     const s = sessions.get(id);
+    if (method === "DELETE") { sessions.delete(id); for (const sink of watchers.get(id) ?? []) sink.close(); watchers.delete(id); return Response.json(null); }
     if (!s) return new Response("missing", { status: 404 });
     if (api.endsWith("/environment")) s.environment = body.variables;
     else if (api.endsWith("/prompt")) {
       if (!s.seen.has(body.id)) {
         s.seen.add(body.id);
         if (body.metadata?.factorio_initial) {
+          s.tool = body.text.split("\n").find((line:string)=>line.startsWith("'") && line.includes(" intake-read --intake-config "));
           s.messages.push({ id: body.id, role: "user", text: "Improve navigation on my phone" });
           s.messages.push({ id: "msg_fixture_question", role: "assistant", parts: [{ type: "text", text: "Which navigation outcome matters most?" }] });
           s.forms = [{ id: "frm_scope", title: "Clarify navigation", fields: [

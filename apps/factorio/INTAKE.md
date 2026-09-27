@@ -20,8 +20,11 @@ bun "$FACTORIO_CLI" intake-save - <<'JSON'
 JSON
 ```
 
-The host supplies `FACTORIO_CLI` and a session-scoped draft credential in the
-shell environment. Keep credentials out of messages, files and tool output.
+The host expands these examples into absolute commands with `--intake-config`
+pointing at a private, host-managed credential file outside the repository. Use
+those exact commands even when shell environment variables disappear. Do not read
+or print the credential file, copy it into the repository, or include it in messages.
+The CLI reads it internally. Reconnect from Factorio if its OAuth session expires.
 `intake-read` returns the current revision, existing tickets and configured
 module paths. Read it before every save. A stale revision rejects the entire
 batch; reread and reconcile rather than blindly overwriting.

@@ -48,6 +48,8 @@ function App() {
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hash, setHash] = useState(location.hash);
+  useEffect(() => { const changed = () => setHash(location.hash); window.addEventListener("hashchange", changed); return () => window.removeEventListener("hashchange", changed); }, []);
   useEffect(() => {
     let close: (() => void) | undefined, disposed = false;
     void client.identify().then(async identity => {
@@ -61,6 +63,7 @@ function App() {
     return () => { disposed = true; close?.(); };
   }, []);
   async function run(action: () => Promise<unknown>) { setBusy(true); setError(""); try { await action(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  if (workspace && hash.startsWith("#intake-")) return <main className="thread-shell"><IntakeDesk key={hash} client={client} workspace={workspace} selected={hash.slice(1)}/></main>;
   return <main>
     <header><div><h1>Factorio</h1><p className="subtitle">Track work from idea to review.</p></div>
       {identified ? <div className="account-actions"><button disabled={busy} onClick={() => void run(async () => setToken((await client.agentToken()).token))}>Create agent token</button><button disabled={busy} onClick={() => void run(async () => location.assign((await client.logout()).redirect))}>Sign out</button></div> : <a className="button primary" href="/auth/login">Continue with Authy</a>}

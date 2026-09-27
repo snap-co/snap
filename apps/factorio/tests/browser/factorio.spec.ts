@@ -19,6 +19,13 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByLabel("Your idea",{exact:true}).fill("Improve navigation on my phone");
   await page.getByRole("button",{name:"Work through this",exact:true}).click();
   await expect(page.getByText("Which navigation outcome matters most?",{exact:true})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toHaveCount(0);
+  for (const height of [844, 420, 844]) {
+    await page.setViewportSize({width:390,height});
+    await expect.poll(async()=>page.locator(".thread-bottom").evaluate(e=>Math.abs(e.getBoundingClientRect().bottom-(window.visualViewport?.height??innerHeight))<2)).toBe(true);
+    await page.locator(".thread-scroll").evaluate(e=>e.scrollTop=0);
+    await expect(page.getByRole("button",{name:"Send reply",exact:true})).toBeVisible();
+  }
   await page.getByRole("button",{name:"Allow once",exact:true}).click();
   await expect(page.getByLabel("Desired outcome",{exact:true})).toBeVisible();
   await expect(page.getByLabel("Alternate outcome",{exact:true})).toHaveCount(0);
@@ -39,7 +46,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByLabel("Desired outcome",{exact:true}).fill("Keep ticket links visible on my phone");
   await page.getByRole("button",{name:"Send answers",exact:true}).click();
   const draft=page.locator("article").filter({has:page.getByRole("heading",{name:"Improve mobile navigation",exact:true})});
-  await expect(draft).toBeVisible();
+  await expect(page.locator(".draft-summary").getByRole("link",{name:"Improve mobile navigation",exact:true})).toBeVisible();
   await page.getByLabel("Reply",{exact:true}).fill("That is the right scope.");
   await page.getByRole("button",{name:"Send reply",exact:true}).click();
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
@@ -56,6 +63,12 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
   expect(page.url()).toBe(conversationURL);
   await page.getByRole("button",{name:"Mark implementation tickets ready",exact:true}).click();
+  await page.screenshot({path:"/tmp/opencode/factorio-thread-ui.png"});
+  await page.getByRole("link",{name:"Back to workspace"}).click();
+  await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
+  await page.goBack();
+  await expect(page.getByLabel("Reply",{exact:true})).toBeVisible();
+  await page.goForward();
   await expect(draft.getByText("ready",{exact:true})).toBeVisible();
   await draft.getByRole("link",{name:"Edit",exact:true}).click();
   await expect(page.getByLabel("description",{exact:true})).toHaveValue(/Acceptance:/);
@@ -67,6 +80,12 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   async function cli(args:string[]){const {stdout}=await exec("bun",[`${root}/apps/factorio/cli.ts`,...args],{cwd:root,env:{...process.env,FACTORIO_OPENCODE:`${dir}/bin/opencode`,FACTORIO_ORIGIN:base,FACTORIO_TOKEN:token}});return JSON.parse(stdout);}
   const intake=(Object.values((await cli(["status"])).intakes) as {id:string;conversation:string}[])[0]!;
   expect((await cli(["intake","--resume",intake.id])).resumed).toBe(intake.conversation);
+  await page.getByRole("navigation",{name:"Conversations"}).getByRole("link").click();
+  await page.getByText("Drafts and session details",{exact:true}).click();
+  page.once("dialog",d=>d.accept());
+  await page.getByRole("button",{name:"Delete conversation",exact:true}).click();
+  await expect(page.getByLabel("Your idea",{exact:true})).toBeVisible();
+  expect((await cli(["status"])).intakes[intake.id]).toBeUndefined();
   const ticket=(id:string,blockers:string[]=[])=>({id,title:id,description:"Fixture implementation",modules:["a"],status:"ready",notes:"",parent:null,blockers});
   for(const t of [ticket("first"),ticket("dependent",["first"])]){const file=`${dir}/${t.id}.json`;await writeFile(file,JSON.stringify(t));await cli(["ticket",file]);}
   await expect(page.locator("#ticket-first").getByRole("heading",{name:"first",exact:true})).toBeVisible();await expect(page.getByRole("link",{name:"first (ready)"})).toBeVisible();

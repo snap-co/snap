@@ -4,7 +4,12 @@ use super::*;
 use axum::extract::Path;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use factorio::intake::{Drafts, Intake};
-use std::{convert::Infallible, process::Stdio, time::Duration};
+use std::{
+    convert::Infallible,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    process::Stdio,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -119,40 +124,93 @@ async fn configure(app: &App, s: &rp::Session, item: &Intake) -> Result<(), Stri
             )
         })
         .map_err(|e| format!("{e:?}"))?;
-    // Session environment is delivered through stdin, never command arguments,
-    // conversation text or workspace Documents. The token only saves these drafts.
+    // Store only the path in prompts. The scoped credential survives shell resets.
+    let config = tool_config(&w, item);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(config.parent().unwrap())
+        .map_err(|e| e.to_string())?;
+    let temporary = config.with_extension(format!("{}.tmp", random()));
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|e| e.to_string())?;
+        file.write_all(
+            json!({"origin":app.oauth.config.origin,"token":token})
+                .to_string()
+                .as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&temporary, &config).map_err(|e| e.to_string())?;
+    let cli = cli_path()?;
+    // Retain compatibility for existing conversations; new prompts use the file.
+    api(
+        "PUT",
+        &format!("{path}/environment"),
+        Some(json!({"variables":{
+            "FACTORIO_ORIGIN":app.oauth.config.origin,"FACTORIO_CLI":cli,
+            "FACTORIO_INTAKE":item.id,"FACTORIO_INTAKE_TOKEN":token
+        }})),
+    )
+    .await?;
+    Ok(())
+}
+fn tool_config(w: &Workspace, item: &Intake) -> PathBuf {
+    PathBuf::from(&w.config.resources)
+        .join("intakes")
+        .join(&item.id)
+        .join("tool.json")
+}
+fn cli_path() -> Result<PathBuf, String> {
     let packaged_cli = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .with_file_name("factory.js");
-    let cli = if packaged_cli.is_file() {
+    Ok(if packaged_cli.is_file() {
         packaged_cli
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("cli.ts")
-    };
-    api(
-        "PUT",
-        &format!("{path}/environment"),
-        Some(json!({"variables":{
-            "FACTORIO_ORIGIN":app.oauth.config.origin,
-            "FACTORIO_CLI":cli,
-            "FACTORIO_INTAKE":item.id,
-            "FACTORIO_INTAKE_TOKEN":token
-        }})),
-    )
-    .await?;
-    Ok(())
+    })
 }
-fn instructions(item: &Intake, w: &Workspace) -> String {
-    format!(
+fn instructions(item: &Intake, w: &Workspace) -> Result<String, String> {
+    let bun = std::env::var("FACTORIO_BUN").unwrap_or_else(|_| "bun".into());
+    let executable = if bun.contains('/') {
+        PathBuf::from(bun)
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|p| p.join(&bun))
+            .find(|p| p.is_file())
+            .ok_or("Bun executable not found")?
+    }
+    .canonicalize()
+    .map_err(|e| e.to_string())?;
+    let quote = |p: &std::path::Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
+    let command = format!("{} {}", quote(&executable), quote(&cli_path()?));
+    let config = quote(&tool_config(w, item));
+    let guide = include_str!("../../INTAKE.md")
+        .replace(
+            "bun \"$FACTORIO_CLI\" intake-read",
+            &format!("{command} intake-read --intake-config {config}"),
+        )
+        .replace(
+            "bun \"$FACTORIO_CLI\" intake-save -",
+            &format!("{command} intake-save - --intake-config {config}"),
+        );
+    Ok(format!(
         "{}\n\nIntake ID: {}. Modules: {}.\n\nUser request:\n{}",
-        include_str!("../../INTAKE.md"),
+        guide,
         item.id,
         serde_json::to_string(&w.config.modules).unwrap(),
         item.description
-    )
+    ))
 }
 pub async fn create(
     State(app): State<Arc<App>>,
@@ -183,7 +241,7 @@ async fn begin(app: &App, s: &rp::Session, item: &Intake) -> Result<(), String> 
     configure(app, s, item).await?;
     let w = app.workspace().map_err(|e| format!("{e:?}"))?;
     // Stable first-message ID makes retry after uncertain admission safe.
-    api("POST", &format!("/api/session/{}/prompt",item.conversation), Some(json!({"id":format!("msg_{}_initial",item.id),"text":instructions(item,&w),"metadata":{"factorio_initial":true}}))).await?;
+    api("POST", &format!("/api/session/{}/prompt",item.conversation), Some(json!({"id":format!("msg_{}_initial",item.id),"text":instructions(item,&w)?,"metadata":{"factorio_initial":true}}))).await?;
     Ok(())
 }
 
@@ -204,6 +262,21 @@ pub async fn action(
     };
     let path = format!("/api/session/{}", item.conversation);
     let result = match input["action"].as_str() {
+        Some("delete") => {
+            if let Err(e) = api("DELETE", &path, None).await {
+                return error(e);
+            }
+            let result = app.oauth.run("intake.delete", |tx| {
+                factorio::intake::delete(tx, actor(&s), &id)
+            });
+            if let Err(e) = result {
+                return failure(e);
+            }
+            if let Ok(w) = app.workspace() {
+                let _ = std::fs::remove_file(tool_config(&w, &item));
+            }
+            return no_store(json!({"deleted":id}));
+        }
         Some("resume") => begin(&app, &s, &item).await.map(|_| json!(item)),
         Some("message") => {
             let (Some(text), Some(message)) = (input["text"].as_str(), input["id"].as_str()) else {

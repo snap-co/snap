@@ -61,6 +61,15 @@ are used without changing global configuration.
 `FACTORIO_INTAKE_MODEL=provider/model` optionally selects the model for new intake
 sessions. Existing conversations retain their OpenCode model selection.
 
+Each intake has its own `#intake-…` screen, reachable from the workspace's
+conversation list and browser history. Only the message area scrolls; the reply
+composer stays at the visible viewport's bottom, including keyboard resizing.
+New messages follow the conversation when already near the bottom. Reading older
+messages keeps the scroll position and offers a jump to the latest messages.
+Draft links return to workspace tickets. Session details include reconnect and
+conversation deletion. Deletion removes the OpenCode session and intake metadata,
+revokes draft-tool access by removing the intake, and preserves saved tickets.
+
 The official `@opencode/client` discovers/authenticates the local OpenCode service.
 The native host runs a small Bun adapter, not another agent harness. Install Bun
 on the host, or set `FACTORIO_BUN` to its executable. Packaged builds include
@@ -78,8 +87,13 @@ latest 100 messages and pending forms/permissions. Full history remains in
 OpenCode. Open event streams recheck OAuth authority at most every ten seconds.
 
 The agent writes through OpenCode's shell tool invoking `factory intake-save`.
-The host installs a narrowly scoped credential in that conversation's shell
-environment. It can read workspace ticket context and atomically save only the
+The host writes a narrowly scoped credential to
+`<resources>/intakes/<id>/tool.json`, using private directories and a mode-0600
+file replaced atomically on reconnect. The prompt supplies shell-quoted absolute
+Bun/CLI paths and `--intake-config <path>`; it never includes the credential.
+The CLI reads the file internally, so losing OpenCode's transient environment
+does not lose ticket access. Legacy shell environment variables are also supplied
+for existing conversations. The tool can read workspace ticket context and atomically save only the
 intake's own draft tickets. It cannot start work, approve a candidate, integrate,
 or mark tickets ready. Its authority expires/revokes with the initiating local
 OAuth session. A subsequent message or explicit reconnect provisions a current
