@@ -466,8 +466,9 @@ Status: verified. Chatty upgrade gate verified.
 
 ## 7. Build Factorio in `apps/factorio`
 
-Status: implemented; local verification and bounded review in progress. Ordered
-upgrade gates 1–6 verified. Live OpenCode V2 execution remains unverified.
+Status: verified. Ordered upgrade gates 1–7 and the two-round implementation review
+are complete. Both review axes cleared the repair commit. Live OpenCode V2 execution
+also passed in an isolated disposable environment.
 
 - Implemented the portable shared workspace, ticket CRUD/graphs, atomic crate and
   repository claims, scope expansion, immutable candidate records with retained
@@ -479,9 +480,10 @@ upgrade gates 1–6 verified. Live OpenCode V2 execution remains unverified.
   Wasm bindings, native dev/build workflows and `.opencode/commands/factory.md`.
 - Read staged factory/command references and current V2 API, client, commands and
   OpenAPI schema. The V2 adapter uses stable session IDs and explicit movement.
-  `opencode --help` on this host exposes the older CLI without `api`; a real V2
-  adapter run is blocked until `FACTORIO_OPENCODE` selects a compatible executable.
-  The disposable journey uses an explicitly labelled V2 contract fixture.
+  `opencode --help` on this host exposes the older CLI without `api`. Downloaded
+  the official standalone V2 2.0.6 binary under `/tmp/opencode` and verified the
+  native adapter against it with isolated HOME/XDG/database/service configuration.
+  The maintained disposable journey still uses an explicitly labelled V2 fixture.
 - Passed four portable lifecycle tests, native real-Git and abrupt-process recovery
   tests, and the full CLI/browser fixture journey with actual Authy OAuth. The
   journey checks blocked/overlapping work, disjoint isolation, fixture-only browser
@@ -507,9 +509,23 @@ upgrade gates 1–6 verified. Live OpenCode V2 execution remains unverified.
   Logs: `/tmp/opencode/snap-upgrade-fix-{unit,check,structure,authy,chatty,factorio}.log`.
   Four targeted Document recovery tests also passed after adding a combined
   recovered-rejection/later-replay-failure regression case.
+  Fix commit: `d232222de7fc81a1735e3efbcb5dfb4947cbe553`. Both independent
+  validation reports marked every finding resolved and returned CLEAR. Two rounds
+  were used; no further autonomous repair/review round is authorized.
   Review ledger and full reports are in `/tmp/opencode/snap-upgrade-review.md`.
-  One bounded validation round remains. Exact reviewer model pinning was unavailable
-  under the harness's model-override rule; configured default reviewers were used.
+  Exact reviewer model pinning was unavailable under the harness's model-override
+  rule; configured default reviewers were used, rather than claiming pinned Astra.
+- Live V2 gate passed stable-ID session creation, authoritative location inspection,
+  association/movement of an existing conversation, and cleanup through Factorio's
+  real native adapter. The first isolated service launch encountered the occupied
+  default port; assigning an ephemeral port only in the temporary configuration
+  resolved that environment issue. Log: `/tmp/opencode/snap-factorio-live-v2.log`.
+  Probe: `/tmp/opencode/snap-factorio-live-v2.ts`. No generation/prompt was submitted.
+- Rebuilt final Authy, Chatty and Factorio packages after the fixes. Logs:
+  `/tmp/opencode/snap-upgrade-final-package-{authy,chatty,factorio}.log`.
+  All owned app/browser/OpenCode fixture processes were stopped; the user's existing
+  OpenCode service and global configuration were not modified. Temporary downloaded
+  V2 tooling remains under `/tmp/opencode/factorio-v2-runtime` for inspection.
 - No real implementation candidate has been approved or integrated by Factorio.
   Automated approval was confined to disposable fixture repositories.
 
