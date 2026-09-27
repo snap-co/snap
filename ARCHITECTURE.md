@@ -187,6 +187,82 @@ The later effect-WAL/ring-buffer phase can change the backend durability authori
 while retaining the transaction contract. No custom WAL, log shipping, consensus,
 multi-writer execution or online schema change is implemented in phase one.
 
+## Access and Document direction
+
+Access and Document are not implemented in this workspace yet. The initial client
+loading policy is to load every document the client is authorized to read, including
+its complete contents. Access supplies the authorized set; Document reconciles that
+set with the client's holdings. Gaining access adds desired state; losing access
+removes it from desired holdings and prevents further authorized delivery or writes.
+Client removal cannot retract data already received.
+
+Subset loading and sparse extents are deferred until real application use cases
+justify them. The initial port does not introduce client interest filters or a
+separate root-versus-extent loading policy. This client loading policy does not
+change Store's server-residency contract: misses still terminate the transaction,
+and hosts explicitly load server data.
+
+Document's client and server should share the canonical in-memory representation
+and deterministic mutation behavior as closely as possible. The server holds data
+for many identities; a client holds its authorized set. Connection-owned references
+are intended to retain server document data, while the client holds its own
+references. Store currently has no eviction or reference-based residency mechanism;
+that lifetime design is not an existing Store guarantee.
+
+Clients keep a separate optimistic layer over authoritative state. Other replicas
+receive ordered mutation intents; the originating client receives a completion
+containing authoritative effects instead of replication of its own mutation. The
+client applies that completion and removes the corresponding optimistic write,
+preserving any other pending work. Shared representation is a design goal, not a
+promise of identical native and Wasm memory layouts.
+
+The optimistic layer is an ordered journal of pending mutation intents. The client
+visible view is authoritative state with that journal replayed over it. A local
+journal append, authoritative completion or incoming replication recomputes the
+view and notifies reactive consumers such as React. Applying completion effects
+and removing the completed journal entry publish one coherent view, without an
+intermediate double application. Remaining entries replay in order.
+
+Initially the journal is in memory and can hold ordinary named mutations and their
+arguments. Future intent-replication bytecode and a persistent client journal should
+fit this same model, supporting offline edits without changing how consumers read
+the projected view. Bytecode, persistence and replay optimization are not designed
+yet. Entries clear on authoritative completion, not acceptance ACK; a rejection
+must also be surfaced and reconciled with remaining optimistic work. Future offline
+retention will require revisiting the initial connection-expiry reset policy.
+
+The SDK applies local mutations optimistically as they arrive and paces outgoing
+mutation submissions by acceptance acknowledgements: the next submission can leave
+after the preceding acknowledgement, without waiting for completion. Acceptance
+does not confirm a commit and does not clear optimistic state. Server dispatch
+remains globally serialized initially; acknowledgement-paced submission does not
+permit concurrent mutation execution. The current carriers allow one outstanding
+command per physical connection, so this pacing requires carrier/dispatch integration
+rather than only an SDK queue change.
+
+Intent replay requires a matching authoritative base and compatible mutation
+behavior. A replay mismatch is an explicit observable replication error, followed
+by authoritative resynchronization, not silently accepted divergence. Detection and
+recovery will be refined during the port; identical state is the intended invariant.
+
+Mutation recovery is scoped to a surviving logical connection. Mutation receipts
+must commit atomically with their writes so an interrupted call can recover its
+result without executing twice. Expiry of the logical connection clears client
+document and optimistic state and starts a fresh manifest exchange; pending writes
+from the expired lifetime are not replayed. This reset does not undo server commits.
+Current transport does not supply this result-recovery behavior; Document's port
+must add the required recovery protocol.
+
+The manifest presents what the client holds. The server chooses catch-up or a
+replacement according to available history, compatibility and cost; replaying every
+intermediate write is not required. Client state is initially ephemeral. Persistent
+client Store support is a later extension of this exchange.
+
+`document.mutate` invokes one named mutation on one document. Applications needing
+atomic multi-document changes publish custom transport operations and compose the
+document mutations through one caller-owned Store transaction. General optimistic
+multi-document mutation is not part of `document.mutate`.
+
 ## Replacement and snapshots
 
 Pausing stops new submissions while the host drains already queued operations.
