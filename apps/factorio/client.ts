@@ -30,7 +30,8 @@ export async function subscribe(client: Factorio, update: (workspace: Workspace 
   const module = await import(/* @vite-ignore */ path);
   await module.default({ module_or_path: "/bindings/factorio_wasm_bg.wasm" });
   let binding: Binding | undefined, socket: WebSocket | undefined, timer: ReturnType<typeof setTimeout> | undefined, closed = false;
-  const id = crypto.randomUUID();
+  // getRandomValues also works on HTTP tailnet origins, unlike randomUUID.
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
   async function connect() {
     try {
       const identity = await client.identify();
