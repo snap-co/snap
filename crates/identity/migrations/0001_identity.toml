@@ -1,0 +1,24 @@
+id = "0001_identity"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "identity.identities"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }]
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "identity.credentials"
+primary = ["email"]
+columns = [{ name = "email", kind = "text" }, { name = "identity", kind = "text" }, { name = "hash", kind = "text" }]
+foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }]
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "identity.sessions"
+primary = ["digest"]
+columns = [{ name = "digest", kind = "bytes" }, { name = "identity", kind = "text" }, { name = "expires", kind = "integer" }]
+foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }]

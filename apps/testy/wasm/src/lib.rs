@@ -96,6 +96,23 @@ impl Client {
     pub async fn start(&mut self, id: &str) -> Result<(), JsValue> {
         self.inner.start(id).await.map_err(error)
     }
+    pub fn use_session(&mut self, bearer: &str) -> Result<(), JsValue> {
+        self.inner.use_session(bearer).map_err(error)
+    }
+    pub async fn authenticate(
+        &mut self,
+        enroll: bool,
+        email: &str,
+        password: &str,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .authenticate(enroll, email, password)
+            .await
+            .map_err(error)
+    }
+    pub async fn logout(&mut self) -> Result<(), JsValue> {
+        self.inner.logout().await.map_err(error)
+    }
     pub async fn disconnect(&mut self) -> Result<(), JsValue> {
         self.inner.disconnect().await.map_err(error)
     }

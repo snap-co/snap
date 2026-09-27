@@ -184,12 +184,12 @@ function App() {
   const [operand, setOperand] = useState("10");
   const [health, setHealth] = useState("");
   const [frames, setFrames] = useState<string[]>([]);
+  const [bearer, setBearer] = useState(sessionStorage.getItem("testy.session") || "");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const client = useRef<Client | undefined>(undefined);
   const channel = useRef<WebChannel | undefined>(undefined);
-  const id = useRef(
-    sessionStorage.getItem("testy.client") || crypto.randomUUID(),
-  );
-  sessionStorage.setItem("testy.client", id.current);
+  const id = useRef(crypto.randomUUID());
   async function connect() {
     channel.current?.dispose();
     client.current?.free();
@@ -198,7 +198,10 @@ function App() {
     const next = new WebChannel(
       (frame) => setFrames((old) => [...old.slice(-99), frame]),
       () => {
-        if (channel.current === next) setStatus("Disconnected");
+        if (channel.current === next) {
+          setStatus("Disconnected");
+          setCalc({ accumulator: "0", history: [] });
+        }
       },
     );
     channel.current = next;
@@ -206,6 +209,10 @@ function App() {
     const sdk = new Client(next);
     client.current = sdk;
     if (route === "/calc") {
+      const session = sessionStorage.getItem("testy.session");
+      if (!session) { setStatus("Sign in required"); return; }
+      sdk.use_session(session);
+      id.current = crypto.randomUUID();
       await sdk.start(id.current);
       setCalc(JSON.parse(await sdk.inspect()));
     }
@@ -218,9 +225,28 @@ function App() {
       await work();
     } catch (e) {
       setError(String(e));
+      if (String(e).includes("InvalidBearer")) {
+        sessionStorage.removeItem("testy.session");
+        setBearer("");
+        setStatus("Sign in required");
+        setCalc({ accumulator: "0", history: [] });
+      }
     } finally {
       setBusy(false);
     }
+  }
+  async function authenticate(enroll: boolean) {
+    // Use a new unauthenticated physical channel for every explicit login attempt.
+    sessionStorage.removeItem("testy.session");
+    await connect();
+    const token = await client.current!.authenticate(enroll, email, password);
+    sessionStorage.setItem("testy.session", token);
+    setBearer(token);
+    setPassword("");
+    id.current = crypto.randomUUID();
+    await client.current!.start(id.current);
+    setCalc(JSON.parse(await client.current!.inspect()));
+    setStatus("Connected");
   }
   useEffect(() => {
     if (route === "/calc" || route === "/healthy") void run(connect);
@@ -283,9 +309,19 @@ function App() {
               {route === "/calc" ? (
                 <>
                   <p className="muted">
-                    Every calculation runs on the server. Entering this screen
-                    calls <code>calc.start</code>.
+                    Sign in to open a private calculator. Disconnecting or signing
+                    out discards its value and history.
                   </p>
+                  {!bearer && (
+                    <fieldset disabled={busy}>
+                      <label className="field">Email<input type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} /></label>
+                      <label className="field">Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></label>
+                      <div className="controls">
+                        <button onClick={() => run(() => authenticate(false))}>Sign in</button>
+                        <button onClick={() => run(() => authenticate(true))}>Create account</button>
+                      </div>
+                    </fieldset>
+                  )}
                   <div className="display">
                     <span>COMMITTED VALUE</span>
                     <output data-testid="accumulator">
@@ -333,15 +369,16 @@ function App() {
                       disabled={busy || status !== "Connected"}
                       onClick={() =>
                         run(async () => {
-                          await client.current!.disconnect();
-                          setStatus("Detached");
+                           await client.current!.disconnect();
+                           setStatus("Detached");
+                           setCalc({ accumulator: "0", history: [] });
                         })
                       }
                     >
                       Disconnect
                     </button>
                     <button
-                      disabled={busy || status === "Connected"}
+                      disabled={busy || !bearer || status === "Connected"}
                       onClick={() => run(connect)}
                     >
                       Reconnect
@@ -368,6 +405,16 @@ function App() {
                     >
                       Refresh
                     </button>
+                    {bearer && <button disabled={busy} onClick={() => run(async () => {
+                      // Reconnect only the carrier if it was lost, never replay logout.
+                      if (status !== "Connected") await connect();
+                      await client.current!.logout();
+                      sessionStorage.removeItem("testy.session");
+                      setBearer("");
+                      setStatus("Sign in required");
+                      setCalc({ accumulator: "0", history: [] });
+                      channel.current?.dispose();
+                    })}>Sign out</button>}
                   </div>
                   <p className="muted small">
                     Client <code>{id.current}</code>

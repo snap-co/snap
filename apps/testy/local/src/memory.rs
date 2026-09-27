@@ -5,6 +5,7 @@ fn main() {
         server, execution,
     ));
     let mut client = testy::Client::new(platform.channel());
+    client.use_session(testy::BEARER).unwrap(); // Explicit fixture authority; no credential issuance.
     let result =
         futures::executor::block_on(testy::journey(&mut client, "memory-program")).unwrap();
     assert_eq!(result.accumulator, 6);

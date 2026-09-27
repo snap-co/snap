@@ -110,7 +110,19 @@ async fn serve_peer<P: Program, R: Authority>(
         clock,
     };
     loop {
-        let bytes = read(&mut stream).await?;
+        let bytes = {
+            let reading = read(&mut stream);
+            tokio::pin!(reading);
+            let mut sweep = tokio::time::interval(std::time::Duration::from_millis(50));
+            loop {
+                tokio::select! {
+                    result = &mut reading => break result?,
+                    _ = sweep.tick() => {
+                        if physical.platform.borrow().retired(&physical.peer) { return Ok(()); }
+                    }
+                }
+            }
+        };
         let command: Command = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
         // Queue each acceptance before handler entry. Current handlers are
         // synchronous; the event loop writes the queued frames immediately after.
@@ -146,6 +158,9 @@ async fn serve_peer<P: Program, R: Authority>(
                 &serde_json::to_vec(&frame).map_err(io::Error::other)?,
             )
             .await?;
+        }
+        if physical.platform.borrow().retired(&physical.peer) {
+            return Ok(());
         }
     }
 }

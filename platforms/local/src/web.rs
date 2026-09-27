@@ -134,6 +134,9 @@ async fn connection<P: Program + Send + 'static, R: Authority + Send + 'static>(
         if failed {
             break;
         }
+        if shared.host.lock().unwrap().retired(peer) {
+            break;
+        }
     }
     shared.change(|host| host.lost(peer, shared.clock.elapsed().as_millis() as u64));
 }

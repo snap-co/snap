@@ -14,6 +14,8 @@ snap-execution = { path = "../../crates/execution" }
 snap-platform-local = { path = "../../platforms/local" }
 snap-store = { path = "../../crates/store" }
 snap-sqlite = { path = "../../platforms/sqlite" }
+snap-identity = { path = "../../crates/identity" }
+toml = "0.9"
 
 [[test]]
 name = "transport-lifecycle"
@@ -40,3 +42,7 @@ path = "../../crates/store/tests/properties/resident.rs"
 
 [package.metadata.snap]
 role = "tool"
+
+[[test]]
+name = "identity-properties"
+path = "../../crates/identity/tests/properties/identity.rs"

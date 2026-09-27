@@ -60,8 +60,8 @@ stalled tests; virtual time exercises elapsed-time behavior where the interface 
 
 ## Current commands
 
-The active Cargo workspace contains transport, execution, Store, their local/SQLite
-adapters, Testy, the CLI and the property consumer. Authy, Chatty and HTTP/LLM sources
+The active Cargo workspace contains transport, execution, Store, Identity, local/SQLite/
+crypto adapters, Testy, the CLI and property consumers. Authy, Chatty and HTTP/LLM sources
 are excluded pending rewrites. Their tests and dependencies are outside this gate.
 
 ```sh
@@ -75,7 +75,9 @@ are excluded pending rewrites. Their tests and dependencies are outside this gat
 
 `bin/check` formats, lints and tests the default packages, compiles portable libraries
 for `wasm32v1-none`, checks feature dependency isolation, and runs Testy's opt-in Store
-composition. It excludes browser/process tests and Hegel exploration.
+and Identity compositions. It excludes real password hashing, browser/process tests
+and Hegel exploration. Memory execution fixtures explicitly select a fixed test authority;
+the Identity composition tests use real SQLite with deterministic test crypto.
 
 The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper runs from
 the repository root, so pass the app directory. `[check].rust` selects fast packages,
@@ -104,6 +106,9 @@ mise exec -- cargo test -p snap-sqlite
 mise exec -- cargo test -p snap-sqlite --test recovery -- --ignored
 mise exec -- cargo test -p snap-cli
 mise exec -- cargo test -p testy-local --features store --test store
+mise exec -- cargo test -p snap-identity
+mise exec -- cargo test -p testy-local --features identity --test identity
+mise exec -- cargo test -p snap-crypto --test native -- --ignored
 
 # CLI checks, suite selection, cancellation and dependency enforcement:
 mise exec -- cargo build -p snap-cli
@@ -135,20 +140,26 @@ bunx playwright install chromium
 ./bin/check-testy-web
 ```
 
-Testy's journeys cover routing/bootstrap, health, arithmetic, reload, reconnect/close,
+Testy's journeys cover enrollment/login, per-session/per-connection isolation, sign-out,
+health, arithmetic, fresh state after reload/reconnect/close,
 exact 64-bit values, and the execution desk. Development-control tests cover stepping,
 dependency supply, snapshots, replacement, pushed reports, command correlation and
 disconnects without replay. Latest-report coalescing has an in-process platform test.
 
 ## Property testing
 
-`snap-core-properties` registers transport, execution, local-platform and Store
+`snap-core-properties` registers transport, execution, local-platform, Store and Identity
 properties. Cases live in their owners' `tests/properties` directories; the separate
 `tests/properties/Cargo.toml` owns the pinned host-only Hegel dependency and static
 engine. Hegel adds no production dependency or portable feature.
+`apps/testy/properties` is a separate application-owned composition consumer. It runs
+the real Testy SDK, Identity and Store through memory transport with a virtual clock
+and deterministic crypto. Its Hegel settings match the core runner; application
+dependencies do not enter the reusable core test consumer.
 
 ```sh
 mise exec -- cargo test --locked -p snap-core-properties
+mise exec -- cargo test --locked -p testy-properties
 HEGEL_DEFAULT_PROFILE=stress HEGEL_SEED=20260926 \
   mise exec -- cargo test --locked -p snap-core-properties -- --nocapture
 

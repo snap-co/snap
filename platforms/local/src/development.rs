@@ -127,6 +127,13 @@ impl<P: Program, R: Authority> Development<P, R> {
             _ => None,
         };
         match self.platform.submit(&mut connection.peer, command, now) {
+            Submission::Ready(Response::Events(events)) => {
+                for event in events {
+                    connection
+                        .responses
+                        .push_back(Response::Events(vec![event]));
+                }
+            }
             Submission::Ready(response) => connection.responses.push_back(response),
             Submission::Pending(ticket) => {
                 connection.pending = true;
@@ -147,6 +154,11 @@ impl<P: Program, R: Authority> Development<P, R> {
             .responses
             .drain(..)
             .collect())
+    }
+    pub fn retired(&self, id: u64) -> bool {
+        self.peers
+            .get(&id)
+            .is_none_or(|connection| self.platform.retired(&connection.peer))
     }
     /// Whether inspection may have changed. Idle sweeps need no report encoding.
     pub fn tick(&mut self, now: u64) -> bool {

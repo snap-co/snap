@@ -15,6 +15,14 @@ use snap_transport::{
 };
 use std::collections::BTreeMap;
 
+/// Application-selected synchronous request dispatcher. Runs under host exclusion;
+/// it owns its validation and durable commit. It must not log request secrets.
+/// Preparation has no effects. The returned closure runs once, after acceptance
+/// is queued, and owns transactional authentication rather than trusting a bearer.
+pub type PreparedRequest = Result<Box<dyn FnOnce() -> snap_transport::Outcome + Send>, Error>;
+type Requests =
+    Box<dyn FnMut(&snap_transport::Invocation, Option<&str>) -> Option<PreparedRequest> + Send>;
+
 #[derive(Default)]
 pub struct Peer {
     attachment: Option<Attachment>,
@@ -31,6 +39,8 @@ pub struct Platform<P: Program, R: Authority> {
     transport: Server<R>,
     execution: Executor<P>,
     invocations: BTreeMap<Ticket, u64>,
+    requests: Option<Requests>,
+    ephemeral: bool,
 }
 impl<P: Program, R: Authority> Platform<P, R> {
     pub fn new(transport: Server<R>, execution: Executor<P>) -> Self {
@@ -38,7 +48,30 @@ impl<P: Program, R: Authority> Platform<P, R> {
             transport,
             execution,
             invocations: BTreeMap::new(),
+            requests: None,
+            ephemeral: false,
         }
+    }
+    pub fn with_requests(
+        mut self,
+        requests: impl FnMut(&snap_transport::Invocation, Option<&str>) -> Option<PreparedRequest>
+        + Send
+        + 'static,
+    ) -> Self {
+        self.requests = Some(Box::new(requests));
+        self
+    }
+    pub fn ephemeral(mut self) -> Self {
+        self.ephemeral = true;
+        self
+    }
+    pub fn attached(&self, peer: &Peer) -> bool {
+        peer.attachment
+            .as_ref()
+            .is_some_and(|attachment| self.transport.attached(attachment))
+    }
+    pub fn retired(&self, peer: &Peer) -> bool {
+        peer.attachment.is_some() && !self.attached(peer)
     }
     pub fn tick(&mut self, now: u64) {
         self.tick_retired(now);
@@ -51,7 +84,11 @@ impl<P: Program, R: Authority> Platform<P, R> {
         let retired = self.transport.take_retired();
         let changed = !retired.is_empty();
         for connection in retired {
-            self.execution.release(Scope(connection.0));
+            if self.ephemeral {
+                self.execution.discard(Scope(connection.0));
+            } else {
+                self.execution.release(Scope(connection.0));
+            }
         }
         changed
     }
@@ -79,9 +116,35 @@ impl<P: Program, R: Authority> Platform<P, R> {
             }
             Command::Request { bearer, invocation } => {
                 let id = invocation.id;
+                if let Some(prepared) = self
+                    .requests
+                    .as_mut()
+                    .and_then(|handler| handler(&invocation, bearer.as_deref()))
+                {
+                    let mut events = Vec::new();
+                    let outcome = match prepared {
+                        Ok(run) => {
+                            events.push(Event::Accepted { id });
+                            run()
+                        }
+                        Err(error) => Err(error),
+                    };
+                    self.tick(now);
+                    events.push(Event::Completed { id, outcome });
+                    return Submission::Ready(Response::Events(events));
+                }
                 return self.enqueue(id, self.transport.request(bearer.as_deref(), invocation));
             }
             Command::Invoke(invocation) => {
+                // Request-only operations must never enter the execution queue or
+                // its inspectable trace, even when sent over the wrong command kind.
+                if self
+                    .requests
+                    .as_mut()
+                    .is_some_and(|prepare| prepare(&invocation, None).is_some())
+                {
+                    return Submission::Ready(Response::Failed(Error::Protocol));
+                }
                 let id = invocation.id;
                 let dispatch = match &peer.attachment {
                     Some(attachment) => self.transport.invoke(attachment, invocation),
@@ -132,6 +195,10 @@ impl<P: Program, R: Authority> Platform<P, R> {
         }
     }
     pub fn step(&mut self) -> Option<Observation> {
+        // Authority may change while an operation waits or the debugger is held.
+        // Recheck before both admission and execution, under the same host lock.
+        self.transport.tick(0);
+        self.retire();
         Some(match self.execution.step()? {
             snap_execution::Event::Accepted(ticket) => Observation::Event {
                 ticket,

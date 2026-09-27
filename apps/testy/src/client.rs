@@ -1,13 +1,18 @@
-use crate::{BEARER, Calculator, start_output};
+use crate::{Calculator, start_output};
+use alloc::string::String;
 use snap_transport::{Channel, Error, Value, json};
 
 pub struct Client<C> {
     transport: snap_transport::client::Client<C>,
+    bearer: Option<String>,
+    connected: bool,
 }
 impl<C: Channel> Client<C> {
     pub fn new(channel: C) -> Self {
         Self {
             transport: snap_transport::client::Client::new(channel),
+            bearer: None,
+            connected: false,
         }
     }
     pub async fn health(&mut self) -> Result<Value, Error> {
@@ -20,19 +25,60 @@ impl<C: Channel> Client<C> {
         }
         Ok(value)
     }
-    /// Bootstrap is deliberately explicit: anonymous credential acquisition,
-    /// authenticated attachment, then initialization of connection-owned state.
-    pub async fn start(&mut self, client_id: &str) -> Result<(), Error> {
+    /// Select credentials on an unattached carrier. Replacing a live connection's
+    /// credentials would not change the identity already bound to that connection.
+    pub fn use_session(&mut self, bearer: &str) -> Result<(), Error> {
+        if self.connected {
+            return Err(Error::Occupied);
+        }
+        self.bearer = Some(bearer.into());
+        Ok(())
+    }
+    pub async fn authenticate(
+        &mut self,
+        enroll: bool,
+        email: &str,
+        password: &str,
+    ) -> Result<String, Error> {
+        if self.connected {
+            return Err(Error::Occupied);
+        }
         let result = self
             .transport
-            .request(None, "calc.start", Value::Null)
+            .request(
+                None,
+                if enroll {
+                    "identity.enroll"
+                } else {
+                    "identity.login"
+                },
+                json!({"email": email, "password": password}),
+            )
             .await?;
-        if !start_output(&result) {
-            return Err(Error::InvalidOutput);
-        }
+        let bearer = result["bearer"]
+            .as_str()
+            .ok_or(Error::InvalidOutput)?
+            .into();
+        self.bearer = Some(bearer);
+        Ok(self.bearer.clone().unwrap())
+    }
+    pub async fn logout(&mut self) -> Result<(), Error> {
         self.transport
-            .connect(result["bearer"].as_str().unwrap(), client_id)
+            .request(self.bearer.as_deref(), "identity.logout", Value::Null)
             .await?;
+        self.bearer = None;
+        self.connected = false;
+        Ok(())
+    }
+    /// Attach with an explicitly acquired session, then initialize connection state.
+    pub async fn start(&mut self, client_id: &str) -> Result<(), Error> {
+        self.transport
+            .connect(
+                self.bearer.as_deref().ok_or(Error::IdentityRequired)?,
+                client_id,
+            )
+            .await?;
+        self.connected = true;
         match self.transport.invoke("calc.start", Value::Null).await {
             Ok(value) if start_output(&value) => {}
             Err(Error::Application(value)) if value == json!("AlreadyStarted") => {}
@@ -42,16 +88,29 @@ impl<C: Channel> Client<C> {
         Ok(())
     }
     pub async fn reconnect(&mut self, client_id: &str) -> Result<bool, Error> {
-        self.transport.connect(BEARER, client_id).await
+        let resumed = self
+            .transport
+            .connect(
+                self.bearer.as_deref().ok_or(Error::IdentityRequired)?,
+                client_id,
+            )
+            .await?;
+        self.connected = true;
+        Ok(resumed)
     }
     pub fn replace_channel(&mut self, channel: C) {
         self.transport.replace_channel(channel);
+        self.connected = false;
     }
     pub async fn disconnect(&mut self) -> Result<(), Error> {
-        self.transport.disconnect().await
+        self.transport.disconnect().await?;
+        self.connected = false;
+        Ok(())
     }
     pub async fn close(&mut self) -> Result<(), Error> {
-        self.transport.close().await
+        self.transport.close().await?;
+        self.connected = false;
+        Ok(())
     }
     pub async fn add(&mut self, operand: i64) -> Result<i64, Error> {
         self.calc("calc.add", operand).await

@@ -1,10 +1,15 @@
 # Testy development controls
 
-Start with `./bin/dev` and open `http://127.0.0.1:3848`. `/` is the mini-app
+After the [Identity database setup](../README.md#run-testy), start with `./bin/dev`
+and open `http://127.0.0.1:3848`. `/` is the mini-app
 launcher, `/healthy` exercises anonymous health requests, and `/calc` bootstraps
-a connection-owned calculator. Browser SDK requests and tool requests share one
+a login-required, connection-owned calculator. Browser SDK requests and tool requests share one
 transport/execution instance. The debugger connection stays responsive while the
 application-wide execution gate is held.
+Identity requests run synchronously outside the calculator stepping queue, under
+host exclusion. Password hashing briefly occupies that host; it cannot be stepped.
+Identity requests/results are excluded from retained traces. Socket loss, logout or
+expiry discards Calc and fails its unfinished work even while the debugger is held.
 
 ## Observe and control
 
@@ -86,7 +91,7 @@ requires a loopback address and matching Host/Origin headers. Use its printed UR
 | `open` | none | Allocate a tool-owned physical peer; returns `{"peer":number}` |
 | `send` | `peer`, `command` | Submit a transport `Command` using that peer |
 | `drain` | `peer` | Take ordered observations; returns `{"responses":[...]}` |
-| `drop` | `peer` | Detach the tool peer; owned work continues |
+| `drop` | `peer` | Discard that calculator and fail its unfinished work |
 | `mode` | `manual`: boolean | Hold host stepping or resume automatic execution/input resolution |
 | `breakpoint` | `enabled`: boolean | Stop after acceptance, before handler entry |
 | `step` | none | Enter manual mode and perform one executor observation |
@@ -125,7 +130,7 @@ produce 62. Run it against an otherwise idle host. The snapshot captures all liv
 scopes, including any browser calculators.
 
 ```python
-import json
+import json, os
 from urllib.request import Request, urlopen
 
 base = "http://127.0.0.1:3848/__dev"
@@ -135,7 +140,7 @@ def control(action, **fields):
         return json.load(r)
 
 peer = control("open")["peer"]
-sequence = 0
+sequence = 1
 def invoke(operation, value=None):
     global sequence
     sequence += 1
@@ -143,8 +148,13 @@ def invoke(operation, value=None):
         "id": sequence, "operation": operation, "input": value}})
 
 try:
+    control("send", peer=peer, command={"Request": {"bearer": None,
+        "invocation": {"id": 1, "operation": "identity.login", "input": {
+            "email": os.environ["TESTY_EMAIL"], "password": os.environ["TESTY_PASSWORD"]}}}})
+    replies = control("drain", peer=peer)["responses"]
+    bearer = replies[-1]["Events"][0]["Completed"]["outcome"]["Ok"]["bearer"]
     control("send", peer=peer, command={"Connect": {
-        "bearer": "testy-private-fixture-token", "client_id": "agent-demo"}})
+        "bearer": bearer, "client_id": "agent-demo"}})
     control("drain", peer=peer)
     invoke("calc.start")
     control("drain", peer=peer)

@@ -6,13 +6,12 @@ fn main() -> std::io::Result<()> {
             let address = std::env::var("TESTY_ADDR").unwrap_or_else(|_| "127.0.0.1:3847".into());
             let listener = tokio::net::TcpListener::bind(address).await?;
             println!("Testy listening on {}", listener.local_addr()?);
-            let server =
-                snap_transport::server::Server::new(testy::TestAuthority, Default::default());
-            let execution = snap_execution::Executor::new(testy::App::default(), 1024).unwrap();
+            let sessions = testy_local::identity::open()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             let (_shutdown, receiver) = tokio::sync::watch::channel(false);
             snap_platform_local::native::serve(
                 listener,
-                snap_platform_local::Platform::new(server, execution),
+                testy_local::identity::platform(sessions),
                 receiver,
                 |_, key| {
                     if key == testy::CEILING {

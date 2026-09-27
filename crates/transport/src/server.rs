@@ -6,11 +6,11 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 /// Supplied by trusted composition. Tokens are opaque to transport. Changing a
 /// token need not change identity; no session IDs, leases or cookies cross here.
 pub trait Authority {
-    fn identify(&self, bearer: &str) -> Option<String>;
+    fn identify(&self, bearer: &str) -> Result<String, Error>;
 }
 impl<F: Fn(&str) -> Option<String>> Authority for F {
-    fn identify(&self, bearer: &str) -> Option<String> {
-        self(bearer)
+    fn identify(&self, bearer: &str) -> Result<String, Error> {
+        self(bearer).ok_or(Error::InvalidBearer)
     }
 }
 
@@ -47,6 +47,7 @@ impl Attachment {
     }
 }
 struct Resident {
+    bearer: String,
     id: ConnectionId,
     generation: u64,
     attached: bool,
@@ -69,6 +70,7 @@ pub struct Server<R: Authority> {
     retired: Vec<ConnectionId>,
     generation: u64,
     now: u64,
+    live_authority: bool,
 }
 impl<R: Authority> Server<R> {
     pub fn new(authority: R, config: Config) -> Self {
@@ -79,15 +81,33 @@ impl<R: Authority> Server<R> {
             retired: Vec::new(),
             generation: 0,
             now: 0,
+            live_authority: false,
         }
+    }
+    /// Revalidate opaque credentials on every connected invocation and timer tick.
+    /// Any failed validation retires the connection, including unavailable storage.
+    /// This closes a physical lifetime, not the persisted login session. Hosts tick.
+    pub fn with_live_authority(mut self) -> Self {
+        self.live_authority = true;
+        self
+    }
+    pub fn attached(&self, attachment: &Attachment) -> bool {
+        self.residents
+            .get(&attachment.key)
+            .is_some_and(|entry| entry.attached && entry.generation == attachment.generation)
     }
     /// Hosts drive this even without traffic, then drain `take_retired`. Retiring
     /// a connection revokes new dispatch; already owned work may finish before
     /// the execution host releases its associated resident data.
     pub fn tick(&mut self, now: u64) {
         self.now = self.now.max(now);
-        self.residents.retain(|_, entry| {
-            let keep = entry.attached || entry.expires > self.now;
+        self.residents.retain(|(identity, _), entry| {
+            let valid = !self.live_authority
+                || match self.authority.identify(&entry.bearer) {
+                    Ok(current) => current == *identity,
+                    Err(_) => false,
+                };
+            let keep = valid && (entry.attached || entry.expires > self.now);
             if !keep {
                 self.retired.push(entry.id);
             }
@@ -109,11 +129,10 @@ impl<R: Authority> Server<R> {
         now: u64,
     ) -> Result<(Attachment, bool), Error> {
         self.tick(now);
-        let identity = self
-            .authority
-            .identify(bearer)
-            .filter(|id| !id.is_empty())
-            .ok_or(Error::InvalidBearer)?;
+        let identity = self.authority.identify(bearer)?;
+        if identity.is_empty() {
+            return Err(Error::InvalidBearer);
+        }
         if client_id.is_empty() || client_id.len() > 128 {
             return Err(Error::InvalidInput);
         }
@@ -130,6 +149,7 @@ impl<R: Authority> Server<R> {
             .residents
             .entry(key.clone())
             .or_insert_with(|| Resident {
+                bearer: String::from(bearer),
                 id: ConnectionId(self.generation),
                 generation: 0,
                 attached: false,
@@ -137,6 +157,7 @@ impl<R: Authority> Server<R> {
                 sequence: 0,
             });
         entry.attached = true;
+        entry.bearer = String::from(bearer);
         entry.generation = self.generation;
         entry.sequence = 0;
         Ok((
@@ -176,10 +197,12 @@ impl<R: Authority> Server<R> {
     pub fn request(&self, bearer: Option<&str>, invocation: Invocation) -> Result<Dispatch, Error> {
         let identity = bearer
             .map(|token| {
-                self.authority
-                    .identify(token)
-                    .filter(|id| !id.is_empty())
-                    .ok_or(Error::InvalidBearer)
+                let identity = self.authority.identify(token)?;
+                if identity.is_empty() {
+                    Err(Error::InvalidBearer)
+                } else {
+                    Ok(identity)
+                }
             })
             .transpose()?;
         Ok(Dispatch {
@@ -193,6 +216,12 @@ impl<R: Authority> Server<R> {
         attachment: &Attachment,
         invocation: Invocation,
     ) -> Result<Dispatch, Error> {
+        if self.live_authority {
+            let bearer = self.resident(attachment)?.bearer.clone();
+            if self.authority.identify(&bearer)? != attachment.key.0 {
+                return Err(Error::InvalidBearer);
+            }
+        }
         let entry = self.resident(attachment)?;
         if invocation.id <= entry.sequence {
             return Err(Error::Protocol);

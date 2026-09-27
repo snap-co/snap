@@ -1,0 +1,10 @@
+[profiles.development]
+test_cases = 200
+
+[profiles.ci]
+test_cases = 200
+
+[profiles.stress]
+extends = "development"
+test_cases = 10000
+show_statistics = true

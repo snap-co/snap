@@ -1,0 +1,28 @@
+[package]
+name = "testy-properties"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[dev-dependencies]
+hegeltest = { version = "=0.47.4", features = ["static-engine"] }
+testy = { path = ".." }
+testy-local = { path = "../local", features = ["identity"] }
+snap-identity = { path = "../../../crates/identity" }
+snap-store.workspace = true
+snap-sqlite = { path = "../../../platforms/sqlite" }
+snap-platform-local = { path = "../../../platforms/local" }
+snap-transport = { path = "../../../crates/transport" }
+futures = "0.3"
+toml = "0.9"
+
+[[test]]
+name = "identity-calculator"
+path = "../tests/properties/identity.rs"
+
+[package.metadata.snap]
+role = "composition"
+
+[lints]
+workspace = true

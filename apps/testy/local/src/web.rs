@@ -1,15 +1,11 @@
-use snap_platform_local::{Platform, development::Development, web};
-use snap_transport::{
-    json,
-    server::{Config, Server},
-};
+use snap_platform_local::{development::Development, web};
+use snap_transport::json;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let platform = Platform::new(
-        Server::new(testy::TestAuthority, Config::default()),
-        snap_execution::Executor::new(testy::App::default(), 128).unwrap(),
-    );
+    let sessions =
+        testy_local::identity::open().map_err(|error| std::io::Error::other(error.to_string()))?;
+    let platform = testy_local::identity::platform(sessions);
     let host = Development::new(
         platform,
         |_, key| {

@@ -18,8 +18,10 @@ pub const BEARER: &str = "testy-private-fixture-token";
 pub const IDENTITY: &str = "testy-fixture-identity";
 pub struct TestAuthority;
 impl Authority for TestAuthority {
-    fn identify(&self, bearer: &str) -> Option<String> {
-        (bearer == BEARER).then(|| IDENTITY.into())
+    fn identify(&self, bearer: &str) -> Result<String, snap_transport::Error> {
+        (bearer == BEARER)
+            .then(|| IDENTITY.into())
+            .ok_or(snap_transport::Error::InvalidBearer)
     }
 }
 
@@ -36,7 +38,5 @@ pub struct Calculator {
     pub history: Vec<Entry>,
 }
 fn start_output(value: &Value) -> bool {
-    value.as_object().is_some_and(|obj| {
-        obj.len() == 1 && obj.get("bearer").and_then(Value::as_str) == Some(BEARER)
-    })
+    value.is_null()
 }

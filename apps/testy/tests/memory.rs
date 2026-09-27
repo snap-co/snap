@@ -17,13 +17,18 @@ fn platform() -> Memory<testy::App, testy::TestAuthority> {
         snap_execution::Executor::new(testy::App::default(), 16).unwrap(),
     ))
 }
+fn fixture_client<C: Channel>(channel: C) -> testy::Client<C> {
+    let mut client = testy::Client::new(channel);
+    client.use_session(testy::BEARER).unwrap();
+    client
+}
 
 #[test]
 fn sdk_program_and_independent_tabs() {
     block_on(async {
         let platform = platform();
-        let mut first = testy::Client::new(platform.channel());
-        let mut second = testy::Client::new(platform.channel());
+        let mut first = fixture_client(platform.channel());
+        let mut second = fixture_client(platform.channel());
         let result = testy::journey(&mut first, "tab-a").await.unwrap();
         second.start("tab-b").await.unwrap();
         second.add(90).await.unwrap();
@@ -38,7 +43,7 @@ fn sdk_program_and_independent_tabs() {
 fn reconnect_retains_state_but_close_and_expiry_release_it() {
     block_on(async {
         let platform = platform();
-        let mut client = testy::Client::new(platform.channel());
+        let mut client = fixture_client(platform.channel());
         client.start("tab").await.unwrap();
         client.add(21).await.unwrap();
         // Replacement drops the physical channel, not logical state.
@@ -70,8 +75,8 @@ fn reconnect_retains_state_but_close_and_expiry_release_it() {
 fn duplicate_attachment_cannot_displace_owner() {
     block_on(async {
         let platform = platform();
-        let mut owner = testy::Client::new(platform.channel());
-        let mut contender = testy::Client::new(platform.channel());
+        let mut owner = fixture_client(platform.channel());
+        let mut contender = fixture_client(platform.channel());
         owner.start("tab").await.unwrap();
         assert_eq!(contender.reconnect("tab").await, Err(Error::Occupied));
         owner.add(7).await.unwrap();
@@ -108,7 +113,7 @@ fn schemas_identity_and_application_failures_have_distinct_admission() {
                 outcome: Err(Error::IdentityRequired)
             }])
         );
-        let mut client = testy::Client::new(channel);
+        let mut client = fixture_client(channel);
         client.start("tab").await.unwrap();
         client.add(8).await.unwrap();
         let before = client.inspect().await.unwrap();
@@ -154,8 +159,8 @@ fn memory_delivery_is_async_and_cancellable_before_admission() {
 fn sdk_waits_behind_the_application_gate_and_retries_without_duplicate_history() {
     use futures::{FutureExt, task::noop_waker};
     let platform = platform();
-    let mut first = testy::Client::new(platform.channel());
-    let mut second = testy::Client::new(platform.channel());
+    let mut first = fixture_client(platform.channel());
+    let mut second = fixture_client(platform.channel());
     block_on(first.start("first")).unwrap();
     block_on(second.start("second")).unwrap();
     block_on(first.add(42)).unwrap();
@@ -198,7 +203,7 @@ fn sdk_waits_behind_the_application_gate_and_retries_without_duplicate_history()
 fn cancelled_client_keeps_owned_work_and_expiry_waits_for_it() {
     use futures::{FutureExt, task::noop_waker};
     let platform = platform();
-    let mut client = testy::Client::new(platform.channel());
+    let mut client = fixture_client(platform.channel());
     block_on(client.start("lost")).unwrap();
     let mut pending = Box::pin(client.add_checked(10));
     let waker = noop_waker();
@@ -216,7 +221,7 @@ fn cancelled_client_keeps_owned_work_and_expiry_waits_for_it() {
     assert!(
         matches!(platform.trace().last(), Some(Event::Completed { outcome: Ok(value), .. }) if value == &json!(10))
     );
-    let mut client = testy::Client::new(platform.channel());
+    let mut client = fixture_client(platform.channel());
     block_on(client.start("lost")).unwrap();
     assert_eq!(block_on(client.inspect()).unwrap().accumulator, 0);
 }

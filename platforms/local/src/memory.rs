@@ -28,6 +28,14 @@ impl<P: Program, R: Authority> Host<P, R> {
                     self.waiting = Some((ticket, key));
                 }
                 Observation::Event { ticket, event } => {
+                    if matches!(event, Event::Completed { .. })
+                        && self
+                            .waiting
+                            .as_ref()
+                            .is_some_and(|(waiting, _)| *waiting == ticket)
+                    {
+                        self.waiting = None;
+                    }
                     self.trace.push(event.clone());
                     if let Some(mailbox) = self.mailboxes.get_mut(&ticket) {
                         mailbox.done = matches!(event, Event::Completed { .. });
@@ -136,9 +144,8 @@ impl<P: Program, R: Authority> Channel for Connection<P, R> {
             let now = host.now;
             match host.platform.submit(&mut self.peer, command, now) {
                 Submission::Ready(response) => {
-                    if let Response::Events(events) = &response {
-                        host.trace.extend(events.clone());
-                    }
+                    // Immediate host replies can contain issued credentials. The
+                    // execution trace only retains queued application observations.
                     host.drive();
                     return Ok(response);
                 }

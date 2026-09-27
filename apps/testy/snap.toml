@@ -7,12 +7,15 @@ rust = ["Cargo.toml", "local/Cargo.toml"]
 [test.memory]
 commands = [
   ["cargo", "test", "-p", "snap-execution", "-p", "snap-transport", "--", "--include-ignored"],
-  ["cargo", "test", "-p", "testy-local", "--features", "web", "--test", "memory", "--test", "development", "--", "--include-ignored"],
+  ["cargo", "test", "-p", "testy-local", "--features", "web", "--test", "memory", "--test", "development", "--test", "identity", "--", "--include-ignored"],
   ["cargo", "test", "-p", "snap-platform-local", "--features", "web", "--lib", "--", "--include-ignored"],
 ]
 
 [test.native]
-commands = [["cargo", "test", "-p", "testy-local", "--features", "native", "--test", "native"]]
+commands = [
+  ["cargo", "test", "-p", "testy-local", "--features", "native", "--test", "native"],
+  ["cargo", "test", "-p", "snap-crypto", "--test", "native", "--", "--ignored"],
+]
 
 [test.browser]
 commands = [["../../bin/check-testy-web"]]

@@ -7,7 +7,10 @@ members = [
     "apps/testy",
     "apps/testy/local",
     "apps/testy/wasm",
+    "apps/testy/properties",
     "crates/store",
+    "crates/identity",
+    "platforms/crypto",
     "tests/properties",
     "tools/cli",
 ]
@@ -15,6 +18,8 @@ members = [
 exclude = ["apps/authy", "apps/chatty", "crates/http", "crates/llm"]
 resolver = "3"
 default-members = [
+    "crates/identity",
+    "platforms/crypto",
     "crates/store",
     "platforms/sqlite",
     "crates/execution",

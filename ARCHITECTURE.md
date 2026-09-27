@@ -20,6 +20,9 @@ independent consumer or enforceable dependency/portability rule requires it.
   index knowledge, miss diagnostics and explicit schema migration declarations.
 - `platforms/sqlite` implements Store's host IO and database-backed durability.
   It is separately consumable by the CLI without importing application execution.
+- `crates/identity` owns credentials, sessions and their operation dispatch using
+  transport values and the caller's Store transaction. `platforms/crypto` supplies
+  native cryptography; Testy's local composition connects Identity to transport.
 - `apps/testy` defines the calculator, operation contracts and SDK.
 - `apps/testy/local` owns the executable entry points and selects the platform,
   authority, application implementation and host input resolver.
@@ -35,19 +38,23 @@ capability must not make it an unconditional dependency of other capabilities.
 
 Authy, Chatty and their HTTP/LLM sources are outside the workspace pending rewrites.
 Their former shared transport, storage, identity and host implementations have been
-deleted. Identity, Access and Document will build on the contracts in this document.
+deleted. The new Identity uses these contracts; Access and Document are future work.
 
 ## Transport and connection lifetime
 
-One configured authority exchanges opaque bearers for identity strings. No session
-ID or lease enters transport. Non-connection requests resolve each bearer;
-connected operations use the identity established at attachment. Reconnect resolves
-credentials again, allowing rotated tokens that resolve to the same identity.
+One configured authority exchanges opaque bearers for identity strings or explicit
+errors. No session ID or lease enters transport. Non-connection requests resolve
+each bearer. Hosts may select live authority validation, as Testy does: transport
+retains an opaque bearer and revalidates it for connected invocations and ticks.
+Any failed validation retires that connection lifetime without mutating its persisted
+session. Connect/request calls preserve authority errors such as Store misses.
+Reconnect resolves credentials again, allowing rotated tokens that resolve to the same identity.
 Wire callers cannot supply authoritative identity or server attachment handles.
 
 Logical connections are keyed by verified identity and client ID. An occupied
 connection rejects a contender without displacing its owner. Unexpected disconnect
 retains logical state for five minutes by default, configurable by composition.
+Testy's authenticated calculator selects zero retention.
 Reattachment before expiry restores state with a new generation that fences stale
 socket events. Platforms drive the monotonic expiry timer even without traffic.
 
@@ -55,6 +62,10 @@ Transport holds stable logical connection IDs; the platform maps them to
 execution-owned state scopes. Explicit close and detached expiry revoke new
 dispatch immediately, then queue state release behind owned operations through
 the execution gate. Process shutdown loses all resident state.
+Ephemeral composition instead calls `Executor::discard`: state disappears immediately,
+queued and active calls fail, and late input cannot recreate the scope. Testy selects
+this policy for disconnect, revocation, expiry and authority failure. The local host
+revalidates authority before each executor step, including after held dependencies.
 
 Increasing invocation IDs reject duplicates per attachment. Transport does not
 replay commands after IO failure or provide cross-reconnect result recovery. Its
@@ -193,17 +204,27 @@ a paused, idle gate and the same live scope IDs. It does not restore sockets,
 clocks, pending IO or external side effects. Replay of a read-dependent invocation
 must supply captured inputs separately.
 
-## Testy calculator
+## Identity and Testy calculator
 
 The launcher links to `/healthy` and `/calc`. `health.up` is an anonymous stateless
 application operation returning `{"status":"OK"}`. Both screens use the Rust SDK
-and the same WebSocket host. A per-tab client ID survives reload in session storage.
+and the same WebSocket host. Each physical calculator connection gets a fresh client ID.
 
-`calc.start` is an application operation. The SDK calls it anonymously for a
-constant fixture bearer, connects with a client ID, then calls it on the connection
-to initialize the calculator. Existing calculators are preserved. Interrupted
-bootstrap may leave an uninitialized connection. Different logical connections
-have separate calculators even under the same identity.
+`calc.start` requires an authenticated connection and initializes its calculator.
+Identity enrollment and login issue durable sessions first. Reload or reconnect can
+reuse a valid bearer but always gets a new calculator. Logout revokes one session,
+discards every calculator attached through that session, and closes its sockets;
+other login sessions remain valid. Browser tab session storage retains the bearer
+for reload, but no calculator data. The UI clears calculator state on socket loss.
+
+Identity operations use the local host's synchronous prepared-request dispatcher.
+Portable parsing rejects malformed inputs before acceptance; the host queues an
+Accepted observation before running the prepared closure under exclusion. Completion
+follows Store commit. These operations remain usable while calculator execution is
+held and never enter execution snapshots or traces. This is not a combined durable
+commit for Executor state and Store: Identity commits Store, Calc commits ephemeral
+memory. Callers doing persistent protected work must resolve session authority and
+write through one Store transaction. See [Identity](docs/identity.md).
 
 Arithmetic uses checked signed 64-bit integers; division truncates toward zero.
 Failed calculations leave accumulator/history untouched. History holds at most

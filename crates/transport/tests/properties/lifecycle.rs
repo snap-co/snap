@@ -11,7 +11,7 @@ struct Credentials {
 }
 
 impl Authority for Credentials {
-    fn identify(&self, bearer: &str) -> Option<String> {
+    fn identify(&self, bearer: &str) -> Result<String, Error> {
         self.lookups.set(self.lookups.get() + 1);
         match bearer {
             "alice-old" if !self.rotated.get()[0] => Some("alice".into()),
@@ -21,6 +21,7 @@ impl Authority for Credentials {
             "empty-identity" => Some(String::new()),
             _ => None,
         }
+        .ok_or(Error::InvalidBearer)
     }
 }
 

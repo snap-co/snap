@@ -1,4 +1,4 @@
-use crate::{BEARER, Calculator, Entry, start_output};
+use crate::{Calculator, Entry, start_output};
 use snap_execution::{
     Admission, Attempt, Call, Error, Operation, Program, Stop, Value, View, WorkingSet, json,
 };
@@ -29,7 +29,7 @@ impl App {
                 },
                 Operation {
                     key: "calc.start",
-                    identity_required: false,
+                    identity_required: true,
                     input: Value::is_null,
                     output: start_output,
                     error: declared_error,
@@ -61,7 +61,7 @@ impl App {
                 }
                 work.state = json!(Calculator::default());
             }
-            return Ok(json!({"bearer": BEARER}));
+            return Ok(Value::Null);
         }
         if call.operation == "calc.inspect" {
             return Ok(work.state.clone());
@@ -118,6 +118,9 @@ impl Program for App {
         &self.operations
     }
     fn admit(&self, call: &Call, view: View<'_>) -> Admission {
+        if call.operation == "calc.start" && !view.connected {
+            return Admission::Reject(failure("NotStarted"));
+        }
         if !matches!(call.operation.as_str(), "calc.start" | "health.up")
             && (!view.connected || view.state.is_null())
         {

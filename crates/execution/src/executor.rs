@@ -137,6 +137,29 @@ impl<P: Program> Executor<P> {
     pub fn state(&self, scope: Scope) -> Option<&Value> {
         self.states.get(&scope)
     }
+    /// Ephemeral hosts may discard a retired scope immediately. Owned operations
+    /// complete with failure instead of publishing into a disconnected lifetime.
+    /// Late dependency responses are rejected; snapshots cannot resurrect the scope.
+    pub fn discard(&mut self, scope: Scope) {
+        self.states.remove(&scope);
+        self.closing.remove(&scope);
+        self.queue
+            .retain(|entry| !matches!(entry, Queued::Release(id) if *id == scope));
+        let fail = |job: &mut Job| {
+            if job.scope == Some(scope) {
+                job.waiting = None;
+                job.failure = Some(Error::IdentityRequired);
+            }
+        };
+        if let Some(job) = &mut self.active {
+            fail(job);
+        }
+        for entry in &mut self.queue {
+            if let Queued::Run(job) = entry {
+                fail(job);
+            }
+        }
+    }
     pub fn inspect(&self) -> Inspection<'_> {
         Inspection {
             states: &self.states,

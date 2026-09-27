@@ -14,13 +14,16 @@ tokio = { version = "1", features = ["rt", "net", "sync", "macros"], optional = 
 snap-store = { workspace = true, optional = true }
 snap-sqlite = { path = "../../../platforms/sqlite", optional = true }
 toml = { version = "0.9", optional = true }
+snap-identity = { path = "../../../crates/identity", optional = true }
+snap-crypto = { path = "../../../platforms/crypto", optional = true }
 
 [features]
 default = ["memory"]
 memory = ["dep:futures"]
-native = ["snap-platform-local/native", "dep:tokio"]
-web = ["snap-platform-local/web", "dep:tokio"]
+native = ["snap-platform-local/native", "dep:tokio", "identity"]
+web = ["snap-platform-local/web", "dep:tokio", "identity"]
 store = ["testy/store", "dep:snap-store", "dep:snap-sqlite", "dep:toml"]
+identity = ["store", "dep:snap-identity", "dep:snap-crypto"]
 
 [[bin]]
 name = "testy-store-demo"
@@ -76,3 +79,8 @@ role = "composition"
 name = "development"
 path = "../tests/development.rs"
 required-features = ["web"]
+
+[[test]]
+name = "identity"
+path = "../tests/identity.rs"
+required-features = ["identity", "memory"]

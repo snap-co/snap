@@ -1,13 +1,19 @@
-import { test as base, expect } from "@playwright/test";
-import { spawn } from "node:child_process";
+import { test as base, expect, type Page } from "@playwright/test";
+import { spawn, execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 
 const test = base.extend<{ server: string }>({
   server: async ({}, use) => {
     const root = resolve(import.meta.dirname, "../../..");
+    await mkdir(resolve(root, ".tmp"), { recursive: true });
+    const directory = await mkdtemp(resolve(root, ".tmp/testy-web-"));
+    const database = resolve(directory, "identity.sqlite");
+    execFileSync(resolve(root, "target/debug/snap"), ["migrate", "--database", database,
+      "--migrations", "crates/identity/migrations"], { cwd: root });
     const child = spawn(resolve(root, "target/debug/testy-web"), [], {
       cwd: root,
-      env: { ...process.env, TESTY_WEB_ADDR: "127.0.0.1:0" },
+      env: { ...process.env, TESTY_WEB_ADDR: "127.0.0.1:0", TESTY_DATABASE: database },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let logs = "";
@@ -46,8 +52,49 @@ const test = base.extend<{ server: string }>({
         child.kill();
         await stopped;
       }
+      await rm(directory, { recursive: true, force: true });
     }
   },
+});
+
+async function login(page: Page, enroll = true) {
+  await page.getByLabel("Email", { exact: true }).fill("alice@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("testy-password1");
+  await page.getByRole("button", { name: enroll ? "Create account" : "Sign in", exact: true }).click();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+}
+
+test("login sessions isolate calculators and sign-out closes every connection of that session", async ({ page, context, server }) => {
+  await page.goto(`${server}/calc`);
+  await expect(page.getByRole("button", { name: "+", exact: true })).toBeDisabled();
+  await login(page);
+  await page.getByLabel("Operand", { exact: true }).fill("12");
+  await page.getByRole("button", { name: "+", exact: true }).click();
+  await expect(page.getByTestId("accumulator")).toHaveText("12");
+  const second = await context.newPage();
+  await second.goto(`${server}/calc`);
+  await login(second, false);
+  await expect(second.getByTestId("accumulator")).toHaveText("0");
+  await second.getByLabel("Operand", { exact: true }).fill("7");
+  await second.getByRole("button", { name: "+", exact: true }).click();
+  await expect(second.getByTestId("accumulator")).toHaveText("7");
+  const token = await page.evaluate(() => sessionStorage.getItem("testy.session")!);
+  const sibling = await context.newPage();
+  await sibling.addInitScript(token => sessionStorage.setItem("testy.session", token), token);
+  await sibling.goto(`${server}/calc`);
+  await expect(sibling.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(sibling.getByTestId("accumulator")).toHaveText("0");
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
+  await expect(page.getByTestId("accumulator")).toHaveText("0");
+  await expect(sibling.getByText("Disconnected", { exact: true })).toBeVisible();
+  await second.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(second.getByTestId("accumulator")).toHaveText("7");
+  const diagnostics = await (await page.request.get(`${server}/__dev`)).text();
+  expect(diagnostics).not.toContain(token);
+  expect(diagnostics).not.toContain("testy-password1");
+  expect(await page.locator(".wire").textContent()).not.toContain(token);
+  expect(await page.locator(".wire").textContent()).not.toContain("testy-password1");
 });
 
 test("WebSocket envelopes and attachment ownership work without the SDK", async ({
@@ -90,9 +137,12 @@ test("WebSocket envelopes and attachment ownership work without the SDK", async 
         invocation: { id: 1, operation: "health.up", input: null },
       },
     });
+    const enrollment = await exchange(first, { Request: { bearer: null,
+      invocation: { id: 2, operation: "identity.enroll", input: { email: "raw@example.com", password: "password1" } } } });
+    const token = (enrollment.at(-1) as any).Events[0].Completed.outcome.Ok.bearer;
     const attach = {
       Connect: {
-        bearer: "testy-private-fixture-token",
+        bearer: token,
         client_id: "raw-frame-client",
       },
     };
@@ -114,7 +164,7 @@ test("WebSocket envelopes and attachment ownership work without the SDK", async 
     ],
     attached: [{ Attached: { resumed: false } }],
     occupied: [{ Failed: "Occupied" }],
-    resumed: [{ Attached: { resumed: true } }],
+    resumed: [{ Attached: { resumed: false } }],
   });
 });
 
@@ -134,18 +184,20 @@ test("launcher, health, calculator, reload and explicit close", async ({
   await page
     .getByRole("link", { name: "Calculator State over transport" })
     .click();
+  await login(page);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByLabel("Operand", { exact: true }).fill("12");
   await page.getByRole("button", { name: "+", exact: true }).click();
   await expect(page.getByTestId("accumulator")).toHaveText("12");
   await page.reload();
-  await expect(page.getByTestId("accumulator")).toHaveText("12");
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("accumulator")).toHaveText("0");
   await page.getByRole("button", { name: "Disconnect", exact: true }).click();
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByLabel("Operand", { exact: true }).fill("3");
   await page.getByRole("button", { name: "×", exact: true }).click();
-  await expect(page.getByTestId("accumulator")).toHaveText("36");
+  await expect(page.getByTestId("accumulator")).toHaveText("0");
   await page.getByRole("button", { name: "Close calculator" }).click();
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByTestId("accumulator")).toHaveText("0");
@@ -162,6 +214,7 @@ test("agent control steps a live browser request and restores its state", async 
   server,
 }) => {
   expect((await page.goto(`${server}/calc`))?.status()).toBe(200);
+  await login(page);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   const control = async (body: object) => {
     const response = await request.post(`${server}/__dev`, { data: body });
@@ -221,6 +274,7 @@ test("execution desk displays and supplies exact i64 dependencies", async ({
       socket.on("framesent", (frame) => sent.push(String(frame.payload)));
   });
   await page.goto(`${server}/calc`);
+  await login(page);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByText("Committed records", { exact: true }).click();
   await page.locator("summary").filter({ hasText: "Execution trace" }).click();
@@ -404,6 +458,7 @@ test("execution desk reconnects independently and is silent while idle", async (
     };
   });
   await page.goto(`${server}/calc`);
+  await login(page);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await expect(page.getByText("Debugger: Live", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "+", exact: true }).click();
@@ -423,7 +478,7 @@ test("execution desk reconnects independently and is silent while idle", async (
     .toBe(2);
   await expect(page.getByText("Debugger: Live", { exact: true })).toBeVisible();
   expect(await (await request.get(`${server}/__dev`)).json()).toEqual(before);
-  expect(appSockets).toBe(1);
+  expect(appSockets).toBe(2); // Initial anonymous channel plus explicit login channel.
   // Advance browser timers without waiting: old 250ms HTTP polling would fire.
   await page.clock.install();
   const framesBefore = debuggerFrames;
@@ -463,6 +518,7 @@ test("a lost debugger response fails the command without replaying the step", as
     });
   });
   await page.goto(`${server}/calc`);
+  await login(page);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Hold", exact: true }).click();
   await expect(
