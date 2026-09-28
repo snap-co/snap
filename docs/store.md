@@ -46,6 +46,16 @@ schemas can use different namespaces in the same catalog. Cross-database atomici
 is not supported. Every table has a module-qualified name such as `identity.accounts`.
 The namespace prevents naming collisions; it is not an authorization mechanism.
 
+`Committed::changes` contains net changes keyed by table and primary key, with
+before/after rows. Repeated writes coalesce and unchanged final rows produce no
+notification. Store allocates the change set before disk commit and returns it
+only after successful durable commit and resident publication. Rejected or
+indeterminate commits return no feed. This is an in-process feed; controllers
+recover missed notifications by inspecting committed desired state at startup.
+
+`Store::inspect` runs resident reads and rejects any staged writes. Admission and
+client synchronization use it to guarantee that their callbacks do no backend IO.
+
 Every read has three possible outcomes:
 
 - `Ok(Some(row))` / nonempty index results: resident hit.
@@ -80,6 +90,13 @@ Reads see earlier staged writes. After commit, written records are immediate pri
 key hits and loaded index results reflect inserts, updates and deletes. An insertion
 into a cold table does not claim to know every other record matching a secondary key;
 that complete-result query remains a miss until the table is loaded.
+
+Hosts can use `load_keys` and `retain_keys` for reference-owned residency. The
+current backend reads a complete table temporarily when unknown keys are needed,
+but only requested rows and negative primary-key results remain resident.
+`retain_keys` releases memory, never disk rows, and invalidates complete-index
+knowledge. The residency controller must include draining connections and accepted
+work before releasing references. Client synchronization never loads missing rows.
 
 SQLite permits one owning Store at a time, including while idle. Close it before
 migrating or opening another owner. `Committed` means disk commit and memory publication

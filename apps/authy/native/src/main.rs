@@ -215,6 +215,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_identity::MIGRATION,
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_document::server::LIFECYCLE_MIGRATION,
         authy::MIGRATION,
         snap_oidc::MIGRATION,
         keys::MIGRATION,

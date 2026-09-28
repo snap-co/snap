@@ -75,8 +75,13 @@ async fn upgrade<B: Backend + Send + 'static>(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let peer = match shared.host.lock().unwrap().open() {
-        Ok(peer) => peer,
+    let opened = {
+        let mut host = shared.host.lock().unwrap();
+        host.open()
+            .and_then(|peer| host.output(peer).map(|output| (peer, output)))
+    };
+    let (peer, output) = match opened {
+        Ok(value) => value,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let failed = shared.clone();
@@ -84,7 +89,7 @@ async fn upgrade<B: Backend + Send + 'static>(
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_failed_upgrade(move |_| failed.host.lock().unwrap().lost(peer, failed.now()))
-        .on_upgrade(move |socket| connection(socket, shared, peer, bearer))
+        .on_upgrade(move |socket| connection(socket, shared, peer, bearer, output))
 }
 
 async fn connection<B: Backend + Send + 'static>(
@@ -92,9 +97,11 @@ async fn connection<B: Backend + Send + 'static>(
     shared: Arc<Shared<B>>,
     peer: u64,
     cookie_bearer: Option<String>,
+    output: crate::Output,
 ) {
     let (mut sink, mut stream) = socket.split();
     let mut flush = tokio::time::interval(Duration::from_millis(2));
+    let mut pending = std::collections::VecDeque::new();
     loop {
         let mut error = None;
         tokio::select! {
@@ -107,10 +114,19 @@ async fn connection<B: Backend + Send + 'static>(
                         && let Some(cookie) = &cookie_bearer {
                         *bearer = cookie.clone();
                     }
-                    if let Err(failed) = shared.host.lock().unwrap().submit(peer, command, shared.now()) { error = Some(failed); }
+                    if pending.len() >= 1024 { break; }
+                    pending.push_back(command);
                 }
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {},
                 _ => break,
+            }
+        }
+        if let Ok(mut host) = shared.host.try_lock() {
+            while let Some(command) = pending.pop_front() {
+                if let Err(failed) = host.submit(peer, command, shared.now()) {
+                    error = Some(failed);
+                    break;
+                }
             }
         }
         let mut failed = false;
@@ -118,13 +134,9 @@ async fn connection<B: Backend + Send + 'static>(
             let response = if let Some(error) = error.take() {
                 snap_transport::Response::Failed(error)
             } else {
-                match shared.host.lock().unwrap().next_response(peer) {
-                    Ok(Some(response)) => response,
-                    Ok(None) => break,
-                    Err(_) => {
-                        failed = true;
-                        break;
-                    }
+                match output.pop_front() {
+                    Some(response) => response,
+                    None => break,
                 }
             };
             let Ok(text) = serde_json::to_string(&response) else {
@@ -141,22 +153,30 @@ async fn connection<B: Backend + Send + 'static>(
                 break;
             }
         }
-        if failed || shared.host.lock().unwrap().retired(peer) {
+        if failed || shared.host.try_lock().is_ok_and(|host| host.retired(peer)) {
             break;
         }
     }
-    shared.host.lock().unwrap().lost(peer, shared.now());
+    // The socket is gone now; logical teardown can wait behind synchronous IO.
+    let _ =
+        tokio::task::spawn_blocking(move || shared.host.lock().unwrap().lost(peer, shared.now()))
+            .await;
 }
 
 /// Drive one application-wide FIFO. Tests can instead call Host::step explicitly
 /// to exercise ACK/completion separation without timers or sleeps.
-pub async fn dispatch<B: Backend>(shared: Arc<Shared<B>>) {
+pub async fn dispatch<B: Backend + Send + 'static>(shared: Arc<Shared<B>>) {
     let mut interval = tokio::time::interval(Duration::from_millis(5));
     loop {
         interval.tick().await;
-        let mut host = shared.host.lock().unwrap();
-        host.tick(shared.now());
-        host.step();
+        let shared = shared.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut host = shared.host.lock().unwrap();
+            host.tick(shared.now());
+            host.step();
+        })
+        .await
+        .expect("document dispatcher panicked");
     }
 }
 

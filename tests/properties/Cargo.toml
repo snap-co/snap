@@ -15,6 +15,10 @@ snap-platform-local = { path = "../../platforms/local" }
 snap-store = { path = "../../crates/store" }
 snap-sqlite = { path = "../../platforms/sqlite" }
 snap-identity = { path = "../../crates/identity" }
+snap-access = { path = "../../crates/access" }
+snap-document = { path = "../../crates/document" }
+snap-document-local = { path = "../../platforms/document" }
+serde_json.workspace = true
 toml = "0.9"
 
 [[test]]
@@ -46,3 +50,7 @@ role = "tool"
 [[test]]
 name = "identity-properties"
 path = "../../crates/identity/tests/properties/identity.rs"
+
+[[test]]
+name = "document-host-properties"
+path = "../../platforms/document/tests/properties/lifecycle.rs"

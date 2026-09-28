@@ -45,10 +45,15 @@ fn grammar(events: &[Event], expected_id: u64) -> Outcome {
         }
         match event {
             Event::Accepted { id } => {
-                if accepted || *id != expected_id {
+                if *id != expected_id {
                     return Err(Error::Protocol);
                 }
                 accepted = true;
+            }
+            Event::Progress { id, .. } => {
+                if *id != expected_id || !accepted {
+                    return Err(Error::Protocol);
+                }
             }
             Event::Completed { id, outcome } => {
                 if *id != expected_id || (!accepted && outcome.is_ok()) {
@@ -83,19 +88,31 @@ fn response(tc: &TestCase, id: u64) -> Response {
             resumed: tc.draw(gs::booleans()),
         },
         4 => Response::Detached,
+        5 => Response::Events(vec![
+            Event::Accepted { id },
+            Event::Progress {
+                id,
+                value: json!("working"),
+            },
+            Event::Accepted { id },
+            Event::Completed { id, outcome },
+        ]),
         _ => {
             let len = tc.draw(gs::integers::<usize>().max_value(6));
             let mut events = Vec::new();
             for _ in 0..len {
                 let id =
                     [id, id - 1, id + 1, u64::MAX][tc.draw(gs::integers::<usize>().max_value(3))];
-                events.push(if tc.draw(gs::booleans()) {
-                    Event::Accepted { id }
-                } else {
-                    Event::Completed {
+                events.push(match tc.draw(gs::integers::<u8>().max_value(2)) {
+                    0 => Event::Accepted { id },
+                    1 => Event::Progress {
+                        id,
+                        value: json!("progress"),
+                    },
+                    _ => Event::Completed {
                         id,
                         outcome: outcome.clone(),
-                    }
+                    },
                 });
             }
             Response::Events(events)

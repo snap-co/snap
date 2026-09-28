@@ -110,8 +110,8 @@ after submission discards observation interest, not host-owned work.
 The native adapter uses bounded length-prefixed JSON over TCP. The web development
 host carries the same commands and observations as JSON text over WebSocket. Both
 permit one outstanding exchange-style command per physical connection in Testy.
-The Document host accepts pipelined invocations, queues ACK separately from execution,
-and publishes capability pushes using `Response::Notification`. WebSocket messages are
+The Document host receives pipelined invocations but admits only one at a time.
+It publishes capability pushes using `Response::Notification`. WebSocket messages are
 bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preserving
 64-bit integers. Rust SDK results cross the UI binding as decimal strings.
 Development controls also use the Rust binding to validate supplied JSON text and
@@ -179,11 +179,12 @@ automatic loading, or automatic retry. A separate host action can `Store::load` 
 table; a later explicit invocation may succeed. Miss diagnostics retain a lifetime
 count and the latest 128 operation/lookup records, exportable by the host.
 
-Phase one loads complete tables. Before loading, a Store knows only its own
+Hosts may load complete tables or explicit primary-key sets. Before loading, a Store knows only its own
 committed inserts/deletes, not the rest of that table. Exact primary-key reads can
 hit known records. Secondary-index or prefix reads require complete residency, so
 a partially loaded set cannot be mistaken for a complete empty result. Loading an
-empty table establishes known nonexistence. There is no resident eviction policy.
+empty table establishes known nonexistence. `retain_keys` releases unreferenced
+rows and invalidates complete-index knowledge without deleting persistent data.
 Indexes support ordered prefix lookups, including composite keys, with primary-key
 tie breaking. Values are non-null text, signed 64-bit integers, or bytes.
 
@@ -209,10 +210,12 @@ commit fences the Store; reads, writes and loads fail until it is reopened and
 recovered. An unknown outcome must not trigger a blind retry of a non-idempotent
 operation. Restart starts cold and loads SQLite's committed state.
 
-External services do not participate in Store's transaction. Callers may start
-effects after `Committed`, but crash-safe delivery needs an outbox row written in
-the same transaction and a separately designed delivery worker. Store does not
-claim exactly-once email delivery or client-request deduplication.
+External services do not participate in Store's transaction. `Committed::changes`
+exposes net before/after rows only after successful publication. The Document host
+uses this feed to schedule controllers by Document type. Notifications are
+in-process; startup scans recover missed notifications by reconciling stored
+desired state against actual resources. Store does not claim exactly-once external
+effects or client-request deduplication.
 
 Migrations are explicit, ordered portable declarations translated to SQLite DDL.
 The CLI creates templates and applies a pending batch atomically with its history.
@@ -255,8 +258,10 @@ Document's client and server should share the canonical in-memory representation
 and deterministic mutation behavior as closely as possible. The server holds data
 for many identities; a client holds its authorized set. Connection-owned references
 are intended to retain server document data, while the client holds its own
-references. Store currently has no eviction or reference-based residency mechanism;
-that lifetime design is not an existing Store guarantee.
+references. The Document host retains server references across physical detach and
+releases them only after logical closure and accepted-work drain. Its residency
+loop loads the union of logical identities' requirements. A separate memory-only
+loop compares each client's manifest with authorized resident data.
 
 Clients keep a separate optimistic layer over authoritative state. Other replicas
 receive ordered mutation intents; the originating client receives a completion
@@ -276,21 +281,40 @@ Initially the journal is in memory and can hold ordinary named mutations and the
 arguments. Future intent-replication bytecode and a persistent client journal should
 fit this same model, supporting offline edits without changing how consumers read
 the projected view. Bytecode, persistence and replay optimization are not designed
-yet. Entries clear on authoritative completion, not acceptance ACK; a rejection
+yet. Entries clear on authoritative desired-commit notification or completion,
+not acceptance ACK; a rejection
 must also be surfaced and reconciled with remaining optimistic work. Future offline
 retention will require revisiting the initial connection-expiry reset policy.
 
-The Document SDK applies local mutations optimistically as they arrive and paces outgoing
-mutation submissions by acceptance acknowledgements: the next submission can leave
-after the preceding acknowledgement, without waiting for completion. Acceptance
-does not confirm a commit and does not clear optimistic state. Server dispatch
-remains globally serialized initially; acknowledgement-paced submission does not
-permit concurrent mutation execution. `document::wire::Wire` correlates physical
-transport IDs separately from retained mutation IDs. `document_local::Host::submit`
-queues acceptance; `Host::step` executes one operation under the global gate.
-The WebSocket reader and dispatcher run independently, so the next submission can
-arrive after ACK while earlier completion is held. Exchange-style Testy clients
-retain their existing one-command API.
+The Document SDK applies local mutations optimistically and may send another
+request after ACK. On the server, shape validation precedes protected admission.
+The application gate covers authentication, Access guards, ACK, handler execution,
+atomic desired-state commit, synchronous controller IO and finalization. Later
+requests wait before ACK. Accepted authority survives expiry and revocation through
+completion; permission mutations wait behind accepted work. ACK promises authorized
+acceptance, not durability or success. Completion closes the invocation channel.
+
+Controllers register by Document type. They inspect current conditions, perform
+host IO, and commit meaningful observed changes through `ControllerContext` under
+the same gate. Failed reconciliation preserves desired state and records a durable
+blocked reason in Document lifecycle state. Automatic retries are deferred; an
+explicit `document.retry` mutation clears the failure. Startup recovery skips
+blocked Documents. There is no controller dependency graph.
+
+`Event::Progress` shares the invocation ID with ACK and completion. SDK operation
+contracts declare separate input, output, error and progress types. Progress is
+informational and non-durable. The carrier drains output independently of the
+execution mutex, so synchronous host IO cannot prevent ACK/progress delivery.
+An internal Document `Committed` notification retires the optimistic mutation
+before controller status updates arrive. It does not complete the invocation;
+the final correlated completion still waits for controller IO.
+Same-ID retries on a retained logical connection reuse acceptance/results and
+reject conflicting inputs. Wire IDs remain unique across physical reconnections;
+Document intent IDs additionally identify transactional receipts.
+
+Physical detach does not release logical residency. Desired logical close prevents
+new admission immediately and enters draining while accepted work remains. Actual
+closure releases the connection's references after that work completes.
 
 Intent replay requires a matching authoritative base and compatible mutation
 behavior. A replay mismatch is an explicit observable replication error. The SDK
@@ -305,10 +329,10 @@ Document's manifest protocol supplies recovery; generic transport alone does not
 The host prefixes receipt lifetimes with a fresh random boot namespace, so a process
 restart cannot reuse an earlier logical connection's receipt IDs.
 
-The manifest presents holdings and unresolved intents. The initial server always
-chooses complete authoritative replacement, including all Access-permitted documents,
-and returns matching receipts for unresolved intents. It retains no replication
-history. Recovered receipts remove journal entries without replacing newer manifest
+The manifest presents holdings and unresolved intents. The server returns missing
+or stale snapshots, validated unchanged holdings, and matching receipts. Documents
+absent from both snapshot and unchanged sets must be removed. It retains no
+replication history. Recovered receipts remove journal entries without replacing newer manifest
 snapshots with older completion snapshots. Reconciliation exposes each recovered
 completion, rejection or forbidden result. A later journal replay failure is
 reported alongside those outcomes rather than hiding them. Client state is ephemeral; a persistent
@@ -318,21 +342,25 @@ Compatible mutations apply to the latest state in server FIFO order. There is no
 blanket stale-base rejection. Applications can declare mutation-specific guards.
 Replication carries the verified actor, base revision and canonical SHA-256 digests
 of the base and result. A mismatch reports divergence and requests a manifest.
-Delivery rechecks current authorization for each frame before handing it to socket
-IO. Queued completions suppress revoked payloads; queued unauthorized intents are
-discarded. Bytes already handed to a socket cannot be retracted.
+Ongoing Document synchronization follows current authorization and filters queued
+pushes after permission changes. Invocation completions retain their accepted
+authority. Bytes already handed to a socket cannot be retracted.
 
 `document.mutate` invokes one named mutation on one document. Applications needing
 atomic multi-document changes publish custom transport operations and compose the
 document mutations through one caller-owned Store transaction. General optimistic
 multi-document mutation is not part of `document.mutate`.
 
-Trusted application operations can `Document::replace` or `Document::remove` in
-their own transaction, for example when publishing an external model result. Both
-require pre-change Owner authority; replacement validates the registered schema
-and advances the revision. They are not client wire operations or optimistic
-intents. Applications must check live session authority and their domain guards
-in the same transaction. The host publishes authoritative holdings after commit.
+`Document::apply` composes a named mutation without creating a wire receipt.
+Dispatch separates `admit` from `execute_recorded`, capturing authority before ACK
+and committing the mutation and receipt together. Composite handlers share one
+transaction and do not re-enter dispatch.
+
+Document lifecycle metadata retains deleted/archived objects, finalizer keys and
+blocked reconciliation status. Deletion and archiving remove Documents from normal
+loading. Cleanup may remove finalizer keys but never physically purges the Document.
+Direct retrieval, freezing and incineration are deferred. Legacy trusted replacement
+helpers remain during application migration; they are not the public mutation API.
 
 ## Replacement and snapshots
 

@@ -1951,6 +1951,10 @@ name = "snap-core-properties"
 version = "0.0.0"
 dependencies = [
  "hegeltest",
+ "serde_json",
+ "snap-access",
+ "snap-document",
+ "snap-document-local",
  "snap-execution",
  "snap-identity",
  "snap-platform-local",

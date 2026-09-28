@@ -17,6 +17,11 @@ pub struct Wire {
 }
 
 impl Wire {
+    /// Forget interrupted exchanges while keeping invocation IDs unique across
+    /// physical attachments. Document receipts recover stable mutation outcomes.
+    pub fn reconnect(&mut self) {
+        self.pending.clear();
+    }
     pub fn submit(&mut self, message: ClientMessage) -> Result<Command, Error> {
         self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
         let (operation, input, intent) = match message {
@@ -45,6 +50,14 @@ impl Wire {
     }
 
     pub fn receive(&mut self, response: Response) -> Result<Vec<ServerMessage>, Error> {
+        self.receive_with_progress(response, |_, _| {})
+    }
+
+    pub fn receive_with_progress(
+        &mut self,
+        response: Response,
+        mut progress: impl FnMut(u64, serde_json::Value),
+    ) -> Result<Vec<ServerMessage>, Error> {
         let mut messages = Vec::new();
         match response {
             Response::Notification { operation, input } if operation == "document" => {
@@ -52,6 +65,7 @@ impl Wire {
                 if !matches!(
                     message,
                     ServerMessage::Replication(_)
+                        | ServerMessage::Committed(_)
                         | ServerMessage::Holdings(_)
                         | ServerMessage::Removed(_)
                         | ServerMessage::Reset
@@ -66,12 +80,22 @@ impl Wire {
                         Event::Accepted { id } => {
                             let pending = self.pending.get_mut(&id).ok_or(Error::Protocol)?;
                             if pending.accepted {
-                                return Err(Error::Protocol);
+                                continue;
                             }
                             pending.accepted = true;
                             if let Some((id, _)) = &pending.intent {
                                 messages.push(ServerMessage::Accepted { id: *id });
                             }
+                        }
+                        Event::Progress { id, value } => {
+                            let pending = self.pending.get(&id).ok_or(Error::Protocol)?;
+                            if !pending.accepted {
+                                return Err(Error::Protocol);
+                            }
+                            progress(
+                                pending.intent.as_ref().map_or(id, |(intent, _)| *intent),
+                                value,
+                            );
                         }
                         Event::Completed { id, outcome } => {
                             let pending = self.pending.remove(&id).ok_or(Error::Protocol)?;
@@ -94,6 +118,13 @@ impl Wire {
                                     messages.push(message);
                                 }
                                 Err(error) => {
+                                    // The desired mutation may already have left
+                                    // the journal. Still surface controller failure
+                                    // to the caller, without undoing that commit.
+                                    if matches!(&error, Error::Application(value) if value.get("committed") == Some(&serde_json::Value::Bool(true)))
+                                    {
+                                        return Err(error);
+                                    }
                                     // An unavailable/retired carrier can hide a committed
                                     // result. Retain the SDK journal for manifest recovery;
                                     // do not misreport an unknown outcome as a rejection.

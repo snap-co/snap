@@ -26,7 +26,7 @@ impl ChattyClient {
         }
     }
     pub fn connect(&mut self, id: &str) -> Result<String, JsValue> {
-        self.wire = Wire::default();
+        self.wire.reconnect();
         serde_json::to_string(&snap_transport::Command::Connect {
             bearer: String::new(),
             client_id: id.into(),

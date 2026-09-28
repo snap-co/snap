@@ -58,8 +58,48 @@ impl<C: Channel> Client<C> {
         .await
     }
     pub async fn invoke(&mut self, operation: &str, input: Value) -> Outcome {
+        self.invoke_with_progress(operation, input, |_| {}).await
+    }
+
+    pub async fn invoke_with_progress(
+        &mut self,
+        operation: &str,
+        input: Value,
+        progress: impl FnMut(Value),
+    ) -> Outcome {
         let invocation = self.invocation(operation, input)?;
-        self.call(Command::Invoke(invocation)).await
+        self.call_with_progress(Command::Invoke(invocation), progress)
+            .await
+    }
+
+    pub async fn invoke_typed<O: crate::Operation>(
+        &mut self,
+        input: &O::Input,
+        mut progress: impl FnMut(O::Progress),
+    ) -> Result<O::Output, crate::Failure<O::Error>> {
+        let input = serde_json::to_value(input)
+            .map_err(|_| crate::Failure::Transport(Error::InvalidInput))?;
+        let mut invalid_progress = false;
+        let outcome = self
+            .invoke_with_progress(O::NAME, input, |value| {
+                match serde_json::from_value(value) {
+                    Ok(value) => progress(value),
+                    Err(_) => invalid_progress = true,
+                }
+            })
+            .await;
+        if invalid_progress {
+            return Err(crate::Failure::Transport(Error::InvalidOutput));
+        }
+        match outcome {
+            Ok(value) => serde_json::from_value(value)
+                .map_err(|_| crate::Failure::Transport(Error::InvalidOutput)),
+            Err(Error::Application(value)) => Err(match serde_json::from_value(value) {
+                Ok(error) => crate::Failure::Application(error),
+                Err(_) => crate::Failure::Transport(Error::InvalidOutput),
+            }),
+            Err(error) => Err(crate::Failure::Transport(error)),
+        }
     }
     fn invocation(&mut self, operation: &str, input: Value) -> Result<Invocation, Error> {
         self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
@@ -70,25 +110,87 @@ impl<C: Channel> Client<C> {
         })
     }
     async fn call(&mut self, command: Command) -> Outcome {
+        self.call_with_progress(command, |_| {}).await
+    }
+
+    async fn call_with_progress(
+        &mut self,
+        command: Command,
+        mut progress: impl FnMut(Value),
+    ) -> Outcome {
         let response = self.channel.exchange(command).await?;
         match response {
-            Response::Events(events) => match events.as_slice() {
-                [
-                    Event::Accepted { id },
-                    Event::Completed {
-                        id: completed,
-                        outcome,
-                    },
-                ] if *id == self.sequence && id == completed => outcome.clone(),
-                [
-                    Event::Completed {
-                        id,
-                        outcome: Err(error),
-                    },
-                ] if *id == self.sequence => Err(error.clone()),
-                _ => Err(Error::Protocol),
-            },
+            Response::Events(events) => {
+                let mut trace = Trace::new(self.sequence, 0);
+                let mut result = None;
+                for event in events {
+                    match trace.receive(event)? {
+                        Observation::Completed(outcome) => result = Some(outcome),
+                        Observation::Progress(value) => progress(value),
+                        Observation::Accepted => {}
+                    }
+                }
+                result.ok_or(Error::Protocol)?
+            }
             Response::Failed(error) => Err(error),
+            _ => Err(Error::Protocol),
+        }
+    }
+}
+
+/// One invocation's channel. Hosts supply monotonic time and drive retries; ACK
+/// disables only the acceptance timer. Progress is transient and completion is
+/// terminal. Retransmission must retain the original invocation and logical ID.
+pub struct Trace {
+    id: u64,
+    retry_at: u64,
+    accepted: bool,
+    completed: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Observation {
+    Accepted,
+    Progress(Value),
+    Completed(Outcome),
+}
+
+impl Trace {
+    pub fn new(id: u64, retry_at: u64) -> Self {
+        Self {
+            id,
+            retry_at,
+            accepted: false,
+            completed: false,
+        }
+    }
+
+    pub fn retry_due(&self, now: u64) -> bool {
+        !self.accepted && !self.completed && now >= self.retry_at
+    }
+
+    pub fn retried(&mut self, retry_at: u64) {
+        self.retry_at = retry_at;
+    }
+
+    pub fn receive(&mut self, event: Event) -> Result<Observation, Error> {
+        if self.completed {
+            return Err(Error::Protocol);
+        }
+        match event {
+            Event::Accepted { id } if id == self.id => {
+                self.accepted = true;
+                Ok(Observation::Accepted)
+            }
+            Event::Progress { id, value } if id == self.id && self.accepted => {
+                Ok(Observation::Progress(value))
+            }
+            Event::Completed { id, outcome }
+                if id == self.id && (self.accepted || outcome.is_err()) =>
+            {
+                self.completed = true;
+                Ok(Observation::Completed(outcome))
+            }
             _ => Err(Error::Protocol),
         }
     }

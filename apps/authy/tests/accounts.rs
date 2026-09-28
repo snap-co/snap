@@ -33,6 +33,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         toml::from_str(snap_identity::MIGRATION).unwrap(),
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
+        toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap(),
         toml::from_str(authy::MIGRATION).unwrap(),
     ];
     all.sort_by(|a: &snap_store::migration::Migration, b| a.id.cmp(&b.id));
@@ -551,6 +552,7 @@ fn client_sdk_drives_optimistic_profile_edits() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![base],
                 completed: vec![],
             }),

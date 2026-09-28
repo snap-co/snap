@@ -160,3 +160,97 @@ fn a_backend_panic_during_commit_fences_the_unknown_outcome() {
         Err(Error::Indeterminate)
     ));
 }
+
+#[test]
+fn committed_changes_coalesce_and_publish_only_the_net_state() {
+    let mut store = Store::new(schema(), Disk::default()).unwrap();
+    store.load("accounts.users").unwrap();
+    let row = Row::from([("id".into(), 1.into())]);
+    let committed = store
+        .run("create", |tx| {
+            tx.insert("accounts.users", row.clone())?;
+            tx.delete("accounts.users", &[1.into()])?;
+            tx.insert("accounts.users", row.clone())
+        })
+        .unwrap();
+    assert_eq!(
+        committed.changes,
+        vec![RowChange {
+            table: "accounts.users".into(),
+            key: vec![1.into()],
+            before: None,
+            after: Some(row.clone()),
+        }]
+    );
+    let committed = store
+        .run("unchanged", |tx| {
+            tx.delete("accounts.users", &[1.into()])?;
+            tx.insert("accounts.users", row.clone())
+        })
+        .unwrap();
+    assert!(committed.changes.is_empty());
+    let committed = store
+        .run("delete", |tx| tx.delete("accounts.users", &[1.into()]))
+        .unwrap();
+    assert_eq!(
+        committed.changes,
+        vec![RowChange {
+            table: "accounts.users".into(),
+            key: vec![1.into()],
+            before: Some(row),
+            after: None,
+        }]
+    );
+}
+
+#[test]
+fn releasing_residency_does_not_delete_rows_or_claim_complete_indexes() {
+    let mut store = Store::new(
+        schema(),
+        Disk(vec![
+            Row::from([("id".into(), 1.into())]),
+            Row::from([("id".into(), 2.into())]),
+        ]),
+    )
+    .unwrap();
+    let keys = std::collections::BTreeSet::from([vec![1.into()], vec![3.into()]]);
+    store.load_keys("accounts.users", &keys).unwrap();
+    assert!(
+        store
+            .run("one", |tx| tx.get("accounts.users", &[1.into()]))
+            .unwrap()
+            .value
+            .is_some()
+    );
+    assert!(
+        store
+            .run("absent", |tx| tx.get("accounts.users", &[3.into()]))
+            .unwrap()
+            .value
+            .is_none()
+    );
+    assert!(matches!(
+        store.run("two", |tx| tx.get("accounts.users", &[2.into()])),
+        Err(Error::Miss(_))
+    ));
+    assert!(matches!(
+        store.run("index", |tx| tx.find("accounts.users", "primary", &[])),
+        Err(Error::Miss(_))
+    ));
+    store
+        .retain_keys("accounts.users", &Default::default())
+        .unwrap();
+    assert!(matches!(
+        store.run("released", |tx| tx.get("accounts.users", &[1.into()])),
+        Err(Error::Miss(_))
+    ));
+    store.load("accounts.users").unwrap();
+    assert_eq!(
+        store
+            .run("disk", |tx| tx.find("accounts.users", "primary", &[]))
+            .unwrap()
+            .value
+            .len(),
+        2
+    );
+}

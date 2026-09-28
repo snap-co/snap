@@ -112,6 +112,19 @@ pub struct MissRecord {
 #[derive(Debug)]
 pub struct Committed<T> {
     pub value: T,
+    /// Net row changes, available only after successful commit and publication.
+    /// This is an in-process notification, not a durable delivery log.
+    pub changes: Vec<RowChange>,
+}
+
+/// One changed primary key. Multiple writes in a transaction coalesce; a net
+/// no-op produces no change. A successful cold insert establishes prior absence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowChange {
+    pub table: String,
+    pub key: Vec<Value>,
+    pub before: Option<Row>,
+    pub after: Option<Row>,
 }
 
 pub struct Store<B> {
@@ -147,6 +160,23 @@ impl<B: Backend> Store<B> {
         core::mem::take(&mut self.misses.recent)
     }
 
+    /// Resident-only observation/admission. A callback that stages any write is
+    /// rejected and rolled back; this entry point never calls backend IO.
+    pub fn inspect<T>(
+        &mut self,
+        operation: &str,
+        read: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.run(operation, |tx| {
+            let value = read(tx)?;
+            if !tx.writes.is_empty() {
+                return Err(Error::Invalid);
+            }
+            Ok(value)
+        })
+        .map(|committed| committed.value)
+    }
+
     /// Explicit host action, separate from an operation. Resolves absence as well
     /// as presence. Repeated loads cannot race a commit because both borrow Store
     /// exclusively. No eviction or expiry: residency is durable-state knowledge.
@@ -168,6 +198,78 @@ impl<B: Backend> Store<B> {
         }
         resident.reindex(schema);
         self.residents.insert(table.into(), resident);
+        Ok(())
+    }
+
+    /// Explicit residency IO for primary keys. The initial backend interface loads
+    /// a table temporarily; only requested rows and known absences remain resident.
+    /// This does not establish complete secondary-index knowledge.
+    pub fn load_keys(&mut self, table: &str, keys: &BTreeSet<Vec<Value>>) -> Result<(), Error> {
+        if self.fenced {
+            return Err(Error::Indeterminate);
+        }
+        let schema = self.catalog.table(table)?;
+        for key in keys {
+            if key.len() != schema.primary.len()
+                || schema.primary.iter().zip(key).any(|(column, value)| {
+                    schema.column(column).map(|column| column.kind) != Ok(kind(value))
+                })
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        let resident = &self.residents[table];
+        let missing: BTreeSet<_> = keys
+            .iter()
+            .filter(|key| {
+                !resident.complete
+                    && !resident.rows.contains_key(*key)
+                    && !resident.absent.contains(*key)
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let loaded = self.backend.load(schema)?;
+        let mut rows = BTreeMap::new();
+        for row in loaded {
+            schema.validate_row(&row)?;
+            if rows.insert(schema.key(&row), row).is_some() {
+                return Err(Error::Invalid);
+            }
+        }
+        let resident = self.residents.get_mut(table).ok_or(Error::Invalid)?;
+        for key in missing {
+            if let Some(row) = rows.remove(&key) {
+                resident.rows.insert(key, row);
+            } else {
+                resident.absent.insert(key);
+            }
+        }
+        resident.reindex(schema);
+        Ok(())
+    }
+
+    /// Release unreferenced resident knowledge, never persistent rows. The host
+    /// must include accepted work and draining logical connections in `keys`.
+    pub fn retain_keys(&mut self, table: &str, keys: &BTreeSet<Vec<Value>>) -> Result<(), Error> {
+        if self.fenced {
+            return Err(Error::Indeterminate);
+        }
+        let schema = self.catalog.table(table)?;
+        let resident = self.residents.get_mut(table).ok_or(Error::Invalid)?;
+        if resident.complete {
+            for key in keys {
+                if !resident.rows.contains_key(key) {
+                    resident.absent.insert(key.clone());
+                }
+            }
+        }
+        resident.rows.retain(|key, _| keys.contains(key));
+        resident.absent.retain(|key| keys.contains(key));
+        resident.complete = false;
+        resident.reindex(schema);
         Ok(())
     }
 
@@ -210,6 +312,34 @@ impl<B: Backend> Store<B> {
                 return Err(error);
             }
         };
+        // Allocate the feed before commit, just like resident indexes. Observers
+        // receive it only after the backend confirms the entire transaction.
+        let keys: BTreeSet<_> = tx
+            .writes
+            .iter()
+            .map(|write| match write {
+                Write::Insert { table, row } => (
+                    table.clone(),
+                    self.catalog.table(table).expect("validated table").key(row),
+                ),
+                Write::Update { table, key, .. } | Write::Delete { table, key } => {
+                    (table.clone(), key.clone())
+                }
+            })
+            .collect();
+        let changes = keys
+            .into_iter()
+            .filter_map(|(table, key)| {
+                let before = self.residents[&table].rows.get(&key).cloned();
+                let after = tx.residents[&table].rows.get(&key).cloned();
+                (before != after).then_some(RowChange {
+                    table,
+                    key,
+                    before,
+                    after,
+                })
+            })
+            .collect();
         if !tx.writes.is_empty() {
             // Also fence unwinding out of a host commit: its effects may already
             // be durable even though the host never returned a classified result.
@@ -230,7 +360,7 @@ impl<B: Backend> Store<B> {
         // All allocations/index construction happened BEFORE durable commit.
         // Exclusive borrowing prevents a reader between commit and publication.
         self.residents = tx.residents;
-        Ok(Committed { value })
+        Ok(Committed { value, changes })
     }
 }
 

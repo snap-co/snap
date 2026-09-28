@@ -32,9 +32,9 @@
 //! * A reread (retry or `manifest` recovery) suppresses the payload when the
 //!   actor can no longer read the document: `Ok(Some(_))` becomes `Ok(None)`.
 //!   `Ok(None)` means "committed but forbidden"; it never carries a snapshot.
-//! * `manifest` always returns a replacement: every currently authorized
-//!   document plus recovered completions for the supplied `pending` intents
-//!   that have receipts in this lifetime. Holdings are ignored for selection.
+//! * `manifest` reconciles all authorized active Documents: missing/stale
+//!   snapshots, validated unchanged holdings, and recovered pending completions.
+//!   Deleted/archived Documents are retained for cleanup but excluded from loading.
 //! * `expire` deletes receipt rows for one lifetime only; document rows are
 //!   never removed here.
 //! * Any Store `Miss` aborts the attempt and is never converted into a domain
@@ -45,8 +45,9 @@
 //! * Revisions and intent IDs must fit in signed 64-bit storage
 //!   (`1..=i64::MAX`). Larger values report `StoreError::Invalid`.
 //! * The host namespaces `lifetime` per boot (for example `"boot:connection"`),
-//!   revalidates the bearer to `actor` inside the same transaction, and filters
-//!   outbound data against the current authorized manifest. Transport
+//!   authenticates and admits under its execution gate before ACK. Accepted
+//!   invocation results retain that authority; ongoing synchronization uses the
+//!   current authorized manifest. Transport
 //!   invocation IDs are unrelated to stable `Intent::id` values.
 
 #![allow(clippy::too_many_lines)]
@@ -67,11 +68,17 @@ use snap_store::Error as StoreError;
 
 /// Ordered migration declarations for the Document tables.
 pub const MIGRATION: &str = include_str!("../migrations/0001_document.toml");
+pub const LIFECYCLE_MIGRATION: &str = include_str!("../migrations/0005_document_lifecycle.toml");
 /// Store tables owned by this module. Hosts load these to arrange residency.
-pub const TABLES: [&str; 2] = ["document.documents", "document.receipts"];
+pub const TABLES: [&str; 3] = [
+    "document.documents",
+    "document.receipts",
+    "document.lifecycle",
+];
 
 const DOCUMENTS: &str = TABLES[0];
 const RECEIPTS: &str = TABLES[1];
+const LIFECYCLE: &str = TABLES[2];
 /// Access kind for every document resource. App definitions select behavior
 /// through `Snapshot::kind` instead.
 const RESOURCE_KIND: &str = "document";
@@ -89,6 +96,14 @@ pub struct MutationResult {
     pub replayed: bool,
 }
 
+/// Admission captures the pre-change authority and snapshot. The host must retain
+/// its application gate until execution finishes; no other writer may intervene.
+pub struct AdmittedMutation {
+    before: Snapshot,
+    intent: Intent,
+    actor: String,
+}
+
 /// Document server over the caller's Store transaction.
 ///
 /// Holds the app `Registry` (deterministic behavior) and the `Access`
@@ -102,6 +117,50 @@ pub struct Document {
 }
 
 impl Document {
+    /// Authorized identities for the host residency controller. This queries the
+    /// resident Access graph, not Document contents or storage IO.
+    pub fn authorized_ids(
+        &self,
+        tx: &mut Transaction<'_>,
+        actor: &str,
+    ) -> Result<BTreeSet<String>, StoreError> {
+        let mut ids = BTreeSet::new();
+        for entry in self.access.accessible(tx, Some(actor), true)? {
+            if entry.resource.kind == RESOURCE_KIND
+                && self.lifecycle(tx, &entry.resource.id)?.state == crate::lifecycle::State::Active
+            {
+                ids.insert(entry.resource.id);
+            }
+        }
+        Ok(ids)
+    }
+    /// Translate a committed Store change to current Document state. Deletion
+    /// requires retained lifecycle state so controllers can finish cleanup.
+    pub fn changed(
+        &self,
+        tx: &mut Transaction<'_>,
+        change: &snap_store::RowChange,
+    ) -> Result<Option<Snapshot>, StoreError> {
+        if change.table == LIFECYCLE {
+            return tx
+                .get(DOCUMENTS, &change.key)?
+                .as_ref()
+                .map(snapshot_from_row)
+                .transpose();
+        }
+        if change.table != DOCUMENTS {
+            return Ok(None);
+        }
+        change.after.as_ref().map(snapshot_from_row).transpose()
+    }
+
+    /// Host-only residency/recovery scan. This grants no client read authority.
+    pub fn snapshots(&self, tx: &mut Transaction<'_>) -> Result<Vec<Snapshot>, StoreError> {
+        tx.find(DOCUMENTS, "primary", &[])?
+            .iter()
+            .map(snapshot_from_row)
+            .collect()
+    }
     /// Assemble the server from an app registry and an Access vocabulary.
     ///
     /// The supplied `Access` must already contain kind `"document"`
@@ -137,14 +196,9 @@ impl Document {
         self.registry
             .validate(snapshot)
             .map_err(|_| StoreError::Invalid)?;
-        // Known-absence check first so duplicates report Invalid deterministically
-        // once resident; cold tables report Miss here.
-        if tx
-            .get(DOCUMENTS, &[Value::Text(snapshot.id.clone())])?
-            .is_some()
-        {
-            return Err(StoreError::Invalid);
-        }
+        // Access registration rejects existing resource identities. A new complete
+        // insert need not load an arbitrary UUID merely to establish absence;
+        // Store/database constraints still reject a conflicting Document row.
         let resource =
             Resource::new(RESOURCE_KIND, &snapshot.id).map_err(|_| StoreError::Invalid)?;
         let grant = DirectGrant::new(owner, Role::Owner).map_err(|_| StoreError::Invalid)?;
@@ -234,9 +288,8 @@ impl Document {
         Ok(snapshot)
     }
 
-    /// Remove the document and its Access resource atomically from a trusted
-    /// application operation. Receipts remain scoped to their connection lifetime;
-    /// delivery suppresses their payload now that the resource is unreadable.
+    /// Request deletion under Owner authority. Retain data, Access and finalizers
+    /// for cleanup, while excluding the Document from normal synchronization.
     pub fn remove(
         &self,
         tx: &mut Transaction<'_>,
@@ -251,9 +304,72 @@ impl Document {
         ) {
             return Err(StoreError::Invalid);
         }
-        self.access.remove(tx, &resource, None)?;
-        tx.delete(DOCUMENTS, &[id.into()])?;
+        let mut lifecycle = self.lifecycle(tx, id)?;
+        lifecycle.state = crate::lifecycle::State::Deleted;
+        self.set_lifecycle(tx, id, &lifecycle)?;
         Ok(())
+    }
+
+    pub fn lifecycle(
+        &self,
+        tx: &mut Transaction<'_>,
+        id: &str,
+    ) -> Result<crate::lifecycle::Lifecycle, StoreError> {
+        let Some(row) = tx.get(LIFECYCLE, &[id.into()])? else {
+            return Ok(Default::default());
+        };
+        let text = |name: &str| match row.get(name) {
+            Some(Value::Text(value)) => Ok(value.as_str()),
+            _ => Err(StoreError::Invalid),
+        };
+        Ok(crate::lifecycle::Lifecycle {
+            state: serde_json::from_str(text("state")?).map_err(|_| StoreError::Invalid)?,
+            finalizers: serde_json::from_str(text("finalizers")?)
+                .map_err(|_| StoreError::Invalid)?,
+            blocked: serde_json::from_str(text("blocked")?).map_err(|_| StoreError::Invalid)?,
+        })
+    }
+
+    /// Platform/controller-owned metadata. Public operations must check Access
+    /// before calling this, just as for their composed domain mutations.
+    pub fn set_lifecycle(
+        &self,
+        tx: &mut Transaction<'_>,
+        id: &str,
+        lifecycle: &crate::lifecycle::Lifecycle,
+    ) -> Result<(), StoreError> {
+        if self.lifecycle(tx, id)? == *lifecycle {
+            return Ok(());
+        }
+        let fields: Row = [
+            (
+                "state".into(),
+                serde_json::to_string(&lifecycle.state)
+                    .map_err(|_| StoreError::Invalid)?
+                    .into(),
+            ),
+            (
+                "finalizers".into(),
+                serde_json::to_string(&lifecycle.finalizers)
+                    .map_err(|_| StoreError::Invalid)?
+                    .into(),
+            ),
+            (
+                "blocked".into(),
+                serde_json::to_string(&lifecycle.blocked)
+                    .map_err(|_| StoreError::Invalid)?
+                    .into(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        if tx.get(LIFECYCLE, &[id.into()])?.is_some() {
+            tx.update(LIFECYCLE, &[id.into()], fields)
+        } else {
+            let mut row = fields;
+            row.insert("id".into(), id.into());
+            tx.insert(LIFECYCLE, row)
+        }
     }
 
     /// Execute one named mutation on one document inside the caller's
@@ -298,37 +414,68 @@ impl Document {
             });
         }
 
-        // No receipt: resolve against the latest committed state.
-        let current = tx.get(DOCUMENTS, &[Value::Text(intent.document.clone())])?;
-        let Some(row) = current else {
-            let completion = Completion {
-                id: intent.id,
-                document: intent.document.clone(),
-                result: Err(DomainError::NotFound),
-            };
-            insert_receipt(tx, lifetime, intent_key, actor, intent, &completion)?;
-            return Ok(MutationResult {
-                completion,
+        let admitted = self.admit(tx, actor, intent)?;
+        let result = match admitted {
+            Ok(admitted) => self.execute(tx, admitted)?,
+            Err(error) => MutationResult {
+                completion: Completion {
+                    id: intent.id,
+                    document: intent.document.clone(),
+                    result: Err(error),
+                },
                 replication: None,
                 replayed: false,
-            });
+            },
+        };
+        insert_receipt(tx, lifetime, intent_key, actor, intent, &result.completion)?;
+        Ok(result)
+    }
+
+    /// Check Access and mutation guards before ACK. This does not execute the
+    /// mutation or stage writes. Storage failures remain distinct from rejection.
+    pub fn admit(
+        &self,
+        tx: &mut Transaction<'_>,
+        actor: &str,
+        intent: &Intent,
+    ) -> Result<Result<AdmittedMutation, DomainError>, StoreError> {
+        validate_actor(actor)?;
+        validate_intent_shape(intent)?;
+        let current = tx.get(DOCUMENTS, &[Value::Text(intent.document.clone())])?;
+        let Some(row) = current else {
+            return Ok(Err(DomainError::NotFound));
         };
         let before = snapshot_from_row(&row).map_err(|_| StoreError::Invalid)?;
+
+        if matches!(
+            intent.mutation.as_str(),
+            "document.delete" | "document.archive" | "document.retry"
+        ) {
+            if intent.version != before.version || !intent.args.is_null() {
+                return Ok(Err(DomainError::Invalid));
+            }
+            let resource =
+                Resource::new(RESOURCE_KIND, &intent.document).map_err(|_| StoreError::Invalid)?;
+            if !snap_access::allows(
+                self.access.role(tx, &resource, Some(actor), false)?,
+                Role::Owner,
+            ) {
+                return Ok(Err(DomainError::Denied));
+            }
+            return Ok(Ok(AdmittedMutation {
+                before,
+                intent: intent.clone(),
+                actor: actor.into(),
+            }));
+        }
+        if self.lifecycle(tx, &intent.document)?.state != crate::lifecycle::State::Active {
+            return Ok(Err(DomainError::NotFound));
+        }
 
         let mutation = match self.registry.mutation(&before, intent) {
             Ok(found) => found,
             Err(error) => {
-                let completion = Completion {
-                    id: intent.id,
-                    document: intent.document.clone(),
-                    result: Err(error),
-                };
-                insert_receipt(tx, lifetime, intent_key, actor, intent, &completion)?;
-                return Ok(MutationResult {
-                    completion,
-                    replication: None,
-                    replayed: false,
-                });
+                return Ok(Err(error));
             }
         };
 
@@ -337,33 +484,80 @@ impl Document {
             Resource::new(RESOURCE_KIND, &intent.document).map_err(|_| StoreError::Invalid)?;
         let role = self.access.role(tx, &resource, Some(actor), true)?;
         if !snap_access::allows(role, mutation.minimum) {
-            let completion = Completion {
-                id: intent.id,
-                document: intent.document.clone(),
-                result: Err(DomainError::Denied),
-            };
-            insert_receipt(tx, lifetime, intent_key, actor, intent, &completion)?;
-            return Ok(MutationResult {
-                completion,
-                replication: None,
-                replayed: false,
-            });
+            return Ok(Err(DomainError::Denied));
         }
         if let Some(guard) = mutation.guard {
             let effective = role.ok_or(StoreError::Invalid)?;
             if !(guard)(&before, intent, actor, effective) {
-                let completion = Completion {
+                return Ok(Err(DomainError::Denied));
+            }
+        }
+        Ok(Ok(AdmittedMutation {
+            before,
+            intent: intent.clone(),
+            actor: actor.into(),
+        }))
+    }
+
+    /// Compose a named mutation in the caller's transaction without a wire receipt.
+    /// Callers must propagate a rejected completion to abort composite operations.
+    pub fn apply(
+        &self,
+        tx: &mut Transaction<'_>,
+        actor: &str,
+        intent: &Intent,
+    ) -> Result<MutationResult, StoreError> {
+        match self.admit(tx, actor, intent)? {
+            Ok(admitted) => self.execute(tx, admitted),
+            Err(error) => Ok(MutationResult {
+                completion: Completion {
                     id: intent.id,
                     document: intent.document.clone(),
-                    result: Err(DomainError::Denied),
-                };
-                insert_receipt(tx, lifetime, intent_key, actor, intent, &completion)?;
-                return Ok(MutationResult {
-                    completion,
-                    replication: None,
-                    replayed: false,
-                });
+                    result: Err(error),
+                },
+                replication: None,
+                replayed: false,
+            }),
+        }
+    }
+
+    /// Execute with captured authority, never rechecking Access after acceptance.
+    /// This method does not insert a receipt and can compose across Documents.
+    pub fn execute(
+        &self,
+        tx: &mut Transaction<'_>,
+        admitted: AdmittedMutation,
+    ) -> Result<MutationResult, StoreError> {
+        let AdmittedMutation {
+            before,
+            intent,
+            actor,
+        } = admitted;
+        let intent = &intent;
+        let actor = actor.as_str();
+
+        if matches!(
+            intent.mutation.as_str(),
+            "document.delete" | "document.archive" | "document.retry"
+        ) {
+            let mut lifecycle = self.lifecycle(tx, &intent.document)?;
+            match intent.mutation.as_str() {
+                "document.delete" => lifecycle.state = crate::lifecycle::State::Deleted,
+                "document.archive" => lifecycle.state = crate::lifecycle::State::Archived,
+                _ => lifecycle.blocked = None,
             }
+            self.set_lifecycle(tx, &intent.document, &lifecycle)?;
+            return Ok(MutationResult {
+                completion: Completion {
+                    id: intent.id,
+                    document: intent.document.clone(),
+                    result: Ok(
+                        (lifecycle.state == crate::lifecycle::State::Active).then_some(before)
+                    ),
+                },
+                replication: None,
+                replayed: false,
+            });
         }
 
         // Authorized: deterministic apply onto the latest state.
@@ -375,7 +569,6 @@ impl Document {
                     document: intent.document.clone(),
                     result: Err(error),
                 };
-                insert_receipt(tx, lifetime, intent_key, actor, intent, &completion)?;
                 return Ok(MutationResult {
                     completion,
                     replication: None,
@@ -404,7 +597,6 @@ impl Document {
             document: intent.document.clone(),
             result: Ok(Some(after)),
         };
-        insert_receipt(tx, lifetime, intent_key, actor, intent, &completion)?;
         Ok(MutationResult {
             completion,
             replication: Some(Replication {
@@ -419,12 +611,60 @@ impl Document {
         })
     }
 
-    /// Reconcile one logical connection: full replacement plus recovery.
+    /// Commit a previously admitted wire mutation and its recovery receipt together.
+    pub fn execute_recorded(
+        &self,
+        tx: &mut Transaction<'_>,
+        lifetime: &str,
+        admitted: AdmittedMutation,
+    ) -> Result<MutationResult, StoreError> {
+        validate_lifetime(lifetime)?;
+        let actor = admitted.actor.clone();
+        let intent = admitted.intent.clone();
+        let result = self.execute(tx, admitted)?;
+        insert_receipt(
+            tx,
+            lifetime,
+            intent.id as i64,
+            &actor,
+            &intent,
+            &result.completion,
+        )?;
+        Ok(result)
+    }
+
+    /// Recover an exact intent from this logical lifetime without executing it.
+    pub fn recover(
+        &self,
+        tx: &mut Transaction<'_>,
+        lifetime: &str,
+        actor: &str,
+        intent: &Intent,
+    ) -> Result<Option<Completion>, StoreError> {
+        validate_lifetime(lifetime)?;
+        validate_actor(actor)?;
+        validate_intent_shape(intent)?;
+        let Some(row) = tx.get(RECEIPTS, &[lifetime.into(), (intent.id as i64).into()])? else {
+            return Ok(None);
+        };
+        let stored = receipt_from_row(&row)?;
+        if stored.actor != actor
+            || stored.document != intent.document
+            || stored.version != intent.version
+            || stored.mutation != intent.mutation
+            || stored.args != intent.args
+        {
+            return Err(StoreError::Invalid);
+        }
+        Ok(Some(stored.completion))
+    }
+
+    /// Reconcile one logical connection's active authorized holdings and receipts.
     ///
-    /// Returns every currently authorized document (no subset policy) and, for
+    /// Returns missing/stale active Documents, unchanged holdings, and, for
     /// each `pending` intent with a receipt in this lifetime, its stored
-    /// completion (suppressed to `Ok(None)` when revoked). Holdings are
-    /// ignored for selection; the server always answers with a replacement.
+    /// completion (suppressed to `Ok(None)` when revoked). The union of snapshots
+    /// and unchanged holdings is the complete desired client set, without filters.
     pub fn manifest(
         &self,
         tx: &mut Transaction<'_>,
@@ -438,12 +678,16 @@ impl Document {
 
         let accessible = self.access.accessible(tx, Some(actor), true)?;
         let mut documents = Vec::new();
+        let mut unchanged = Vec::new();
         let mut allowed: BTreeSet<String> = BTreeSet::new();
         for entry in accessible {
             if entry.resource.kind != RESOURCE_KIND {
                 continue;
             }
             let id = entry.resource.id;
+            if self.lifecycle(tx, &id)?.state != crate::lifecycle::State::Active {
+                continue;
+            }
             let Some(row) = tx.get(DOCUMENTS, &[Value::Text(id.clone())])? else {
                 // Access without a document row (created outside Document):
                 // skip rather than invent a snapshot.
@@ -454,7 +698,16 @@ impl Document {
                 .validate(&snapshot)
                 .map_err(|_| StoreError::Invalid)?;
             allowed.insert(id.clone());
-            documents.push(snapshot);
+            if let Some(holding) = manifest.holdings.iter().find(|holding| {
+                holding.document == snapshot.id
+                    && holding.version == snapshot.version
+                    && holding.revision == snapshot.revision
+                    && holding.digest == digest(&snapshot)
+            }) {
+                unchanged.push(holding.clone());
+            } else {
+                documents.push(snapshot);
+            }
         }
         // `accessible` already sorts by kind then id; filtering preserves it.
 
@@ -498,6 +751,7 @@ impl Document {
             completed.push(completion);
         }
         Ok(Reconciliation {
+            unchanged,
             documents,
             completed,
         })

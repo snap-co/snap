@@ -132,7 +132,28 @@ fn transaction_histories_match_a_record_model(tc: TestCase) {
                 }
                 Ok(())
             })
-            .map(|c| c.value);
+            .map(|c| {
+                let mut keys: Vec<_> = model.keys().chain(candidate.keys()).copied().collect();
+                keys.sort();
+                keys.dedup();
+                let changes: Vec<_> = ["left.records", "right.records"]
+                    .into_iter()
+                    .flat_map(|table| {
+                        keys.iter().filter_map(|key| {
+                            let before = model.get(key).map(|g| row(*key, *g));
+                            let after = candidate.get(key).map(|g| row(*key, *g));
+                            (before != after).then_some(RowChange {
+                                table: table.into(),
+                                key: vec![key.0.into(), key.1.into()],
+                                before,
+                                after,
+                            })
+                        })
+                    })
+                    .collect();
+                assert_eq!(c.changes, changes);
+                c.value
+            });
         assert_eq!(actual, expected);
         if expected.is_ok() {
             model = candidate;

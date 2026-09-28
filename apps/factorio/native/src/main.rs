@@ -296,6 +296,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_document::server::LIFECYCLE_MIGRATION,
         rp::MIGRATION,
         snap_oauth_local::MIGRATION,
         include_str!("../migrations/0003_factorio_agents.toml"),

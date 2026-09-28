@@ -11,6 +11,42 @@ use snap_transport::json;
 const LIFETIME: &str = "boot:1";
 const OTHER_LIFETIME: &str = "boot:2";
 
+#[test]
+fn manifest_omits_only_snapshots_matching_every_holding_field() {
+    let mut store = store_loaded();
+    let doc = document();
+    let id = uuid(1);
+    create_doc(&mut store, &doc, &id, "alice", 5);
+    let current = store
+        .inspect("read", |tx| doc.read(tx, &id, Some("alice")))
+        .unwrap();
+    let holding = snap_document::Holding {
+        document: id.clone(),
+        version: current.version.clone(),
+        revision: current.revision,
+        digest: snap_document::digest(&current),
+    };
+    let mut manifest = Manifest {
+        holdings: vec![holding.clone()],
+        pending: vec![],
+    };
+    let unchanged = store
+        .inspect("manifest", |tx| {
+            doc.manifest(tx, LIFETIME, "alice", &manifest)
+        })
+        .unwrap();
+    assert!(unchanged.documents.is_empty());
+    assert_eq!(unchanged.unchanged, vec![holding]);
+    manifest.holdings[0].digest = "stale".into();
+    let stale = store
+        .inspect("manifest", |tx| {
+            doc.manifest(tx, LIFETIME, "alice", &manifest)
+        })
+        .unwrap();
+    assert_eq!(stale.documents, vec![current]);
+    assert!(stale.unchanged.is_empty());
+}
+
 fn access_migration() -> snap_store::migration::Migration {
     toml::from_str(snap_access::MIGRATION).unwrap()
 }
@@ -37,12 +73,14 @@ columns = [{ name = "id", kind = "text" }, { name = "body", kind = "text" }]
 
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut all = vec![access_migration(), doc_migration()];
+    all.push(toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap());
     all.sort_by(|a, b| a.id.cmp(&b.id));
     all
 }
 
 fn migrations_with_notes() -> Vec<snap_store::migration::Migration> {
     let mut all = vec![access_migration(), doc_migration(), notes_migration()];
+    all.push(toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap());
     all.sort_by(|a, b| a.id.cmp(&b.id));
     all
 }
@@ -183,21 +221,27 @@ fn application_replacement_and_removal_require_owner_and_share_rollback() {
         .unwrap();
     assert_eq!(
         store
-            .run("missing", |tx| doc.read(tx, &id, Some("alice")))
-            .unwrap_err(),
-        StoreError::NotFound
+            .run("retained for cleanup", |tx| doc.read(
+                tx,
+                &id,
+                Some("alice")
+            ))
+            .unwrap()
+            .value,
+        snapshot(&id, 4, 2)
     );
     assert!(
         store
-            .run("resource gone", |tx| doc.access.role(
+            .run("excluded from normal loading", |tx| doc.manifest(
                 tx,
-                &Resource::new("document", &id).unwrap(),
-                Some("alice"),
-                true
+                LIFETIME,
+                "alice",
+                &Manifest::default()
             ))
             .unwrap()
             .value
-            .is_none()
+            .documents
+            .is_empty()
     );
 }
 
@@ -978,7 +1022,8 @@ fn document_migration_applies_cleanly() {
         toml::from_str(snap_document::server::MIGRATION).unwrap();
     assert_eq!(parsed.id, "0001_document");
     assert_eq!(parsed.changes.len(), 2);
-    let mut store = snap_sqlite::Sqlite::memory(&[parsed]).unwrap();
+    let lifecycle = toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap();
+    let mut store = snap_sqlite::Sqlite::memory(&[parsed, lifecycle]).unwrap();
     for table in TABLES {
         store.load(table).unwrap();
     }

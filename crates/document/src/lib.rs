@@ -2,6 +2,7 @@
 //! logical connection lifetimes; Store owns durability and transaction exclusion.
 #![no_std]
 extern crate alloc;
+pub mod lifecycle;
 
 pub mod client;
 mod definition;

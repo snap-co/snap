@@ -186,7 +186,8 @@ disconnects without replay. Latest-report coalescing has an in-process platform 
 
 ## Property testing
 
-`snap-core-properties` registers transport, execution, local-platform, Store and Identity
+`snap-core-properties` registers transport, execution, local-platform, Store, Identity
+and Document-host
 properties. Cases live in their owners' `tests/properties` directories; the separate
 `tests/properties/Cargo.toml` owns the pinned host-only Hegel dependency and static
 engine. Hegel adds no production dependency or portable feature.
@@ -210,6 +211,13 @@ HEGEL_TEST_CASES=10000 HEGEL_SEED=42 HEGEL_DATABASE=disabled \
 10,000 for stress. Environment variables can override count, seed and persistence.
 Local counterexamples live in Git-ignored `tests/properties/.hegel`; Hegel's built-in
 CI profile disables that database. Retain failure output when exploring in CI.
+
+`document-host-properties` generates Access changes, accepted mutations, duplicate
+delivery, physical loss, logical close and expiry through the real Store-backed
+host. It compares committed counters and controller effects with a separate model.
+Store properties also compare net committed-change notifications with before/after
+model records. Deterministic host tests cover held controller IO, progress delivery,
+explicit blocked-state retry and logical residency reference counts.
 
 On failure, keep the reduced trace and printed `#[hegel::reproduce_failure("...")]`
 attribute. Temporarily add it below the failing property's `#[hegel::test]` to replay

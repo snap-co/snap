@@ -8,6 +8,7 @@ fn fixture() -> Database {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_document::server::LIFECYCLE_MIGRATION,
         rp::MIGRATION,
         chatty::MIGRATION,
     ]

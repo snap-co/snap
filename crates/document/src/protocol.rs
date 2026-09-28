@@ -67,10 +67,13 @@ pub struct Manifest {
     pub pending: Vec<Intent>,
 }
 
-/// An authoritative replacement of ALL permitted holdings. No subset policy.
+/// All permitted holdings: changed snapshots plus unchanged validated holdings.
+/// Any local document absent from both sets must be removed. No subset policy.
 /// Recovered receipts remove journal entries without replacing these newer snapshots.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reconciliation {
+    #[serde(default)]
+    pub unchanged: Vec<Holding>,
     pub documents: Vec<Snapshot>,
     pub completed: Vec<Completion>,
 }
@@ -87,6 +90,9 @@ pub enum ServerMessage {
         id: u64,
     },
     Completed(Completion),
+    /// Desired mutation is durably committed while its controller may still run.
+    /// Reconcile the optimistic journal without closing the invocation channel.
+    Committed(Completion),
     Manifest(Reconciliation),
     /// Unsolicited Access-driven replacement; cannot satisfy a recovery request.
     Holdings(Vec<Snapshot>),

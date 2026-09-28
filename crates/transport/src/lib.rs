@@ -26,7 +26,23 @@ pub enum Error {
 }
 pub type Outcome = Result<Value, Error>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// SDK operation contract. Progress is independent of terminal output/error and
+/// may be a shared message type across operations.
+pub trait Operation {
+    const NAME: &'static str;
+    type Input: Serialize;
+    type Output: serde::de::DeserializeOwned;
+    type Error: serde::de::DeserializeOwned;
+    type Progress: serde::de::DeserializeOwned;
+}
+
+#[derive(Debug)]
+pub enum Failure<E> {
+    Transport(Error),
+    Application(E),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Invocation {
     pub id: u64,
     pub operation: String,
@@ -53,6 +69,7 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Accepted { id: u64 },
+    Progress { id: u64, value: Value },
     Completed { id: u64, outcome: Outcome },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

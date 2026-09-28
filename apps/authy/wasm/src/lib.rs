@@ -55,6 +55,7 @@ mod tests {
             .handle(
                 &authy::registry(),
                 ServerMessage::Manifest(snap_document::Reconciliation {
+                    unchanged: vec![],
                     documents: vec![snap_document::Snapshot {
                         id: id.into(),
                         kind: authy::PROFILE_KIND.into(),
@@ -214,7 +215,7 @@ impl AuthyClient {
         if client_id.is_empty() {
             return Err(js_error("client_id is required".into()));
         }
-        self.wire = Wire::default();
+        self.wire.reconnect();
         let command = snap_transport::Command::Connect {
             bearer: String::new(),
             client_id: client_id.to_owned(),

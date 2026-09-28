@@ -351,6 +351,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut values: Vec<_> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_document::server::LIFECYCLE_MIGRATION,
         rp::MIGRATION,
         snap_oauth_local::MIGRATION,
         chatty::MIGRATION,

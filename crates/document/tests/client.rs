@@ -6,6 +6,85 @@ use snap_document::{
 };
 
 #[test]
+fn manifest_keeps_validated_unchanged_documents_and_removes_omitted_ones() {
+    let registry = registry();
+    let mut client = Client::new("alice".into());
+    let kept = snapshot("doc-a", 3, 7);
+    install(
+        &mut client,
+        &registry,
+        vec![kept.clone(), snapshot("doc-b", 1, 0)],
+    );
+    let holding = client
+        .manifest()
+        .holdings
+        .into_iter()
+        .find(|h| h.document == "doc-a")
+        .unwrap();
+    client.begin_reconnect();
+    client
+        .handle(
+            &registry,
+            ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![holding.clone()],
+                documents: vec![],
+                completed: vec![],
+            }),
+        )
+        .unwrap();
+    assert_eq!(client.authoritative().len(), 1);
+    assert_eq!(client.authoritative()["doc-a"], kept);
+    let mut wrong = holding;
+    wrong.digest = "incorrect".into();
+    assert!(
+        client
+            .handle(
+                &registry,
+                ServerMessage::Manifest(Reconciliation {
+                    unchanged: vec![wrong],
+                    documents: vec![],
+                    completed: vec![],
+                })
+            )
+            .is_err()
+    );
+    assert_eq!(client.authoritative()["doc-a"], kept);
+}
+
+#[test]
+fn controller_holdings_do_not_reapply_a_durably_committed_optimistic_mutation() {
+    let registry = registry();
+    let mut client = Client::new("alice".into());
+    install(&mut client, &registry, vec![snapshot("doc-a", 1, 0)]);
+    let id = client
+        .enqueue(&registry, "doc-a", "inc", Value::Null)
+        .unwrap();
+    client.next_submission().unwrap();
+    client
+        .handle(&registry, ServerMessage::Accepted { id })
+        .unwrap();
+    let completion = Completion {
+        id,
+        document: "doc-a".into(),
+        result: Ok(Some(snapshot("doc-a", 2, 1))),
+    };
+    client
+        .handle(&registry, ServerMessage::Committed(completion.clone()))
+        .unwrap();
+    client
+        .handle(
+            &registry,
+            ServerMessage::Holdings(vec![snapshot("doc-a", 3, 2)]),
+        )
+        .unwrap();
+    assert_eq!(client.get("doc-a").unwrap().value["count"], 2);
+    client
+        .handle(&registry, ServerMessage::Completed(completion))
+        .unwrap();
+    assert_eq!(client.get("doc-a").unwrap().value["count"], 2);
+}
+
+#[test]
 fn recovered_rejections_are_observable_without_replaying_stale_snapshots() {
     let registry = registry();
     let mut client = Client::new("alice".into());
@@ -32,6 +111,7 @@ fn recovered_rejections_are_observable_without_replaying_stale_snapshots() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-a", 10, 20)],
                 completed: vec![
                     Completion {
@@ -93,6 +173,7 @@ fn recovered_forbidden_completion_removes_dependent_journal_and_reports_access_l
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![],
                 completed: vec![Completion {
                     id,
@@ -142,6 +223,7 @@ fn recovered_rejection_survives_a_later_optimistic_replay_failure() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-a", 10, i64::MAX)],
                 completed: vec![Completion {
                     id,
@@ -274,6 +356,7 @@ fn install(client: &mut Client, registry: &Registry, documents: Vec<Snapshot>) {
         .handle(
             registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents,
                 completed: Vec::new(),
             }),
@@ -308,6 +391,7 @@ fn unsolicited_holdings_cannot_open_recovery_or_double_apply_a_committed_pending
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![committed.clone()],
                 completed: vec![Completion {
                     id,
@@ -630,6 +714,7 @@ fn recovered_receipt_does_not_roll_back_newer_snapshot() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![replacement.clone()],
                 completed: vec![Completion {
                     id: id1,
@@ -933,6 +1018,7 @@ fn surviving_reconnect_resubmits_same_ids_after_reconciliation() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-a", 1, 0)],
                 completed: Vec::new(),
             }),
@@ -969,6 +1055,7 @@ fn surviving_reconnect_dedups_committed_receipts() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![committed.clone()],
                 completed: vec![Completion {
                     id: id1,
@@ -1322,6 +1409,7 @@ fn unsolicited_holdings_refresh_preserves_accepted_pacing() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-a", 1, 0), snapshot("doc-b", 1, 7)],
                 completed: Vec::new(),
             }),
@@ -1388,6 +1476,7 @@ fn recovery_manifest_requeues_unresolved_after_need_manifest() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-a", 1, 0)],
                 completed: Vec::new(),
             }),
@@ -1448,6 +1537,7 @@ fn origin_completion_before_same_commit_holdings_refresh() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![committed.clone()],
                 completed: Vec::new(),
             }),
@@ -1487,6 +1577,7 @@ fn revocation_tombstone_lifts_only_on_regrant() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-b", 1, 0)],
                 completed: Vec::new(),
             }),
@@ -1503,6 +1594,7 @@ fn revocation_tombstone_lifts_only_on_regrant() {
         .handle(
             &registry,
             ServerMessage::Manifest(Reconciliation {
+                unchanged: vec![],
                 documents: vec![snapshot("doc-a", 1, 0), snapshot("doc-b", 1, 0)],
                 completed: Vec::new(),
             }),

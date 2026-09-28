@@ -33,6 +33,13 @@ impl Default for Config {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnectionId(pub u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionState {
+    Open,
+    Draining,
+    Closed,
+}
+
 /// Opaque, host-owned proof of one physical attachment. Never accepted from a
 /// wire caller. Old handles cannot invoke, detach or close a replacement.
 #[derive(Clone)]
@@ -53,6 +60,8 @@ struct Resident {
     attached: bool,
     expires: u64,
     sequence: u64,
+    closing: bool,
+    accepted: usize,
 }
 
 /// Verified input for the host dispatcher. The wire has no asserted identity,
@@ -92,9 +101,9 @@ impl<R: Authority> Server<R> {
         self
     }
     pub fn attached(&self, attachment: &Attachment) -> bool {
-        self.residents
-            .get(&attachment.key)
-            .is_some_and(|entry| entry.attached && entry.generation == attachment.generation)
+        self.residents.get(&attachment.key).is_some_and(|entry| {
+            !entry.closing && entry.attached && entry.generation == attachment.generation
+        })
     }
     /// Hosts drive this even without traffic, then drain `take_retired`. Retiring
     /// a connection revokes new dispatch; already owned work may finish before
@@ -102,12 +111,17 @@ impl<R: Authority> Server<R> {
     pub fn tick(&mut self, now: u64) {
         self.now = self.now.max(now);
         self.residents.retain(|(identity, _), entry| {
-            let valid = !self.live_authority
+            let valid = entry.accepted > 0
+                || !self.live_authority
                 || match self.authority.identify(&entry.bearer) {
                     Ok(current) => current == *identity,
                     Err(_) => false,
                 };
-            let keep = valid && (entry.attached || entry.expires > self.now);
+            if !valid || (!entry.attached && entry.expires <= self.now) {
+                entry.closing = true;
+                entry.attached = false;
+            }
+            let keep = !entry.closing || entry.accepted > 0;
             if !keep {
                 self.retired.push(entry.id);
             }
@@ -138,7 +152,11 @@ impl<R: Authority> Server<R> {
         }
         let key = (identity, String::from(client_id));
         let resumed = self.residents.contains_key(&key);
-        if self.residents.get(&key).is_some_and(|entry| entry.attached) {
+        if self
+            .residents
+            .get(&key)
+            .is_some_and(|entry| entry.attached || entry.closing)
+        {
             return Err(Error::Occupied);
         }
         if !resumed && self.residents.len() >= self.config.capacity {
@@ -155,6 +173,8 @@ impl<R: Authority> Server<R> {
                 attached: false,
                 expires: 0,
                 sequence: 0,
+                closing: false,
+                accepted: 0,
             });
         entry.attached = true;
         entry.bearer = String::from(bearer);
@@ -172,7 +192,9 @@ impl<R: Authority> Server<R> {
     fn resident(&mut self, attachment: &Attachment) -> Result<&mut Resident, Error> {
         self.residents
             .get_mut(&attachment.key)
-            .filter(|entry| entry.attached && entry.generation == attachment.generation)
+            .filter(|entry| {
+                !entry.closing && entry.attached && entry.generation == attachment.generation
+            })
             .ok_or(Error::StaleConnection)
     }
     /// Detach without retiring resident state until the reconnect deadline.
@@ -185,11 +207,44 @@ impl<R: Authority> Server<R> {
         self.tick(self.now);
         Ok(())
     }
-    /// Revoke immediately and notify the host to release the logical scope.
+    /// Stop admissions immediately. Accepted operations retain the logical scope
+    /// until their final release, independently of the physical attachment.
     pub fn close(&mut self, attachment: &Attachment) -> Result<(), Error> {
-        let id = self.resident(attachment)?.id;
-        self.residents.remove(&attachment.key);
-        self.retired.push(id);
+        let entry = self.resident(attachment)?;
+        entry.closing = true;
+        entry.attached = false;
+        self.tick(self.now);
+        Ok(())
+    }
+
+    pub fn state(&self, connection: ConnectionId) -> ConnectionState {
+        match self.residents.values().find(|entry| entry.id == connection) {
+            Some(entry) if entry.closing => ConnectionState::Draining,
+            Some(_) => ConnectionState::Open,
+            None => ConnectionState::Closed,
+        }
+    }
+
+    /// Called by the dispatcher under its gate after guards pass, before ACK.
+    pub fn retain(&mut self, connection: ConnectionId) -> Result<(), Error> {
+        let entry = self
+            .residents
+            .values_mut()
+            .find(|entry| entry.id == connection && !entry.closing)
+            .ok_or(Error::StaleConnection)?;
+        entry.accepted = entry.accepted.checked_add(1).ok_or(Error::Capacity)?;
+        Ok(())
+    }
+
+    /// Release exactly one accepted operation after execution and controllers.
+    pub fn release(&mut self, connection: ConnectionId) -> Result<(), Error> {
+        let entry = self
+            .residents
+            .values_mut()
+            .find(|entry| entry.id == connection)
+            .ok_or(Error::StaleConnection)?;
+        entry.accepted = entry.accepted.checked_sub(1).ok_or(Error::Protocol)?;
+        self.tick(self.now);
         Ok(())
     }
     /// Non-connection requests resolve credentials on every invocation. Their

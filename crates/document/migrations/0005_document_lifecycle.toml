@@ -1,0 +1,14 @@
+id = "0005_document_lifecycle"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "document.lifecycle"
+primary = ["id"]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "state", kind = "text" },
+  { name = "finalizers", kind = "text" },
+  { name = "blocked", kind = "text" },
+]
+foreign = [{ columns = ["id"], table = "document.documents", references = ["id"] }]

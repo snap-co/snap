@@ -339,7 +339,7 @@ impl Client {
     /// Apply one server message and publish a single coherent view.
     ///
     /// Completion effects and removal of the completed entry publish together;
-    /// remaining entries replay in order. The originator's completion is
+    /// remaining entries replay in order. The originator's commit notification is
     /// queued before any same-commit holdings refresh, so handling them in
     /// arrival order never double-applies. Replication is verified (base
     /// revision/digest, compatible behavior, result revision/digest) and never
@@ -358,6 +358,12 @@ impl Client {
         match message {
             ServerMessage::Accepted { id } => self.handle_accepted(id),
             ServerMessage::Completed(completion) => self.handle_completed(registry, completion),
+            ServerMessage::Committed(completion) => {
+                if self.reconciling || self.recovery_pending {
+                    return Ok(Outcome::Deferred);
+                }
+                self.handle_completed(registry, completion)
+            }
             ServerMessage::Manifest(reconciliation) => {
                 self.handle_reconciliation(registry, reconciliation)
             }
@@ -368,6 +374,7 @@ impl Client {
                 self.handle_reconciliation(
                     registry,
                     Reconciliation {
+                        unchanged: Vec::new(),
                         documents,
                         completed: Vec::new(),
                     },
@@ -579,6 +586,21 @@ impl Client {
     ) -> Result<Outcome, Error> {
         {
             let mut seen = BTreeSet::new();
+            for holding in &reconciliation.unchanged {
+                if !seen.insert(holding.document.clone()) {
+                    return Err(Error::Invalid);
+                }
+                let snapshot = self
+                    .authoritative
+                    .get(&holding.document)
+                    .ok_or(Error::Protocol)?;
+                if snapshot.version != holding.version
+                    || snapshot.revision != holding.revision
+                    || crate::digest(snapshot) != holding.digest
+                {
+                    return Err(Error::Protocol);
+                }
+            }
             for snapshot in &reconciliation.documents {
                 if !seen.insert(snapshot.id.clone()) {
                     return Err(Error::Invalid);
@@ -597,6 +619,12 @@ impl Client {
         // the gate; an unsolicited refresh preserves acceptance pacing.
         let requested = self.reconciling || self.recovery_pending;
         let mut authoritative = BTreeMap::new();
+        for holding in reconciliation.unchanged {
+            authoritative.insert(
+                holding.document.clone(),
+                self.authoritative[&holding.document].clone(),
+            );
+        }
         for snapshot in reconciliation.documents {
             authoritative.insert(snapshot.id.clone(), snapshot);
         }
