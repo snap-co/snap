@@ -18,6 +18,10 @@ pub struct Root {
     pub tickets: BTreeMap<String, String>,
     pub sessions: BTreeMap<String, String>,
     pub intakes: BTreeMap<String, String>,
+    /// Next incarnation per logical key. Retained Documents are never reused, so
+    /// old mutation receipts cannot apply to a replacement ticket or intake.
+    #[serde(default)]
+    pub generations: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -139,6 +143,7 @@ pub fn onboard(
         tickets: BTreeMap::new(),
         sessions: BTreeMap::new(),
         intakes: BTreeMap::new(),
+        generations: BTreeMap::new(),
     };
     let snapshot = Snapshot {
         id: id.into(),
@@ -215,13 +220,14 @@ pub fn observe(
     id: &str,
     effect: Effect,
 ) -> Result<Workspace, Error> {
+    let root: Root = decode(document().retained(tx, workspace)?.value)?;
     let before = retained(tx, workspace)?;
     let after = super::observe(before.clone(), id, effect)?;
     for (key, ticket) in &after.tickets {
         if encode(ticket)? != encode(before.tickets.get(key).ok_or(Error::Invalid)?)? {
             document().observe(
                 tx,
-                &child_id(workspace, TICKET_KIND, key),
+                root.tickets.get(key).ok_or(Error::NotFound)?,
                 encode(&Child {
                     workspace: workspace.into(),
                     data: ticket,
@@ -230,19 +236,19 @@ pub fn observe(
         }
     }
     let session = after.sessions.get(id).ok_or(Error::NotFound)?;
-    let doc_id = child_id(workspace, SESSION_KIND, id);
+    let doc_id = root.sessions.get(id).ok_or(Error::NotFound)?;
     document().observe(
         tx,
-        &doc_id,
+        doc_id,
         encode(&Child {
             workspace: workspace.into(),
             data: session,
         })?,
     )?;
     if !session.claims() {
-        let mut lifecycle = document().lifecycle(tx, &doc_id)?;
+        let mut lifecycle = document().lifecycle(tx, doc_id)?;
         lifecycle.finalizers.remove("factorio.session.resources");
-        document().set_lifecycle(tx, &doc_id, &lifecycle)?;
+        document().set_lifecycle(tx, doc_id, &lifecycle)?;
     }
     Ok(after)
 }
@@ -321,7 +327,11 @@ pub fn command(
     let after = guard(tx, workspace, actor, human, now, command)?;
     save(tx, workspace, actor, &before, &after)?;
     if let Some(id) = retry {
-        let id = child_id(workspace, SESSION_KIND, &id);
+        let id = root(tx, workspace, actor)?
+            .sessions
+            .get(&id)
+            .ok_or(Error::NotFound)?
+            .clone();
         let mut lifecycle = document().lifecycle(tx, &id)?;
         lifecycle.blocked = None;
         document().set_lifecycle(tx, &id, &lifecycle)?;
@@ -342,7 +352,7 @@ fn save(
         workspace,
         actor,
         TICKET_KIND,
-        &mut root.tickets,
+        &mut root,
         &before.tickets,
         &after.tickets,
     )?;
@@ -351,7 +361,7 @@ fn save(
         workspace,
         actor,
         SESSION_KIND,
-        &mut root.sessions,
+        &mut root,
         &before.sessions,
         &after.sessions,
     )?;
@@ -360,7 +370,7 @@ fn save(
         workspace,
         actor,
         INTAKE_KIND,
-        &mut root.intakes,
+        &mut root,
         &before.intakes,
         &after.intakes,
     )?;
@@ -392,11 +402,15 @@ pub fn create_intake(
             Err(Error::Constraint)
         };
     }
+    let root = root(tx, workspace, actor)?;
     let item = intake::Intake {
         id: id.into(),
         owner: actor.into(),
         description: description.into(),
-        conversation: format!("ses_{}", child_id(workspace, INTAKE_KIND, id)),
+        conversation: format!(
+            "ses_{}",
+            next_id(workspace, INTAKE_KIND, id, &root.generations)
+        ),
         route: intake::Route::Explore,
         rationale: String::new(),
         tickets: vec![],
@@ -518,18 +532,39 @@ pub fn drafts(
     Ok(item)
 }
 
+fn next_id(workspace: &str, kind: &str, key: &str, generations: &BTreeMap<String, u64>) -> String {
+    let generation = generations
+        .get(&format!("{kind}:{key}"))
+        .copied()
+        .unwrap_or(0);
+    if generation == 0 {
+        child_id(workspace, kind, key)
+    } else {
+        child_id(workspace, kind, &format!("{key}@{generation}"))
+    }
+}
+
 fn sync<T: Serialize>(
     tx: &mut Transaction<'_>,
     workspace: &str,
     actor: &str,
     kind: &str,
-    index: &mut BTreeMap<String, String>,
+    root: &mut Root,
     before: &BTreeMap<String, T>,
     after: &BTreeMap<String, T>,
 ) -> Result<(), Error> {
+    let index = match kind {
+        TICKET_KIND => &mut root.tickets,
+        SESSION_KIND => &mut root.sessions,
+        INTAKE_KIND => &mut root.intakes,
+        _ => return Err(Error::Invalid),
+    };
+    let generations = &mut root.generations;
     for key in before.keys().filter(|key| !after.contains_key(*key)) {
         let id = index.remove(key).ok_or(Error::Invalid)?;
         document().remove(tx, &id, actor)?;
+        // A root written before incarnation tracking has already used generation 0.
+        generations.entry(format!("{kind}:{key}")).or_insert(1);
     }
     for (key, data) in after {
         if before.get(key).map(encode).transpose()? == Some(encode(data)?) {
@@ -542,7 +577,9 @@ fn sync<T: Serialize>(
         if let Some(id) = index.get(key) {
             document().replace(tx, id, actor, value)?;
         } else {
-            let id = child_id(workspace, kind, key);
+            let id = next_id(workspace, kind, key, generations);
+            let generation = generations.entry(format!("{kind}:{key}")).or_insert(0);
+            *generation = generation.checked_add(1).ok_or(Error::Constraint)?;
             document().create(
                 tx,
                 &Snapshot {

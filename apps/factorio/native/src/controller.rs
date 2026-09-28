@@ -78,7 +78,7 @@ fn with_effects(
                 graph::retained(tx, &child.workspace)
             })?;
             let session = state.sessions.get(&child.data.id).ok_or(Error::NotFound)?;
-            if graph::child_id(&child.workspace, graph::SESSION_KIND, &session.id) != snapshot.id {
+            if root.sessions.get(&session.id) != Some(&snapshot.id) {
                 return Err(Error::Invalid);
             }
             let lifecycle = ctx.lifecycle(&snapshot.id)?;

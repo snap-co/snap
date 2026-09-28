@@ -117,6 +117,9 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await expect(page.getByLabel("Your idea",{exact:true})).toBeVisible();
   expect((await cli(["status"])).intakes[intake.id]).toBeUndefined();
   expect((await readIntake()).Err).toBeDefined();
+  const replacement=await invoke(page,"factorio.intake-create",{workspace,id:intake.id,description:"Replacement intake"});
+  expect(replacement.Ok.id).toBe(intake.id);expect(replacement.Ok.conversation).not.toBe(intake.conversation);
+  expect((await invoke(page,"factorio.intake-delete",{workspace,id:intake.id})).Ok).toBeNull();
   expect((await page.request.post(`${base}/api/command`,{headers:mutationHeaders,data:{command:"delete_ticket",id:"preceding-0"}})).ok()).toBe(false);
   const ticket=(id:string,blockers:string[]=[])=>({id,title:id,description:"Fixture implementation",modules:["a"],status:"ready",notes:"",parent:null,blockers});
   for(const t of [ticket("first"),ticket("dependent",["first"])]){const file=`${dir}/${t.id}.json`;await writeFile(file,JSON.stringify(t));await cli(["ticket",file]);}

@@ -14,7 +14,7 @@ commands = [["bun", "../../scripts/build-factorio.ts", "--package"]]
 commands = [["cargo", "test", "-p", "factorio"]]
 
 [test.native]
-commands = [["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"], ["bun", "test", "tests/intake-tool.test.ts"]]
+commands = [["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"], ["bun", "test", "tests/intake-tool.test.ts", "tests/client.test.ts"]]
 
 [test.browser]
 commands = [["bun", "../../scripts/test-factorio.ts"]]

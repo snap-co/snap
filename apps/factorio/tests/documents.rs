@@ -122,6 +122,152 @@ fn linked_documents_inherit_workspace_access_without_a_service_owner() {
 }
 
 #[test]
+fn replacements_get_fresh_document_and_conversation_incarnations() {
+    let mut store = store();
+    let first = store
+        .run("initial", |tx| {
+            graph::onboard(tx, ROOT, "alice", config())?;
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                false,
+                0,
+                Command::Ticket {
+                    ticket: ticket("one"),
+                },
+            )?;
+            graph::create_intake(tx, ROOT, "alice", "request", "Original")
+        })
+        .unwrap()
+        .value;
+    let old_ticket = graph::child_id(ROOT, graph::TICKET_KIND, "one");
+    let old_intake = graph::child_id(ROOT, graph::INTAKE_KIND, "request");
+    store
+        .run("delete", |tx| {
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                false,
+                0,
+                Command::DeleteTicket { id: "one".into() },
+            )?;
+            graph::delete_intake(tx, ROOT, "alice", "request")
+        })
+        .unwrap();
+    assert!(
+        store
+            .run("stranger cannot recreate", |tx| graph::create_intake(
+                tx,
+                ROOT,
+                "bob",
+                "request",
+                "Replacement"
+            ))
+            .is_err()
+    );
+    let replaced = store
+        .run("recreate", |tx| {
+            let mut replacement = ticket("one");
+            replacement.title = "Replacement".into();
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                false,
+                0,
+                Command::Ticket {
+                    ticket: replacement,
+                },
+            )?;
+            graph::create_intake(tx, ROOT, "alice", "request", "Replacement")
+        })
+        .unwrap()
+        .value;
+    assert_ne!(first.conversation, replaced.conversation);
+    store
+        .inspect("new identities", |tx| {
+            let root = graph::root(tx, ROOT, "alice")?;
+            assert_ne!(root.tickets["one"], old_ticket);
+            assert_ne!(root.intakes["request"], old_intake);
+            assert_eq!(
+                graph::load(tx, ROOT, "alice")?.tickets["one"].title,
+                "Replacement"
+            );
+            assert_eq!(
+                graph::document().retained(tx, &old_ticket)?.value["data"]["title"],
+                "Implement one"
+            );
+            let stale = Intent {
+                id: 1,
+                document: old_ticket.clone(),
+                mutation: "ticket.edit".into(),
+                version: "1".into(),
+                args: serde_json::to_value(ticket("one")).unwrap(),
+            };
+            assert!(graph::document().admit(tx, "alice", &stale)?.is_err());
+            let active = graph::document().authorized_ids(tx, "alice")?;
+            assert_eq!(active.len(), 3);
+            assert!(!active.contains(&old_ticket));
+            assert!(!active.contains(&old_intake));
+            Ok(())
+        })
+        .unwrap();
+    // Controller completion targets the current incarnation, not the tombstone.
+    store
+        .run("complete replacement ticket", |tx| {
+            graph::command(tx, ROOT, "alice", false, 0, start("work"))?;
+            graph::observe(tx, ROOT, "work", factorio::Effect::Started)?;
+            graph::observe(
+                tx,
+                ROOT,
+                "work",
+                factorio::Effect::Published {
+                    commit: "b".repeat(40),
+                    target: "a".repeat(40),
+                    evidence: "checked".into(),
+                    findings: vec![],
+                },
+            )?;
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                true,
+                0,
+                Command::Approve {
+                    id: "work".into(),
+                    commit: "b".repeat(40),
+                },
+            )?;
+            graph::observe(
+                tx,
+                ROOT,
+                "work",
+                factorio::Effect::Integrating {
+                    commit: "c".repeat(40),
+                },
+            )?;
+            graph::observe(tx, ROOT, "work", factorio::Effect::Integrated)
+        })
+        .unwrap();
+    store
+        .inspect("current ticket completed", |tx| {
+            assert_eq!(
+                graph::load(tx, ROOT, "alice")?.tickets["one"].status,
+                Status::Done
+            );
+            assert_eq!(
+                graph::document().retained(tx, &old_ticket)?.value["data"]["status"],
+                "ready"
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     let mut store = store();
     store

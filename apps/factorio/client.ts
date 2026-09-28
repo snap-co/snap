@@ -47,8 +47,13 @@ export class Factorio {
     if (this.ready) return;
     if (this.opening) return this.opening;
     this.opening = (async()=>{
-      if (!this.identity.identified) await this.identify();
-      if (!this.identity.identified) throw new Error("Sign in to continue");
+      // Cookie bootstrap refreshes the OAuth access lease before reattachment.
+      // Agent credentials never borrow that browser refresh authority.
+      if (!this.token || !this.identity.identified) await this.identify();
+      if (!this.identity.identified) {
+        this.calls.close("Sign-in ended; outstanding outcomes are unknown");
+        throw new Error("Sign in to continue");
+      }
       if (typeof window !== "undefined" && !this.binding) {
         const path="/bindings/factorio_wasm.js";
         const module=await import(/* @vite-ignore */ path);
@@ -67,8 +72,13 @@ export class Factorio {
           try {
             const frame=String(event.data), response=JSON.parse(frame);
             if (response.Attached) { this.ready=true; clearTimeout(timeout); resolve(); }
-            if (response.Failed || response.Detached) throw new Error(JSON.stringify(response.Failed??"Disconnected"));
-            if (this.calls.receive(frame)) return;
+            const owned=this.calls.receive(frame);
+            if (response.Failed!==undefined) throw new Error(JSON.stringify(response.Failed));
+            if (response==="Detached") {
+              this.calls.close("Logical connection ended; outstanding outcomes are unknown");
+              throw new Error("Disconnected");
+            }
+            if (owned) return;
             if (this.binding) {
               const result=JSON.parse(this.binding.receive(frame));
               this.documents=result.documents;
@@ -81,11 +91,21 @@ export class Factorio {
         socket.onclose=()=>{
           clearTimeout(timeout); this.ready=false; this.calls.detached();
           reject(new Error("Connection closed"));
-          if (!this.closed) { this.emit("Reconnecting"); this.timer=setTimeout(()=>void this.connect().catch(error=>this.emit(String(error))),500); }
+          if (!this.closed) { this.emit("Reconnecting"); this.reconnect(); }
         };
       });
-    })().finally(()=>{this.opening=undefined;});
+    })().catch(error=>{
+      // Bootstrap can fail transiently while the backend is restarting, before
+      // there is a socket whose close handler could schedule another attempt.
+      if(this.identity.identified) this.reconnect();
+      throw error;
+    }).finally(()=>{this.opening=undefined;});
     return this.opening;
+  }
+  private reconnect() {
+    if(this.closed) return;
+    clearTimeout(this.timer);
+    this.timer=setTimeout(()=>void this.connect().catch(error=>this.emit(String(error))),500);
   }
   async invoke<T>(operation: string, input: unknown): Promise<T> { await this.connect(); return this.calls.invoke<T>(operation,input); }
   repositories() { return this.invoke<Repository[]>("factorio.repositories",{}); }

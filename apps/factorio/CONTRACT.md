@@ -47,6 +47,10 @@ Workspace, Ticket, Session and Intake are separate Documents. Workspace indexes
 link children, whose Access is inherited from the workspace. Loading includes all
 authorized active Documents. The Rust Document client owns browser reconciliation;
 the browser and CLI share invocation ACK, same-ID retry and reconnect recovery.
+Browser reattachment refreshes the OAuth access lease through session bootstrap.
+An ended login or terminal transport failure settles outstanding calls rather than
+leaving the UI waiting. Deleted ticket/intake IDs may be reused, but receive fresh
+Document identities and intake conversations; retained receipts stay on old identities.
 
 Live application operations run over `/transport` WebSocket. `factorio.command`
 composes ticket/session changes in one Store transaction; intake creation, draft
