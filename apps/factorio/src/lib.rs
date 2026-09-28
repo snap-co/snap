@@ -261,6 +261,9 @@ pub struct Actor<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    Recover {
+        id: String,
+    },
     Publish {
         id: String,
         evidence: String,
@@ -316,6 +319,13 @@ pub fn transition(
     cmd: Command,
 ) -> Result<Workspace, Error> {
     match cmd {
+        Command::Recover { id } => {
+            w.sessions
+                .get_mut(&id)
+                .ok_or(Error::NotFound)?
+                .error
+                .clear();
+        }
         Command::Publish {
             id,
             evidence,
@@ -579,6 +589,16 @@ fn apply_effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Wo
     let w = observe(load(tx)?, id, effect)?;
     save(tx, &w)?;
     Ok(w)
+}
+
+/// Trusted controller publication for the aggregate host during carrier migration.
+/// Authorization already committed the desired state before external IO began.
+pub fn controller_observe(
+    tx: &mut Transaction<'_>,
+    id: &str,
+    effect: Effect,
+) -> Result<Workspace, Error> {
+    apply_effect(tx, id, effect)
 }
 
 /// Pure controller observation. Hosts persist these only after the corresponding

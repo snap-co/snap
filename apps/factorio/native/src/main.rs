@@ -1,3 +1,4 @@
+mod controller;
 mod effects;
 mod intake;
 #[cfg(test)]
@@ -9,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use factorio::{Actor, Command, Effect, Phase, Workspace};
+use factorio::{Actor, Command, Workspace};
 use serde_json::{Value, json};
 use snap_document_local::{Host, web::Shared};
 use snap_oauth_local::{Config, Cookies, OAuth, failure, no_store, now, random};
@@ -20,33 +21,11 @@ use tower_http::services::{ServeDir, ServeFile};
 
 struct App {
     oauth: Arc<OAuth>,
-    effects: tokio::sync::Mutex<()>,
     intake_gate: tokio::sync::Mutex<()>,
 }
 impl App {
     fn workspace(&self) -> Result<Workspace, Error> {
         self.oauth.run("factorio.inspect", factorio::load)
-    }
-    fn effect(&self, id: &str, effect: Effect) -> Result<Workspace, String> {
-        self.oauth
-            .run("factorio.effect", |tx| factorio::effect(tx, id, effect))
-            .map_err(|e| format!("{e:?}"))
-    }
-    fn intent(&self, session: &rp::Session, id: &str, effect: Effect) -> Result<Workspace, String> {
-        self.oauth
-            .run("factorio.authorized-intent", |tx| {
-                factorio::authorized_intent(
-                    tx,
-                    Actor {
-                        session: &session.id,
-                        human: false,
-                        now: now(),
-                    },
-                    id,
-                    effect,
-                )
-            })
-            .map_err(|e| format!("{e:?}"))
     }
     async fn actor(
         &self,
@@ -76,118 +55,59 @@ impl App {
         }
         Ok((s, true))
     }
-    async fn recover(&self, id: &str) -> Result<(), String> {
-        let w = self.workspace().map_err(|e| format!("{e:?}"))?;
-        let s = w.sessions.get(id).ok_or("Session not found")?;
-        match s.phase {
-            Phase::Starting => {
-                effects::setup(&w.config, s).await?;
-                self.effect(id, Effect::Started)?;
-            }
-            Phase::Integrating => {
-                effects::integrate(&w.config, s).await?;
-                self.effect(id, Effect::Integrated)?;
-            }
-            _ => {}
-        }
-        let w = self.workspace().map_err(|e| format!("{e:?}"))?;
-        let s = w.sessions.get(id).ok_or("Session not found")?;
-        if matches!(s.phase, Phase::Cleanup | Phase::Abandoning) {
-            effects::cleanup(&w.config, s).await?;
-            self.effect(id, Effect::Cleaned)?;
-        }
-        Ok(())
-    }
     async fn execute(&self, session: &rp::Session, mut input: Value) -> Result<Workspace, String> {
-        let _gate = self.effects.lock().await;
         let name = input["command"]
             .as_str()
             .ok_or("Missing command")?
             .to_owned();
         let id = input["id"].as_str().unwrap_or("").to_owned();
         let w = self.workspace().map_err(|e| format!("{e:?}"))?;
-        // Recheck local OAuth authority after waiting for external-effect exclusion.
+        if name == "accept"
+            && w.sessions.get(&id).is_some_and(|session| {
+                session
+                    .candidate
+                    .as_ref()
+                    .is_none_or(|candidate| candidate.approval.is_none())
+            })
+        {
+            return Err("Awaiting explicit human approval in the browser".into());
+        }
+        if name == "approve" {
+            return Err("Approval requires the human browser action".into());
+        }
+        if name == "cleanup" {
+            input["command"] = "recover".into();
+        }
+        if name == "publish" && input.get("findings").is_none() {
+            input["findings"] = json!([]);
+        }
+        if name == "start" {
+            input["base"] = effects::head(&w.config).await?.into();
+            if input.get("conversation").is_none() {
+                input["conversation"] = format!("ses_{}", uuid::Uuid::new_v4().simple()).into();
+            }
+        }
+        let command: Command = serde_json::from_value(input).map_err(|e| e.to_string())?;
         self.oauth
-            .run("factorio.authority", |tx| rp::lease(tx, &session.id, now()))
-            .map_err(|_| "Session expired")?;
-        let result: Result<(), String> = async {
-            match name.as_str() {
-                "publish" => {
-                    let s = w.sessions.get(&id).ok_or("Session not found")?;
-                    let evidence = input["evidence"]
-                        .as_str()
-                        .ok_or("Provide check/review evidence")?
-                        .to_owned();
-                    let findings =
-                        serde_json::from_value(input.get("findings").cloned().unwrap_or(json!([])))
-                            .map_err(|_| "Invalid findings")?;
-                    let (commit, target) = effects::candidate(&w.config, s).await?;
-                    self.intent(
-                        session,
-                        &id,
-                        Effect::Published {
-                            commit,
-                            target,
-                            evidence,
-                            findings,
-                        },
-                    )?;
-                }
-                "accept" => {
-                    let s = w.sessions.get(&id).ok_or("Session not found")?;
-                    if s.phase == Phase::Published {
-                        if s.candidate.as_ref().is_none_or(|c| c.approval.is_none()) {
-                            return Err("Awaiting explicit human approval in the browser".into());
-                        }
-                        let commit = effects::prepare(&w.config, s).await?;
-                        self.intent(session, &id, Effect::Integrating { commit })?;
-                    } else if !matches!(s.phase, Phase::Integrating | Phase::Cleanup) {
-                        return Err("Session cannot be accepted in this phase".into());
-                    }
-                    self.recover(&id).await?;
-                }
-                "recover" | "cleanup" => {
-                    self.recover(&id).await?;
-                }
-                "approve" => return Err("Approval requires the human browser action".into()),
-                _ => {
-                    if name == "start" {
-                        input["base"] = effects::head(&w.config).await?.into();
-                        if input.get("conversation").is_none() {
-                            input["conversation"] =
-                                format!("ses_{}", uuid::Uuid::new_v4().simple()).into();
-                        }
-                    }
-                    let command: Command =
-                        serde_json::from_value(input).map_err(|e| e.to_string())?;
-                    self.oauth
-                        .run("factorio.command", |tx| {
-                            factorio::command(
-                                tx,
-                                Actor {
-                                    session: &session.id,
-                                    human: false,
-                                    now: now(),
-                                },
-                                command,
-                            )
-                        })
-                        .map_err(|e| format!("{e:?}"))?;
-                    if name == "start" || name == "abandon" {
-                        self.recover(&id).await?;
-                    }
-                }
-            }
-            Ok(())
+            .run("factorio.command", |tx| {
+                factorio::command(
+                    tx,
+                    Actor {
+                        session: &session.id,
+                        human: false,
+                        now: now(),
+                    },
+                    command,
+                )
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        let workspace = self.workspace().map_err(|e| format!("{e:?}"))?;
+        if let Some(session) = workspace.sessions.get(&id)
+            && !session.error.is_empty()
+        {
+            return Err(session.error.clone());
         }
-        .await;
-        if let Err(error) = result {
-            if !id.is_empty() {
-                let _ = self.effect(&id, Effect::Failed(error.clone()));
-            }
-            return Err(error);
-        }
-        self.workspace().map_err(|e| format!("{e:?}"))
+        Ok(workspace)
     }
 }
 async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -244,7 +164,6 @@ async fn approve(
     let Some(commit) = input["commit"].as_str() else {
         return failure(Error::Invalid);
     };
-    let _gate = app.effects.lock().await;
     let result = app.oauth.run("factorio.human-approval", |tx| {
         factorio::command(
             tx,
@@ -393,6 +312,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         snap_transport::server::Config::default(),
         random(),
     );
+    let mut host = controller::register(host, tokio::runtime::Handle::current());
+    tokio::task::block_in_place(|| host.recover_controllers())?;
     let documents = Shared::with_cookie(host, origin.clone(), cookies.reader());
     let oauth = OAuth::new(
         documents.clone(),
@@ -406,27 +327,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let app = Arc::new(App {
         oauth: oauth.clone(),
-        effects: tokio::sync::Mutex::new(()),
         intake_gate: tokio::sync::Mutex::new(()),
     });
-    // Only reconcile committed integration/cleanup at boot. Interrupted setup is
-    // visible and requires explicit recovery before any hook is run again.
-    for s in app.workspace()?.sessions.values() {
-        effects::reap_hook(s)?;
-        if matches!(
-            s.phase,
-            Phase::Integrating | Phase::Cleanup | Phase::Abandoning
-        ) {
-            if let Err(e) = app.recover(&s.id).await {
-                let _ = app.effect(&s.id, Effect::Failed(e));
-            }
-        } else if s.phase == Phase::Starting {
-            app.effect(
-                &s.id,
-                Effect::Failed("Setup interrupted; inspect resources and run recover".into()),
-            )?;
-        }
-    }
     let assets = std::env::var("SNAP_WEB_DIR").unwrap_or_else(|_| {
         std::env::current_exe()
             .ok()

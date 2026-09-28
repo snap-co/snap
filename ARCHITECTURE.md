@@ -45,9 +45,10 @@ independent consumer or enforceable dependency/portability rule requires it.
   Its native host registers guarded WebSocket operations with the shared dispatcher.
   Chatty synchronizes client data and performs no model or tool IO.
 - `apps/factorio` owns the shared workspace Document, ticket graphs, exclusive module
-  claims and candidate/approval lifecycle. Its native host journals effect intent
-  before Git or OpenCode IO and reconciles the exact planned integration commit
-  after restart. Cookie-authenticated human approval is separate from agent-token
+  claims and candidate/approval lifecycle. Its native controller performs one effect
+  per reconciliation pass under the shared gate, publishes observations and resumes
+  committed desires at startup. Failures stop until explicitly cleared. Integration
+  journals the exact planned commit before moving mainline. Cookie-authenticated human approval is separate from agent-token
   commands. CLI and browser share the TypeScript carrier; Rust owns domain rules.
   Conversational intake uses the existing OpenCode V2 service through its official
   client. OpenCode owns execution and history; Factorio keeps intake metadata and

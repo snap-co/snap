@@ -148,9 +148,10 @@ presence against software controlling that browser.
 `accept` requires that approval, checks both recorded OIDs, constructs a merge commit
 without changing the worktree, then durably records its OID before fast-forwarding
 mainline. Candidate or target movement requires a new publication and approval.
-Publication and new integration intent recheck the initiating OAuth session inside
-their write transaction after preparatory Git IO. Recovery of committed integration
-intent remains host-owned after the initiating session ends.
+Commands authorize and commit desired state before the controller performs Git IO.
+Reconciliation remains host-owned after the initiating session ends. Each pass runs
+one required effect and commits its observation under the shared application gate.
+The next pass reads committed state, so integration never precedes its recorded OID.
 Conflicts stop for inspection. Mainline integration is serialized across sessions.
 No remote push, PR, deployment or external tracker is involved.
 
@@ -171,9 +172,15 @@ The host checks port availability during setup. Hook argv runs directly with
 database. Hooks finish within 120 seconds; they may not leave detached services.
 The host owns each hook process group. A durable PID/birth record and pre-execution
 handshake allow restart to retire an interrupted group without killing a reused PID.
-Interrupted setup requires explicit recovery; committed merge/cleanup is reconciled
-at startup. Shell history, manual dev processes and their shutdown remain the
+Startup scans resume unfinished setup, publication, integration and cleanup.
+A recorded failure blocks that session until `recover` clears it. There is no
+automatic retry timer. Shell history, manual dev processes and their shutdown remain the
 operator's responsibility.
+
+The native carrier currently uses the aggregate workspace controller. The linked
+Session Document controller runs the same effect steps, records blocked lifecycle
+state and retains deletion/archival cleanup finalizers. Its host composition tests
+exercise that path ahead of the remaining carrier migration.
 
 ## OpenCode V2
 
