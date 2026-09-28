@@ -2177,6 +2177,7 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "hegeltest",
+ "snap-execution",
  "snap-identity",
  "snap-platform-local",
  "snap-sqlite",

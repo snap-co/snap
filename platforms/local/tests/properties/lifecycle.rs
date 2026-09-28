@@ -40,6 +40,7 @@ fn event(host: &mut Host, ticket: Ticket, expected: Event) {
         Some(Observation::Event {
             ticket: actual_ticket,
             event,
+            ..
         }) => {
             assert_eq!(actual_ticket, ticket);
             assert_eq!(event, expected);
@@ -132,12 +133,24 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
         }
     }
     host.tick(now);
-    assert!(
-        host.step().is_none(),
-        "scope retirement must wait behind held work"
-    );
-    for scope in &records {
-        assert_eq!(host.inspect().states[scope], state(&[]));
+    for (index, (ticket, _, _)) in jobs.iter().enumerate().skip(1) {
+        if retired[index] {
+            event(
+                &mut host,
+                *ticket,
+                Event::Completed {
+                    id: 1,
+                    outcome: Err(Error::IdentityRequired),
+                },
+            );
+        }
+    }
+    assert!(host.step().is_none(), "accepted work remains held");
+    for (index, scope) in records.iter().enumerate() {
+        assert_eq!(
+            host.inspect().states.get(scope),
+            (index == 0 || !retired[index]).then_some(&state(&[]))
+        );
     }
     // Reattach while old work is still held. Expired/closed connections get fresh
     // scopes; retained connections keep the old scope and its queued operation.
@@ -145,7 +158,9 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
     for (index, peer) in peers.iter_mut().enumerate() {
         let before = host.inspect().states.clone();
         let response = ready(&mut host, peer, connect(index), now);
-        if retired[index] {
+        if index == 0 && retired[index] {
+            assert_eq!(response, Response::Failed(Error::Occupied));
+        } else if retired[index] {
             tc.event("retired scope replaced while work held");
             assert_eq!(response, Response::Attached { resumed: false });
             let added: Vec<_> = host
@@ -173,6 +188,9 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
         }
     }
     for (index, (ticket, scope, delta)) in jobs.iter().enumerate() {
+        if index > 0 && retired[index] {
+            continue;
+        }
         if index > 0 {
             event(&mut host, *ticket, Event::Accepted { id: 1 });
             assert!(
@@ -206,9 +224,10 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
                 },
             },
         );
+        let expected = if fail { state(&[]) } else { state(&[*delta]) };
         assert_eq!(
-            host.inspect().states[scope],
-            if fail { state(&[]) } else { state(&[*delta]) }
+            host.inspect().states.get(scope),
+            (!retired[index]).then_some(&expected)
         );
     }
     assert!(host.step().is_none());

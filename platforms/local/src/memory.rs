@@ -27,7 +27,11 @@ impl<P: Program, R: Authority> Host<P, R> {
                 Observation::Need { ticket, key } => {
                     self.waiting = Some((ticket, key));
                 }
-                Observation::Event { ticket, event } => {
+                Observation::Event {
+                    ticket,
+                    event,
+                    private,
+                } => {
                     if matches!(event, Event::Completed { .. })
                         && self
                             .waiting
@@ -36,7 +40,9 @@ impl<P: Program, R: Authority> Host<P, R> {
                     {
                         self.waiting = None;
                     }
-                    self.trace.push(event.clone());
+                    if !private {
+                        self.trace.push(event.clone());
+                    }
                     if let Some(mailbox) = self.mailboxes.get_mut(&ticket) {
                         mailbox.done = matches!(event, Event::Completed { .. });
                         mailbox.events.push(event);

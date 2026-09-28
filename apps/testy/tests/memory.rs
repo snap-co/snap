@@ -214,10 +214,15 @@ fn cancelled_client_keeps_owned_work_and_expiry_waits_for_it() {
     drop(pending);
     drop(client);
     platform.advance(100);
-    assert_eq!(platform.residents(), 0);
+    assert_eq!(
+        platform.residents(),
+        1,
+        "accepted work retains the draining logical connection"
+    );
     // Data remains pinned until the accepted operation has finished. Supplying
     // the read cannot panic or revive the retired connection.
     platform.supply(ticket, &key, Ok(json!(100))).unwrap();
+    assert_eq!(platform.residents(), 0);
     assert!(
         matches!(platform.trace().last(), Some(Event::Completed { outcome: Ok(value), .. }) if value == &json!(10))
     );

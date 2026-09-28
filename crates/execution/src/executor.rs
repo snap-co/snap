@@ -48,9 +48,18 @@ impl Job {
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
+    /// The host owns this FIFO slot until it calls `finish_reserved`. No program
+    /// code or credential-bearing request data enters this slot.
+    Reserved(Ticket),
     Accepted(Ticket),
-    Need { ticket: Ticket, key: String },
-    Completed { ticket: Ticket, outcome: Outcome },
+    Need {
+        ticket: Ticket,
+        key: String,
+    },
+    Completed {
+        ticket: Ticket,
+        outcome: Outcome,
+    },
 }
 
 struct Job {
@@ -65,6 +74,7 @@ struct Job {
 enum Queued {
     Run(Job),
     Release(Scope),
+    Reserved(Ticket),
 }
 
 /// One application-wide gate. The active job retains ownership while waiting for
@@ -77,6 +87,7 @@ pub struct Executor<P: Program> {
     closing: BTreeSet<Scope>,
     queue: VecDeque<Queued>,
     active: Option<Job>,
+    reserved: Option<Ticket>,
     sequence: u64,
     paused: bool,
     capacity: usize,
@@ -99,6 +110,7 @@ impl<P: Program> Executor<P> {
             closing: BTreeSet::new(),
             queue: VecDeque::new(),
             active: None,
+            reserved: None,
             sequence: 0,
             paused: false,
             capacity,
@@ -137,16 +149,21 @@ impl<P: Program> Executor<P> {
     pub fn state(&self, scope: Scope) -> Option<&Value> {
         self.states.get(&scope)
     }
-    /// Ephemeral hosts may discard a retired scope immediately. Owned operations
-    /// complete with failure instead of publishing into a disconnected lifetime.
-    /// Late dependency responses are rejected; snapshots cannot resurrect the scope.
+    /// Retire unaccepted work immediately. An accepted operation retains its scope
+    /// through completion, including held dependencies; release follows it.
     pub fn discard(&mut self, scope: Scope) {
-        self.states.remove(&scope);
-        self.closing.remove(&scope);
+        let draining = self
+            .active
+            .as_ref()
+            .is_some_and(|job| job.scope == Some(scope) && job.accepted);
+        if !draining {
+            self.states.remove(&scope);
+            self.closing.remove(&scope);
+        }
         self.queue
             .retain(|entry| !matches!(entry, Queued::Release(id) if *id == scope));
         let fail = |job: &mut Job| {
-            if job.scope == Some(scope) {
+            if job.scope == Some(scope) && !job.accepted {
                 job.waiting = None;
                 job.failure = Some(Error::IdentityRequired);
             }
@@ -159,6 +176,10 @@ impl<P: Program> Executor<P> {
                 fail(job);
             }
         }
+        if draining {
+            self.closing.remove(&scope);
+            self.release(scope);
+        }
     }
     pub fn inspect(&self) -> Inspection<'_> {
         Inspection {
@@ -169,7 +190,7 @@ impl<P: Program> Executor<P> {
                 .iter()
                 .filter_map(|entry| match entry {
                     Queued::Run(job) => Some(job.view()),
-                    Queued::Release(_) => None,
+                    Queued::Release(_) | Queued::Reserved(_) => None,
                 })
                 .collect(),
             releases: self
@@ -189,7 +210,9 @@ impl<P: Program> Executor<P> {
         {
             return Err(Error::Protocol);
         }
-        if self.queue.len() + usize::from(self.active.is_some()) >= self.capacity {
+        if self.queue.len() + usize::from(self.active.is_some() || self.reserved.is_some())
+            >= self.capacity
+        {
             return Err(Error::Capacity);
         }
         self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
@@ -204,6 +227,32 @@ impl<P: Program> Executor<P> {
             failure: None,
         }));
         Ok(ticket)
+    }
+
+    /// Reserve a FIFO operation slot for a host-composed transactional capability.
+    /// Admission starts only when `step` emits Reserved. The host queues its ACK
+    /// after its guard succeeds and releases this slot after its durable completion.
+    pub fn reserve(&mut self) -> Result<Ticket, Error> {
+        if self.paused {
+            return Err(Error::Unavailable);
+        }
+        if self.queue.len() + usize::from(self.active.is_some() || self.reserved.is_some())
+            >= self.capacity
+        {
+            return Err(Error::Capacity);
+        }
+        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
+        let ticket = Ticket(self.sequence);
+        self.queue.push_back(Queued::Reserved(ticket));
+        Ok(ticket)
+    }
+
+    pub fn finish_reserved(&mut self, ticket: Ticket) -> Result<(), Error> {
+        if self.reserved != Some(ticket) {
+            return Err(Error::Protocol);
+        }
+        self.reserved = None;
+        Ok(())
     }
     /// Resolves exactly the outstanding read. Failure ends the operation without
     /// publication. Stale or mismatched responses cannot resume another operation.
@@ -232,6 +281,9 @@ impl<P: Program> Executor<P> {
     /// Performs one observable transition. None means idle or waiting on a read.
     /// Call again after Accepted to enter the handler, or after supply to retry.
     pub fn step(&mut self) -> Option<Event> {
+        if self.reserved.is_some() {
+            return None;
+        }
         // Discarded queued work is already terminal. Deliver its failure even
         // while another scope owns the application gate and waits for input.
         if let Some(index) = self
@@ -253,6 +305,10 @@ impl<P: Program> Executor<P> {
                 Queued::Release(scope) => {
                     self.states.remove(&scope);
                     self.closing.remove(&scope);
+                }
+                Queued::Reserved(ticket) => {
+                    self.reserved = Some(ticket);
+                    return Some(Event::Reserved(ticket));
                 }
             }
         }
@@ -375,7 +431,7 @@ impl<P: Program> Executor<P> {
         self.paused = false;
     }
     pub fn idle(&self) -> bool {
-        self.active.is_none() && self.queue.is_empty()
+        self.active.is_none() && self.reserved.is_none() && self.queue.is_empty()
     }
     /// Code-only replacement at a drained gate. A rejected replacement preserves
     /// the old program and all state. The version is an application compatibility

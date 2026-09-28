@@ -163,6 +163,28 @@ fn whole_operation_gate_survives_multiple_misses_and_serializes_all_scopes() {
 }
 
 #[test]
+fn host_transaction_reservations_share_the_gate_and_block_snapshots() {
+    let (mut host, _) = executor();
+    let before = host.submit(Some(Scope(1)), call(2, "")).unwrap();
+    let reserved = host.reserve().unwrap();
+    let after = host.submit(Some(Scope(1)), call(3, "")).unwrap();
+    assert_eq!(host.step(), Some(Event::Accepted(before)));
+    assert!(
+        matches!(host.step(), Some(Event::Completed { ticket, outcome: Ok(_) }) if ticket == before)
+    );
+    assert_eq!(host.step(), Some(Event::Reserved(reserved)));
+    assert!(host.step().is_none());
+    assert!(!host.idle());
+    assert!(matches!(host.snapshot(), Err(Error::Unavailable)));
+    assert_eq!(host.finish_reserved(after), Err(Error::Protocol));
+    host.finish_reserved(reserved).unwrap();
+    assert_eq!(host.step(), Some(Event::Accepted(after)));
+    assert!(
+        matches!(host.step(), Some(Event::Completed { outcome: Ok(value), .. }) if value == json!(5))
+    );
+}
+
+#[test]
 fn admission_reads_finish_before_ack_and_rejection_never_enters_handler() {
     let (mut host, entries) = executor();
     for allowed in [false, true] {

@@ -1,7 +1,7 @@
 //! Identity's portable operation dispatch. Parsing precedes Store entry. The host
 //! publishes execute's output only after the enclosing durable transaction commits.
 use crate::{Crypto, Identity};
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 use snap_store::Transaction;
 use snap_transport::{Error, Invocation, Value, json};
 
@@ -11,7 +11,64 @@ pub enum Operation {
     Current { bearer: String },
     Logout { bearer: String },
 }
+
+/// Authority captured under the application gate before ACK. Fields cannot be
+/// constructed by a wire caller. Hosts retain the gate through `execute`.
+pub struct Admitted {
+    operation: Operation,
+    session: Option<crate::Session>,
+    digest: Option<Vec<u8>>,
+    now: i64,
+}
+
+impl Admitted {
+    pub fn name(&self) -> &'static str {
+        self.operation.name()
+    }
+
+    pub fn execute(
+        self,
+        identity: &Identity,
+        tx: &mut Transaction<'_>,
+        crypto: &mut impl Crypto,
+    ) -> Result<Value, snap_store::Error> {
+        match self.operation {
+            Operation::Current { .. } => Ok(json!(self.session.expect("admitted current session"))),
+            Operation::Logout { .. } => {
+                tx.delete(
+                    crate::TABLES[2],
+                    &[snap_store::Value::Bytes(
+                        self.digest.expect("admitted logout digest"),
+                    )],
+                )?;
+                Ok(Value::Null)
+            }
+            operation => operation.execute(identity, tx, crypto, self.now),
+        }
+    }
+}
 impl Operation {
+    pub fn admit(
+        self,
+        identity: &Identity,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        now: i64,
+    ) -> Result<Admitted, snap_store::Error> {
+        let (session, digest) = match &self {
+            Self::Current { bearer } | Self::Logout { bearer } => (
+                Some(identity.resolve(tx, crypto, bearer, now)?),
+                Some(crypto.digest(bearer)),
+            ),
+            Self::Enroll { .. } | Self::Login { .. } => (None, None),
+        };
+        Ok(Admitted {
+            operation: self,
+            session,
+            digest,
+            now,
+        })
+    }
     /// None lets composition dispatch to another capability. Unknown Identity
     /// operations fail here, so credentials never enter the calculator/debug trace.
     pub fn parse(invocation: &Invocation, bearer: Option<&str>) -> Result<Option<Self>, Error> {

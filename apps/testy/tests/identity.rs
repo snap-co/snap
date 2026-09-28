@@ -10,7 +10,7 @@ use std::sync::{
 use testy_local::identity::{Sessions, platform};
 
 #[test]
-fn sessions_own_connections_and_retirement_discards_even_held_work() {
+fn session_logout_waits_for_accepted_work_and_then_retires_its_connections() {
     let now = Arc::new(AtomicI64::new(0));
     let clock = now.clone();
     let sessions = Sessions::new(
@@ -26,6 +26,10 @@ fn sessions_own_connections_and_retirement_discards_even_held_work() {
         Err(Error::IdentityRequired)
     );
     let token = block_on(first.authenticate(true, "a@b", "password1")).unwrap();
+    assert!(
+        memory.trace().is_empty(),
+        "issuance results must not enter retained traces"
+    );
     block_on(first.start("one")).unwrap();
     block_on(first.add(42)).unwrap();
     let mut second = testy::Client::new(memory.channel());
@@ -46,10 +50,12 @@ fn sessions_own_connections_and_retirement_discards_even_held_work() {
     assert!(pending.poll_unpin(&mut cx).is_pending());
     assert!(pending.poll_unpin(&mut cx).is_pending());
     let (ticket, key) = memory.pending_read().unwrap();
-    // Identity's synchronous Store dispatcher remains available while Calc is held.
-    block_on(sibling.logout()).unwrap();
-    assert_eq!(block_on(pending), Err(Error::IdentityRequired));
-    assert!(memory.supply(ticket, &key, Ok(json!(100))).is_err());
+    let mut logout = Box::pin(sibling.logout());
+    assert!(logout.poll_unpin(&mut cx).is_pending());
+    assert!(logout.poll_unpin(&mut cx).is_pending());
+    memory.supply(ticket, &key, Ok(json!(100))).unwrap();
+    assert_eq!(block_on(pending), Ok(5));
+    block_on(logout).unwrap();
     assert_eq!(memory.residents(), 1);
     assert!(block_on(first.start("revoked")).is_err());
     assert_eq!(block_on(second.add(3)).unwrap(), 3);
@@ -76,6 +82,60 @@ fn transport_preserves_miss_instead_of_misreporting_bad_credentials() {
 }
 
 #[test]
+fn expiry_during_a_held_accepted_operation_drains_before_logical_release() {
+    let now = Arc::new(AtomicI64::new(0));
+    let clock = now.clone();
+    let sessions = Sessions::new(
+        support::store(true),
+        support::Fake::default(),
+        snap_identity::Identity::new(10).unwrap(),
+        move || clock.load(Ordering::SeqCst),
+    );
+    let memory = Memory::new(platform(sessions));
+    let mut client = testy::Client::new(memory.channel());
+    block_on(client.authenticate(true, "a@b", "password1")).unwrap();
+    block_on(client.start("expiry")).unwrap();
+    let mut pending = Box::pin(client.add_checked(7));
+    let waker = noop_waker();
+    let mut cx = core::task::Context::from_waker(&waker);
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    let (ticket, key) = memory.pending_read().unwrap();
+    now.store(10, Ordering::SeqCst);
+    memory.advance(1);
+    assert_eq!(memory.residents(), 1);
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    memory.supply(ticket, &key, Ok(json!(100))).unwrap();
+    assert_eq!(block_on(pending), Ok(7));
+    assert_eq!(memory.residents(), 0);
+}
+
+#[test]
+fn protected_identity_requests_validate_authority_before_ack() {
+    let sessions = Sessions::new(
+        support::store(true),
+        support::Fake::default(),
+        snap_identity::Identity::default(),
+        || 0,
+    );
+    let memory = Memory::new(platform(sessions));
+    let mut channel = memory.channel();
+    let reply = block_on(channel.exchange(Command::Request {
+        bearer: Some("invalid".into()),
+        invocation: Invocation {
+            id: 1,
+            operation: "identity.current".into(),
+            input: json!(null),
+        },
+    }))
+    .unwrap();
+    assert!(
+        matches!(reply, Response::Events(events) if matches!(&events[..], [snap_transport::Event::Completed { outcome: Err(Error::InvalidBearer), .. }]))
+    );
+    assert!(memory.trace().is_empty());
+}
+
+#[test]
 fn identity_inputs_on_wrong_command_kind_never_enter_execution_diagnostics() {
     let sessions = Sessions::new(
         support::store(true),
@@ -98,7 +158,7 @@ fn identity_inputs_on_wrong_command_kind_never_enter_execution_diagnostics() {
 }
 
 #[test]
-fn revoked_queued_work_completes_while_another_session_waits() {
+fn permission_changes_share_the_fifo_with_calculator_operations() {
     let sessions = Sessions::new(
         support::store(true),
         support::Fake::default(),
@@ -123,13 +183,14 @@ fn revoked_queued_work_completes_while_another_session_waits() {
     let mut queued = Box::pin(second.add(3));
     assert!(queued.poll_unpin(&mut cx).is_pending());
     assert!(queued.poll_unpin(&mut cx).is_pending());
-    block_on(logout.logout()).unwrap();
-    assert_eq!(
-        queued.poll_unpin(&mut cx),
-        core::task::Poll::Ready(Err(Error::IdentityRequired))
-    );
+    let mut revoked = Box::pin(logout.logout());
+    assert!(revoked.poll_unpin(&mut cx).is_pending());
+    assert!(revoked.poll_unpin(&mut cx).is_pending());
     assert!(held.poll_unpin(&mut cx).is_pending());
-    assert_eq!(memory.residents(), 1);
+    assert_eq!(memory.residents(), 2);
     memory.supply(ticket, &key, Ok(json!(100))).unwrap();
     assert_eq!(block_on(held), Ok(5));
+    assert_eq!(block_on(queued), Ok(3));
+    block_on(revoked).unwrap();
+    assert_eq!(memory.residents(), 1);
 }

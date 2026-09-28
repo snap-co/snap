@@ -49,9 +49,11 @@ impl<B: Backend + Send + 'static, C: Crypto + Send + 'static> Sessions<B, C> {
             Ok(None) => return None,
             Err(error) => return Some(Err(error)),
         };
-        let sessions = self.clone();
-        Some(Ok(Box::new(move || {
-            let mut state = sessions.0.lock().map_err(|_| Error::Unavailable)?;
+        let operation = {
+            let mut state = match self.0.lock() {
+                Ok(state) => state,
+                Err(_) => return Some(Err(Error::Unavailable)),
+            };
             let State {
                 store,
                 crypto,
@@ -59,9 +61,25 @@ impl<B: Backend + Send + 'static, C: Crypto + Send + 'static> Sessions<B, C> {
                 clock,
             } = &mut *state;
             let now = clock();
+            match store.inspect("identity.admit", |tx| {
+                operation.admit(identity, tx, crypto, now)
+            }) {
+                Ok(admitted) => admitted,
+                Err(failed) => return Some(Err(error(failed))),
+            }
+        };
+        let sessions = self.clone();
+        Some(Ok(Box::new(move || {
+            let mut state = sessions.0.lock().map_err(|_| Error::Unavailable)?;
+            let State {
+                store,
+                crypto,
+                identity,
+                clock: _,
+            } = &mut *state;
             store
                 .run(operation.name(), |tx| {
-                    operation.execute(identity, tx, crypto, now)
+                    operation.execute(identity, tx, crypto)
                 })
                 .map(|committed| committed.value)
                 .map_err(error)
@@ -101,8 +119,10 @@ pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
         .with_live_authority(),
         snap_execution::Executor::new(testy::App::default(), 128).unwrap(),
     )
-    .with_requests(move |invocation, bearer| requests.prepare(invocation, bearer))
-    .ephemeral()
+    .with_requests(
+        |name| name.starts_with("identity."),
+        move |invocation, bearer| requests.prepare(invocation, bearer),
+    )
 }
 pub fn open()
 -> Result<Sessions<snap_sqlite::Sqlite, snap_crypto::Native>, Box<dyn std::error::Error>> {

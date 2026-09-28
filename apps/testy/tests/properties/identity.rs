@@ -1,6 +1,6 @@
 #[path = "../../../../crates/identity/tests/support/mod.rs"]
 mod support;
-use futures::executor::block_on;
+use futures::{FutureExt, executor::block_on, task::noop_waker};
 use hegel::{TestCase, generators as gs};
 use snap_platform_local::memory::Memory;
 use std::sync::{
@@ -8,6 +8,70 @@ use std::sync::{
     atomic::{AtomicI64, Ordering},
 };
 use testy_local::identity::{Sessions, platform};
+
+#[hegel::test]
+fn accepted_work_drains_before_queued_logout_across_expiry_and_dependency_failure(tc: TestCase) {
+    let amount = tc.draw(gs::integers::<i64>().min_value(1).max_value(100));
+    let expire = tc.draw(gs::booleans());
+    let fail = tc.draw(gs::booleans());
+    let now = Arc::new(AtomicI64::new(0));
+    let clock = now.clone();
+    let sessions = Sessions::new(
+        support::store(true),
+        support::Fake::default(),
+        snap_identity::Identity::new(10).unwrap(),
+        move || clock.load(Ordering::SeqCst),
+    );
+    let memory = Memory::new(platform(sessions));
+    let mut client = testy::Client::new(memory.channel());
+    let bearer = block_on(client.authenticate(true, "a@b", "password1")).unwrap();
+    block_on(client.start("held")).unwrap();
+    let mut sibling = testy::Client::new(memory.channel());
+    sibling.use_session(&bearer).unwrap();
+    let mut pending = Box::pin(client.add_checked(amount));
+    let waker = noop_waker();
+    let mut cx = core::task::Context::from_waker(&waker);
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    assert!(pending.poll_unpin(&mut cx).is_pending());
+    let (ticket, key) = memory.pending_read().unwrap();
+    let mut logout = Box::pin(sibling.logout());
+    assert!(logout.poll_unpin(&mut cx).is_pending());
+    assert!(logout.poll_unpin(&mut cx).is_pending());
+    if expire {
+        now.store(10, Ordering::SeqCst);
+        memory.advance(1);
+    }
+    assert_eq!(memory.residents(), 1);
+    assert!(logout.poll_unpin(&mut cx).is_pending());
+    memory
+        .supply(
+            ticket,
+            &key,
+            if fail {
+                Err(snap_execution::Error::Unavailable)
+            } else {
+                Ok(snap_transport::json!(1000))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        block_on(pending),
+        if fail {
+            Err(snap_transport::Error::Unavailable)
+        } else {
+            Ok(amount)
+        }
+    );
+    assert_eq!(
+        block_on(logout),
+        if expire {
+            Err(snap_transport::Error::InvalidBearer)
+        } else {
+            Ok(())
+        }
+    );
+    assert_eq!(memory.residents(), 0);
+}
 
 #[hegel::test]
 fn authenticated_calculators_follow_connection_lifetimes(tc: TestCase) {

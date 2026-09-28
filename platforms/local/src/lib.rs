@@ -11,17 +11,22 @@ pub mod web;
 use snap_execution::{Call, Executor, Program, Scope, Ticket};
 use snap_transport::{
     Command, Error, Event, Response,
-    server::{Attachment, Authority, Dispatch, Server},
+    server::{Attachment, Authority, ConnectionId, Dispatch, Server},
 };
 use std::collections::BTreeMap;
 
 /// Application-selected synchronous request dispatcher. Runs under host exclusion;
 /// it owns its validation and durable commit. It must not log request secrets.
-/// Preparation has no effects. The returned closure runs once, after acceptance
-/// is queued, and owns transactional authentication rather than trusting a bearer.
+/// Preparation validates authority without writes once its FIFO slot owns the gate.
+/// The returned closure runs once, after acceptance is queued, with that authority.
+/// Private request payloads and results never enter retained execution traces.
 pub type PreparedRequest = Result<Box<dyn FnOnce() -> snap_transport::Outcome + Send>, Error>;
-type Requests =
+type Prepare =
     Box<dyn FnMut(&snap_transport::Invocation, Option<&str>) -> Option<PreparedRequest> + Send>;
+struct Requests {
+    recognizes: fn(&str) -> bool,
+    prepare: Prepare,
+}
 
 #[derive(Default)]
 pub struct Peer {
@@ -32,15 +37,25 @@ pub enum Submission {
     Pending(Ticket),
 }
 pub enum Observation {
-    Event { ticket: Ticket, event: Event },
-    Need { ticket: Ticket, key: String },
+    Event {
+        ticket: Ticket,
+        event: Event,
+        private: bool,
+    },
+    Need {
+        ticket: Ticket,
+        key: String,
+    },
 }
 pub struct Platform<P: Program, R: Authority> {
     transport: Server<R>,
     execution: Executor<P>,
     invocations: BTreeMap<Ticket, u64>,
+    connections: BTreeMap<Ticket, ConnectionId>,
+    accepted: std::collections::BTreeSet<Ticket>,
     requests: Option<Requests>,
-    ephemeral: bool,
+    queued_requests: BTreeMap<Ticket, (snap_transport::Invocation, Option<String>)>,
+    active_request: Option<(Ticket, Box<dyn FnOnce() -> snap_transport::Outcome + Send>)>,
 }
 impl<P: Program, R: Authority> Platform<P, R> {
     pub fn new(transport: Server<R>, execution: Executor<P>) -> Self {
@@ -48,27 +63,38 @@ impl<P: Program, R: Authority> Platform<P, R> {
             transport,
             execution,
             invocations: BTreeMap::new(),
+            connections: BTreeMap::new(),
+            accepted: std::collections::BTreeSet::new(),
             requests: None,
-            ephemeral: false,
+            queued_requests: BTreeMap::new(),
+            active_request: None,
         }
     }
     pub fn with_requests(
         mut self,
+        recognizes: fn(&str) -> bool,
         requests: impl FnMut(&snap_transport::Invocation, Option<&str>) -> Option<PreparedRequest>
         + Send
         + 'static,
     ) -> Self {
-        self.requests = Some(Box::new(requests));
-        self
-    }
-    pub fn ephemeral(mut self) -> Self {
-        self.ephemeral = true;
+        self.requests = Some(Requests {
+            recognizes,
+            prepare: Box::new(requests),
+        });
         self
     }
     pub fn attached(&self, peer: &Peer) -> bool {
         peer.attachment
             .as_ref()
             .is_some_and(|attachment| self.transport.attached(attachment))
+    }
+    /// Private capability requests must not enter debugger submission traces.
+    pub fn private_request(&self, ticket: Ticket) -> bool {
+        self.queued_requests.contains_key(&ticket)
+            || self
+                .active_request
+                .as_ref()
+                .is_some_and(|(active, _)| *active == ticket)
     }
     pub fn retired(&self, peer: &Peer) -> bool {
         peer.attachment.is_some() && !self.attached(peer)
@@ -84,11 +110,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
         let retired = self.transport.take_retired();
         let changed = !retired.is_empty();
         for connection in retired {
-            if self.ephemeral {
-                self.execution.discard(Scope(connection.0));
-            } else {
-                self.execution.release(Scope(connection.0));
-            }
+            self.execution.discard(Scope(connection.0));
         }
         changed
     }
@@ -116,22 +138,22 @@ impl<P: Program, R: Authority> Platform<P, R> {
             }
             Command::Request { bearer, invocation } => {
                 let id = invocation.id;
-                if let Some(prepared) = self
+                if self
                     .requests
-                    .as_mut()
-                    .and_then(|handler| handler(&invocation, bearer.as_deref()))
+                    .as_ref()
+                    .is_some_and(|handler| (handler.recognizes)(&invocation.operation))
                 {
-                    let mut events = Vec::new();
-                    let outcome = match prepared {
-                        Ok(run) => {
-                            events.push(Event::Accepted { id });
-                            run()
+                    return match self.execution.reserve() {
+                        Ok(ticket) => {
+                            self.invocations.insert(ticket, id);
+                            self.queued_requests.insert(ticket, (invocation, bearer));
+                            Submission::Pending(ticket)
                         }
-                        Err(error) => Err(error),
+                        Err(error) => Submission::Ready(Response::Events(vec![Event::Completed {
+                            id,
+                            outcome: Err(transport_error(error)),
+                        }])),
                     };
-                    self.tick(now);
-                    events.push(Event::Completed { id, outcome });
-                    return Submission::Ready(Response::Events(events));
                 }
                 return self.enqueue(id, self.transport.request(bearer.as_deref(), invocation));
             }
@@ -140,8 +162,8 @@ impl<P: Program, R: Authority> Platform<P, R> {
                 // its inspectable trace, even when sent over the wrong command kind.
                 if self
                     .requests
-                    .as_mut()
-                    .is_some_and(|prepare| prepare(&invocation, None).is_some())
+                    .as_ref()
+                    .is_some_and(|handler| (handler.recognizes)(&invocation.operation))
                 {
                     return Submission::Ready(Response::Failed(Error::Protocol));
                 }
@@ -172,6 +194,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
     }
     fn enqueue(&mut self, id: u64, dispatch: Result<Dispatch, Error>) -> Submission {
         let result = dispatch.and_then(|dispatch| {
+            let connection = dispatch.connection;
             self.execution
                 .submit(
                     dispatch.connection.map(|id| Scope(id.0)),
@@ -182,6 +205,11 @@ impl<P: Program, R: Authority> Platform<P, R> {
                     },
                 )
                 .map_err(transport_error)
+                .inspect(|ticket| {
+                    if let Some(connection) = connection {
+                        self.connections.insert(*ticket, connection);
+                    }
+                })
         });
         match result {
             Ok(ticket) => {
@@ -195,22 +223,88 @@ impl<P: Program, R: Authority> Platform<P, R> {
         }
     }
     pub fn step(&mut self) -> Option<Observation> {
-        // Authority may change while an operation waits or the debugger is held.
-        // Recheck before both admission and execution, under the same host lock.
+        if let Some((ticket, run)) = self.active_request.take() {
+            let outcome = run();
+            self.execution
+                .finish_reserved(ticket)
+                .expect("owned request slot");
+            let id = self
+                .invocations
+                .remove(&ticket)
+                .expect("owned request invocation");
+            self.transport.tick(0);
+            self.retire();
+            return Some(Observation::Event {
+                ticket,
+                event: Event::Completed { id, outcome },
+                private: true,
+            });
+        }
+        // Live authority controls later admission. Transport retention prevents
+        // retirement from cancelling work whose acceptance already captured it.
         self.transport.tick(0);
         self.retire();
         Some(match self.execution.step()? {
-            snap_execution::Event::Accepted(ticket) => Observation::Event {
-                ticket,
-                event: Event::Accepted {
-                    id: self.invocations[&ticket],
-                },
-            },
+            snap_execution::Event::Reserved(ticket) => {
+                let (invocation, bearer) =
+                    self.queued_requests.remove(&ticket).expect("owned request");
+                let prepared = (self.requests.as_mut().expect("configured requests").prepare)(
+                    &invocation,
+                    bearer.as_deref(),
+                )
+                .unwrap_or(Err(Error::UnknownOperation));
+                let event = match prepared {
+                    Ok(run) => {
+                        self.active_request = Some((ticket, run));
+                        Event::Accepted { id: invocation.id }
+                    }
+                    Err(error) => {
+                        self.execution
+                            .finish_reserved(ticket)
+                            .expect("owned request slot");
+                        self.invocations.remove(&ticket);
+                        Event::Completed {
+                            id: invocation.id,
+                            outcome: Err(error),
+                        }
+                    }
+                };
+                Observation::Event {
+                    ticket,
+                    event,
+                    private: true,
+                }
+            }
+            snap_execution::Event::Accepted(ticket) => {
+                if let Some(connection) = self.connections.get(&ticket) {
+                    self.transport
+                        .retain(*connection)
+                        .expect("admitted live connection");
+                }
+                self.accepted.insert(ticket);
+                Observation::Event {
+                    ticket,
+                    event: Event::Accepted {
+                        id: self.invocations[&ticket],
+                    },
+                    private: false,
+                }
+            }
             snap_execution::Event::Need { ticket, key } => Observation::Need { ticket, key },
             snap_execution::Event::Completed { ticket, outcome } => {
                 let id = self.invocations.remove(&ticket).expect("owned invocation");
+                let accepted = self.accepted.remove(&ticket);
+                if let Some(connection) = self.connections.remove(&ticket)
+                    && accepted
+                {
+                    self.transport
+                        .release(connection)
+                        .expect("accepted connection pin");
+                    self.retire();
+                }
                 Observation::Event {
                     ticket,
+                    private: false,
                     event: Event::Completed {
                         id,
                         outcome: outcome.map_err(transport_error),

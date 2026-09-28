@@ -94,10 +94,10 @@ Transport holds stable logical connection IDs; the platform maps them to
 execution-owned state scopes. Explicit close and detached expiry revoke new
 dispatch immediately, then queue state release behind owned operations through
 the execution gate. Process shutdown loses all resident state.
-Ephemeral composition instead calls `Executor::discard`: state disappears immediately,
-queued and active calls fail, and late input cannot recreate the scope. Testy selects
-this policy for disconnect, revocation, expiry and authority failure. The local host
-revalidates authority before each executor step, including after held dependencies.
+`Executor::discard` rejects unaccepted work. Already accepted work retains its
+scope through completion and releases it afterward. Testy's local composition pins
+the transport lifetime at acceptance; disconnect, expiry and authority failure stop
+later admission without cancelling held accepted work.
 
 Increasing invocation IDs reject duplicates per attachment. Transport itself does not
 replay commands after IO failure or provide cross-reconnect result recovery. Document
@@ -399,11 +399,11 @@ discards every calculator attached through that session, and closes its sockets;
 other login sessions remain valid. Browser tab session storage retains the bearer
 for reload, but no calculator data. The UI clears calculator state on socket loss.
 
-Identity operations use the local host's synchronous prepared-request dispatcher.
-Portable parsing rejects malformed inputs before acceptance; the host queues an
-Accepted observation before running the prepared closure under exclusion. Completion
-follows Store commit. These operations remain usable while calculator execution is
-held and never enter execution snapshots or traces. This is not a combined durable
+Identity operations reserve a slot in the same FIFO as calculator operations.
+Preparation parses and authorizes protected requests once the slot owns the gate,
+then queues Accepted before running the closure. Completion follows Store commit.
+These operations wait while calculator execution is held. Credentials and issuance
+results never enter execution snapshots or retained traces. This is not a combined durable
 commit for Executor state and Store: Identity commits Store, Calc commits ephemeral
 memory. Callers doing persistent protected work must resolve session authority and
 write through one Store transaction. See [Identity](docs/identity.md).

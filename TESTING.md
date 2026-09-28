@@ -190,6 +190,9 @@ engine. Hegel adds no production dependency or portable feature.
 the real Testy SDK, Identity and Store through memory transport with a virtual clock
 and deterministic crypto. Its Hegel settings match the core runner; application
 dependencies do not enter the reusable core test consumer.
+Its held-operation property varies expiry and dependency failure while logout waits
+in the application FIFO. Accepted work drains before connection release. The local
+platform property separately checks rejection of unaccepted work after retirement.
 
 ```sh
 mise exec -- cargo test --locked -p snap-core-properties

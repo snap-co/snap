@@ -18,6 +18,11 @@ These are transport `Request` operations, not connected `Invoke` operations.
 Enroll/login take no existing bearer. Each login creates an independent session.
 Logout affects only the supplied session. Disconnect leaves the session valid.
 
+Testy's prepared Identity requests share the application FIFO with calculator work.
+Protected current/logout requests capture authority through `Operation::admit`
+before ACK. The resulting `Admitted` value executes under the same gate without
+reauthorizing or reevaluating expiry. Logout waits behind accepted calculator work.
+
 The Rust `Identity` methods receive the caller's `&mut Transaction`, so enrollment,
 the first session and application records can commit atomically. The operation parser
 and dispatcher live in the same portable crate. Hosts return issuance results only
@@ -66,10 +71,11 @@ Revocation, expiry or unavailable authority closes the affected connection lifet
 Unavailable authority does not delete its persisted session; reconnect is explicit.
 Different sessions and different tabs get separate calculators, even for one identity.
 
-Connection loss immediately discards the calculator and fails queued/active work.
-Late dependency replies and saved execution snapshots cannot restore a retired scope.
+Connection loss stops new admission. Unaccepted work fails, while accepted work and
+its calculator remain pinned through completion, including dependency waits.
+Expiry or revocation enters logical draining until that accepted work finishes.
 Sign-out closes every connection using that session; other sessions continue working.
-This policy is stricter than the generic executor's finish-owned-work release policy.
+Snapshots cannot restore a retired scope.
 
 The browser keeps its bearer in tab-scoped session storage and clears it after
 confirmed sign-out or invalid-session responses. Reload uses that bearer with a fresh

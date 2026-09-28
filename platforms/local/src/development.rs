@@ -138,9 +138,11 @@ impl<P: Program, R: Authority> Development<P, R> {
             Submission::Pending(ticket) => {
                 connection.pending = true;
                 self.owners.insert(ticket, id);
-                self.record(
-                    json!({"submitted": ticket.id(), "peer": id, "invocation": invocation}),
-                );
+                if !self.platform.private_request(ticket) {
+                    self.record(
+                        json!({"submitted": ticket.id(), "peer": id, "invocation": invocation}),
+                    );
+                }
             }
         }
         self.pump();
@@ -172,11 +174,19 @@ impl<P: Program, R: Authority> Development<P, R> {
             return false;
         };
         match observation {
-            Observation::Event { ticket, event } => {
+            Observation::Event {
+                ticket,
+                event,
+                private,
+            } => {
                 let completed = matches!(event, Event::Completed { .. });
                 let accepted = matches!(event, Event::Accepted { .. });
                 let owner = self.owners[&ticket];
-                self.record(json!({"ticket": ticket.id(), "peer": owner, "observation": event}));
+                if !private {
+                    self.record(
+                        json!({"ticket": ticket.id(), "peer": owner, "observation": event}),
+                    );
+                }
                 if let Some(connection) = self.peers.get_mut(&owner) {
                     connection
                         .responses
@@ -188,7 +198,7 @@ impl<P: Program, R: Authority> Development<P, R> {
                 if completed {
                     self.owners.remove(&ticket);
                 }
-                if accepted && self.breakpoint {
+                if accepted && !private && self.breakpoint {
                     self.manual = true;
                 }
             }
