@@ -5,7 +5,16 @@ use sha2::{Digest, Sha256};
 use snap_access::Role;
 
 pub type Apply = fn(&Value, &Value, &str) -> Result<Value, Error>;
-pub type Guard = fn(&Snapshot, &Intent, &str, Role) -> bool;
+/// Read related resident state during protected admission. Guards must not stage
+/// writes; the dispatcher's read-only transaction enforces this before ACK.
+/// Store misses remain storage errors rather than becoming authorization denials.
+pub type Guard = fn(
+    &mut snap_store::Transaction<'_>,
+    &Snapshot,
+    &Intent,
+    &str,
+    Role,
+) -> Result<bool, snap_store::Error>;
 
 pub struct Mutation {
     pub name: String,

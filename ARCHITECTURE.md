@@ -342,6 +342,9 @@ journal is future work.
 
 Compatible mutations apply to the latest state in server FIFO order. There is no
 blanket stale-base rejection. Applications can declare mutation-specific guards.
+Guards can read related resident state through the admission transaction, allowing
+cross-Document constraints without dispatch re-entry. Missing residency remains a
+Store error. The dispatcher's read-only admission transaction rejects guard writes.
 Replication carries the verified actor, base revision and canonical SHA-256 digests
 of the base and result. A mismatch reports divergence and requests a manifest.
 Ongoing Document synchronization follows current authorization and filters queued

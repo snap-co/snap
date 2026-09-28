@@ -488,7 +488,7 @@ impl Document {
         }
         if let Some(guard) = mutation.guard {
             let effective = role.ok_or(StoreError::Invalid)?;
-            if !(guard)(&before, intent, actor, effective) {
+            if !(guard)(tx, &before, intent, actor, effective)? {
                 return Ok(Err(DomainError::Denied));
             }
         }

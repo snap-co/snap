@@ -93,6 +93,73 @@ fn store_loaded() -> Store {
     store
 }
 
+#[test]
+fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
+    let doc = Document::new(
+        Registry::new(vec![Definition {
+            kind: "counter".into(),
+            version: "1".into(),
+            validate: |v| v.is_i64(),
+            mutations: vec![Mutation {
+                name: "ready".into(),
+                minimum: Role::Owner,
+                guard: Some(|tx, snapshot, _, _, _| {
+                    Ok(tx
+                        .get("test.notes", &[snapshot.id.clone().into()])?
+                        .is_some())
+                }),
+                apply: |_, _, _| Ok(json!(1)),
+            }],
+        }])
+        .unwrap(),
+        access(),
+    );
+    let mut store = snap_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
+    for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
+        store.load(table).unwrap();
+    }
+    let id = uuid(99);
+    create_doc(&mut store, &doc, &id, "alice", 0);
+    let operation = intent(1, &id, "ready", 0);
+    assert!(matches!(
+        store.inspect("cold guard", |tx| doc.admit(tx, "alice", &operation)),
+        Err(StoreError::Miss(_))
+    ));
+    store.load("test.notes").unwrap();
+    assert!(matches!(
+        store
+            .inspect("missing prerequisite", |tx| doc
+                .admit(tx, "alice", &operation))
+            .unwrap(),
+        Err(snap_document::Error::Denied)
+    ));
+    store
+        .run("prerequisite and mutation", |tx| {
+            tx.insert(
+                "test.notes",
+                [
+                    ("id".into(), id.clone().into()),
+                    ("body".into(), "ready".into()),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
+            let admitted = doc
+                .admit(tx, "alice", &operation)?
+                .map_err(|_| StoreError::Invalid)?;
+            doc.execute(tx, admitted)?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        store
+            .inspect("read", |tx| doc.read(tx, &id, Some("alice")))
+            .unwrap()
+            .value,
+        json!(1)
+    );
+}
+
 type Store = snap_store::Store<snap_sqlite::Sqlite>;
 
 fn access() -> Access {
@@ -119,7 +186,7 @@ fn registry() -> Registry {
             Mutation {
                 name: "touch".into(),
                 minimum: Role::Viewer,
-                guard: Some(|_, _, actor, _| actor == "alice"),
+                guard: Some(|_, _, _, actor, _| Ok(actor == "alice")),
                 apply: |value, _, _| Ok(value.clone()),
             },
         ],

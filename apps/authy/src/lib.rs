@@ -349,14 +349,20 @@ fn apply_edit(
 /// mutation's `Owner` minimum, so staged grants in the same change cannot
 /// authorize themselves. Stale concurrent edits report `Denied` without a
 /// document write, while Document itself keeps its latest-state policy.
-fn guard_owner(snapshot: &Snapshot, intent: &Intent, actor: &str, role: Role) -> bool {
+fn guard_owner(
+    _tx: &mut Transaction<'_>,
+    snapshot: &Snapshot,
+    intent: &Intent,
+    actor: &str,
+    role: Role,
+) -> Result<bool, StoreError> {
     if actor.is_empty() || role != Role::Owner {
-        return false;
+        return Ok(false);
     }
     let Some(revision) = intent.args.get("revision").and_then(|v| v.as_u64()) else {
-        return false;
+        return Ok(false);
     };
-    revision == snapshot.revision
+    Ok(revision == snapshot.revision)
 }
 
 fn text_field<'a>(row: &'a Row, column: &str) -> Result<&'a str, StoreError> {
