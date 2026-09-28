@@ -1,7 +1,30 @@
 import { test, expect } from "bun:test";
 import { host } from "../support/upgraded-host";
 
-test("HTTP accounts preserve credential, cookie and session authority", async () => {
+async function invoke(base: string, cookie: string, operation: string, input: unknown) {
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/transport`, { headers: { cookie, origin: base } });
+  return await new Promise<any>((resolve, reject) => {
+    let accepted = false;
+    const timer = setTimeout(() => { socket.close(); reject(new Error("Invocation timed out")); }, 5000);
+    const finish = (value: unknown, error = false) => { clearTimeout(timer); socket.close(); error ? reject(new Error(JSON.stringify(value))) : resolve(value); };
+    socket.onopen = () => socket.send(JSON.stringify({ Connect: { bearer: "", client_id: crypto.randomUUID() } }));
+    socket.onerror = () => finish("WebSocket failed", true);
+    socket.onmessage = event => {
+      const frame = JSON.parse(String(event.data));
+      if (frame.Attached) socket.send(JSON.stringify({ Invoke: { id: 1, operation, input } }));
+      if (frame.Failed) finish(frame.Failed, true);
+      for (const event of frame.Events ?? []) {
+        if (event.Accepted) accepted = true;
+        if (event.Completed) {
+          if (event.Completed.outcome.Err) finish(event.Completed.outcome.Err, true);
+          else { expect(accepted).toBe(true); finish(event.Completed.outcome.Ok); }
+        }
+      }
+    };
+  });
+}
+
+test("WebSocket account operations preserve credential, cookie and session authority", async () => {
   const server = await host();
   const body = { email: "  Account@Example.test ", password: "account fixture password" };
   const request = (path: string, cookie = "") => fetch(`${server.base}${path}`, { headers: { cookie } });
@@ -21,18 +44,17 @@ test("HTTP accounts preserve credential, cookie and session authority", async ()
     const loggedIn = await post("/api/login", body);
     const second = loggedIn.headers.get("set-cookie")!.split(";")[0];
     expect((await loggedIn.json()).account.identity).toBe(account.identity);
-    const sessions = (await (await request("/api/sessions", first)).json()).sessions;
+    const sessions = (await invoke(server.base, first, "authy.sessions", null)).sessions;
     expect(sessions).toHaveLength(2);
     expect(sessions.filter((s: { current: boolean }) => s.current)).toHaveLength(1);
-    const credentials = (await (await request("/api/credentials", first)).json()).credentials;
+    const credentials = (await invoke(server.base, first, "authy.credentials", null)).credentials;
     expect(credentials).toEqual([{ label: "account@example.test", kind: "password", removable: false }]);
-    expect((await post("/api/logout", { scope: "all" }, first, "null")).status).toBe(403);
-    expect((await post("/api/logout", { scope: "others" }, first)).status).toBe(200);
+    expect((await post("/api/logout", { scope: "all" }, first)).status).not.toBe(200);
+    await invoke(server.base, first, "authy.logout", { scope: "others" });
     expect((await (await request("/api/session", second)).json()).account).toBeNull();
     await server.restart();
     expect((await (await request("/api/session", first)).json()).account.identity).toBe(account.identity);
-    const ended = await post("/api/logout", {}, first);
-    expect(ended.headers.get("set-cookie")).toContain("Max-Age=0");
+    await invoke(server.base, first, "authy.logout", { scope: "current" });
     expect((await (await request("/api/session", first)).json()).account).toBeNull();
   } finally { await server.close(); }
 }, 30000);

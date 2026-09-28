@@ -18,9 +18,12 @@ The browser uses these same-origin HTTP routes:
 | `POST /api/signup` | Create an account and first session |
 | `POST /api/login` | Create an independent session |
 | `GET /api/session` | Current account or null |
-| `GET /api/sessions` | Current identity's session summaries |
-| `GET /api/credentials` | Credential labels without hashes |
-| `POST /api/logout` | Revoke `current`, `others` or `all` sessions |
+
+Connected account operations use WebSocket invocations: `authy.sessions` and
+`authy.credentials` take null and return session summaries and credential labels;
+`authy.logout` takes `{scope: "current" | "others" | "all"}`. Logout revokes the
+selected sessions durably. The old cookie grants no authority afterward; HTTP
+session bootstrapping clears it when the browser checks its session again.
 
 Account responses contain identity and profile IDs, not bearer material. Mutating
 HTTP routes require the canonical Origin. Session cookies are signed, HttpOnly,
@@ -35,11 +38,13 @@ uses its projected revision; conflicting concurrent edits reject and reconcile.
 HTTP account APIs are not a second profile-write path.
 
 The WebSocket host reads the signed cookie when a browser Connect carries an
-empty bearer. It revalidates session authority during dispatch and delivery.
+empty bearer. It validates session authority before ACK under the shared gate.
+Accepted authority survives through completion; session changes serialize behind it.
 Revocation clears the visible profile and stops authenticated delivery. Ordinary
 reconnect recovers a surviving logical connection. Expired connections clear
 pending writes and reload a fresh manifest. Closing the SDK does not revoke the
-persisted session. HTTP mutations are never automatically replayed.
+persisted session. Invocation channels retry with the same ID until ACK and recover
+pending outcomes on a surviving reconnect. A fresh lifetime reports unknown outcomes.
 
 ## OAuth and OIDC
 

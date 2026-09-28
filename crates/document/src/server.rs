@@ -161,6 +161,21 @@ impl Document {
             .map(snapshot_from_row)
             .collect()
     }
+
+    /// Cleanup ownership retains these rows independently of connected viewers.
+    /// Lifecycle metadata is resident even when Document values are partially loaded.
+    pub fn cleanup_ids(&self, tx: &mut Transaction<'_>) -> Result<BTreeSet<String>, StoreError> {
+        let mut ids = BTreeSet::new();
+        for row in tx.find(LIFECYCLE, "primary", &[])? {
+            let Some(Value::Text(id)) = row.get("id") else {
+                return Err(StoreError::Invalid);
+            };
+            if !self.lifecycle(tx, id)?.finalizers.is_empty() {
+                ids.insert(id.clone());
+            }
+        }
+        Ok(ids)
+    }
     /// Assemble the server from an app registry and an Access vocabulary.
     ///
     /// The supplied `Access` must already contain kind `"document"`
@@ -246,6 +261,22 @@ impl Document {
         Ok(snapshot)
     }
 
+    /// Trusted controller observation, including retained deleted/archived values.
+    /// This grants no client authority; wire operations must use `read` instead.
+    pub fn retained(&self, tx: &mut Transaction<'_>, id: &str) -> Result<Snapshot, StoreError> {
+        if !is_uuid(id) {
+            return Err(StoreError::Invalid);
+        }
+        let row = tx
+            .get(DOCUMENTS, &[Value::Text(id.into())])?
+            .ok_or(StoreError::NotFound)?;
+        let snapshot = snapshot_from_row(&row)?;
+        self.registry
+            .validate(&snapshot)
+            .map_err(|_| StoreError::Invalid)?;
+        Ok(snapshot)
+    }
+
     /// Replace a document from a trusted application operation, for example a
     /// committed external-model result. Requires pre-change Owner authority and
     /// validates the existing kind/version. This is not a wire operation: callers
@@ -308,6 +339,41 @@ impl Document {
         lifecycle.state = crate::lifecycle::State::Deleted;
         self.set_lifecycle(tx, id, &lifecycle)?;
         Ok(())
+    }
+
+    /// Trusted controller publication, independent of a currently connected owner.
+    /// Values are schema checked; unchanged observations do not enqueue a new pass.
+    /// Never expose this method as an unguarded wire replacement operation.
+    pub fn observe(
+        &self,
+        tx: &mut Transaction<'_>,
+        id: &str,
+        value: serde_json::Value,
+    ) -> Result<Snapshot, StoreError> {
+        let mut snapshot = self.retained(tx, id)?;
+        if snapshot.value == value {
+            return Ok(snapshot);
+        }
+        snapshot.revision = snapshot
+            .revision
+            .checked_add(1)
+            .filter(|n| *n <= i64::MAX as u64)
+            .ok_or(StoreError::Invalid)?;
+        snapshot.value = value;
+        self.registry
+            .validate(&snapshot)
+            .map_err(|_| StoreError::Invalid)?;
+        tx.update(
+            DOCUMENTS,
+            &[id.into()],
+            [
+                ("revision".into(), (snapshot.revision as i64).into()),
+                ("value".into(), snapshot.value.to_string().into()),
+            ]
+            .into_iter()
+            .collect(),
+        )?;
+        Ok(snapshot)
     }
 
     pub fn lifecycle(

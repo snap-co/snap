@@ -19,8 +19,15 @@ pub type Authenticate =
     Arc<dyn Fn(&mut Transaction<'_>, &str) -> Result<String, snap_store::Error> + Send + Sync>;
 /// App-owned handlers compose module calls in the supplied transaction. The
 /// identity is captured at admission, never supplied by the wire caller.
+/// The last argument is its private credential, for session-scoped operations.
+/// Do not log or return it, or reauthorize accepted work against it.
 pub type Handler = Box<
-    dyn FnMut(&mut Transaction<'_>, &Invocation, Option<&str>) -> Result<Value, snap_store::Error>
+    dyn FnMut(
+            &mut Transaction<'_>,
+            &Invocation,
+            Option<&str>,
+            Option<&str>,
+        ) -> Result<Value, snap_store::Error>
         + Send,
 >;
 
@@ -247,11 +254,13 @@ impl<B: Backend> Host<B> {
                     .value;
             }
         }
+        let cleanup = store.inspect("residency.cleanup", |tx| self.document.cleanup_ids(tx))?;
         let keys = self
             .residency
             .values()
             .flat_map(|(_, ids)| ids.iter())
             .chain(self.pinned.iter())
+            .chain(cleanup.iter())
             .chain(self.reconcile.keys())
             .map(|id| vec![snap_store::Value::Text(id.clone())])
             .collect();
@@ -330,9 +339,10 @@ impl<B: Backend> Host<B> {
                 self.reconcile.insert(snapshot.id.clone(), snapshot);
             }
         }
-        self.reconcile(None)?;
+        let result = self.reconcile(None);
         self.pinned.clear();
-        self.reconcile_residency()
+        self.reconcile_residency()?;
+        result
     }
 
     pub fn open(&mut self) -> Result<u64, Error> {
@@ -771,7 +781,12 @@ impl<B: Backend> Host<B> {
                     .lock()
                     .unwrap()
                     .run("application.request", |tx| {
-                        let value = (request.handler)(tx, invocation, work.actor.as_deref())?;
+                        let value = (request.handler)(
+                            tx,
+                            invocation,
+                            work.actor.as_deref(),
+                            work.bearer.as_deref(),
+                        )?;
                         if !(request.output)(&value) {
                             return Err(snap_store::Error::Invalid);
                         }

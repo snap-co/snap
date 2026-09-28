@@ -366,6 +366,11 @@ blocked reconciliation status. Deletion and archiving remove Documents from norm
 loading. Cleanup may remove finalizer keys but never physically purges the Document.
 The Client SDK queues typed delete/archive/retry intents through normal receipt
 recovery, leaving projected values unchanged until authoritative publication.
+Finalizer-bearing Documents remain resident independently of connected viewers.
+Controllers explicitly load related Documents through `ControllerContext::document`;
+those dependencies remain pinned through the current reconciliation. Controller
+observations use schema-checked, no-op-aware publication and do not require a live
+user session. None of these host-only methods grant wire callers read/write authority.
 Direct retrieval, freezing and incineration are deferred. Legacy trusted replacement
 helpers remain during application migration; they are not the public mutation API.
 

@@ -205,9 +205,22 @@ impl Identity {
     ) -> Result<Vec<SessionSummary>, Error> {
         let actor = self.resolve(tx, crypto, bearer, now)?;
         let current = crypto.digest(bearer);
+        self.sessions_for(tx, crypto, &actor.identity, &current, now)
+    }
+
+    /// Trusted composition with authority captured before ACK. `current` is the
+    /// private bearer digest, never a caller-selected session identifier.
+    pub fn sessions_for(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        identity: &str,
+        current: &[u8],
+        now: i64,
+    ) -> Result<Vec<SessionSummary>, Error> {
         let mut sessions = Vec::new();
         for row in tx.find(TABLES[2], "primary", &[])? {
-            if text(&row, "identity")? != actor.identity {
+            if text(&row, "identity")? != identity {
                 continue;
             }
             let (Some(Value::Bytes(digest)), Some(Value::Integer(expires))) =
@@ -237,9 +250,18 @@ impl Identity {
         now: i64,
     ) -> Result<Vec<String>, Error> {
         let actor = self.resolve(tx, crypto, bearer, now)?;
+        self.credentials_for(tx, &actor.identity)
+    }
+
+    /// Credential labels for an identity authorized by the enclosing dispatcher.
+    pub fn credentials_for(
+        &self,
+        tx: &mut Transaction<'_>,
+        identity: &str,
+    ) -> Result<Vec<String>, Error> {
         let mut labels = Vec::new();
         for row in tx.find(TABLES[1], "primary", &[])? {
-            if text(&row, "identity")? == actor.identity {
+            if text(&row, "identity")? == identity {
                 labels.push(text(&row, "email")?.into());
             }
         }
@@ -260,8 +282,22 @@ impl Identity {
         }
         let actor = self.resolve(tx, crypto, bearer, now)?;
         let current = crypto.digest(bearer);
+        self.revoke_scope_for(tx, &actor.identity, &current, scope)
+    }
+
+    /// Revoke using accepted authority; expiry cannot cancel an accepted logout.
+    pub fn revoke_scope_for(
+        &self,
+        tx: &mut Transaction<'_>,
+        identity: &str,
+        current: &[u8],
+        scope: &str,
+    ) -> Result<(), Error> {
+        if !["current", "others", "all"].contains(&scope) {
+            return Err(Error::Invalid);
+        }
         for row in tx.find(TABLES[2], "primary", &[])? {
-            if text(&row, "identity")? != actor.identity {
+            if text(&row, "identity")? != identity {
                 continue;
             }
             let Some(Value::Bytes(digest)) = row.get("digest") else {

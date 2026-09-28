@@ -7,13 +7,11 @@
 // reconciliation logic.
 //
 // Host contract: POST /api/signup and POST /api/login with
-// {email,password}; POST /api/logout with {scope?:'current'|'others'|'all'}
-// (omitted defaults to current; 'others' keeps the current account and
-// returns it, other modes return account:null and clear the cookie);
+// {email,password}; logout and account summaries use guarded WebSocket invocations.
 // GET /api/session returns
 // {account:null|{identity,email,profile,authenticated_at}};
-// GET /api/sessions returns {sessions:[{id,expires,current}]} and
-// GET /api/credentials returns
+// authy.sessions returns {sessions:[{id,expires,current}]} and
+// authy.credentials returns
 // {credentials:[{label,kind:'password',removable:false}]}. The HttpOnly
 // same-origin cookie is the auth; no bearer is exposed. Socket /transport
 // carries standard snap_transport Command/Response frames; the browser sends
@@ -21,6 +19,8 @@
 // upgrade cookie. Cross-tab revocation arrives as a Document Reset followed
 // by socket close; the browser then re-fetches /api/session and becomes
 // anonymous when revoked instead of reconnecting with empty authority.
+
+import { Invocations } from "../../platforms/document/client";
 
 export interface Account {
   identity: string;
@@ -79,6 +79,7 @@ interface WasmAuthyClient {
   profile_id(): string;
   snapshot(): string;
   connect_command(client_id: string): string;
+  invoke(operation: string, input: string): string;
   attached(resumed: boolean): string;
   enqueue_edit(name: string, bio: string): string;
   receive(frame: string): string;
@@ -207,6 +208,13 @@ export async function startAuthy(): Promise<AuthyClient> {
   let backoff = 250;
   let accountEpoch = 0;
   let authBusy = false;
+  const calls = new Invocations((operation, input) => {
+    if (!wasm || snapshot.connection !== "connected") throw new Error("Authy is still connecting");
+    return wasm.invoke(operation, JSON.stringify(input));
+  }, frame => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Disconnected");
+    socket.send(frame);
+  });
 
   const emit = () => {
     for (const listener of listeners) listener();
@@ -217,6 +225,7 @@ export async function startAuthy(): Promise<AuthyClient> {
   };
 
   const clearSocket = () => {
+    calls.detached();
     if (socket) {
       socket.onopen = null;
       socket.onmessage = null;
@@ -273,6 +282,7 @@ export async function startAuthy(): Promise<AuthyClient> {
   };
 
   const teardownAccount = () => {
+    calls.close("Account session ended");
     accountEpoch++;
     clearSocket();
     if (reconnectTimer) {
@@ -332,29 +342,13 @@ export async function startAuthy(): Promise<AuthyClient> {
   // actions, never polled. Identity owns these business rules; the browser
   // only renders the summaries.
   const fetchSummaries = async (): Promise<void> => {
-    if (closed || !snapshot.account) return;
+    if (closed || !snapshot.account || snapshot.connection !== "connected") return;
     const epoch = accountEpoch;
-    const [sessionsResponse, credentialsResponse] = await Promise.all([
-      fetch("/api/sessions", { credentials: "same-origin", headers: { accept: "application/json" } }),
-      fetch("/api/credentials", {
-        credentials: "same-origin",
-        headers: { accept: "application/json" },
-      }),
+    const [sessions, credentials] = await Promise.all([
+      calls.invoke<{ sessions: SessionSummary[] }>("authy.sessions", null),
+      calls.invoke<{ credentials: CredentialSummary[] }>("authy.credentials", null),
     ]);
     if (closed || !snapshot.account || epoch !== accountEpoch) return;
-    if (sessionsResponse.status === 401 || credentialsResponse.status === 401) {
-      await revalidateSession();
-      return;
-    }
-    if (!sessionsResponse.ok || !credentialsResponse.ok) {
-      throw new Error(
-        `Session list failed (${sessionsResponse.status}/${credentialsResponse.status})`,
-      );
-    }
-    const sessions = (await sessionsResponse.json()) as { sessions: SessionSummary[] };
-    const credentials = (await credentialsResponse.json()) as {
-      credentials: CredentialSummary[];
-    };
     if (closed || !snapshot.account || epoch !== accountEpoch) return;
     set({
       sessions: Object.freeze(sessions.sessions.slice()),
@@ -383,10 +377,12 @@ export async function startAuthy(): Promise<AuthyClient> {
       if (socket !== next || closed) return;
       const frame = typeof event.data === "string" ? event.data : String(event.data);
       try {
+        if (calls.receive(frame)) return;
         const parsed = JSON.parse(frame) as { Attached?: { resumed: boolean } };
         if (parsed && typeof parsed.Attached === "object" && parsed.Attached) {
           set({ connection: "connected" });
           applyWasmResult(wasm!.attached(parsed.Attached.resumed === true));
+          void fetchSummaries().catch(error => set({ error: String(error) }));
           return;
         }
       } catch {
@@ -408,6 +404,7 @@ export async function startAuthy(): Promise<AuthyClient> {
     next.onclose = () => {
       if (socket !== next || closed) return;
       socket = null;
+      calls.detached();
       // The server closes revoked sockets after a Document Reset. Re-fetch
       // the session: a revoked tab becomes anonymous (profile cleared) while
       // a live session reconnects normally.
@@ -421,6 +418,7 @@ export async function startAuthy(): Promise<AuthyClient> {
   }
 
   const resetDoc = async (account: Account | null) => {
+    calls.close("Account changed");
     const epoch = accountEpoch;
     clearSocket();
     if (wasm) {
@@ -530,13 +528,7 @@ export async function startAuthy(): Promise<AuthyClient> {
       const epoch = ++accountEpoch;
       try {
       set({ error: null });
-      const response = await fetch("/api/logout", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(scope === "current" ? {} : { scope }),
-      });
-      if (!response.ok) throw new Error(`Sign-out could not be confirmed (${response.status})`);
+      await calls.invoke("authy.logout", { scope });
       if (closed || epoch !== accountEpoch) return;
       if (scope === "others") {
         // The current session survives; refresh the account and summaries.
@@ -577,6 +569,7 @@ export async function startAuthy(): Promise<AuthyClient> {
       else void refreshSession().catch(() => scheduleReconnect());
     },
     close() {
+      calls.close();
       closed = true;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);

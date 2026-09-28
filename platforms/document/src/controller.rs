@@ -18,6 +18,23 @@ pub struct ControllerContext<'a, B: Backend> {
 }
 
 impl<B: Backend> ControllerContext<'_, B> {
+    /// Explicitly load a related Document for synchronous reconciliation. It stays
+    /// pinned through this invocation's controllers, then normal residency resumes.
+    /// Unlike `inspect`, this is host IO and may read storage on a cold key.
+    pub fn document(&mut self, id: &str) -> Result<Snapshot, Error> {
+        let mut store = self.host.store.lock().unwrap();
+        store.load_keys(
+            snap_document::server::TABLES[0],
+            &[vec![snap_store::Value::Text(id.into())]]
+                .into_iter()
+                .collect(),
+        )?;
+        let snapshot = store.inspect("controller.document", |tx| {
+            self.host.document.retained(tx, id)
+        })?;
+        self.host.pinned.insert(id.into());
+        Ok(snapshot)
+    }
     pub fn lifecycle(&mut self, id: &str) -> Result<snap_document::lifecycle::Lifecycle, Error> {
         self.host
             .store

@@ -1,5 +1,6 @@
 mod keys;
 mod oidc_http;
+mod operations;
 
 use axum::{
     Json, Router,
@@ -149,67 +150,6 @@ fn authenticate(
         Err(error) => store_error(error),
     }
 }
-#[derive(Deserialize)]
-struct Logout {
-    #[serde(default = "current_scope")]
-    scope: String,
-}
-fn current_scope() -> String {
-    "current".into()
-}
-async fn sessions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let Some(bearer) = app.bearer(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    match app.run("authy.sessions", |tx| {
-        Identity::default().sessions(tx, &snap_crypto::Native, &bearer, now())
-    }) {
-        Ok(sessions) => json_response(StatusCode::OK, json!({"sessions":sessions})),
-        Err(error) => store_error(error),
-    }
-}
-async fn credentials(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let Some(bearer) = app.bearer(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    match app.run("authy.credentials", |tx| {
-        Identity::default().credentials(tx, &snap_crypto::Native, &bearer, now())
-    }) {
-        Ok(labels) => json_response(
-            StatusCode::OK,
-            json!({"credentials":labels.into_iter().map(|label|json!({"label":label,"kind":"password","removable":false})).collect::<Vec<_>>()}),
-        ),
-        Err(error) => store_error(error),
-    }
-}
-async fn logout(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(request): Json<Logout>,
-) -> Response {
-    if !app.same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    if let Some(bearer) = app.bearer(&headers) {
-        match app.run("authy.logout", |tx| {
-            Identity::default().revoke_scope(
-                tx,
-                &snap_crypto::Native,
-                &bearer,
-                &request.scope,
-                now(),
-            )
-        }) {
-            Ok(()) | Err(Error::NotFound) => {}
-            Err(error) => return store_error(error),
-        }
-    }
-    if request.scope == "others" {
-        return session(State(app), headers).await;
-    }
-    session_response(&app, serde_json::Value::Null, None)
-}
-
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<_> = [
         snap_identity::MIGRATION,
@@ -287,6 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         snap_transport::server::Config::default(),
         keys::random(),
     );
+    let host = operations::register(host);
     let cookie: ReadCookie = {
         let keys = keys.clone();
         Arc::new(move |headers| keys.read_cookie(headers))
@@ -313,9 +254,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/session", get(session))
         .route("/api/signup", post(signup))
         .route("/api/login", post(login))
-        .route("/api/logout", post(logout))
-        .route("/api/sessions", get(sessions))
-        .route("/api/credentials", get(credentials))
         .merge(oidc_http::routes())
         .with_state(app)
         .merge(snap_document_local::web::router(documents.clone()))

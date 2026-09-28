@@ -10,6 +10,65 @@ use std::sync::Arc;
 
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
 
+#[test]
+fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values() {
+    const DEP: &str = "018f3c4b-6d2a-7000-8000-000000000002";
+    for cleanup in [false, true] {
+        let mut host = fixture();
+        host.transact("dependency", |tx| {
+            let doc = Document::new(registry(), access());
+            doc.create(
+                tx,
+                &Snapshot {
+                    id: DEP.into(),
+                    kind: "counter".into(),
+                    version: "1".into(),
+                    revision: 1,
+                    value: json!(12),
+                },
+                Audience::Restricted,
+                "bob",
+            )?;
+            if cleanup {
+                doc.remove(tx, DEP, "bob")?;
+                let mut lifecycle = doc.lifecycle(tx, DEP)?;
+                lifecycle.finalizers.insert("resource".into());
+                doc.set_lifecycle(tx, DEP, &lifecycle)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let (peer, _) = connect(&mut host, "alice", "dependency", 0);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = called.clone();
+        let mut host = host.with_controller(
+            "counter",
+            Box::new(move |ctx, snapshot| {
+                if snapshot.id != ID {
+                    return Ok(());
+                }
+                let resident = ctx.inspect("resident dependency", |tx| {
+                    Document::new(registry(), access()).retained(tx, DEP)
+                });
+                if cleanup {
+                    assert_eq!(resident?.value, json!(12));
+                } else {
+                    assert!(matches!(resident, Err(snap_store::Error::Miss(_))));
+                }
+                assert_eq!(ctx.document(DEP)?.value, json!(12));
+                if cleanup {
+                    ctx.finalize(DEP, "resource")?;
+                }
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        submit(&mut host, peer, 1, intent(1, 1));
+        assert!(host.step());
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
 fn access() -> Access {
     Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap()
 }

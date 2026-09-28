@@ -9,7 +9,7 @@
 //! Wire protocol (served by the coordinator-owned host):
 //!
 //! * HTTP `POST /api/signup`, `POST /api/login` with `{email,password}` and
-//!   `POST /api/logout` with `{}`; `GET /api/session` returns
+//!   `GET /api/session` returns
 //!   `{account:null|{identity,email,profile,authenticated_at}}`. The
 //!   `HttpOnly` same-origin cookie is the auth; no bearer is exposed to JS.
 //! * Socket `/transport` carries standard `snap_transport` `Command`/`Response`
@@ -176,6 +176,14 @@ fn outcome_error(outcome: &snap_document::client::Outcome) -> Option<String> {
 
 #[wasm_bindgen]
 impl AuthyClient {
+    pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
+        let input = serde_json::from_str(input).map_err(|e| js_error(e.to_string()))?;
+        let command = self
+            .wire
+            .invoke(operation, input)
+            .map_err(|e| js_error(format!("{e:?}")))?;
+        serde_json::to_string(&command).map_err(|e| js_error(e.to_string()))
+    }
     /// Create a sync client for the current HTTP session account.
     #[wasm_bindgen(constructor)]
     pub fn new(actor: String, profile: String) -> Result<AuthyClient, JsValue> {
