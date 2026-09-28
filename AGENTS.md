@@ -2,7 +2,7 @@
 
 This is a local portable-capability experiment, exercised through Testy, Authy and
 Chatty. Authy owns accounts and OIDC issuance. Chatty uses Authy OAuth and private
-Document conversations, with host-owned model and file-tool IO.
+Document conversations synchronized between clients through guarded WebSocket operations.
 
 - For setup and development commands, read [README.md](README.md).
 - Before changing package boundaries, provider composition, carriers, storage, or

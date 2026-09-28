@@ -17,6 +17,16 @@ pub struct Wire {
 }
 
 impl Wire {
+    /// Allocate a generic application invocation on the same connection. Its
+    /// operation channel is owned by the carrier SDK, not the optimistic journal.
+    pub fn invoke(&mut self, operation: &str, input: serde_json::Value) -> Result<Command, Error> {
+        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
+        Ok(Command::Invoke(Invocation {
+            id: self.sequence,
+            operation: operation.into(),
+            input,
+        }))
+    }
     /// Forget interrupted exchanges while keeping invocation IDs unique across
     /// physical attachments. Document receipts recover stable mutation outcomes.
     pub fn reconnect(&mut self) {

@@ -75,21 +75,25 @@ async fn upgrade<B: Backend + Send + 'static>(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let opened = {
-        let mut host = shared.host.lock().unwrap();
+    let opening = shared.clone();
+    let opened = tokio::task::spawn_blocking(move || {
+        let mut host = opening.host.lock().unwrap();
         host.open()
-            .and_then(|peer| host.output(peer).map(|output| (peer, output)))
-    };
-    let (peer, output) = match opened {
+            .and_then(|peer| Ok((peer, host.output(peer)?, host.carrier_control(peer)?)))
+    })
+    .await
+    .expect("document carrier opening panicked");
+    let (peer, output, control) = match opened {
         Ok(value) => value,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let failed = shared.clone();
+    let failed_control = control.clone();
     let bearer = shared.cookie.as_ref().and_then(|read| read(&headers));
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
-        .on_failed_upgrade(move |_| failed.host.lock().unwrap().lost(peer, failed.now()))
-        .on_upgrade(move |socket| connection(socket, shared, peer, bearer, output))
+        .on_failed_upgrade(move |_| failed_control.detach(failed.now()))
+        .on_upgrade(move |socket| connection(socket, shared, peer, bearer, output, control))
 }
 
 async fn connection<B: Backend + Send + 'static>(
@@ -98,6 +102,7 @@ async fn connection<B: Backend + Send + 'static>(
     peer: u64,
     cookie_bearer: Option<String>,
     output: crate::Output,
+    control: crate::CarrierControl,
 ) {
     let (mut sink, mut stream) = socket.split();
     let mut flush = tokio::time::interval(Duration::from_millis(2));
@@ -109,6 +114,11 @@ async fn connection<B: Backend + Send + 'static>(
             message = stream.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let Ok(mut command) = serde_json::from_str(&text) else { break; };
+                    if matches!(command, snap_transport::Command::Close | snap_transport::Command::Disconnect) {
+                        if matches!(command, snap_transport::Command::Close) { control.close(shared.now()); }
+                        else { control.detach(shared.now()); }
+                        break;
+                    }
                     if let snap_transport::Command::Connect { bearer, .. } = &mut command
                         && bearer.is_empty()
                         && let Some(cookie) = &cookie_bearer {
@@ -157,10 +167,10 @@ async fn connection<B: Backend + Send + 'static>(
             break;
         }
     }
-    // The socket is gone now; logical teardown can wait behind synchronous IO.
-    let _ =
-        tokio::task::spawn_blocking(move || shared.host.lock().unwrap().lost(peer, shared.now()))
-            .await;
+    // Drop both halves without waiting for synchronous IO or a socket close handshake.
+    control.detach(shared.now());
+    drop(stream);
+    drop(sink);
 }
 
 /// Drive one application-wide FIFO. Tests can instead call Host::step explicitly

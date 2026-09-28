@@ -96,8 +96,9 @@ fn accepted_authority_dedup_and_draining_match_committed_effects(tc: TestCase) {
         let amount = tc.draw(gs::integers::<i64>().min_value(1).max_value(8));
         let duplicate = tc.draw(gs::booleans());
         let close = tc.draw(gs::booleans());
+        let carrier = tc.draw(gs::booleans());
         let revoke = tc.draw(gs::booleans());
-        tc.note(&format!("step={step} allowed={allowed} amount={amount} duplicate={duplicate} close={close} revoke={revoke}"));
+        tc.note(&format!("step={step} allowed={allowed} amount={amount} duplicate={duplicate} close={close} carrier={carrier} revoke={revoke}"));
         host.transact("grant", |tx| grant(tx, allowed)).unwrap();
         let peer = host.open().unwrap();
         host.submit(
@@ -130,7 +131,14 @@ fn accepted_authority_dedup_and_draining_match_committed_effects(tc: TestCase) {
         if duplicate {
             host.submit(peer, command, step as u64 * 100).unwrap();
         }
-        if close {
+        if carrier {
+            let control = host.carrier_control(peer).unwrap();
+            if close {
+                control.close(step as u64 * 100);
+            }
+            control.detach(step as u64 * 100);
+            host.tick(step as u64 * 100 + 10);
+        } else if close {
             host.submit(peer, Command::Close, step as u64 * 100)
                 .unwrap();
         } else {

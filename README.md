@@ -117,10 +117,9 @@ mise exec -- bun scripts/chatty.ts
 ```
 
 Open `http://127.0.0.1:3850` and choose Continue with Authy. The runner reads
-`.snap/chatty.env`; environment variables override it. `OPENCODE_API_KEY` enables
-live model replies and `EXA_API_KEY` enables search. Default tests use a local
-provider fixture. See [Chatty](apps/chatty/CONTRACT.md) for configuration, thread
-recovery, file tools and explicit live verification.
+`.snap/chatty.env`; environment variables override it. Chatty stores and synchronizes
+conversation messages between clients. See [Chatty](apps/chatty/CONTRACT.md) for
+configuration and verification.
 
 ## Run Factorio
 

@@ -52,6 +52,50 @@ fn manifest_keeps_validated_unchanged_documents_and_removes_omitted_ones() {
 }
 
 #[test]
+fn lifecycle_intents_wait_for_authority_and_recover_without_projecting_value_edits() {
+    use snap_document::lifecycle::Operation;
+    for operation in [Operation::Delete, Operation::Archive, Operation::Retry] {
+        let registry = registry();
+        let mut client = Client::new("alice".into());
+        let before = snapshot("doc-a", 1, 0);
+        install(&mut client, &registry, vec![before.clone()]);
+        let id = client.lifecycle(&registry, "doc-a", operation).unwrap();
+        assert_eq!(client.get("doc-a"), Some(&before));
+        let submitted = client.next_submission().unwrap();
+        assert!(
+            matches!(submitted, ClientMessage::Mutate(ref intent) if intent.id == id && intent.mutation == operation.name() && intent.args.is_null())
+        );
+        client
+            .handle(&registry, ServerMessage::Accepted { id })
+            .unwrap();
+        client.begin_reconnect();
+        assert_eq!(client.manifest().pending.len(), 1);
+        let retained = operation == Operation::Retry;
+        client
+            .handle(
+                &registry,
+                ServerMessage::Manifest(Reconciliation {
+                    documents: if retained {
+                        vec![before.clone()]
+                    } else {
+                        vec![]
+                    },
+                    unchanged: vec![],
+                    completed: vec![Completion {
+                        id,
+                        document: "doc-a".into(),
+                        result: Ok(retained.then_some(before)),
+                    }],
+                }),
+            )
+            .unwrap();
+        assert!(client.pending().is_empty());
+        assert_eq!(client.get("doc-a").is_some(), retained);
+        assert!(client.next_submission().is_none());
+    }
+}
+
+#[test]
 fn controller_holdings_do_not_reapply_a_durably_committed_optimistic_mutation() {
     let registry = registry();
     let mut client = Client::new("alice".into());

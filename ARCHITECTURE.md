@@ -41,9 +41,9 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `apps/authy` composes atomic enrollment and Access-owned profile Documents.
   `apps/authy/native` owns HTTP, signed cookies, persisted RS256 keys and the
   serialized Document host. `apps/authy/wasm` binds the Document SDK for React.
-- `apps/chatty` owns synchronous thread acceptance, cancellation and result
-  publication. Conversations are private Documents; opaque provider context lives
-  in server-only Store tables. Its native host owns retained model/tool tasks.
+- `apps/chatty` owns private conversation Documents and named message mutations.
+  Its native host registers guarded WebSocket operations with the shared dispatcher.
+  Chatty synchronizes client data and performs no model or tool IO.
 - `apps/factorio` owns the shared workspace Document, ticket graphs, exclusive module
   claims and candidate/approval lifecycle. Its native host journals effect intent
   before Git or OpenCode IO and reconciles the exact planned integration commit
@@ -55,7 +55,7 @@ independent consumer or enforceable dependency/portability rule requires it.
   owner-authorized conversation snapshots after OpenCode events and reconnects.
 - `crates/http` declares bounded outbound IO. `platforms/model` builds and consumes
   Responses streams through that contract. Neither is a portable application
-  executor; model IO runs outside Chatty's Store transaction.
+  executor; applications must explicitly select these adapters when needed.
 - `apps/testy` defines the calculator, operation contracts and SDK.
 - `apps/testy/local` owns the executable entry points and selects the platform,
   authority, application implementation and host input resolver.
@@ -315,6 +315,8 @@ Document intent IDs additionally identify transactional receipts.
 Physical detach does not release logical residency. Desired logical close prevents
 new admission immediately and enters draining while accepted work remains. Actual
 closure releases the connection's references after that work completes.
+Carrier close/detach signals do not acquire the execution mutex. The socket drops
+immediately; the host consumes signals before subsequent admission and at finalization.
 
 Intent replay requires a matching authoritative base and compatible mutation
 behavior. A replay mismatch is an explicit observable replication error. The SDK
@@ -359,6 +361,8 @@ transaction and do not re-enter dispatch.
 Document lifecycle metadata retains deleted/archived objects, finalizer keys and
 blocked reconciliation status. Deletion and archiving remove Documents from normal
 loading. Cleanup may remove finalizer keys but never physically purges the Document.
+The Client SDK queues typed delete/archive/retry intents through normal receipt
+recovery, leaving projected values unchanged until authoritative publication.
 Direct retrieval, freezing and incineration are deferred. Legacy trusted replacement
 helpers remain during application migration; they are not the public mutation API.
 

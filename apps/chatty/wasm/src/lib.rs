@@ -33,6 +33,13 @@ impl ChattyClient {
         })
         .map_err(error)
     }
+    pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
+        let command = self
+            .wire
+            .invoke(operation, serde_json::from_str(input).map_err(error)?)
+            .map_err(error)?;
+        serde_json::to_string(&command).map_err(error)
+    }
     pub fn rename(&mut self, id: &str, title: &str, effort: &str) -> Result<String, JsValue> {
         self.client
             .enqueue(

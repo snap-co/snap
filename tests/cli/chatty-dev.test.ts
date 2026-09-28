@@ -32,7 +32,7 @@ test("Chatty dev retains OAuth sessions and threads across failed builds and nat
     await page.getByRole("button", { name: "Allow", exact: true }).click();
     await page.getByLabel("Message Chatty").fill("Persistent dev thread");
     await page.getByRole("button", { name: "Send message", exact: true }).click();
-    await page.getByText("Fixture answer: Persistent dev thread", { exact: true }).waitFor();
+    await page.locator(".transcript .user-message p").filter({ hasText: "Persistent dev thread" }).waitFor();
     const css = `${fixture}/apps/chatty/web/style.css`;
     await writeFile(css, await readFile(css, "utf8") + "\nbody { --chatty-probe: active; }\n");
     await until(() => page.evaluate(() => getComputedStyle(document.body).getPropertyValue("--chatty-probe").trim() === "active"));
@@ -41,13 +41,13 @@ test("Chatty dev retains OAuth sessions and threads across failed builds and nat
     await writeFile(source, original + '\ncompile_error!("deliberate Chatty build failure");\n');
     await until(() => server!.logs.includes("Rebuild failed; previous generation retained"));
     await page.reload();
-    await page.getByText("Fixture answer: Persistent dev thread", { exact: true }).waitFor();
+    await page.locator(".transcript .user-message p").filter({ hasText: "Persistent dev thread" }).waitFor();
     const ready = (server.logs.match(/generation ready/g) ?? []).length;
     const reloaded = page.waitForEvent("load");
     await writeFile(source, original);
     await until(() => (server!.logs.match(/generation ready/g) ?? []).length > ready);
     await reloaded;
-    await page.getByText("Fixture answer: Persistent dev thread", { exact: true }).waitFor();
+    await page.locator(".transcript .user-message p").filter({ hasText: "Persistent dev thread" }).waitFor();
     await page.evaluate(() => { (window as any).__chattyDev = "same"; });
     const ui = `${fixture}/apps/chatty/web/main.tsx`;
     await writeFile(ui, (await readFile(ui, "utf8")).replace("YOUR CONVERSATIONS", "UPDATED CONVERSATIONS"));

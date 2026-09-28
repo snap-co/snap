@@ -37,7 +37,10 @@ impl Registry {
             }
             let mut names = alloc::collections::BTreeSet::new();
             for mutation in &definition.mutations {
-                if mutation.name.is_empty() || !names.insert(mutation.name.clone()) {
+                if mutation.name.is_empty()
+                    || mutation.name.starts_with("document.")
+                    || !names.insert(mutation.name.clone())
+                {
                     return Err(Error::Invalid);
                 }
             }
@@ -83,6 +86,20 @@ impl Registry {
         intent: &Intent,
         actor: &str,
     ) -> Result<Snapshot, Error> {
+        if crate::lifecycle::Operation::named(&intent.mutation).is_some() {
+            self.validate(snapshot)?;
+            if intent.id == 0
+                || intent.document != snapshot.id
+                || intent.version != snapshot.version
+                || !intent.args.is_null()
+            {
+                return Err(Error::Invalid);
+            }
+            // Cleanup and blocked status belong to the authority. Keep the visible
+            // value until its committed holdings/removal arrives, without inventing
+            // a value revision for a lifecycle-only mutation.
+            return Ok(snapshot.clone());
+        }
         let mutation = self.mutation(snapshot, intent)?;
         let mut result = snapshot.clone();
         result.value = (mutation.apply)(&snapshot.value, &intent.args, actor)?;

@@ -15,55 +15,60 @@ async function send(page: Page, message: string) {
   await page.getByRole("button", { name: "Send message", exact: true }).click();
 }
 
-test("Authy OAuth, private Document threads, streamed progress, cancellation, file tool, restart and logout", async ({ page, browser }) => {
+test("WebSocket mutations synchronize conversations, enforce Access, and survive restart", async ({ page, browser }) => {
   const errors: string[] = [];
   const frames: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("websocket", socket => socket.on("framereceived", event => frames.push(String(event.payload))));
   await signup(page, `chatty-${Date.now()}@example.test`);
   await send(page, "Hello");
-  await expect(page.getByText("Fixture answer: Hello", { exact: true })).toBeVisible();
+  await expect(page.locator(".transcript .user-message p")).toHaveText("Hello");
+  await expect(page).toHaveURL(/\?thread=.+/);
   const threadURL = page.url();
   page.once("dialog", dialog => dialog.accept("Renamed conversation"));
   await page.getByRole("button", { name: "Rename", exact: true }).click();
   await expect(page.locator(".topbar strong")).toHaveText("Renamed conversation");
   await page.reload();
   await expect(page.locator(".topbar strong")).toHaveText("Renamed conversation");
-  await expect(page.getByText("Fixture answer: Hello", { exact: true })).toBeVisible();
-  const heldRequest = page.waitForRequest(request => request.url().endsWith("/api/send") && request.method() === "POST");
-  await send(page, "Hold reply");
-  const submitted = (await heldRequest).postDataJSON();
-  await expect(page.getByText(/^Partial reply\./)).toBeVisible();
-  const session = await (await page.request.get(`${process.env.CHATTY_TEST_URL}/api/session`)).json();
-  const before = await (await page.request.get(`${process.env.CHATTY_FIXTURE_URL}/stats`)).json();
-  const duplicate = await page.request.post(`${process.env.CHATTY_TEST_URL}/api/send`, { headers: { origin: process.env.CHATTY_TEST_URL!, "x-snap-csrf": session.csrf }, data: submitted });
-  expect(duplicate.status()).toBe(202);
-  const after = await (await page.request.get(`${process.env.CHATTY_FIXTURE_URL}/stats`)).json();
-  expect(after.calls).toBe(before.calls);
-  await page.getByRole("button", { name: "Stop reply", exact: true }).click();
-  await expect(page.getByText("Stopped by you. In-flight remote work may still finish.", { exact: true })).toBeVisible();
-  await page.request.get(`${process.env.CHATTY_FIXTURE_URL}/release`);
-  await send(page, "Write a note");
-  await expect(page.getByText("Saved your note.", { exact: true })).toBeVisible();
-  await page.getByText(/write file Finished/).click();
-  await expect(page.getByText(/A private fixture note/, { exact: false }).last()).toBeVisible();
-  expect(frames.some(frame => frame.includes("fixture-opaque-provider-state"))).toBe(false);
-  expect(frames.some(frame => frame.includes("fixture-model-key"))).toBe(false);
+  await expect(page.getByText("Hello", { exact: true })).toBeVisible();
+  const second = await page.context().newPage();
+  await second.goto(threadURL);
+  await expect(second.getByText("Hello", { exact: true })).toBeVisible();
+  await send(second, "From another client");
+  await expect(page.getByText("From another client", { exact: true })).toBeVisible();
+  await second.close();
+  expect((await page.request.post(`${process.env.CHATTY_TEST_URL}/api/send`, { data: {} })).ok()).toBe(false);
   const otherContext = await browser.newContext();
   try {
     const other = await otherContext.newPage();
     await signup(other, `other-${Date.now()}@example.test`);
     await other.goto(threadURL);
     await expect(other.getByLabel("Message Chatty")).toBeVisible();
-    await expect(other.getByText("Fixture answer: Hello", { exact: true })).toHaveCount(0);
+    await expect(other.getByText("Hello", { exact: true })).toHaveCount(0);
     await expect(other.getByRole("button", { name: "Renamed conversation", exact: true })).toHaveCount(0);
-    const otherSession = await (await other.request.get(`${process.env.CHATTY_TEST_URL}/api/session`)).json();
-    const stolen = await other.request.post(`${process.env.CHATTY_TEST_URL}/api/send`, { headers: { origin: process.env.CHATTY_TEST_URL!, "x-snap-csrf": otherSession.csrf }, data: submitted });
-    expect(stolen.status()).toBe(401);
+    const stolen = await other.evaluate(thread => new Promise<{ accepted: boolean; failed: boolean }>((resolve, reject) => {
+      const socket = new WebSocket(`${location.origin.replace(/^http/, "ws")}/transport`);
+      const timer = setTimeout(() => { socket.close(); reject(new Error("Timed out")); }, 5000);
+      let accepted = false;
+      socket.onopen = () => socket.send(JSON.stringify({ Connect: { bearer: "", client_id: crypto.randomUUID() } }));
+      socket.onmessage = event => {
+        const frame = JSON.parse(String(event.data));
+        if (frame.Attached) socket.send(JSON.stringify({ Invoke: { id: 1, operation: "chatty.send", input: { thread_id: thread, request_id: "stolen", message: "unauthorized" } } }));
+        for (const event of frame.Events ?? []) {
+          if (event.Accepted) accepted = true;
+          if (event.Completed) { clearTimeout(timer); socket.close(); resolve({ accepted, failed: "Err" in event.Completed.outcome }); }
+        }
+      };
+    }), new URL(threadURL).searchParams.get("thread"));
+    expect(stolen).toEqual({ accepted: false, failed: true });
   } finally { await otherContext.close(); }
   await page.request.get(`${process.env.CHATTY_FIXTURE_URL}/restart`);
   await page.reload();
-  await expect(page.getByText("Saved your note.", { exact: true })).toBeVisible();
+  await expect(page.getByText("From another client", { exact: true })).toBeVisible();
+  expect(frames.some(frame => frame.includes("Accepted"))).toBe(true);
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Renamed conversation", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await page.getByRole("button", { name: "Confirm sign out", exact: true }).click();
   await expect(page.getByRole("link", { name: /Continue with Authy/ })).toBeVisible();

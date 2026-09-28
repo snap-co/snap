@@ -18,9 +18,10 @@ selects a Secure `__Host-` cookie. Access, refresh and ID tokens remain in priva
 Store rows. Owner IDs derive from issuer plus case-sensitive subject. Chatty has
 no passwords, direct Authy database access or shared Authy bearer.
 
-Each protected write rechecks authority under the serialized Store gate. Mutating
-HTTP calls require canonical Origin and session-bound `x-snap-csrf`. WebSockets
-validate Origin and resolve the cookie in the same host.
+Application operations use the shared WebSocket dispatcher. It validates identity
+and Access before ACK under the application gate. Accepted authority lasts through
+completion. WebSockets validate Origin and resolve the session cookie. OAuth and
+session bootstrapping remain HTTP; logout requires session-bound `x-snap-csrf`.
 
 Local sessions last at most 30 days. Refresh commits a consumption fence before
 HTTP; failed/uncertain exchanges require a fresh login. Restart retires in-flight
@@ -32,50 +33,24 @@ Logout revokes the local session first and cancels its previous continuation. It
 navigates to Authy confirmation using client, registered redirect and single-use
 state. ID tokens do not enter browser URLs. The callback checks browser correlation.
 
-## Threads and external work
+## Conversations
 
-Each owner can keep 200 threads with 200 turns each; messages are at most 32 KiB.
-The `rename` Document mutation updates title/effort optimistically. Creation,
-deletion, message acceptance and cancellation are application HTTP operations.
+Chatty stores and synchronizes messages between clients. It performs no model,
+search or file-tool IO. Existing saved replies remain readable.
 
-`/api/send` requires a request ID. Message, active-turn fence and request receipt
-commit before the host starts work. Repeating the same ID/message returns its turn
-without IO; changing the message conflicts. One turn per thread and four model
-tasks per host are admitted. A cancelled task retains its host IO permit until exit.
+An owner can create up to 200 conversations, each with at most 200 messages of
+32 KiB. `chatty.create` grants its authenticated creator ownership. `chatty.send`
+and `chatty.rename` compose the named `send` and `rename` Document mutations in
+the dispatcher transaction. `chatty.delete` composes `document.delete`, removing
+the conversation from normal loading while retaining stored cleanup state.
 
-Generation runs at most five model steps and eight tool calls, with 8192 output
-tokens per step. The default provider is OpenCode Go's `muse-spark-1.3-contributor`
-at `https://opencode.ai/zen/go/v1/responses`. Server settings `CHATTY_MODEL` and
-`CHATTY_MODEL_ENDPOINT` override these. Requests use `store:false`, encrypted
-reasoning inclusion and a stable thread session header.
+Messages record the verified sender. Repeating a message ID with the same sender
+and content does not append it twice; different content conflicts. Invocation
+retries reuse their ID within a surviving logical connection. A lost logical
+lifetime reports unknown outcomes rather than replaying effects as new requests.
 
-Streaming progress publishes display text, explicit provider summaries, tool
-results, usage and completion through Documents. Opaque provider output stays in
-private Store rows. Provider ordering, assistant phase and tool call/result pairing
-survive subsequent requests. No raw thinking transcript is exposed.
-
-Context retains complete recent turns within 192 KiB, dropping whole older turns
-with a visible omitted count. Failed/cancelled/interrupted turns stay visible but
-do not become model context. Expanded context after tools is bounded to 320 KiB;
-display text plus summaries are bounded to 512 KiB.
-
-Each progress/result publication checks current session, owner and the accepted
-turn fence. Cancel/delete/logout reject late results. Retained work survives HTTP
-observer loss. Startup marks unfinished turns interrupted and never repeats model
-requests or file writes. Already-started remote work may still finish. Errors are
-visible without automatic retry.
-
-## Tools
-
-File tools list/read/write a dedicated per-owner workspace. cap-std confines path
-resolution. Paths are relative with at most eight components; files are UTF-8,
-at most 64 KiB, with at most 200 files. Writes use a temporary file and rename.
-Tools do not run shell commands. Local administrators remain trusted.
-
-`EXA_API_KEY` enables search with five results, bounded excerpts and source URLs.
-The model is instructed to cite them and treat retrieved text as untrusted. Tools
-run outside Store after progress commits. A crash after an external write records
-uncertainty rather than repeating the tool.
+Document updates synchronize all accessible active conversations. No separate
+HTTP application command routes exist.
 
 ## Local operation
 
@@ -103,7 +78,7 @@ SNAP_DATABASE=apps/chatty/.snap/chatty-store.sqlite ./dist/chatty/chatty
 ```
 
 `CHATTY_ADDR` selects the native loopback listener. `SNAP_ORIGIN`, `AUTHY_ORIGIN`,
-`SNAP_WEB_DIR` and `CHATTY_FILES` select origins, assets and file storage. Standalone
+`SNAP_WEB_DIR` select origins and assets. Standalone
 database defaults to `.snap/chatty-store.sqlite` relative to cwd; dev uses
 `apps/chatty/.snap/chatty-store.sqlite`. Preserve SQLite for sessions, keys and
 threads. Old databases are not automatically imported. Workers and public
@@ -114,12 +89,9 @@ deployment are not supported targets.
 ```sh
 ./bin/snap test apps/chatty full
 TMPDIR=/tmp/opencode mise exec -- bun test tests/cli/chatty-dev.test.ts
-# Explicit paid-provider gate, using configured model and Exa keys:
-TMPDIR=/tmp/opencode mise exec -- bun scripts/check-chatty-live.ts
 ```
 
-Default tests use temporary stores, real Authy OAuth and a deterministic streaming
-provider. Core tests cover rollback, deduplication, private context and lifecycle
-fences. Native gates cover file confinement and RSA verification. Browser tests
-cover Document edits, streaming, tools, isolation, restart and logout. The live
-gate requires an actual model answer citing a returned search source.
+Tests use temporary stores and real Authy OAuth. Core tests cover guarded writes,
+verified senders, message deduplication, atomic rollback and retained deletion.
+Browser tests cover cross-client synchronization, denial before ACK, restart and
+logout. The native OAuth gate covers RSA verification.

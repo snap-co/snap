@@ -402,6 +402,121 @@ fn physical_loss_and_logical_expiry_both_drain_accepted_work() {
     }
 }
 
+#[tokio::test]
+#[ignore = "real socket suite"]
+async fn websocket_close_drops_socket_while_controller_io_is_held() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (finish, released) = std::sync::mpsc::channel();
+    let mut entered = Some(entered);
+    let host = fixture().with_controller(
+        "counter",
+        Box::new(move |_, _| {
+            entered.take().unwrap().send(()).unwrap();
+            released
+                .recv()
+                .map_err(|_| snap_store::Error::Unavailable)?;
+            Ok(())
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let shared = snap_document_local::web::Shared::new(host, format!("http://{address}"));
+    let router = snap_document_local::web::router(shared.clone());
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _server = Stop(tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    }));
+    let (mut socket, _) = connect_async(format!("ws://{address}/transport"))
+        .await
+        .unwrap();
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&Command::Connect {
+                bearer: "alice".into(),
+                client_id: "close-held".into(),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let timeout = std::time::Duration::from_secs(2);
+    let attached = tokio::time::timeout(timeout, socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        serde_json::from_str::<Response>(attached.to_text().unwrap()).unwrap(),
+        Response::Attached { .. }
+    ));
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&Command::Invoke(Invocation {
+                id: 1,
+                operation: "document.mutate".into(),
+                input: serde_json::to_value(intent(1, 3)).unwrap(),
+            }))
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let ack = tokio::time::timeout(timeout, socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Response>(ack.to_text().unwrap()).unwrap(),
+        Response::Events(vec![Event::Accepted { id: 1 }])
+    );
+    let worker_host = shared.clone();
+    let worker = tokio::task::spawn_blocking(move || worker_host.host.lock().unwrap().step());
+    tokio::time::timeout(timeout, waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&Command::Close).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+    let closed = tokio::time::timeout(timeout, async {
+        while let Some(Ok(message)) = socket.next().await {
+            if matches!(message, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    // Always release the blocking worker before asserting the socket result.
+    finish.send(()).unwrap();
+    assert!(worker.await.unwrap());
+    closed.expect("physical close waited for controller IO");
+    let mut host = shared.host.lock().unwrap();
+    host.tick(10);
+    assert_eq!(host.residency_references(ID), 0);
+    assert_eq!(
+        host.transact("read drained mutation", |tx| Document::new(
+            registry(),
+            access()
+        )
+        .read(tx, ID, Some("alice")))
+            .unwrap()
+            .value,
+        json!(3)
+    );
+}
+
 #[test]
 fn controller_commits_progress_and_converges_before_the_next_acceptance() {
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -535,6 +650,62 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
         })
         .unwrap();
     assert!(state.blocked.is_none());
+}
+
+#[test]
+fn carrier_close_during_controller_io_drains_only_accepted_work() {
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (finish, released) = std::sync::mpsc::channel();
+    let mut host = fixture().with_controller(
+        "counter",
+        Box::new(move |_, _| {
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            Ok(())
+        }),
+    );
+    let (peer, _) = connect(&mut host, "alice", "closing-io", 0);
+    let output = host.output(peer).unwrap();
+    let control = host.carrier_control(peer).unwrap();
+    submit(&mut host, peer, 1, intent(1, 1));
+    submit(&mut host, peer, 2, intent(2, 10));
+    let worker = std::thread::spawn(move || {
+        host.step();
+        host
+    });
+    waiting
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    control.close(1);
+    control.detach(1); // Physical teardown must not downgrade desired close.
+    finish.send(()).unwrap();
+    let mut host = worker.join().unwrap();
+    assert!(!host.step());
+    assert!(host.retired(peer));
+    assert_eq!(host.residency_references(ID), 0);
+    let events: Vec<_> = std::iter::from_fn(|| output.pop_front())
+        .filter_map(|r| match r {
+            Response::Events(events) => Some(events),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Accepted { id: 1 }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Accepted { id: 2 }))
+    );
+    let saved = host
+        .transact("read after close", |tx| {
+            Document::new(registry(), access()).read(tx, ID, Some("alice"))
+        })
+        .unwrap();
+    assert_eq!(saved.value, json!(1));
 }
 
 #[test]

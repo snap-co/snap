@@ -60,6 +60,22 @@ struct Peer {
     actor: Option<String>,
     held: BTreeMap<String, Snapshot>,
     output: Output,
+    control: CarrierControl,
+}
+
+/// Physical teardown can be requested while controller IO holds the host gate.
+/// The host consumes it before another protected admission. Accepted work drains.
+#[derive(Clone, Default)]
+pub struct CarrierControl(Arc<Mutex<Option<(bool, u64)>>>);
+
+impl CarrierControl {
+    pub fn detach(&self, now: u64) {
+        self.0.lock().unwrap().get_or_insert((false, now));
+    }
+
+    pub fn close(&self, now: u64) {
+        *self.0.lock().unwrap() = Some((true, now));
+    }
 }
 
 /// Carrier-owned handle. Socket writes and progress draining never acquire the
@@ -332,6 +348,7 @@ impl<B: Backend> Host<B> {
                 actor: None,
                 held: BTreeMap::new(),
                 output: Output::default(),
+                control: CarrierControl::default(),
             },
         );
         Ok(self.next_peer)
@@ -349,6 +366,7 @@ impl<B: Backend> Host<B> {
     }
 
     pub fn tick(&mut self, now: u64) {
+        self.apply_carrier_controls();
         self.transport.tick(now);
         let retired = self.transport.take_retired();
         let released = !retired.is_empty();
@@ -393,6 +411,41 @@ impl<B: Backend> Host<B> {
                 .lock()
                 .unwrap()
                 .retain_keys(snap_document::server::TABLES[0], &keys);
+        }
+    }
+
+    pub fn carrier_control(&self, peer: u64) -> Result<CarrierControl, Error> {
+        self.peers
+            .get(&peer)
+            .map(|peer| peer.control.clone())
+            .ok_or(Error::StaleConnection)
+    }
+
+    fn apply_carrier_controls(&mut self) {
+        let controls: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(id, peer)| {
+                peer.control
+                    .0
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .map(|signal| (*id, signal))
+            })
+            .collect();
+        for (id, (close, now)) in controls {
+            if let Some(peer) = self.peers.remove(&id)
+                && let Some(attachment) = peer.attachment
+            {
+                if close {
+                    let _ = self.transport.close(&attachment);
+                } else {
+                    let _ = self.transport.disconnect(&attachment, now);
+                }
+            }
+            self.calls
+                .retain(|(connection, _), _| *connection != (id | (1 << 63)));
         }
     }
 
@@ -608,6 +661,7 @@ impl<B: Backend> Host<B> {
     }
 
     fn admit_next(&mut self) {
+        self.apply_carrier_controls();
         if self.active.is_some() {
             return;
         }

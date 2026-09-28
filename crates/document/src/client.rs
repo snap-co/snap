@@ -312,6 +312,22 @@ impl Client {
         }
     }
 
+    /// Queue server-owned lifecycle work through the same receipt/reconnect path.
+    /// It leaves the projected Document unchanged until authoritative publication.
+    pub fn lifecycle(
+        &mut self,
+        registry: &Registry,
+        document: &str,
+        operation: crate::lifecycle::Operation,
+    ) -> Result<u64, Error> {
+        self.enqueue(
+            registry,
+            document,
+            operation.name(),
+            serde_json::Value::Null,
+        )
+    }
+
     /// Next intent to submit, paced by acceptance.
     ///
     /// Returns `None` while reconciling or while one intent still awaits
