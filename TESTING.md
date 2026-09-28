@@ -97,6 +97,13 @@ logout. Its native OAuth gate checks pinned RSA verification.
 `bun test tests/cli/chatty-dev.test.ts` covers the shared dev driver.
 Set `TMPDIR=/tmp/opencode` for disposable filesystem gates.
 
+Factorio's linked-Document domain tests cover inherited workspace ownership,
+multi-Document rollback, exclusive claims, intake revision guards, retained cleanup,
+and atomic ticket/session completion. Its separate property consumer runs with
+`mise exec -- cargo test --locked -p factorio-properties`. The resource-ownership
+model varies unauthorized callers, conflicting starts, transaction rejection and
+cleanup, checking port allocation, claims and finalizers against committed outcomes.
+
 Factorio's full gate covers portable claim/graph/lifecycle rules, native Git effects,
 and a real Authy OAuth CLI/browser journey in disposable repositories. The journey
 uses an explicit OpenCode V2 contract fixture. Candidate approval is a fixture-only

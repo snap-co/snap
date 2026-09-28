@@ -118,6 +118,7 @@ async fn fixture() -> (tempfile::TempDir, Config, Session) {
         publications: vec![],
         integration: None,
         error: String::new(),
+        desired: factorio::Desired::Active,
     };
     (temp, c, s)
 }

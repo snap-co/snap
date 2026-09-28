@@ -3,6 +3,7 @@ members = [
     "apps/factorio",
     "apps/factorio/native",
     "apps/factorio/wasm",
+    "apps/factorio/properties",
     "crates/execution",
     "crates/transport",
     "platforms/local",

@@ -11,6 +11,7 @@ use snap_oidc::relying_party as rp;
 use snap_store::{Error, Transaction};
 
 pub const WORKSPACE: &str = "faca0000-0000-4000-8000-000000000001";
+pub mod documents;
 pub mod intake;
 const OWNER: &str = "factorio-service";
 
@@ -98,6 +99,21 @@ pub struct Session {
     /// Persisted before mainline changes; recovery checks ancestry of this exact OID.
     pub integration: Option<String>,
     pub error: String,
+    #[serde(default)]
+    pub desired: Desired,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Desired {
+    #[default]
+    Active,
+    Published {
+        evidence: String,
+        findings: Vec<Finding>,
+    },
+    Integrated,
+    Abandoned,
 }
 impl Session {
     pub fn claims(&self) -> bool {
@@ -245,6 +261,14 @@ pub struct Actor<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    Publish {
+        id: String,
+        evidence: String,
+        findings: Vec<Finding>,
+    },
+    Accept {
+        id: String,
+    },
     Ticket {
         ticket: Ticket,
     },
@@ -277,8 +301,54 @@ pub fn command(
     cmd: Command,
 ) -> Result<Workspace, Error> {
     let who = rp::lease(tx, actor.session, actor.now)?;
-    let mut w = load(tx)?;
+    let w = transition(load(tx)?, &who.owner, actor.human, actor.now, cmd)?;
+    save(tx, &w)?;
+    Ok(w)
+}
+
+/// Pure desired-state transition, shared by admission guards and transactional
+/// handlers. No credentials, Store writes or host effects run here.
+pub fn transition(
+    mut w: Workspace,
+    owner: &str,
+    human: bool,
+    now: i64,
+    cmd: Command,
+) -> Result<Workspace, Error> {
     match cmd {
+        Command::Publish {
+            id,
+            evidence,
+            findings,
+        } => {
+            let s = w.sessions.get_mut(&id).ok_or(Error::NotFound)?;
+            if !matches!(s.phase, Phase::Active | Phase::Published)
+                || evidence.trim().is_empty()
+                || evidence.len() > 32768
+                || findings.len() > 128
+                || findings
+                    .iter()
+                    .any(|f| f.text.len() + f.disposition.len() > 8192)
+            {
+                return Err(Error::Constraint);
+            }
+            s.desired = Desired::Published { evidence, findings };
+            if let Some(previous) = s.candidate.take() {
+                s.publications.push(previous);
+            }
+            s.phase = Phase::Active;
+        }
+        Command::Accept { id } => {
+            let s = w.sessions.get_mut(&id).ok_or(Error::NotFound)?;
+            if s.phase != Phase::Published
+                || s.candidate
+                    .as_ref()
+                    .is_none_or(|c| c.approval.as_ref().is_none_or(|a| a.commit != c.commit))
+            {
+                return Err(Error::Constraint);
+            }
+            s.desired = Desired::Integrated;
+        }
         Command::Ticket { ticket } => {
             if !valid_id(&ticket.id)
                 || ticket.title.trim().is_empty()
@@ -385,7 +455,7 @@ pub fn command(
                 id.clone(),
                 Session {
                     id: id.clone(),
-                    owner: who.owner,
+                    owner: owner.into(),
                     prompt,
                     tickets,
                     modules,
@@ -400,6 +470,7 @@ pub fn command(
                     publications: vec![],
                     integration: None,
                     error: String::new(),
+                    desired: Desired::Active,
                 },
             );
         }
@@ -419,6 +490,7 @@ pub fn command(
                 s.publications.push(previous);
             }
             s.phase = Phase::Active;
+            s.desired = Desired::Active;
             for m in modules {
                 if !s.modules.contains(&m) {
                     s.modules.push(m);
@@ -426,7 +498,7 @@ pub fn command(
             }
         }
         Command::Approve { id, commit } => {
-            if !actor.human {
+            if !human {
                 return Err(Error::Constraint);
             }
             let s = w.sessions.get_mut(&id).ok_or(Error::NotFound)?;
@@ -438,8 +510,8 @@ pub fn command(
                 return Err(Error::Constraint);
             }
             c.approval = Some(Approval {
-                human: who.owner,
-                at: actor.now,
+                human: owner.into(),
+                at: now,
                 commit,
             });
         }
@@ -452,9 +524,9 @@ pub fn command(
                 return Err(Error::Constraint);
             }
             s.phase = Phase::Abandoning;
+            s.desired = Desired::Abandoned;
         }
     }
-    save(tx, &w)?;
     Ok(w)
 }
 
@@ -504,7 +576,14 @@ pub fn authorized_intent(
 }
 
 fn apply_effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Workspace, Error> {
-    let mut w = load(tx)?;
+    let w = observe(load(tx)?, id, effect)?;
+    save(tx, &w)?;
+    Ok(w)
+}
+
+/// Pure controller observation. Hosts persist these only after the corresponding
+/// resource check/effect; failures leave desired state and resource claims intact.
+pub fn observe(mut w: Workspace, id: &str, effect: Effect) -> Result<Workspace, Error> {
     if matches!(effect, Effect::Integrating { .. })
         && w.sessions
             .values()
@@ -577,11 +656,9 @@ fn apply_effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Wo
         }
         Effect::Failed(message) => {
             s.error = message;
-            save(tx, &w)?;
             return Ok(w);
         }
     }
     s.error.clear();
-    save(tx, &w)?;
     Ok(w)
 }

@@ -11,6 +11,7 @@ snap-access.workspace = true
 snap-document.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 snap-sqlite = { path = "../../platforms/sqlite" }

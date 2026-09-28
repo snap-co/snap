@@ -1,0 +1,25 @@
+[package]
+name = "factorio-properties"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[dev-dependencies]
+hegeltest = { version = "=0.47.4", features = ["static-engine"] }
+factorio = { path = ".." }
+snap-access.workspace = true
+snap-document.workspace = true
+snap-store.workspace = true
+snap-sqlite = { path = "../../../platforms/sqlite" }
+toml = "0.9"
+
+[[test]]
+name = "document-claims"
+path = "../tests/properties/documents.rs"
+
+[package.metadata.snap]
+role = "composition"
+
+[lints]
+workspace = true
