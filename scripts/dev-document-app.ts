@@ -99,7 +99,7 @@ try {
     } finally { building = false; }
   }
   vite.watcher.on("all", (_event, path) => {
-    if (!/\.(rs|toml|lock)$/.test(path) || path.includes("/.snap/")) return;
+    if ((!/\.(rs|toml|lock)$/.test(path) && !(app === "authy" && path.endsWith("/auth-ui.tsx"))) || path.includes("/.snap/")) return;
     revision++; clearTimeout(timer); timer = setTimeout(() => void rebuild().catch(error => { console.error(error); void shutdown(1); }), 150);
   });
   await vite.listen(); const address = vite.httpServer!.address();

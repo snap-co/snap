@@ -48,7 +48,8 @@ test("OAuth returns through password login and explicit consent; forced login as
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Create account", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Authorize application" })).toBeVisible();
-  await expect(page.getByText(/Allow Chatty to access/)).toBeVisible();
+  await expect(page.getByText(/Chatty is requesting access/)).toBeVisible();
+  await expect(page.getByText("See your email address", { exact: true })).toBeVisible();
   const consentResponse = page.waitForResponse(response => response.url().endsWith("/oauth/authorize") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Allow", exact: true }).click();
   const consent = await consentResponse;
@@ -70,4 +71,39 @@ test("OAuth returns through password login and explicit consent; forced login as
   await expect(page).toHaveURL(/\/auth\/logged-out\?state=logout-state/);
   await page.goto(baseURL!);
   await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
+});
+
+test("auth protocol pages share sign-in styling and work without JavaScript", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+  try {
+    const enrolled = await context.request.post(`${baseURL}/api/signup`, { headers: { origin: baseURL! }, data: { email: `static-auth-${Date.now()}@example.test`, password: "static auth fixture password" } });
+    expect(enrolled.ok()).toBe(true);
+    const page = await context.newPage();
+    const parameters = new URLSearchParams({ client_id: "chatty", redirect_uri: `${process.env.AUTHY_TEST_RP}/auth/callback`, response_type: "code", scope: "openid profile email", state: "static-state", nonce: "static-nonce", prompt: "consent", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" });
+    const response = await page.goto(`${baseURL}/oauth/authorize?${parameters}`);
+    expect(response?.headers()["content-security-policy"]).toContain("default-src 'none'");
+    await expect(page.getByRole("link", { name: "Authy home" })).toBeVisible();
+    await expect(page.getByText("Sign you in", { exact: true })).toBeVisible();
+    await expect(page.getByText("Read your profile", { exact: true })).toBeVisible();
+    await expect(page.getByText(process.env.AUTHY_TEST_RP!, { exact: true })).toBeVisible();
+    expect(await page.locator(".auth-shell").evaluate(element => getComputedStyle(element).backgroundColor)).toBe("rgb(25, 30, 39)");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: "/tmp/opencode/authy-consent-mobile.png", fullPage: true });
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await page.screenshot({ path: "/tmp/opencode/authy-consent-desktop.png", fullPage: true });
+    await page.getByRole("button", { name: "Deny", exact: true }).click();
+    await expect(page).toHaveURL(/error=access_denied/);
+    const logout = new URLSearchParams({ client_id: "chatty", post_logout_redirect_uri: `${process.env.AUTHY_TEST_RP}/auth/logged-out`, state: "static-logout" });
+    await page.goto(`${baseURL}/oauth/logout?${logout}`);
+    await expect(page.getByRole("heading", { name: "Sign out of Authy" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Stay signed in" })).toBeVisible();
+    await page.getByRole("button", { name: "Confirm sign out" }).click();
+    await expect(page).toHaveURL(/state=static-logout/);
+    const invalid = await page.goto(`${baseURL}/oauth/resume?request=expired`);
+    expect(invalid?.status()).toBe(400);
+    await expect(page.getByRole("heading", { name: "We couldn't complete this request" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Return to Authy" })).toBeVisible();
+    const machine = await context.request.get(`${baseURL}/oauth/resume?request=expired`, { headers: { accept: "application/json" } });
+    expect(machine.headers()["content-type"]).toContain("application/json");
+  } finally { await context.close(); }
 });

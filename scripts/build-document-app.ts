@@ -1,5 +1,6 @@
 import { mkdir, copyFile, cp } from "node:fs/promises";
 import { resolve } from "node:path";
+import { buildAuthyPages } from "./build-authy-pages";
 
 export async function build(app: "authy" | "chatty" | "factorio", entry: "app" | "main") {
   const root = resolve(import.meta.dir, ".."); process.chdir(root);
@@ -22,6 +23,7 @@ export async function build(app: "authy" | "chatty" | "factorio", entry: "app" |
   await run(["mise", "exec", "--", "cargo", "build", "-p", `${app}-wasm`, "--target", "wasm32-unknown-unknown"]);
   const outdir = resolve(process.env[`${app.toUpperCase()}_BUILD_DIR`] ?? `apps/${app}/.snap/web`);
   await mkdir(outdir, { recursive: true });
+  if (app === "authy") await buildAuthyPages(outdir);
   await run([bindgen, "--target", "web", "--out-dir", `${outdir}/bindings`, `target/wasm32-unknown-unknown/debug/${app}_wasm.wasm`]);
   if (!process.argv.includes("--bindings-only")) {
     const result = await Bun.build({ entrypoints: [`apps/${app}/web/${entry}.tsx`], outdir, target: "browser", sourcemap: "linked", naming: "[name].[ext]", define: { "process.env.NODE_ENV": JSON.stringify("development") } });

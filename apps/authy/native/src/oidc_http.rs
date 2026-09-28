@@ -1,5 +1,6 @@
 //! Standard HTTP carrier for the portable issuer. Store transactions include
 //! session validation, protocol state, fresh profile claims and token issuance.
+use crate::pages::escape;
 use crate::{App, json_response, now, store_error};
 use axum::{
     Router,
@@ -174,17 +175,9 @@ fn redirect_error(app: &App, uri: &str, error: &str, state: &str) -> Response {
         .append_pair("iss", &app.origin);
     redirect(uri.as_str())
 }
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
 fn page(app: &App, title: &str, body: String) -> Response {
     let html = format!(
-        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>{}</title><main><h1>{}</h1>{body}</main></html>",
-        escape(title),
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{} · Authy</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body>{body}</body></html>",
         escape(title)
     );
     // Browsers enforce form-action on the redirect following a consent POST too.
@@ -249,15 +242,17 @@ fn consent_page(app: &App, handle: String) -> Response {
         .client(&client)
         .map(|c| c.name.as_str())
         .unwrap_or(&client);
+    let origin = app
+        .issuer
+        .config
+        .client(&client)
+        .and_then(|client| url::Url::parse(&client.redirect_uri).ok())
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_default();
     page(
         app,
         "Authorize application",
-        format!(
-            "<p>Allow {} to access: {}?</p><form method=\"post\" action=\"/oauth/authorize\"><input type=\"hidden\" name=\"request\" value=\"{}\"><button name=\"decision\" value=\"allow\">Allow</button><button name=\"decision\" value=\"deny\">Deny</button></form>",
-            escape(name),
-            escape(&scope),
-            escape(&handle)
-        ),
+        app.pages.consent(name, &origin, &scope, &handle),
     )
 }
 fn hint(app: &App, raw: &str) -> Result<Value, HttpError> {
@@ -720,14 +715,9 @@ fn logout(app: Arc<App>, headers: HeaderMap, params: Params) -> Response {
             now(),
         )
     }) {
-        Ok(oidc::LogoutOutcome::ShowConfirm { handle }) => page(
-            &app,
-            "Sign out of Authy",
-            format!(
-                "<p>End your current sign-in session?</p><form method=\"post\" action=\"/oauth/logout\"><input type=\"hidden\" name=\"request\" value=\"{}\"><button>Confirm sign out</button></form>",
-                escape(&handle)
-            ),
-        ),
+        Ok(oidc::LogoutOutcome::ShowConfirm { handle }) => {
+            page(&app, "Sign out of Authy", app.pages.logout(&handle))
+        }
         Ok(oidc::LogoutOutcome::Redirect { uri }) => redirect(&uri),
         Ok(oidc::LogoutOutcome::DirectError { .. }) => {
             problem(StatusCode::BAD_REQUEST, "invalid_request")
@@ -736,14 +726,44 @@ fn logout(app: Arc<App>, headers: HeaderMap, params: Params) -> Response {
     }
 }
 
-pub fn routes() -> Router<Arc<App>> {
-    Router::new()
-        .route("/.well-known/openid-configuration", get(discovery))
-        .route("/oauth/jwks", get(jwks))
+async fn browser_errors(
+    State(app): State<Arc<App>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let wants_html = request
+        .headers()
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"));
+    let response = next.run(request).await;
+    let status = response.status();
+    if !wants_html || !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    let message = if status.is_server_error() {
+        "Authy is temporarily unavailable. Please try again shortly."
+    } else if status == StatusCode::FORBIDDEN {
+        "This request could not be verified. Your account has not been changed."
+    } else {
+        "This request is invalid or has expired. Start again from the application you want to use."
+    };
+    let mut response = page(&app, "Request unsuccessful", app.pages.error(message));
+    *response.status_mut() = status;
+    response
+}
+
+pub fn routes(app: Arc<App>) -> Router<Arc<App>> {
+    let browser = Router::new()
         .route("/oauth/authorize", get(authorize).post(consent))
         .route("/oauth/resume", get(resume))
+        .route("/oauth/logout", get(logout_get).post(logout_post))
+        .route_layer(axum::middleware::from_fn_with_state(app, browser_errors));
+    Router::new()
+        .merge(browser)
+        .route("/.well-known/openid-configuration", get(discovery))
+        .route("/oauth/jwks", get(jwks))
         .route("/oauth/token", axum::routing::post(token))
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
         .route("/oauth/revoke", axum::routing::post(revoke))
-        .route("/oauth/logout", get(logout_get).post(logout_post))
 }

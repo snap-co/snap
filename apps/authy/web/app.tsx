@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react
 import { createRoot } from "react-dom/client";
 import { startAuthy, type AuthyClient } from "../client";
 import "./style.css";
+import { AuthShell, AuthHeading, AuthActions, AuthButton } from "./auth-ui";
 
 function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
   const [email, setEmail] = useState("");
@@ -21,8 +22,7 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
 
   return (
     <>
-      <h1>{mode === "signup" ? "Create your account" : "Sign in"}</h1>
-      <p className="muted">One account for your Snap apps.</p>
+      <AuthHeading title={mode === "signup" ? "Create your account" : "Sign in"}>One account for your Snap apps.</AuthHeading>
       <form onSubmit={submit}>
         <label htmlFor="email">Email</label>
         <input
@@ -46,13 +46,13 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-        <div className="actions">
-          <button type="submit" disabled={busy}>
+        <AuthActions>
+          <AuthButton type="submit" disabled={busy}>
             {mode === "signup" ? "Create account" : "Sign in"}
-          </button>
-          <button
+          </AuthButton>
+          <AuthButton
             type="button"
-            className="secondary"
+            secondary
             onClick={() => {
               setMode(mode === "signup" ? "signin" : "signup");
               setError(null);
@@ -60,8 +60,8 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
             }}
           >
             {mode === "signup" ? "Have an account? Sign in" : "New here? Create account"}
-          </button>
-        </div>
+          </AuthButton>
+        </AuthActions>
       </form>
       {error && <p role="alert">{error}</p>}
     </>
@@ -249,21 +249,16 @@ export function View({ client }: { client: AuthyClient }) {
         : "Disconnected";
 
   return (
-    <main>
-      <header>
-        <span className="brand">Snap / Authy</span>
-        <span className="connection" data-testid="connection">
+    <AuthShell status={<span className="connection" data-testid="connection">
           {connectionLabel}
-        </span>
-      </header>
+        </span>}>
       {snapshot.phase === "loading" ? (
-        <h1>Checking your session…</h1>
+        <AuthHeading title="Checking your session…" />
       ) : snapshot.phase === "anonymous" || !snapshot.account ? (
         <AuthForm client={client} busy={busy} />
       ) : (
         <>
-          <h1>You&apos;re signed in</h1>
-          <p className="muted">Your session survives a page reload and server restart.</p>
+          <AuthHeading title="You're signed in">Manage your profile and active sessions.</AuthHeading>
           <p className="identity" data-testid="account-email">
             {snapshot.account.email}
           </p>
@@ -284,7 +279,7 @@ export function View({ client }: { client: AuthyClient }) {
       {(actionError ?? snapshot.error) && (
         <p role="alert">{actionError ?? snapshot.error}</p>
       )}
-    </main>
+    </AuthShell>
   );
 }
 
@@ -313,17 +308,15 @@ function App() {
   }, []);
   if (failed) {
     return (
-      <main>
-        <h1>Authy is unavailable</h1>
+      <AuthShell>
+        <AuthHeading title="Authy is unavailable" />
         <p role="alert">{failed}</p>
-      </main>
+      </AuthShell>
     );
   }
   if (!client) {
     return (
-      <main>
-        <h1>Checking your session…</h1>
-      </main>
+      <AuthShell><AuthHeading title="Checking your session…" /></AuthShell>
     );
   }
   return <View client={client} />;

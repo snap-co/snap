@@ -48,6 +48,13 @@ pending outcomes on a surviving reconnect. A fresh lifetime reports unknown outc
 
 ## OAuth and OIDC
 
+Sign-in, signup, consent, logout confirmation and browser protocol errors share
+`web/auth-ui.tsx` and the tokens in `web/style.css`. The web build renders the
+script-free protocol views into `auth-pages.json`; the native host loads that
+artifact and fills escaped request data. Change the shared components to update
+both render paths. Consent shows the registered application origin and explains
+each permission. JSON protocol errors remain JSON for non-browser clients.
+
 | Endpoint | Behavior |
 | --- | --- |
 | `/.well-known/openid-configuration` | Issuer metadata |

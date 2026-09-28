@@ -1,6 +1,7 @@
 mod keys;
 mod oidc_http;
 mod operations;
+mod pages;
 
 use axum::{
     Json, Router,
@@ -29,6 +30,7 @@ pub struct App {
     pub keys: Arc<keys::Keys>,
     pub origin: String,
     pub issuer: oidc_http::Issuer,
+    pub pages: pages::Pages,
 }
 
 impl App {
@@ -234,12 +236,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let documents = Shared::with_cookie(host, origin.clone(), cookie);
     let issuer = oidc_http::Issuer::new(&origin)?;
-    let app = Arc::new(App {
-        documents: documents.clone(),
-        keys,
-        origin,
-        issuer,
-    });
     let assets = std::env::var("SNAP_WEB_DIR").unwrap_or_else(|_| {
         let adjacent = std::env::current_exe()
             .ok()
@@ -249,12 +245,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".snap/web".into())
     });
+    let app = Arc::new(App {
+        documents: documents.clone(),
+        keys,
+        origin,
+        issuer,
+        pages: pages::Pages::load(&assets)?,
+    });
     let router = Router::new()
         .route("/health", get(|| async { "OK" }))
         .route("/api/session", get(session))
         .route("/api/signup", post(signup))
         .route("/api/login", post(login))
-        .merge(oidc_http::routes())
+        .merge(oidc_http::routes(app.clone()))
         .with_state(app)
         .merge(snap_document_local::web::router(documents.clone()))
         .layer(DefaultBodyLimit::max(64 * 1024))
