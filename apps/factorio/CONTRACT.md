@@ -1,13 +1,11 @@
 # Factorio
 
-Factorio coordinates one local Git repository through a shared Authy-authenticated
-workspace. The portable application owns tickets, blocker/parent graphs, exclusive
-claims, candidate evidence, approval and lifecycle transitions. The native Linux
-host owns Git, finite setup/teardown hooks and OpenCode V2 operations.
+Factorio turns an OpenCode intake conversation into draft tickets, then coordinates
+ticket-backed work and human-approved local integration. Authy owns sign-in.
 
-## Setup
+## Setup and onboarding
 
-Create a JSON configuration and set `FACTORIO_CONFIG` to its absolute path:
+`FACTORIO_CONFIG` names a JSON file describing an existing server-hosted repository:
 
 ```json
 {
@@ -21,18 +19,15 @@ Create a JSON configuration and set `FACTORIO_CONFIG` to its absolute path:
 }
 ```
 
-Use Cargo package names and their repository-relative directories for modules.
-`*` is the repository-wide claim and conflicts with every crate. Declare all
-cross-cutting work before editing. The configuration is pinned in the workspace;
-changing it requires an explicit future migration, rather than silently redirecting
-existing worktrees. The main checkout must be clean and on the configured mainline
-for integration. Resources live outside that checkout.
+Module directories must exist, be non-overlapping and contain no symlinks. The host
+offers this configured repository during onboarding. It does not accept arbitrary
+filesystem paths from clients. One workspace per repository keeps claims and port
+allocation repository-wide. Onboarding grants the authenticated creator ownership.
+Another identity receives no access unless granted through Access.
 
-Set the same randomly generated `FACTORIO_CLIENT_SECRET` of at least 32 bytes on
-Authy and Factorio. Authy registers Factorio when this variable is present.
-`FACTORIO_ORIGIN` on Authy defaults to `http://127.0.0.1:3852`. Factorio uses
-`AUTHY_ORIGIN`, defaulting to `http://127.0.0.1:3846`. Start Authy using its existing
-development instructions.
+Set the same `FACTORIO_CLIENT_SECRET` on Authy and Factorio. Authy uses
+`FACTORIO_ORIGIN` to register the callback. Factorio uses `AUTHY_ORIGIN` to reach
+Authy. Preserve these credentials and Authy's database when resetting Factorio.
 
 ```sh
 mise exec -- cargo build -p factorio-native
@@ -40,175 +35,75 @@ SNAP_DATABASE=apps/factorio/.snap/factorio-store.sqlite target/debug/factorio --
 ./bin/snap dev apps/factorio
 ```
 
-Startup opens explicitly migrated Store tables. It never migrates automatically.
-`SNAP_DATABASE`, `SNAP_ORIGIN`, `SNAP_WEB_DIR` and `FACTORIO_ADDR` override native
-defaults. `FACTORIO_WEB_ADDR` selects the public dev address. Build with
-`./bin/snap build apps/factorio`; the package is `dist/factorio/factorio` plus `web`.
-Packaged launch selects the adjacent `web` directory. Retain the same database,
-configuration and OAuth environment.
+Startup verifies migrations and leaves an empty database empty. After sign-in,
+choose the repository and create the first workspace. The next screen asks what
+you want to work on. `SNAP_DATABASE`, `SNAP_ORIGIN`, `SNAP_WEB_DIR`, `FACTORIO_ADDR`
+and `FACTORIO_WEB_ADDR` retain their usual native/dev overrides. Packaged builds
+include the executable, web bindings and OpenCode bridge.
 
-## Work
+## Documents and transport
 
-### Conversational intake
+Workspace, Ticket, Session and Intake are separate Documents. Workspace indexes
+link children, whose Access is inherited from the workspace. Loading includes all
+authorized active Documents. The Rust Document client owns browser reconciliation;
+the browser and CLI share invocation ACK, same-ID retry and reconnect recovery.
 
-The web starts with a description and an OpenCode V2 conversation. Factorio saves
-the original request before external IO, assigns a stable conversation and initial
-message ID, and allows recovery after an interrupted create. OpenCode owns model
-execution, repository exploration, tool calls, questions and conversation history.
-The intake prompt uses Ask Matt to choose exploration, grilling, triage, wayfinder
-or implementation-ready work. The configured OpenCode model and installed skills
-are used without changing global configuration.
-`FACTORIO_INTAKE_MODEL=provider/model` optionally selects the model for new intake
-sessions. Existing conversations retain their OpenCode model selection.
+Live application operations run over `/transport` WebSocket. `factorio.command`
+composes ticket/session changes in one Store transaction; intake creation, draft
+batches, readiness, deletion and onboarding use their own guarded operations.
+No HTTP workspace, command, approval, token or intake-tool write endpoint remains.
+`GET /api/session` and OAuth routes bootstrap identity. Agent tokens are normal
+account credentials tied to the issuing OAuth session; agents cannot issue tokens
+or approve candidates. `factory help` documents the CLI and credential-file flags.
 
-Each intake has its own `#intake-…` screen, reachable from the workspace's
-conversation list and browser history. Only the message area scrolls; the reply
-composer stays at the visible viewport's bottom, including keyboard resizing.
-New messages follow the conversation when already near the bottom. Reading older
-messages keeps the scroll position and offers a jump to the latest messages.
-Draft links return to workspace tickets. Session details include reconnect and
-conversation deletion. Deletion removes the OpenCode session and intake metadata,
-revokes draft-tool access by removing the intake, and preserves saved tickets.
+## Intake and tickets
 
-The official `@opencode/client` discovers/authenticates the local OpenCode service.
-The native host runs a small Bun adapter, not another agent harness. Install Bun
-on the host, or set `FACTORIO_BUN` to its executable. Packaged builds include
-`opencode-bridge.js` and `factory.js` alongside the native executable. Dev uses
-the repository scripts. `FACTORIO_OPENCODE_BRIDGE` overrides the adapter path for
-isolated contract fixtures.
+OpenCode owns conversation history, questions and agent execution. Factorio's
+authenticated proxy forwards conversation actions and streams snapshots outside
+the application gate, so an agent can call back into Factorio without deadlocking.
+The proxy checks workspace Access. Service credentials remain server-side.
 
-Intake metadata and resulting tickets belong to the shared workspace. Only the
-initiating Authy identity can read or control its OpenCode conversation through
-Factorio. Browser requests use the existing cookie and CSRF policy. OpenCode
-service credentials stay server-side. The browser sees projected text/tool status,
-pending questions and permission requests, not opaque provider state or shell
-environment. SSE is event-driven; reconnect loads an authoritative snapshot of the
-latest 100 messages and pending forms/permissions. Full history remains in
-OpenCode. Open event streams recheck OAuth authority at most every ten seconds.
+The agent receives the [intake guide](INTAKE.md) and absolute CLI commands. The CLI
+reads a private account credential file under the workspace's resource directory;
+credentials are never embedded in prompts. There are no intake-only credentials.
+Reconnect provisions a current account token if the browser session changed.
 
-The agent writes through OpenCode's shell tool invoking `factory intake-save`.
-The host writes a narrowly scoped credential to
-`<resources>/intakes/<id>/tool.json`, using private directories and a mode-0600
-file replaced atomically on reconnect. The prompt supplies shell-quoted absolute
-Bun/CLI paths and `--intake-config <path>`; it never includes the credential.
-The CLI reads the file internally, so losing OpenCode's transient environment
-does not lose ticket access. Legacy shell environment variables are also supplied
-for existing conversations. The tool can read workspace ticket context and atomically save only the
-intake's own draft tickets. It cannot start work, approve a candidate, integrate,
-or mark tickets ready. Its authority expires/revokes with the initiating local
-OAuth session. A subsequent message or explicit reconnect provisions a current
-credential. The [intake tool contract](INTAKE.md) is included in the initial
-prompt. Draft saves require the current intake revision; a stale revision or any
-invalid ticket rejects the whole batch. Saved drafts survive host restarts.
+Draft batches carry a revision and commit atomically. A stale revision or invalid
+ticket rejects the batch. Multi-module work becomes draft parents and single-module
+leaves with explicit blockers. The user can grill a draft, edit its details, or mark
+implementation leaves ready after reviewing the agent's recommendation. Starting a
+ready ticket allocates its worktree and OpenCode session; resume that session to
+perform the implementation. Deleting an intake preserves its tickets.
 
-Multi-module work is broken into a draft parent and single-module implementation
-leaves, with explicit blockers. Parent tickets are not actionable. Users mark
-implementation leaves ready after reviewing the agent's recommendation; this
-does not start execution. Intake is instructed to explore and draft, with edits
-denied through OpenCode's edit permission. As with the rest of Factorio, a local
-agent's shell access is cooperative, not a filesystem sandbox.
+## Session controllers
 
-From an authenticated CLI, `bin/factory intake -- <description>` creates an intake
-and opens OpenCode's own terminal UI. `bin/factory intake --resume <intake-id>`
-resumes it. The web and CLI share the same conversation. If the initial request
-fails, the printed intake ID can be resumed; prompts use stable IDs rather than
-blindly replaying uncertain submissions.
+Commands commit desired state and claims before external IO. One Session controller
+performs one effect per pass under the shared application gate, then publishes its
+observation. Startup scans resume unfinished non-blocked work. Errors retain desired
+state, resource claims and visible blocked status until explicit recovery.
 
-Sign in through the browser, then create an agent token and export it as
-`FACTORIO_TOKEN` in the CLI environment. Tokens are stored as digests and refer to
-the authenticated OAuth session. Logout/expiry ends their authority. Keep the
-browser session active to renew upstream access. Agent tokens cannot mint other
-tokens or approve candidates.
+Setup records the repository base, prepares the worktree, runs setup hooks and
+creates or moves a stable OpenCode session. Publication checks clean work and module
+scope, then records the candidate and mainline OIDs with evidence. An authenticated
+human must approve that exact candidate before acceptance. Integration prepares and
+commits its exact merge OID before moving mainline. Restart checks ancestry of that
+OID instead of merging twice. Ticket completion and the session's merge observation
+commit atomically. Candidate or mainline movement requires new publication/approval.
 
-`bin/factory help` lists CLI syntax. Ticket input is a JSON file containing `id`,
-`title`, `description`, `modules`, `status`, `notes`, `parent` and `blockers`.
-Statuses are `draft`, `ready`, `cancelled` and host-completed `done`. A ready ticket
-can start only after all blockers are done. Deleting referenced tickets fails.
+Cleanup retains claims and finalizers until teardown succeeds. Deleted or archived
+Sessions remain available to cleanup. Only clean merged worktrees are removed;
+abandonment preserves unmerged work. Data directories and branches remain for
+inspection. No push, deployment or external tracker publication is automatic.
 
-```sh
-bin/factory start --id fix-parser --modules parser --tickets parser-ticket -- Fix parser
-bin/factory publish fix-parser --evidence /path/to/check-and-review-evidence.txt
-bin/factory accept fix-parser
-```
+## Hooks and OpenCode
 
-Start commits all claims and resource allocations before setup. Failed setup retains
-the claims, worktree, data and error. Inspect `status`, repair the setup cause and
-run `recover <id>`. Disconnect never releases a claim. `expand <id> --modules ...`
-acquires additional scope atomically while active. Publication rejects changes
-outside the declared directories. Exclusion coordinates cooperative agents; it is
-not a filesystem sandbox against a local process intentionally editing other paths.
+Setup/teardown argv receive `PORT`, `SNAP_DATABASE`, `FACTORIO_DATA`,
+`FACTORIO_SESSION` and `FACTORIO_REPOSITORY`. Hooks are idempotent, finish within
+120 seconds, explicitly migrate their own database and leave no detached services.
+The host owns their process groups and records PID/birth markers for crash recovery.
 
-Publish requires a clean worktree and records the exact candidate OID, mainline OID,
-evidence and findings/dispositions. The browser exposes an explicit confirmation
-for the authenticated human. Approval cannot be supplied in a CLI command or JSON
-actor field. The host attributes approval to the OAuth identity. This separates
-agent credentials from human browser actions; it does not prove physical human
-presence against software controlling that browser.
-
-`accept` requires that approval, checks both recorded OIDs, constructs a merge commit
-without changing the worktree, then durably records its OID before fast-forwarding
-mainline. Candidate or target movement requires a new publication and approval.
-Commands authorize and commit desired state before the controller performs Git IO.
-Reconciliation remains host-owned after the initiating session ends. Each pass runs
-one required effect and commits its observation under the shared application gate.
-The next pass reads committed state, so integration never precedes its recorded OID.
-Conflicts stop for inspection. Mainline integration is serialized across sessions.
-No remote push, PR, deployment or external tracker is involved.
-
-Recovery checks whether mainline contains the exact planned merge commit. It then
-completes all claimed tickets in the same Store transaction as the session's merge
-transition. A dependent becomes actionable from that committed state. Cleanup
-retains claims until successful teardown. It removes only a clean, merged worktree.
-Dirty or unmerged work is preserved with an actionable error. Data directories and
-branches remain for inspection; deletion of stored development data is explicit.
-`abandon` runs teardown, releases claims and preserves the unmerged worktree.
-
-## Resources and hooks
-
-Each attempt receives a persisted unique port, worktree, branch and data directory.
-The host checks port availability during setup. Hook argv runs directly with
-`PORT`, `SNAP_DATABASE`, `FACTORIO_DATA`, `FACTORIO_SESSION` and
-`FACTORIO_REPOSITORY`. Hook setup must be idempotent and explicitly migrate its own
-database. Hooks finish within 120 seconds; they may not leave detached services.
-The host owns each hook process group. A durable PID/birth record and pre-execution
-handshake allow restart to retire an interrupted group without killing a reused PID.
-Startup scans resume unfinished setup, publication, integration and cleanup.
-A recorded failure blocks that session until `recover` clears it. There is no
-automatic retry timer. Shell history, manual dev processes and their shutdown remain the
-operator's responsibility.
-
-The native carrier currently uses the aggregate workspace controller. The linked
-Session Document controller runs the same effect steps, records blocked lifecycle
-state and retains deletion/archival cleanup finalizers. Its host composition tests
-exercise that path ahead of the remaining carrier migration.
-
-## OpenCode V2
-
-Install a V2 CLI that supports `opencode api`. Set `FACTORIO_OPENCODE` to its path
-when the default executable is another version. The adapter uses that CLI's service
-discovery/authentication, `POST /api/session` with a stable supplied ID and location,
-and `POST /api/session/{id}/move`. It never reads or modifies global configuration.
-Pass an existing `--conversation ses_...` to associate and move that conversation.
-The command in `.opencode/commands/factory.md` guides ticket-backed and ticketless
-work and confirms the harness directory before editing.
-
-The browser displays the associated conversation ID and a CLI resume command.
-OpenCode owns conversation display and steering. The server integration is based
-on the [V2 API](https://opencode.ai/v2/docs/api), its OpenAPI schema and the
-[V2 command documentation](https://opencode.ai/v2/docs/commands).
-
-## Verification
-
-```sh
-mise exec -- cargo test -p factorio
-TMPDIR=/tmp/opencode mise exec -- cargo test -p factorio-native -- --include-ignored
-TMPDIR=/tmp/opencode mise exec -- bun scripts/test-factorio.ts
-TMPDIR=/tmp/opencode mise exec -- bun scripts/test-factorio.ts --dev
-```
-
-Core tests own graph, authority, claim rollback and atomic completion guarantees.
-Native tests own real Git movement, scope checks, merge reconciliation and dirty
-work preservation. The browser journey uses real Authy OAuth, Store, Document,
-CLI and disposable Git repositories. OpenCode is an explicit V2 contract fixture
-in that journey. Automated approval applies only to disposable fixture code and
-never constitutes the user's acceptance of a real candidate.
+Use OpenCode V2. `FACTORIO_OPENCODE` selects its CLI; `FACTORIO_BUN` selects Bun.
+The bridge uses the official client and local service discovery/authentication.
+`FACTORIO_INTAKE_MODEL=provider/model` optionally selects new intake models.
+`FACTORIO_OPENCODE_BRIDGE` supports isolated contract fixtures. Factorio does not
+change global OpenCode configuration or wait for an agent turn under its gate.

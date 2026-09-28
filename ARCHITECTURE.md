@@ -44,16 +44,17 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `apps/chatty` owns private conversation Documents and named message mutations.
   Its native host registers guarded WebSocket operations with the shared dispatcher.
   Chatty synchronizes client data and performs no model or tool IO.
-- `apps/factorio` owns the shared workspace Document, ticket graphs, exclusive module
+- `apps/factorio` owns linked Workspace, Ticket, Session and Intake Documents, exclusive module
   claims and candidate/approval lifecycle. Its native controller performs one effect
   per reconciliation pass under the shared gate, publishes observations and resumes
   committed desires at startup. Failures stop until explicitly cleared. Integration
   journals the exact planned commit before moving mainline. Cookie-authenticated human approval is separate from agent-token
   commands. CLI and browser share the TypeScript carrier; Rust owns domain rules.
   Conversational intake uses the existing OpenCode V2 service through its official
-  client. OpenCode owns execution and history; Factorio keeps intake metadata and
-  validates scoped, revision-guarded draft writes in Store. Native SSE projects
-  owner-authorized conversation snapshots after OpenCode events and reconnects.
+  client. OpenCode owns execution and history; Factorio validates revision-guarded
+  draft writes through ordinary workspace Access over WebSocket. The authenticated
+  OpenCode proxy and SSE run outside the gate. Onboarding creates the first owned
+  workspace for the server-configured repository; no fixed service owner is used.
 - `crates/http` declares bounded outbound IO. `platforms/model` builds and consumes
   Responses streams through that contract. Neither is a portable application
   executor; applications must explicitly select these adapters when needed.

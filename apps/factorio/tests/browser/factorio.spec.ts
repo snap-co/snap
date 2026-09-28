@@ -1,10 +1,27 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { writeFile, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 const exec = promisify(execFile);
 const base=process.env.FACTORIO_TEST_URL!, dir=process.env.FACTORIO_FIXTURE_DIR!, root=resolve(import.meta.dirname,"../../../..");
+async function invoke(page:Page,operation:string,input:unknown,bearer="") {
+  return page.evaluate(({operation,input,bearer})=>new Promise<any>((resolve,reject)=>{
+    const socket=new WebSocket(`${location.origin.replace(/^http/,"ws")}/transport`);
+    let accepted=false;
+    const timer=setTimeout(()=>{socket.close();reject(new Error("WS timeout"));},10000);
+    socket.onopen=()=>socket.send(JSON.stringify({Connect:{bearer,client_id:`fixture-${Math.random()}`}}));
+    socket.onmessage=event=>{
+      const frame=JSON.parse(String(event.data));
+      if(frame.Attached) socket.send(JSON.stringify({Invoke:{id:1,operation,input}}));
+      if(frame.Failed){clearTimeout(timer);socket.close();reject(new Error(JSON.stringify(frame.Failed)));}
+      for(const event of frame.Events??[]) {
+        if(event.Accepted) accepted=true;
+        if(event.Completed){clearTimeout(timer);socket.close();resolve({accepted,...event.Completed.outcome});}
+      }
+    };
+  }),{operation,input,bearer});
+}
 test("fixture-only human acceptance, CLI/UI records, exclusions and restart recovery",async({page,browser})=>{
   await page.setViewportSize({width:390,height:844});
   // HTTP tailnet origins lack randomUUID, including in mobile Safari.
@@ -14,11 +31,14 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByRole("button",{name:"New here? Create account",exact:true}).click();
   await page.getByLabel("Email",{exact:true}).fill(`factorio-${Date.now()}@example.test`);await page.getByLabel("Password",{exact:true}).fill("Factorio fixture password");
   await page.getByRole("button",{name:"Create account",exact:true}).click();await page.getByRole("button",{name:"Allow",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Create your first workspace",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Create workspace",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
   await expect(page.getByText("No tickets yet",{exact:true})).toBeVisible();
   const identity=await(await page.request.get(`${base}/api/session`)).json();
   const mutationHeaders={origin:base,"x-snap-csrf":identity.csrf};
-  for(let n=0;n<6;n++) expect((await page.request.post(`${base}/api/command`,{headers:mutationHeaders,data:{command:"ticket",ticket:{id:`preceding-${n}`,title:`Earlier ticket ${n}`,description:"Existing work",modules:["a"],status:"draft",notes:"",parent:null,blockers:[]}}})).ok()).toBe(true);
+  const workspace=(await invoke(page,"factorio.workspaces",{})).Ok[0].id;
+  for(let n=0;n<6;n++) expect((await invoke(page,"factorio.command",{workspace,command:{command:"ticket",ticket:{id:`preceding-${n}`,title:`Earlier ticket ${n}`,description:"Existing work",modules:["a"],status:"draft",notes:"",parent:null,blockers:[]}}})).Ok).toBeNull();
   await page.getByLabel("Your idea",{exact:true}).fill("Improve navigation on my phone");
   await page.getByRole("button",{name:"Work through this",exact:true}).click();
   await expect(page.getByText("Which navigation outcome matters most?",{exact:true})).toBeVisible();
@@ -60,10 +80,12 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   const intakeID=new URL(conversationURL).hash.slice(1);
   const stranger=await browser.newContext();
   try {
-    const other=await stranger.newPage();await other.goto(base);await other.getByRole("link",{name:"Continue with Authy"}).click();await other.getByRole("button",{name:"New here? Create account",exact:true}).click();await other.getByLabel("Email",{exact:true}).fill(`other-${Date.now()}@example.test`);await other.getByLabel("Password",{exact:true}).fill("Other fixture password");await other.getByRole("button",{name:"Create account",exact:true}).click();await other.getByRole("button",{name:"Allow",exact:true}).click();await expect(other.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
-    expect((await other.request.get(`${base}/api/intakes/${intakeID}/events`)).ok()).toBe(false);
+    const other=await stranger.newPage();await other.goto(base);await other.getByRole("link",{name:"Continue with Authy"}).click();await other.getByRole("button",{name:"New here? Create account",exact:true}).click();await other.getByLabel("Email",{exact:true}).fill(`other-${Date.now()}@example.test`);await other.getByLabel("Password",{exact:true}).fill("Other fixture password");await other.getByRole("button",{name:"Create account",exact:true}).click();await other.getByRole("button",{name:"Allow",exact:true}).click();await expect(other.getByRole("heading",{name:"Create your first workspace",exact:true})).toBeVisible();
+    expect((await invoke(other,"factorio.workspaces",{})).Ok).toEqual([]);
+    const forbidden=await invoke(other,"factorio.workspace",{workspace});expect(forbidden.accepted).toBe(false);expect(forbidden.Err).toBeDefined();
+    expect((await other.request.get(`${base}/api/workspaces/${workspace}/intakes/${intakeID}/events`)).ok()).toBe(false);
     const identity=await(await other.request.get(`${base}/api/session`)).json();
-    expect((await other.request.post(`${base}/api/intakes/${intakeID}`,{headers:{origin:base,"x-snap-csrf":identity.csrf},data:{action:"interrupt"}})).ok()).toBe(false);
+    expect((await other.request.post(`${base}/api/workspaces/${workspace}/intakes/${intakeID}/opencode`,{headers:{origin:base,"x-snap-csrf":identity.csrf},data:{action:"interrupt"}})).ok()).toBe(false);
   } finally {await stranger.close();}
   await page.reload();
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
@@ -86,19 +108,16 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   async function cli(args:string[]){const {stdout}=await exec("bun",[`${root}/apps/factorio/cli.ts`,...args],{cwd:root,env:{...process.env,FACTORIO_OPENCODE:`${dir}/bin/opencode`,FACTORIO_ORIGIN:base,FACTORIO_TOKEN:token}});return JSON.parse(stdout);}
   const intake=(Object.values((await cli(["status"])).intakes) as {id:string;conversation:string}[])[0]!;
   expect((await cli(["intake","--resume",intake.id])).resumed).toBe(intake.conversation);
-  const credential=JSON.parse(await readFile(`${dir}/resources/intakes/${intake.id}/tool.json`,"utf8"));
-  const oldTool=()=>page.request.post(`${base}/api/intake-tool`,{headers:{authorization:`Bearer ${credential.token}`},data:{action:"read"}});
-  expect((await oldTool()).ok()).toBe(true);
+  const readIntake=()=>invoke(page,"factorio.intake-read",{workspace,id:intake.id},token);
+  expect((await readIntake()).Ok.intake.id).toBe(intake.id);
   await page.getByRole("navigation",{name:"Conversations"}).getByRole("link").click();
   await page.getByText("Drafts and session details",{exact:true}).click();
   page.once("dialog",d=>d.accept());
   await page.getByRole("button",{name:"Delete conversation",exact:true}).click();
   await expect(page.getByLabel("Your idea",{exact:true})).toBeVisible();
   expect((await cli(["status"])).intakes[intake.id]).toBeUndefined();
-  expect((await oldTool()).ok()).toBe(false);
-  expect((await page.request.post(`${base}/api/intakes`,{headers:mutationHeaders,data:{id:intake.id,description:"Replacement intake"}})).ok()).toBe(true);
-  expect((await oldTool()).ok()).toBe(false);
-  expect((await page.request.post(`${base}/api/intakes/${intake.id}`,{headers:mutationHeaders,data:{action:"delete"}})).ok()).toBe(true);
+  expect((await readIntake()).Err).toBeDefined();
+  expect((await page.request.post(`${base}/api/command`,{headers:mutationHeaders,data:{command:"delete_ticket",id:"preceding-0"}})).ok()).toBe(false);
   const ticket=(id:string,blockers:string[]=[])=>({id,title:id,description:"Fixture implementation",modules:["a"],status:"ready",notes:"",parent:null,blockers});
   for(const t of [ticket("first"),ticket("dependent",["first"])]){const file=`${dir}/${t.id}.json`;await writeFile(file,JSON.stringify(t));await cli(["ticket",file]);}
   await expect(page.locator("#ticket-first").getByRole("heading",{name:"first",exact:true})).toBeVisible();await expect(page.getByRole("link",{name:"first (ready)"})).toBeVisible();
@@ -112,8 +131,8 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await writeFile(`${a.worktree}/crates/a/file`,"implemented");await exec("git",["add","."],{cwd:a.worktree});await exec("git",["-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","-m","fixture implementation"],{cwd:a.worktree});
   await writeFile(`${dir}/evidence.txt`,"Fixture checks passed; test review found no unresolved findings.");
   const published=await cli(["publish","one","--evidence",`${dir}/evidence.txt`]);const candidate=published.sessions.one.candidate.commit;
-  await expect(cli(["accept","one"])).rejects.toThrow(/human approval/);
-  const denied=await page.request.post(`${base}/api/approve`,{headers:{authorization:`Bearer ${token}`},data:{id:"one",commit:candidate}});expect(denied.status()).toBe(403);
+  await expect(cli(["accept","one"])).rejects.toThrow();
+  const denied=await invoke(page,"factorio.command",{workspace,command:{command:"approve",id:"one",commit:candidate}},token);expect(denied.accepted).toBe(false);expect(denied.Err).toBeDefined();
   // This automated account approves disposable fixture code, never user work.
   page.once("dialog",d=>d.accept());await page.getByRole("button",{name:"Approve candidate as human"}).click();
   await expect.poll(async()=>Boolean((await cli(["status"])).sessions.one.candidate.approval)).toBe(true);

@@ -28,7 +28,7 @@ fn operations(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> 
         input: |v| serde_json::from_value::<chatty::Create>(v.clone()).is_ok(),
         output: Value::is_object,
         progress: |_| false,
-        guard: |_, _, _| Ok(()),
+        guard: |_, _, _, _| Ok(()),
         handler: Box::new(|tx, invocation, owner, _| {
             let input = serde_json::from_value::<chatty::Create>(invocation.input.clone())
                 .map_err(|_| Error::Invalid)?;
@@ -39,7 +39,7 @@ fn operations(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> 
     for name in ["chatty.send", "chatty.rename", "chatty.delete"] {
         host = host.with_request(Request {
             name: name.into(), identity_required: true, input: |v| v["thread_id"].is_string(), output: Value::is_object, progress: |_| false,
-            guard: |tx, actor, input| {
+            guard: |tx, actor, input, _| {
                 let snapshot = chatty::document().read(tx, field(input, "thread_id")?, actor)?;
                 let resource = snap_access::Resource::new("document", &snapshot.id).map_err(|_| Error::Invalid)?;
                 if !snap_access::allows(chatty::document().access.role(tx, &resource, actor, false)?, snap_access::Role::Owner) { return Err(Error::Invalid); }

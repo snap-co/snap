@@ -16,6 +16,13 @@ pub struct FactorioClient {
 }
 #[wasm_bindgen]
 impl FactorioClient {
+    pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
+        let command = self
+            .wire
+            .invoke(operation, serde_json::from_str(input).map_err(error)?)
+            .map_err(error)?;
+        serde_json::to_string(&command).map_err(error)
+    }
     #[wasm_bindgen(constructor)]
     pub fn new(actor: String) -> Self {
         Self {
@@ -33,7 +40,7 @@ impl FactorioClient {
     }
     pub fn receive(&mut self, text: &str) -> Result<String, JsValue> {
         let response: snap_transport::Response = serde_json::from_str(text).map_err(error)?;
-        let registry = factorio::registry();
+        let registry = factorio::documents::registry();
         let mut manifest = false;
         match response {
             snap_transport::Response::Attached { resumed } => {
@@ -70,11 +77,7 @@ impl FactorioClient {
         } else {
             vec![]
         };
-        let value = self
-            .client
-            .view()
-            .get(factorio::WORKSPACE)
-            .map(|s| &s.value);
-        serde_json::to_string(&serde_json::json!({"workspace":value,"send":send})).map_err(error)
+        serde_json::to_string(&serde_json::json!({"documents":self.client.view(),"send":send}))
+            .map_err(error)
     }
 }

@@ -430,7 +430,7 @@ pub fn transition(
             conversation,
         } => {
             if !valid_id(&id)
-                || !oid(&base)
+                || (!base.is_empty() && !oid(&base))
                 || prompt.trim().is_empty()
                 || prompt.len() > 32768
                 || !conversation.starts_with("ses")
@@ -543,6 +543,7 @@ pub fn transition(
 /// Host-only observations of committed effect intent. Never deserialize this enum
 /// from a public request. Claims persist through failures and cleanup retries.
 pub enum Effect {
+    Based(String),
     Started,
     Published {
         commit: String,
@@ -591,16 +592,6 @@ fn apply_effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Wo
     Ok(w)
 }
 
-/// Trusted controller publication for the aggregate host during carrier migration.
-/// Authorization already committed the desired state before external IO began.
-pub fn controller_observe(
-    tx: &mut Transaction<'_>,
-    id: &str,
-    effect: Effect,
-) -> Result<Workspace, Error> {
-    apply_effect(tx, id, effect)
-}
-
 /// Pure controller observation. Hosts persist these only after the corresponding
 /// resource check/effect; failures leave desired state and resource claims intact.
 pub fn observe(mut w: Workspace, id: &str, effect: Effect) -> Result<Workspace, Error> {
@@ -613,6 +604,12 @@ pub fn observe(mut w: Workspace, id: &str, effect: Effect) -> Result<Workspace, 
     }
     let s = w.sessions.get_mut(id).ok_or(Error::NotFound)?;
     match effect {
+        Effect::Based(commit) => {
+            if s.phase != Phase::Starting || !s.base.is_empty() || !oid(&commit) {
+                return Err(Error::Constraint);
+            }
+            s.base = commit;
+        }
         Effect::Started => {
             if s.phase != Phase::Starting {
                 return Err(Error::Constraint);

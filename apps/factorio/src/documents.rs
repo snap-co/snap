@@ -313,9 +313,19 @@ pub fn command(
     now: i64,
     command: Command,
 ) -> Result<Workspace, Error> {
+    let retry = match &command {
+        Command::Recover { id } => Some(id.clone()),
+        _ => None,
+    };
     let before = load(tx, workspace, actor)?;
     let after = guard(tx, workspace, actor, human, now, command)?;
     save(tx, workspace, actor, &before, &after)?;
+    if let Some(id) = retry {
+        let id = child_id(workspace, SESSION_KIND, &id);
+        let mut lifecycle = document().lifecycle(tx, &id)?;
+        lifecycle.blocked = None;
+        document().set_lifecycle(tx, &id, &lifecycle)?;
+    }
     Ok(after)
 }
 
@@ -398,7 +408,7 @@ pub fn create_intake(
     Ok(item)
 }
 
-fn require_owner(tx: &mut Transaction<'_>, workspace: &str, actor: &str) -> Result<(), Error> {
+pub fn require_owner(tx: &mut Transaction<'_>, workspace: &str, actor: &str) -> Result<(), Error> {
     if snap_access::allows(
         document().access.role(
             tx,
@@ -412,6 +422,62 @@ fn require_owner(tx: &mut Transaction<'_>, workspace: &str, actor: &str) -> Resu
     } else {
         Err(Error::NotFound)
     }
+}
+
+pub fn ready(
+    tx: &mut Transaction<'_>,
+    workspace: &str,
+    actor: &str,
+    id: &str,
+    revision: u32,
+) -> Result<intake::Intake, Error> {
+    require_owner(tx, workspace, actor)?;
+    let before = load(tx, workspace, actor)?;
+    let mut after = before.clone();
+    let mut item = before.intakes.get(id).ok_or(Error::NotFound)?.clone();
+    if item.revision != revision || item.route != intake::Route::Implement {
+        return Err(Error::Constraint);
+    }
+    let mut changed = false;
+    for key in &item.tickets {
+        if before
+            .tickets
+            .values()
+            .any(|ticket| ticket.parent.as_ref() == Some(key))
+        {
+            continue;
+        }
+        let mut ticket = before.tickets.get(key).ok_or(Error::NotFound)?.clone();
+        if ticket.status != Status::Draft {
+            continue;
+        }
+        if ticket.modules.len() != 1 {
+            return Err(Error::Constraint);
+        }
+        ticket.status = Status::Ready;
+        after = transition(after, actor, false, 0, Command::Ticket { ticket })?;
+        changed = true;
+    }
+    if !changed {
+        return Err(Error::Constraint);
+    }
+    item.revision = item.revision.checked_add(1).ok_or(Error::Constraint)?;
+    after.intakes.insert(id.into(), item.clone());
+    save(tx, workspace, actor, &before, &after)?;
+    Ok(item)
+}
+
+pub fn delete_intake(
+    tx: &mut Transaction<'_>,
+    workspace: &str,
+    actor: &str,
+    id: &str,
+) -> Result<(), Error> {
+    require_owner(tx, workspace, actor)?;
+    let before = load(tx, workspace, actor)?;
+    let mut after = before.clone();
+    after.intakes.remove(id).ok_or(Error::NotFound)?;
+    save(tx, workspace, actor, &before, &after)
 }
 
 /// Compose every ticket change and the intake revision in one caller transaction.

@@ -20,8 +20,9 @@ bun "$FACTORIO_CLI" intake-save - <<'JSON'
 JSON
 ```
 
-The host expands these examples into absolute commands with `--intake-config`
-pointing at a private, host-managed credential file outside the repository. Use
+The host expands these examples into absolute commands with `--credentials`
+pointing at a private, host-managed account credential file, and `--intake` selecting
+this intake. The CLI uses guarded WebSocket operations with workspace Access. Use
 those exact commands even when shell environment variables disappear. Do not read
 or print the credential file, copy it into the repository, or include it in messages.
 The CLI reads it internally. Reconnect from Factorio if its OAuth session expires.

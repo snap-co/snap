@@ -17,7 +17,7 @@ pub fn register(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite
                 _ => |v| v.is_null(),
             },
             progress: |_| false,
-            guard: |_, actor, _| actor.map(|_| ()).ok_or(Error::NotFound),
+            guard: |_, actor, _, _| actor.map(|_| ()).ok_or(Error::NotFound),
             handler: Box::new(move |tx, invocation, actor, bearer| {
                 let actor = actor.ok_or(Error::NotFound)?;
                 let current = snap_crypto::Native.digest(bearer.ok_or(Error::NotFound)?);

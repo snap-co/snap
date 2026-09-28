@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Factorio, subscribe, type Workspace, type Ticket, type Session } from "../client";
+import { Factorio, randomID, subscribe, type Workspace, type Ticket, type Session, type Repository } from "../client";
 import { IntakeDesk } from "./intake";
 import "./style.css";
 
@@ -43,6 +43,8 @@ function TicketEditor({ initial, workspace, busy, run, close }: { initial: Ticke
 
 function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [repositories, setRepositories] = useState<Repository[] | null>(null);
+  const [repository, setRepository] = useState("");
   const [identified, setIdentified] = useState(false);
   const [error, setError] = useState("");
   const [ticket, setTicket] = useState<Ticket | null>(null);
@@ -61,6 +63,11 @@ function App() {
       if (disposed) return;
       setIdentified(identity.identified);
       if (identity.identified) {
+        const roots = await client.workspaces();
+        if (roots.length === 0) {
+          const choices = await client.repositories();
+          if (!disposed) { setRepositories(choices); setRepository(choices[0]?.id ?? ""); }
+        } else client.workspaceID = roots[0]!.id;
         const stop = await subscribe(client, (w, e) => { if (!disposed) { setWorkspace(w); setError(e ?? ""); } });
         if (disposed) stop(); else close = stop;
       }
@@ -68,6 +75,12 @@ function App() {
     return () => { disposed = true; close?.(); };
   }, []);
   async function run(action: () => Promise<unknown>) { setBusy(true); setError(""); try { await action(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  async function grill(t: Ticket) {
+    const text=`Use grill-me to sharpen ticket ${t.id} before implementation. Keep it a draft until its questions are resolved.\n\n${t.title}\n${t.description}\nModules: ${t.modules.join(", ")}\nBlockers: ${t.blockers.join(", ")}`;
+    const intake=Object.values(workspace?.intakes??{}).find(item=>item.tickets.includes(t.id));
+    if(intake) { await client.intakeAction(intake.id,{action:"message",id:`msg_${randomID()}`,text});location.hash=intake.id; }
+    else { const id=`intake-${randomID()}`;await client.intake(id,text);location.hash=id; }
+  }
   if (workspace && hash.startsWith("#intake-")) return <main className="thread-shell"><IntakeDesk key={hash} client={client} workspace={workspace} selected={hash.slice(1)}/></main>;
   return <main>
     <header><div><h1>Factorio</h1><p className="subtitle">Track work from idea to review.</p></div>
@@ -75,7 +88,8 @@ function App() {
     </header>
     {error && <p role="alert">{error}</p>}
     {token && <label>Agent token. Copy once, then dismiss.<input aria-label="Agent token" type="password" readOnly value={token}/><button onClick={() => setToken("")}>Dismiss token</button></label>}
-    {identified && !workspace && !error && <p role="status">Loading workspace…</p>}
+    {identified && !workspace && repositories && <section className="onboarding"><h2>Create your first workspace</h2><p>Choose an existing repository on this server. Then describe your first piece of work.</p><form onSubmit={event => { event.preventDefault(); void run(async () => { setWorkspace(await client.onboard(repository)); setRepositories(null); location.hash="intake"; }); }}><label>Repository<select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)}>{repositories.map(repo => <option key={repo.id} value={repo.id}>{repo.path}</option>)}</select></label><p className="muted">You will own this workspace and its tickets, intakes and sessions.</p><button className="primary" disabled={busy || !repository}>Create workspace</button></form></section>}
+    {identified && !workspace && !repositories && !error && <p role="status">Loading workspace…</p>}
     {workspace && <>
       <div className="workspace-bar"><span>{workspace.config.repository.split("/").filter(Boolean).at(-1)}</span><code>{workspace.config.mainline}</code><nav aria-label="Workspace"><a href="#tickets">Tickets <span className="count">{Object.keys(workspace.tickets).length}</span></a><a href="#sessions">Sessions <span className="count">{Object.keys(workspace.sessions).length}</span></a></nav></div>
       <IntakeDesk client={client} workspace={workspace}/>
@@ -86,7 +100,10 @@ function App() {
             <div className="ticket-meta"><code>{t.id}</code><span className={`badge ${t.status}`}>{t.status}</span></div><h3>{t.title}</h3><p className="muted">{t.modules.join(", ")}</p><p className="prose">{t.description}</p>
             {t.blockers.length > 0 && <p>Blockers: {t.blockers.map(id => <a key={id} href={`#ticket-${id}`}>{id} ({workspace.tickets[id]?.status}) </a>)}</p>}
             {t.parent && <a href={`#ticket-${t.parent}`}>Parent {t.parent}</a>}{t.notes && <p className="prose muted">{t.notes}</p>}
-            <div className="actions"><a className="button" href="#ticket-editor" onClick={() => setTicket(t)}>Edit</a><button className="danger quiet" disabled={busy} onClick={() => void run(async () => { await client.command({ command: "delete_ticket", id: t.id }); if (ticket?.id === t.id) setTicket(null); })}>Delete</button></div>
+            <div className="actions"><a className="button" href="#ticket-editor" onClick={() => setTicket(t)}>Edit</a>
+              {t.status === "draft" && <button disabled={busy} onClick={() => void run(() => grill(t))}>Grill ticket</button>}
+              {t.status === "ready" && <button className="primary" disabled={busy || t.blockers.some(id => workspace.tickets[id]?.status !== "done") || Object.values(workspace.tickets).some(child => child.parent === t.id) || Object.values(workspace.sessions).some(s => !["complete","abandoned"].includes(s.phase) && s.tickets.includes(t.id))} onClick={() => void run(async () => { await client.command({command:"start", id:`work-${randomID()}`, tickets:[t.id],modules:[],prompt:`Implement ticket ${t.id}: ${t.title}\n${t.description}`}); location.hash="sessions"; })}>Start implementation</button>}
+              <button className="danger quiet" disabled={busy} onClick={() => void run(async () => { await client.command({ command: "delete_ticket", id: t.id }); if (ticket?.id === t.id) setTicket(null); })}>Delete</button></div>
           </article>)}
         </div>{ticket && <TicketEditor key={ticket.id} initial={ticket} workspace={workspace} busy={busy} run={run} close={() => setTicket(null)}/>}</div>
       </section>

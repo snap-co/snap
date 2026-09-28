@@ -73,7 +73,7 @@ export function IntakeDesk({ client, workspace, selected = "" }: { client: Facto
     setConversation(null);
     if (!intake) return;
     setConnection("Connecting to OpenCode…");
-    const events = new EventSource(`${client.origin}/api/intakes/${encodeURIComponent(intake.id)}/events`);
+    const events = new EventSource(client.eventsURL(intake.id));
     events.addEventListener("snapshot", event => { setConversation(JSON.parse(event.data)); setConnection("Connected to OpenCode"); });
     events.addEventListener("unavailable", event => setConnection(event.data));
     events.addEventListener("expired", () => { setError("Your session expired. Sign in again to continue."); events.close(); });

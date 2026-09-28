@@ -31,7 +31,9 @@ pub type Handler = Box<
         + Send,
 >;
 
-pub type Guard = fn(&mut Transaction<'_>, Option<&str>, &Value) -> Result<(), snap_store::Error>;
+/// The credential is private host context, used only for session-specific policy.
+pub type Guard =
+    fn(&mut Transaction<'_>, Option<&str>, &Value, Option<&str>) -> Result<(), snap_store::Error>;
 pub type Validator = fn(&Value) -> bool;
 
 pub struct Request {
@@ -719,7 +721,12 @@ impl<B: Backend> Host<B> {
                             if request.identity_required && actor.is_none() {
                                 return Ok(Err(Error::IdentityRequired));
                             }
-                            (request.guard)(tx, actor.as_deref(), &invocation.input)?;
+                            (request.guard)(
+                                tx,
+                                actor.as_deref(),
+                                &invocation.input,
+                                work.bearer.as_deref(),
+                            )?;
                             Ok(Ok(Prepared::Request))
                         }
                     }

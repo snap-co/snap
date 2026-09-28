@@ -16,9 +16,7 @@ export function openCodeFixture() {
       return JSON.parse(output);
     };
     const state = await tool({ action: "read" });
-    const denied = await fetch(`${s.environment.FACTORIO_ORIGIN}/api/command`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${s.environment.FACTORIO_INTAKE_TOKEN}` }, body: JSON.stringify({ command: "delete_ticket", id: "unrelated" }) });
-    if (denied.ok) throw new Error("Scoped intake credential reached general commands");
-    const id = `${s.environment.FACTORIO_INTAKE}-navigation`;
+     const id = `${state.intake.id}-navigation`;
     await tool({ revision: state.intake.revision, route: "implement", rationale: "The outcome and single-module scope are agreed.", tickets: [{ id, title: "Improve mobile navigation", description: "Make navigation usable on a phone. Acceptance: ticket links remain visible at 390px.", modules: [Object.keys(state.modules)[0]], status: "draft", notes: "", parent: null, blockers: [] }] });
     s.messages.push({ id: "msg_fixture_answer", role: "assistant", parts: [{ type: "text", text: "I saved a single-module draft. Review it and mark it ready when you want to start." }] });
   }
@@ -45,7 +43,7 @@ export function openCodeFixture() {
       if (!s.seen.has(body.id)) {
         s.seen.add(body.id);
         if (body.metadata?.factorio_initial) {
-          s.tool = body.text.split("\n").find((line:string)=>line.startsWith("'") && line.includes(" intake-read --intake-config "));
+          s.tool = body.text.split("\n").find((line:string)=>line.startsWith("'") && line.includes(" intake-read --credentials "));
           s.messages.push({ id: body.id, role: "user", text: "Improve navigation on my phone" });
           s.messages.push({ id: "msg_fixture_question", role: "assistant", parts: [{ type: "text", text: "Which navigation outcome matters most?" }] });
           s.forms = [{ id: "frm_scope", title: "Clarify navigation", fields: [

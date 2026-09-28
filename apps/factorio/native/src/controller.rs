@@ -9,6 +9,7 @@ type Context<'a> = ControllerContext<'a, snap_sqlite::Sqlite>;
 /// Keep the effect boundary small so reconciliation can be exercised without Git
 /// processes or a running OpenCode service.
 trait Effects: Send + 'static {
+    fn head(&mut self, config: &Config) -> Result<String, String>;
     fn setup(&mut self, config: &Config, session: &Session) -> Result<(), String>;
     fn candidate(&mut self, config: &Config, session: &Session)
     -> Result<(String, String), String>;
@@ -24,6 +25,9 @@ impl Native {
     }
 }
 impl Effects for Native {
+    fn head(&mut self, c: &Config) -> Result<String, String> {
+        self.run(crate::effects::head(c))
+    }
     fn setup(&mut self, c: &Config, s: &Session) -> Result<(), String> {
         self.run(crate::effects::setup(c, s))
     }
@@ -47,32 +51,6 @@ pub fn register(
     host: Host<snap_sqlite::Sqlite>,
     runtime: tokio::runtime::Handle,
 ) -> Host<snap_sqlite::Sqlite> {
-    let mut effects = Native(runtime.clone());
-    // The current UI still stores its aggregate workspace. Use the same step
-    // function until its carrier is switched to the linked Document model.
-    let host = host.with_controller(
-        "factorio-workspace",
-        Box::new(move |ctx, snapshot| {
-            let workspace: factorio::Workspace =
-                serde_json::from_value(snapshot.value).map_err(|_| Error::Invalid)?;
-            for session in workspace.sessions.values() {
-                if !session.error.is_empty() {
-                    continue;
-                }
-                let effect = match step(&mut effects, &workspace.config, session) {
-                    Ok(Some(effect)) => effect,
-                    Ok(None) => continue,
-                    Err(message) => Effect::Failed(message),
-                };
-                ctx.transact("factorio.controller.observed", |tx| {
-                    factorio::controller_observe(tx, &session.id, effect)
-                })?;
-                // Reload committed state on the next pass, including ticket changes.
-                break;
-            }
-            Ok(())
-        }),
-    );
     with_effects(host, Native(runtime))
 }
 
@@ -180,6 +158,7 @@ fn step(
     session: &Session,
 ) -> Result<Option<Effect>, String> {
     Ok(Some(match session.phase {
+        Phase::Starting if session.base.is_empty() => Effect::Based(effects.head(config)?),
         Phase::Starting => {
             effects.setup(config, session)?;
             Effect::Started
@@ -248,6 +227,10 @@ mod tests {
         }
     }
     impl Effects for Fake {
+        fn head(&mut self, _: &Config) -> Result<String, String> {
+            self.call("head")?;
+            Ok("a".repeat(40))
+        }
         fn setup(&mut self, _: &Config, _: &Session) -> Result<(), String> {
             self.call("setup")
         }
