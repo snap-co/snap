@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react
 import { createRoot } from "react-dom/client";
 import { startAuthy, type AuthyClient } from "../client";
 import "./style.css";
-import { AuthShell, AuthHeading, AuthActions, AuthButton } from "./auth-ui";
+import { AuthShell, AuthHeading, AuthActions, AuthButton, AuthField } from "./auth-ui";
 
 function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
   const [email, setEmail] = useState("");
@@ -23,8 +23,8 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
   return (
     <>
       <AuthHeading title={mode === "signup" ? "Create your account" : "Sign in"}>One account for your Snap apps.</AuthHeading>
-      <form onSubmit={submit}>
-        <label htmlFor="email">Email</label>
+      <form onSubmit={submit} className="signin-form" aria-busy={busy}>
+        <AuthField label="Email" id="email">
         <input
           id="email"
           name="email"
@@ -34,7 +34,8 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <label htmlFor="password">Password</label>
+        </AuthField>
+        <AuthField label="Password" id="password">
         <input
           id="password"
           name="password"
@@ -46,13 +47,16 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
+        </AuthField>
         <AuthActions>
           <AuthButton type="submit" disabled={busy}>
-            {mode === "signup" ? "Create account" : "Sign in"}
+            {busy ? (mode === "signup" ? "Creating account…" : "Signing in…") : (mode === "signup" ? "Create account" : "Sign in")}
           </AuthButton>
           <AuthButton
             type="button"
             secondary
+            className="mode-switch"
+            disabled={busy}
             onClick={() => {
               setMode(mode === "signup" ? "signin" : "signup");
               setError(null);
@@ -249,7 +253,7 @@ export function View({ client }: { client: AuthyClient }) {
         : "Disconnected";
 
   return (
-    <AuthShell status={<span className="connection" data-testid="connection">
+    <AuthShell status={snapshot.account && <span className="connection" data-testid="connection">
           {connectionLabel}
         </span>}>
       {snapshot.phase === "loading" ? (
