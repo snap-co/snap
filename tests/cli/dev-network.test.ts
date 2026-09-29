@@ -27,5 +27,18 @@ test("client callback origins share discovered hosts and preserve configured cli
       ]);
     }
   }
-  for (const value of ["http://0.0.0.0:3852", "http://host/path", "http://user@host", "https://host"]) expect(() => publicOrigin(value)).toThrow();
+  for (const value of ["http://0.0.0.0:3852", "http://host/path", "http://user@host", "ftp://host"]) expect(() => publicOrigin(value)).toThrow();
+});
+
+test("TLS proxy policy matches the exact configured authority and scheme", () => {
+  const origin = "https://factorio.cc.example.test";
+  expect(publicOrigin(origin).origin).toBe(origin);
+  expect(requestOrigin([origin], { host: "factorio.cc.example.test", origin })).toBe(origin);
+  expect(requestOrigin([origin], { host: "factorio.cc.example.test" })).toBe(origin);
+  for (const value of ["http://factorio.cc.example.test", "https://chatty.cc.example.test", "null"]) {
+    expect(requestOrigin([origin], { host: "factorio.cc.example.test", origin: value })).toBeUndefined();
+  }
+  expect(requestOrigin([origin], { host: "factorio.cc.example.test.evil.test" })).toBeUndefined();
+  expect(clientOrigins(["127.0.0.1"], { FACTORIO_ORIGIN: origin }).factorio).toEqual([origin]);
+  expect(clientOrigins(["127.0.0.1"], { AUTHY_APP_DOMAIN: "cc.example.test" })).toEqual({});
 });

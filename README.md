@@ -94,6 +94,23 @@ network hosts accept only Store-backed sessions.
 
 ## Network development
 
+For HTTPS behind a local reverse proxy, set `SNAP_ORIGIN` to the public HTTPS
+origin and bind the dev frontend to loopback with `<APP>_WEB_ADDR`. For example:
+
+```sh
+SNAP_ORIGIN=https://authy.cc.example.test AUTHY_WEB_ADDR=127.0.0.1:3846 AUTHY_APP_DOMAIN=cc.example.test ./bin/snap dev apps/authy
+SNAP_ORIGIN=https://factorio.cc.example.test FACTORIO_WEB_ADDR=127.0.0.1:3852 AUTHY_ORIGIN=https://authy.cc.example.test ./bin/snap dev apps/factorio
+```
+
+The proxy must preserve Host and Origin. The dev server admits only the configured
+HTTPS authority in this mode, ignores incoming forwarding headers, and refuses
+non-loopback bind addresses. HMR uses the browser's HTTPS hostname over WSS.
+Direct LAN HTTP aliases are available only in the HTTP development mode below.
+`AUTHY_APP_DOMAIN` is Authy's optional configuration for deriving exact HTTPS
+callback and logout URLs for each registered client ID. It overrides individual
+client origin variables. It does not register unknown clients or allow one client
+to redirect to another client's subdomain. Leave it unset to use explicit origins.
+
 Authy, Chatty and Factorio's `snap dev` runners listen on `0.0.0.0` by default.
 They discover local IPv4 addresses, including LAN and Tailscale, plus the local
 Tailscale DNS name and short name when those resolve to this machine. Each address

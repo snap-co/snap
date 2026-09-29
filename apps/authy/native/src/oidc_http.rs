@@ -23,7 +23,7 @@ pub struct Issuer {
 }
 impl Issuer {
     pub fn new(origin: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let rp = std::env::var("CHATTY_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:3850".into());
+        let rp = configured_app_origin("chatty", "http://127.0.0.1:3850")?;
         let rp = url::Url::parse(&rp)?;
         if !["http", "https"].contains(&rp.scheme())
             || rp.path() != "/"
@@ -52,10 +52,7 @@ impl Issuer {
             if secret.len() < 32 {
                 return Err("FACTORIO_CLIENT_SECRET must contain at least 32 bytes".into());
             }
-            let rp = url::Url::parse(
-                &std::env::var("FACTORIO_ORIGIN")
-                    .unwrap_or_else(|_| "http://127.0.0.1:3852".into()),
-            )?;
+            let rp = url::Url::parse(&configured_app_origin("factorio", "http://127.0.0.1:3852")?)?;
             if !["http", "https"].contains(&rp.scheme())
                 || rp.path() != "/"
                 || rp.query().is_some()
@@ -82,7 +79,9 @@ impl Issuer {
             for client in &mut clients {
                 for value in origins.get(&client.id).into_iter().flatten() {
                     let url = url::Url::parse(value)?;
-                    if url.scheme() != "http" || url.origin().ascii_serialization() != *value {
+                    if !matches!(url.scheme(), "http" | "https")
+                        || url.origin().ascii_serialization() != *value
+                    {
                         return Err("Invalid development client origin".into());
                     }
                     for (uris, path) in [
@@ -104,6 +103,35 @@ impl Issuer {
             },
         })
     }
+}
+
+// A configured domain derives one exact origin per registered client. It never
+// registers arbitrary request-supplied subdomains or makes clients interchangeable.
+fn configured_app_origin(app: &str, fallback: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if let Ok(domain) = std::env::var("AUTHY_APP_DOMAIN") {
+        return domain_app_origin(&domain, app);
+    }
+    Ok(std::env::var(format!("{}_ORIGIN", app.to_uppercase())).unwrap_or_else(|_| fallback.into()))
+}
+
+fn domain_app_origin(domain: &str, app: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if domain.len() > 253
+        || !domain.contains('.')
+        || domain.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        })
+    {
+        return Err(
+            "AUTHY_APP_DOMAIN must be a DNS domain without scheme, port or wildcard".into(),
+        );
+    }
+    Ok(format!("https://{app}.{}", domain.to_ascii_lowercase()))
 }
 
 struct CryptoHost<'a>(&'a crate::keys::Keys);
@@ -792,4 +820,33 @@ pub fn routes(app: Arc<App>) -> Router<Arc<App>> {
         .route("/oauth/token", axum::routing::post(token))
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
         .route("/oauth/revoke", axum::routing::post(revoke))
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::domain_app_origin;
+    #[test]
+    fn derives_separate_exact_https_origins_and_rejects_url_components() {
+        assert_eq!(
+            domain_app_origin("CC.example.test", "factorio").unwrap(),
+            "https://factorio.cc.example.test"
+        );
+        assert_eq!(
+            domain_app_origin("cc.example.test", "chatty").unwrap(),
+            "https://chatty.cc.example.test"
+        );
+        for domain in [
+            "",
+            "localhost",
+            "https://cc.example.test",
+            "*.example.test",
+            "example.test:443",
+            "example.test/path",
+            "example.test@evil.test",
+            ".example.test",
+            "-cc.example.test",
+        ] {
+            assert!(domain_app_origin(domain, "factorio").is_err());
+        }
+    }
 }

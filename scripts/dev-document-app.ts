@@ -11,6 +11,10 @@ const root = resolve(import.meta.dir, "..");
 process.chdir(root);
 const listenURL = new URL(`http://${process.env[`${prefix}_WEB_ADDR`] ?? `0.0.0.0:${port}`}`);
 const publicURL = publicOrigin(process.env.SNAP_ORIGIN ?? `http://127.0.0.1:${listenURL.port || 80}`);
+const behindTLS = publicURL.protocol === "https:";
+if (behindTLS && !["127.0.0.1", "[::1]"].includes(listenURL.hostname)) {
+  throw new Error("HTTPS public origins require a loopback WEB_ADDR behind the TLS proxy");
+}
 const hosts = await devHosts();
 hosts.push(publicURL.hostname);
 let origins: string[] = [];
@@ -130,7 +134,7 @@ try {
   await vite.listen(); const address = vite.httpServer!.address();
   if (address && typeof address !== "string") {
     if (!process.env.SNAP_ORIGIN) publicURL.port = String(address.port);
-    origins = [...new Set([...originsFor(hosts, address.port), publicURL.origin])];
+    origins = behindTLS ? [publicURL.origin] : [...new Set([...originsFor(hosts, address.port), publicURL.origin])];
   }
   console.log(`${title} dev origins: ${origins.join(", ")}`);
   await rebuild(); console.log(`${title} dev ${publicURL.origin} (frontend HMR; Rust/Wasm rebuild and reload)`);

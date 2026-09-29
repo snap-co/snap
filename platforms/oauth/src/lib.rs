@@ -203,7 +203,7 @@ impl OAuth {
             Vec::new()
         };
         for value in &dev_origins {
-            if origin(value)? != *value || !value.starts_with("http://") {
+            if origin(value)? != *value {
                 return Err(Error::Invalid);
             }
         }

@@ -34,22 +34,27 @@ export function originsFor(hosts: string[], port: string | number) {
 }
 
 export function requestOrigin(origins: readonly string[], headers: { host?: string; origin?: string }) {
-  const origin = `http://${headers.host}`;
-  return origins.includes(origin) && (headers.origin === undefined || headers.origin === origin) ? origin : undefined;
+  // The startup policy determines the scheme, never an incoming forwarding header.
+  // HTTPS policies are served only behind the loopback proxy listener.
+  return origins.find(origin => new URL(origin).host === headers.host &&
+    (headers.origin === undefined || headers.origin === origin));
 }
 
 export function publicOrigin(value: string) {
   const url = new URL(value);
-  if (url.protocol !== "http:" || url.pathname !== "/" || url.search || url.hash || url.username || url.password || ["0.0.0.0", "[::]"].includes(url.hostname)) {
-    throw new Error("Development public URLs must be HTTP origins with a reachable hostname or IP");
+  if (!["http:", "https:"].includes(url.protocol) || url.pathname !== "/" || url.search || url.hash || url.username || url.password || ["0.0.0.0", "[::]"].includes(url.hostname)) {
+    throw new Error("Development public URLs must be HTTP(S) origins with a reachable hostname or IP");
   }
   return url;
 }
 
 export function clientOrigins(hosts: string[], env: Record<string, string | undefined> = process.env) {
+  // Authy's native configuration derives exact per-client HTTPS callbacks.
+  if (env.AUTHY_APP_DOMAIN) return {};
   return Object.fromEntries(([ ["chatty", 3850], ["factorio", 3852] ] as const).map(([app, fallback]) => {
     const prefix = app.toUpperCase();
     const canonical = env[`${prefix}_ORIGIN`] ? publicOrigin(env[`${prefix}_ORIGIN`]!) : undefined;
+    if (canonical?.protocol === "https:") return [app, [canonical.origin]];
     const listen = new URL(`http://${env[`${prefix}_WEB_ADDR`] ?? `0.0.0.0:${fallback}`}`);
     const port = canonical ? canonical.port || "80" : listen.port || "80";
     if (port === "0") throw new Error(`${prefix}_ORIGIN must supply the app's allocated port to Authy`);
