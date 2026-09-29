@@ -3,9 +3,6 @@ application = "chatty"
 
 [build]
 
-[dev]
-commands = [["bun", "../../scripts/dev-chatty.ts"]]
-
 [check]
 rust = ["Cargo.toml", "native/Cargo.toml"]
 

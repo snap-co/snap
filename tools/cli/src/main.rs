@@ -1,10 +1,10 @@
 //! Local developer tooling. Application execution stays in the selected host executable.
-mod application;
 mod architecture;
 mod build;
 mod cargo;
 mod check;
 mod config;
+mod dev;
 mod migrate;
 mod process;
 mod secrets;
@@ -66,7 +66,7 @@ async fn main() -> ExitCode {
         match cli.command {
             Command::Build(args) => build::run(args, &runner).await,
             Command::Dev { project, config } => {
-                application::run(config::Project::discover(project)?, &runner, config).await
+                dev::run(config::Project::discover(project)?, &runner, config).await
             }
             Command::Secrets(args) => secrets::run(args),
             Command::Migrate(args) => migrate::run(args),

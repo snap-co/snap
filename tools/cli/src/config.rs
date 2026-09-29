@@ -8,7 +8,6 @@ pub struct Config {
     pub version: u32,
     pub application: String,
     pub build: Option<Build>,
-    pub dev: Option<TestSuite>,
     #[serde(default)]
     pub check: Check,
     #[serde(default)]
@@ -81,15 +80,6 @@ impl Project {
                         "application must not be empty"
                     );
                     validate_commands("check", &config.check.commands)?;
-                    for (name, workflow) in [("dev", &config.dev)] {
-                        if let Some(workflow) = workflow {
-                            ensure!(
-                                !workflow.commands.is_empty(),
-                                "{name}.commands must not be empty"
-                            );
-                            validate_commands(name, &workflow.commands)?;
-                        }
-                    }
                     for (name, suite) in &config.test {
                         ensure!(
                             matches!(

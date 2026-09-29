@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { host as authyHost } from "../../../authy/tests/support/upgraded-host";
-import { devHosts, originsFor } from "../../../../scripts/dev-network";
+import { localOrigins } from "../../../../tests/support/local-origins";
 import { deployment } from "../../../../tests/support/deployment";
 
 export async function pair(options: { root?: string; dev?: boolean } = {}) {
@@ -36,7 +36,7 @@ export async function pair(options: { root?: string; dev?: boolean } = {}) {
   async function close() { await stop(); await authy?.close(); control.stop(true); await rm(directory, { recursive: true, force: true }); }
   try {
     authy = await authyHost(base, options.dev ? {
-      SNAP_DEV_MODE: "1", SNAP_DEV_CLIENT_ORIGINS: JSON.stringify({ chatty: originsFor(await devHosts(), new URL(base).port) }),
+      SNAP_DEV_MODE: "1", SNAP_DEV_CLIENT_ORIGINS: JSON.stringify({ chatty: localOrigins(new URL(base).port) }),
     } : {});
     setup = await deployment(directory, { host: { mode: "development", listen: new URL(base).host, origin: base, data_dir: directory, database: "chatty.sqlite", web_dir: `${root}/apps/chatty/dist/development/web` },
       app: { oauth: { issuer: authy.base, client_id: "chatty", client_secret_ref: "oauth.client_secret" } },

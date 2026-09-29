@@ -6,9 +6,6 @@ server = "local"
 binary = "testy-web"
 features = ["web"]
 
-[dev]
-commands = [["bun", "../../scripts/dev-testy.ts"]]
-
 [check]
 rust = ["Cargo.toml", "local/Cargo.toml"]
 

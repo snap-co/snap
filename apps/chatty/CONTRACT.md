@@ -58,11 +58,16 @@ From the repository root:
 
 ```sh
 # After explicitly initializing and sealing matching Authy/Chatty secrets.
-mise exec -- bun scripts/chatty.ts --migrate
-mise exec -- bun scripts/chatty.ts
+./bin/snap build --project apps/authy
+./bin/snap build --project apps/chatty
+apps/authy/dist/development/server --migrate
+apps/chatty/dist/development/server --migrate
+# Run in separate terminals:
+./bin/snap dev apps/authy
+./bin/snap dev apps/chatty
 ```
 
-The runner reads each app's `.deployment/development/config.toml` and encrypted bag.
+Snap reads each app's `.deployment/development/config.toml` and encrypted bag.
 The checked-in configs select Authy at `127.0.0.1:3846` and Chatty at `127.0.0.1:3850`.
 Startup never silently migrates or replaces
 an occupied listener. Dev supports frontend HMR and native/Wasm replacement;

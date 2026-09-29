@@ -2,14 +2,14 @@ import { expect, test } from "bun:test";
 import { chromium, type Browser } from "@playwright/test";
 import { request } from "node:http";
 import { pair } from "../../apps/chatty/tests/support/pair";
-import { devHosts, originsFor } from "../../scripts/dev-network";
+import { localOrigins } from "../support/local-origins";
 
 test("network dev preserves alias callbacks and logout, blocks spoofed hosts and origins, and serves HMR", async () => {
   const server = await pair({ dev: true });
   let browser: Browser | undefined;
   try {
     browser = await chromium.launch();
-    const aliases = originsFor(await devHosts(), new URL(server.base).port);
+    const aliases = localOrigins(new URL(server.base).port);
     const candidates = aliases.filter(o => o !== server.base);
     expect(candidates.length).toBeGreaterThan(0);
     for (const origin of aliases) {

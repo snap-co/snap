@@ -4,9 +4,6 @@ application = "factorio"
 [check]
 rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
 
-[dev]
-commands = [["bun", "../../scripts/dev-factorio.ts"]]
-
 [build]
 
 [test.memory]

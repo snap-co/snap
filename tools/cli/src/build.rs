@@ -263,7 +263,8 @@ fn copy_file(source: &Path, target: &Path) -> Result<()> {
     std::fs::copy(source, target)?;
     Ok(())
 }
-fn copy_tree(source: &Path, target: &Path) -> Result<()> {
+pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<()> {
+    std::fs::create_dir_all(target)?;
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let destination = target.join(entry.file_name());

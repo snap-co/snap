@@ -3,9 +3,6 @@ application = "authy"
 
 [build]
 
-[dev]
-commands = [["bun", "../../scripts/dev-authy.ts"]]
-
 [check]
 rust = ["Cargo.toml", "native/Cargo.toml"]
 

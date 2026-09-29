@@ -5,9 +5,9 @@ import { openCodeFixture } from "../apps/factorio/tests/opencode-fixture";
 import { deployment } from "../tests/support/deployment";
 const root = resolve(process.env.FACTORIO_SOURCE_ROOT ?? resolve(import.meta.dir, "..")); process.chdir(root);
 if (process.argv.includes("--dev") && !process.env.FACTORIO_SOURCE_ROOT) {
-  const copy = await mkdtemp("/tmp/opencode/factorio-dev-source-");
+  const copy = await mkdtemp(resolve(process.env.TMPDIR ?? "/tmp/opencode", "factorio-dev-source-"));
   try {
-    for (const path of ["Cargo.toml","Cargo.lock","package.json","tsconfig.json","scripts","crates","platforms","kits","tools/cli","apps","tests/properties"])
+    for (const path of ["Cargo.toml","Cargo.lock","package.json","tsconfig.json","scripts","crates","platforms","kits","tools/cli","apps","tests"])
       await cp(`${root}/${path}`,`${copy}/${path}`,{recursive:true,filter:path=>!/(^|\/)(\.snap|\.deployment|node_modules|target|build|dist)(\/|$)/.test(path)});
     for (const path of ["node_modules",".tools","target"]) await symlink(`${root}/${path}`,`${copy}/${path}`);
     const rust=(await Bun.file(`${root}/mise.toml`).text()).match(/rust = "([^"]+)"/)![1];
@@ -21,7 +21,7 @@ await run(["mise", "exec", "--", "cargo", "build", "-p", "snap-cli", "-p", "auth
 await run([`${root}/target/debug/snap`, "build", "--project", "apps/authy", "--web-only", "--output", `${root}/apps/authy/dist/development/web`]);
 await run([`${root}/target/debug/snap`, "build", "--project", "apps/factorio", "--web-only", "--output", `${root}/apps/factorio/dist/development/web`]);
 await run(["bunx", "tsc", "-p", "apps/factorio/web/tsconfig.json"]);
-const directory = await mkdtemp("/tmp/opencode/factorio-journey-");
+const directory = await mkdtemp(resolve(process.env.TMPDIR ?? "/tmp/opencode", "factorio-journey-"));
 let authy: Awaited<ReturnType<typeof host>> | undefined, child: ReturnType<typeof Bun.spawn> | undefined;
 let logs = "";
 let setup: Awaited<ReturnType<typeof deployment>>;
@@ -71,4 +71,5 @@ await fs.writeFile(file,JSON.stringify(sessions));
     app: { repository: repositoryConfig, oauth: { issuer: authy.base, client_id: "factorio", client_secret_ref: "oauth.client_secret" }, tools: { bun: process.execPath, opencode: `${directory}/bin/opencode`, bridge: `${root}/apps/factorio/tests/opencode-bridge.ts` } } }, { oauth: { client_secret: secret } });
   await run([`${root}/target/debug/factorio`,"--migrate", "--config", setup.path],setup.env);await start();
   await run(["bunx","playwright","test","--config","apps/factorio/tests/playwright.config.ts"],{...process.env,FACTORIO_TEST_URL:base,FACTORIO_FIXTURE_URL:`http://127.0.0.1:${control.port}`,FACTORIO_FIXTURE_DIR:directory});
-} finally {await stop();await authy?.close();control.stop(true);await rm(directory,{recursive:true,force:true});}
+} catch (error) { console.error(logs); throw error; }
+finally {await stop();await authy?.close();control.stop(true);await rm(directory,{recursive:true,force:true});}

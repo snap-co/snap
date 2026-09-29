@@ -133,12 +133,26 @@ databases and generated keys.
 ## Development and containers
 
 `snap dev` reads `.deployment/development/config.toml`. Optional `[dev].listen`
-controls the frontend separately from the loopback backend. The runner writes an
+controls the frontend separately from the loopback backend. The Rust CLI writes an
 explicit config for each backend generation with discovered origins and allocated
 ports. It reads the conventional development `secrets.key` unless `SNAP_MASTER_KEY`
 is supplied. Servers never discover that key file. `snap dev --config PATH` supports
-explicit installations and disposable fixtures. Restart the runner after deployment
-configuration changes.
+explicit installations and disposable fixtures. Config, `secrets.enc` and
+`secrets.key` changes are revalidated and applied automatically. Invalid changes
+retain the preceding generation. Startup and replacement never migrate a database.
+
+The CLI owns filesystem watching, native/Wasm builds, readiness, publication and
+process-group shutdown. Apps use their `[build]` target selection for development
+too; `snap.toml` no longer accepts `[dev].commands`. React/CSS changes use Vite HMR.
+Rust changes publish matching native and Wasm artifacts, then reload browsers.
+Compilation failures keep the current backend running. Replacement stops the old
+backend before opening its database; startup failure restarts the preceding one.
+
+`tools/cli/web-dev.mjs` is the framework-owned Node adapter for Vite, React refresh,
+generated bindings and the checked proxy policy. It receives no deployment key.
+Checkout edits to this adapter restart only Vite, with rollback if it cannot start.
+Changes to the Rust CLI or its embedded build helper require rebuilding and
+relaunching `snap dev`. Network-address changes require relaunching it too.
 
 Use `host.origin` for the stable public URL and the OAuth issuer/client origins for
 peer URLs. HTTPS development requires a loopback frontend behind the proxy. HTTP

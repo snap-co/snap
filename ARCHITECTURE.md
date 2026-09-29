@@ -20,6 +20,10 @@ independent consumer or enforceable dependency/portability rule requires it.
   secrets loading. App hosts define typed settings and resolve secrets once before
   serving. Portable modules never discover configuration. The CLI owns conventional
   builds and allowlisted deployment packaging; see [configuration](docs/configuration.md).
+  The Rust CLI also owns development watching, builds, backend readiness and
+  replacement, configuration reload and child process groups. A small Vite
+  adapter owns frontend serving/HMR and enforces the CLI-supplied proxy policy;
+  it never supervises Rust processes or receives deployment keys.
 - `crates/store` owns portable server-side resident transactions,
   index knowledge, miss diagnostics and explicit schema migration declarations.
 - `crates/access` owns resource registration, direct grants, parent links and

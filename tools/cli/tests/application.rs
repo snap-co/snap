@@ -323,8 +323,9 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
 }
 
 #[test]
-fn development_workflows_run_from_the_project_and_propagate_failure() {
-    let root = std::env::temp_dir().join(format!("snap-workflow-{}", std::process::id()));
+fn development_rejects_obsolete_app_commands_without_executing_them() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
     fs::create_dir_all(root.join("nested")).unwrap();
     fs::write(
         root.join("Cargo.toml"),
@@ -346,11 +347,8 @@ commands = [["sh", "-c", "pwd > built; exit 17"], ["touch", "should-not-run"]]
         .arg("dev")
         .output()
         .unwrap();
-    assert_eq!(dev.status.code(), Some(17));
-    assert_eq!(
-        fs::read_to_string(root.join("built")).unwrap().trim(),
-        root.to_str().unwrap()
-    );
+    assert!(!dev.status.success());
+    assert!(String::from_utf8_lossy(&dev.stderr).contains("Invalid"));
+    assert!(!root.join("built").exists());
     assert!(!root.join("should-not-run").exists());
-    fs::remove_dir_all(root).unwrap();
 }

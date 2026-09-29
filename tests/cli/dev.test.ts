@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { deployment } from "../support/deployment";
 
 // Explicit cross-process gate. Edits happen only in a disposable source copy.
-test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", async () => {
+test("dev publishes real generations, hot-reloads frontend and tooling, and retains invalid changes", async () => {
   const root = resolve(import.meta.dir, "../..");
   await mkdir(`${root}/.tmp`, { recursive: true });
   const fixture = await mkdtemp(`${root}/.tmp/dev-cli-`);
@@ -43,14 +43,18 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
     })();
     await until(() => logs.includes("Testy dev http"));
     const url = /Testy dev (http:\/\/[^\s]+)/.exec(logs)![1];
+    const backendURL = /Testy (http:\/\/[^\s]+)/.exec(logs)![1];
     const page = await browser.newPage();
     const errors: string[] = [];
     page.on("pageerror", error => { errors.push(error.message); logs += `\nBrowser: ${error.message}`; });
+    page.on("console", message => { if (message.type() === "error") logs += `\nBrowser console: ${message.text()}`; });
+    page.on("requestfailed", request => { logs += `\nRequest failed: ${request.url()} ${request.failure()?.errorText}`; });
     await page.goto(`${url}/calc`);
     await page.getByLabel("Email", { exact: true }).fill("dev@example.com");
     await page.getByLabel("Password", { exact: true }).fill("password123");
     await page.getByRole("button", { name: "Create account", exact: true }).click();
     await page.getByText("Connected", { exact: true }).waitFor();
+
     await page.getByLabel("Operand", { exact: true }).fill("12");
     await page.getByRole("button", { name: "+", exact: true }).click();
     await until(async () => await page.getByTestId("accumulator").textContent() === "12");
@@ -58,7 +62,7 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
     await writeFile(stylesheet, await readFile(stylesheet, "utf8") + "\nbody { --dev-probe: active; }\n");
     await until(() => page.evaluate(() => getComputedStyle(document.body).getPropertyValue("--dev-probe").trim() === "active"));
     expect(await page.getByTestId("accumulator").textContent()).toBe("12");
-    expect((await fetch(`${url}/__dev`, { headers: { Origin: "http://elsewhere.invalid" } })).status).toBe(404);
+    expect((await fetch(`${url}/__dev`, { headers: { Origin: "http://elsewhere.invalid" } })).status).toBe(403);
 
     const source = `${fixture}/apps/testy/src/lib.rs`;
     const original = await readFile(source, "utf8");
@@ -79,11 +83,46 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
     expect(await page.evaluate(() => (window as any).__devDocument)).toBe("same");
     expect(errors).toEqual([]);
 
+    const adapter = `${fixture}/tools/cli/web-dev.mjs`;
+    await writeFile(adapter, (await readFile(adapter, "utf8")).replace("const path = req.url", 'res.setHeader("x-dev-adapter", "restarted"); const path = req.url'));
+    await until(async () => { try { return (await fetch(url)).headers.get("x-dev-adapter") === "restarted"; } catch { return false; } });
+    await page.getByText("Connected", { exact: true }).waitFor();
+
+    const knownAdapter = await readFile(adapter, "utf8");
+    await writeFile(adapter, knownAdapter + "\ninvalid JavaScript syntax;\n");
+    await until(() => logs.includes("Vite adapter rejected; previous adapter retained"));
+    await until(async () => { try { return (await fetch(url)).headers.get("x-dev-adapter") === "restarted"; } catch { return false; } });
+    const restarts = (logs.match(/Vite adapter restarted/g) ?? []).length;
+    await writeFile(adapter, knownAdapter);
+    await until(() => (logs.match(/Vite adapter restarted/g) ?? []).length > restarts);
+    await page.getByText("Connected", { exact: true }).waitFor();
+
+    const configuration = await readFile(setup.path, "utf8");
+    await writeFile(setup.path, "invalid TOML");
+    await until(() => logs.includes("Configuration rejected; previous generation retained"));
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    expect(await page.getByTestId("accumulator").textContent()).toBe("0");
+    const configured = (logs.match(/generation ready/g) ?? []).length;
+    await writeFile(setup.path, configuration);
+    await until(() => (logs.match(/generation ready/g) ?? []).length > configured);
+    await page.getByText("Connected", { exact: true }).waitFor();
+    expect(await page.getByLabel("Email", { exact: true }).count()).toBe(0);
+
+    await writeFile(setup.path, configuration.replace('database = "identity.sqlite"', 'database = "unmigrated.sqlite"'));
+    await until(() => logs.includes("Restart failed; previous generation retained"));
+    await page.reload();
+    await page.getByText("Connected", { exact: true }).waitFor();
+    expect(await page.getByLabel("Email", { exact: true }).count()).toBe(0);
+    await writeFile(setup.path, configuration);
+    expect(errors).toEqual([]);
+
     child.kill("SIGTERM");
     expect(await child.exited).toBe(143);
     await until(async () => {
       try { await fetch(url); return false; } catch { return true; }
     });
+    try { await fetch(backendURL); throw new Error("Backend listener survived snap dev shutdown"); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; }
   } catch (error) {
     console.error(logs);
     throw error;

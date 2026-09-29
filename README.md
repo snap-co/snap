@@ -109,8 +109,9 @@ controls consent independently. The default development config uses `snapco.dev`
 
 The proxy admits only discovered/configured authorities and matching Origin headers,
 overwrites forwarding headers, and supplies checked alias origins for development
-callbacks. Production forbids development-origin lists. Restart runners after config
-or network changes. See [configuration and packages](docs/configuration.md).
+callbacks. Production forbids development-origin lists. Config and encrypted-bag
+changes are revalidated automatically; restart after network-address changes.
+See [configuration and packages](docs/configuration.md).
 
 ## Run Authy
 
@@ -132,12 +133,16 @@ packaged launch and verification commands.
 
 ```sh
 # After explicitly initializing and sealing each app's matching client secrets:
-mise exec -- bun scripts/chatty.ts --migrate
-# Start both dev servers, with frontend HMR and native/Wasm rebuilds:
-mise exec -- bun scripts/chatty.ts
+./bin/snap build --project apps/authy
+./bin/snap build --project apps/chatty
+apps/authy/dist/development/server --migrate
+apps/chatty/dist/development/server --migrate
+# Run in separate terminals:
+./bin/snap dev apps/authy
+./bin/snap dev apps/chatty
 ```
 
-Open `http://127.0.0.1:3850` and choose Continue with Authy. The runner reads
+Open `http://127.0.0.1:3850` and choose Continue with Authy. Snap reads
 each app's `.deployment/development/config.toml` and encrypted bag. Chatty synchronizes
 conversation messages between clients. See [Chatty](apps/chatty/CONTRACT.md) for
 configuration and verification.

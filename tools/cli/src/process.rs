@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncReadExt,
-    process::Command,
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::{Child, Command},
     signal::unix::{SignalKind, signal},
     sync::watch,
 };
@@ -49,6 +49,30 @@ impl Runner {
             return Err(Failed(code).into());
         }
         Ok(())
+    }
+
+    pub async fn cancelled(&self) -> Result<()> {
+        let mut stopped = self.stopped.clone();
+        self.check()?;
+        stopped.changed().await?;
+        self.check()
+    }
+
+    /// Long-lived development children have the same process-group lifetime as
+    /// finite commands. Dropping their owner also retires all descendants.
+    pub fn spawn(&self, command: &mut Command) -> Result<OwnedProcess> {
+        self.check()?;
+        command.process_group(0).kill_on_drop(true);
+        let child = command
+            .spawn()
+            .context("Could not start development process")?;
+        let group = Group(Pid::from_raw(
+            child.id().context("Missing child PID")? as i32
+        ));
+        Ok(OwnedProcess {
+            child,
+            _group: group,
+        })
     }
 
     pub async fn run(&self, command: &mut Command, capture: bool) -> Result<Vec<u8>> {
@@ -99,6 +123,37 @@ impl Runner {
         drop(group);
         let output = reader.await??;
         Ok((status, output))
+    }
+}
+
+pub struct OwnedProcess {
+    pub child: Child,
+    _group: Group,
+}
+impl OwnedProcess {
+    pub async fn stop(&mut self) -> Result<()> {
+        let _ = killpg(self._group.0, Signal::SIGTERM);
+        match tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await {
+            Ok(status) => {
+                status?;
+            }
+            Err(_) => {
+                let _ = killpg(self._group.0, Signal::SIGKILL);
+                self.child.wait().await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn forward_output(&mut self) {
+        if let Some(stdout) = self.child.stdout.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    println!("{line}");
+                }
+            });
+        }
     }
 }
 

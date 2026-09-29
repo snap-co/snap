@@ -27,6 +27,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   // HTTP tailnet origins lack randomUUID, including in mobile Safari.
   await page.addInitScript(()=>Reflect.deleteProperty(Object.getPrototypeOf(crypto),"randomUUID"));
   const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
+  page.on("console",message=>{if(message.type()==="error" && /removeChild|already been passed to createRoot/.test(message.text()))errors.push(message.text());});
   await page.goto(base);await page.getByRole("link",{name:"Continue with Authy"}).click();
   await page.getByRole("button",{name:"New here? Create account",exact:true}).click();
   await page.getByLabel("Email",{exact:true}).fill(`factorio-${Date.now()}@example.test`);await page.getByLabel("Password",{exact:true}).fill("Factorio fixture password");

@@ -103,15 +103,17 @@ Chatty covers search-state navigation without another connection.
 `bun test kits/react/tests/router.test.ts` is the explicit Chromium kit gate. It
 holds a replacement account's loader open and checks that the old account's data
 stays hidden until the new onboarding choices can mount.
-`bun test tests/cli/chatty-dev.test.ts` covers the shared dev driver.
+`bun test tests/cli/chatty-dev.test.ts` covers OAuth and Document compatibility with
+the Rust development supervisor.
 Set `TMPDIR=/tmp/opencode` for disposable filesystem gates.
 
-`mise exec -- bun test tests/cli/dev-network.test.ts tests/cli/dev-origins.test.ts`
-checks discovered-origin policy and real development OAuth across multiple local
+`mise exec -- bun test tests/cli/dev-origins.test.ts`
+checks origin policy through real development OAuth across multiple local
 addresses, including callback/logout return addresses, authenticated WebSockets,
 HMR connections and rejected foreign Host/Origin pairs. Build `authy-native` and
 `chatty-native` and Authy's web assets first. The dev-origin journey owns temporary
-databases and uses the shared Chatty development runner.
+databases and uses `snap dev` for Chatty. Origin-policy predicates are not tested
+through private tooling functions.
 
 Factorio's linked-Document domain tests cover inherited workspace ownership,
 multi-Document rollback, exclusive claims, intake revision guards, retained cleanup,
@@ -139,8 +141,9 @@ suite. Browser and stress cases belong in separate targets.
 
 `snap build [environment]` owns conventional native/Wasm/client builds and allowlisted
 deployment packaging. Root tooling can select `--project apps/testy`. Applications
-cannot declare `[build].commands`. `snap dev apps/testy` retains app development
-commands with process-group ownership. Testy's driver provides HMR and Rust/Wasm rebuilds.
+cannot declare `[build].commands` or `[dev].commands`. `snap dev apps/testy` owns
+development configuration, process groups and native/Wasm publication in Rust,
+with one framework-owned Vite adapter for frontend HMR.
 Former `[server]`, `[web]`, `[prepare]` and suite `build` configuration remain rejected.
 
 Run `mise exec -- cargo test -p snap-cli` for CLI dispatch and migration coverage.
@@ -154,7 +157,11 @@ real encrypted bags through the CLI and never require operator secrets.
 After building the CLI, `bun test tests/cli/dev.test.ts` is the explicit development
 workflow gate (requires installed Playwright Chromium). It uses a disposable source
 copy and migrated database, shares the build cache, and checks CSS/React hot reload,
-failed-build retention, Rust/Wasm replacement, login survival and process shutdown.
+adapter restart, config reload, failed-build retention, Rust/Wasm replacement,
+login survival and process shutdown. `cargo test -p snap-cli --test dev` exercises
+CLI discovery/options and invalid-installation rejection without mocks or app
+processes. If Chromium reports `ERR_INSUFFICIENT_RESOURCES` on a full tmpfs, set
+`TMPDIR` to a workspace directory with free space before running browser gates.
 
 ```sh
 # Portable behavior and Testy's in-process SDK:
