@@ -11,8 +11,8 @@ export function openCodeFixture() {
       // OpenCode may lose overrides between calls. Exercise the actual supplied
       // command with neither PATH nor Factorio credentials in the environment.
       const child = Bun.spawn(["/bin/bash", "-c", command], {env:{},stdin:new Blob([JSON.stringify(body)]),stdout:"pipe",stderr:"pipe"});
-      const output = await new Response(child.stdout).text();
-      if (await child.exited) throw new Error("Fixture scoped CLI failed with an empty environment");
+      const [output, error] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      if (await child.exited) throw new Error(`Fixture scoped CLI failed with an empty environment: ${error}`);
       return JSON.parse(output);
     };
     const state = await tool({ action: "read" });

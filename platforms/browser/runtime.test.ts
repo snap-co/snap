@@ -106,3 +106,22 @@ test("disposal settles route readiness even while Identity IO is pending", async
   await Promise.resolve(); await Promise.resolve();
   expect(f.sockets).toHaveLength(0);
 });
+for (const terminal of [{ Failed: "StaleConnection" }, "Detached"]) {
+  test(`terminal ${JSON.stringify(terminal)} settles an accepted call without revalidation`, async () => {
+    const f = fixture(async () => ({ id: "alice" }), async () => ({
+      connect: () => "", invoke: () => JSON.stringify({ Invoke: { id: 1 } }), free() {},
+      receive: frame => JSON.stringify({ ready: JSON.parse(frame).manifest === true, send: [] }),
+    }));
+    try {
+      await f.runtime.refresh();
+      f.sockets[0]!.receive({ Attached: { resumed: false } }); f.sockets[0]!.receive({ manifest: true });
+      let outcome = "pending";
+      const call = f.runtime.invoke("example", null).then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
+      f.sockets[0]!.receive({ Events: [{ Accepted: { id: 1 } }] });
+      f.sockets[0]!.receive(terminal);
+      await Promise.resolve(); await Promise.resolve();
+      expect(outcome).toBe("rejected");
+      await call;
+    } finally { f.runtime.close(); }
+  });
+}

@@ -1,7 +1,8 @@
 import { createRootRouteWithContext, Outlet, redirect, useRouter } from "@tanstack/react-router";
-import { useSyncExternalStore } from "react";
+import { useContext, useSyncExternalStore } from "react";
 import type { SessionRuntime, SessionState } from "../../platforms/browser/runtime";
 import { Failure, Loading } from "./states";
+import { SessionPublication } from "./publication";
 import "./theme.css";
 
 export interface SessionContext<A, C> { session: SessionState<A>; client: C }
@@ -10,10 +11,13 @@ export interface SessionContext<A, C> { session: SessionState<A>; client: C }
 export function sessionRoot<A, C>(runtime: SessionRuntime<A>, client: C) {
   function Shell() {
     const state = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot);
+    const publication = useContext(SessionPublication);
+    const publishedEpoch = useSyncExternalStore(publication.subscribe, publication.getSnapshot);
     // Clear mounted identity-owned page state before an async router invalidation
     // can publish the next session. Physical reconnects keep the same epoch.
     if (state.phase === "loading") return <Loading />;
     if (state.phase === "error") return <ErrorScreen />;
+    if (publishedEpoch !== state.epoch) return <Loading />;
     return <><Outlet key={state.epoch} />{state.phase === "ready" && state.connection !== "connected" && <p className="snap-reconnecting" role="status">Reconnecting…</p>}</>;
   }
   function ErrorScreen() {

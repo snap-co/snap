@@ -100,6 +100,9 @@ disconnects retain mounted pages and the last converged view while the existing
 binding reconciles. Confirmed identity changes clear Documents, invocation
 channels and app page state before the next session publishes.
 
+The React host publishes a session epoch only after synchronous router invalidation
+commits its guards and loaders. Runtime readiness alone cannot publish cached
+loader data from a previous account. Physical reconnects retain that publication.
 The React host owns focus/visibility revalidation, router invalidation and HMR
 cleanup. Apps call `mount` once and register its disposer with `import.meta.hot`;
 page effects must not start or close the client. Use ordinary TanStack routes and

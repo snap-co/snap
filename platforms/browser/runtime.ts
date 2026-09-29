@@ -141,9 +141,11 @@ export class BrowserRuntime<A, B extends Binding, P extends Publication> impleme
       if (!current()) return;
       try {
         const frame = String(event.data), response = JSON.parse(frame);
-        if (response.Failed !== undefined || response === "Detached") throw new Error(JSON.stringify(response));
+        if (response === "Detached") this.calls.close("Logical connection ended; outstanding outcomes are unknown");
         if (response.Attached) this.set({ connection: "connected" });
-        if (this.calls.receive(frame)) return;
+        const owned = this.calls.receive(frame);
+        if (response.Failed !== undefined || response === "Detached") throw new Error(JSON.stringify(response));
+        if (owned) return;
         this.apply(binding.receive(frame));
       } catch (error) { this.fail(error); socket.close(); }
     };

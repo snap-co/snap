@@ -100,6 +100,9 @@ fences, reconnect preservation and disposal during pending IO. All three app
 browser gates exercise the shared React kit. Authy covers startup retry and guarded
 deep links; Factorio covers empty-account onboarding, intake routes and back/forward;
 Chatty covers search-state navigation without another connection.
+`bun test kits/react/tests/router.test.ts` is the explicit Chromium kit gate. It
+holds a replacement account's loader open and checks that the old account's data
+stays hidden until the new onboarding choices can mount.
 `bun test tests/cli/chatty-dev.test.ts` covers the shared dev driver.
 Set `TMPDIR=/tmp/opencode` for disposable filesystem gates.
 
