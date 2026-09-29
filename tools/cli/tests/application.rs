@@ -70,6 +70,34 @@ fn build_selects_the_named_environment_without_development_fallback() {
             "retained"
         );
     }
+    let external = root.path().join("external-release");
+    fs::rename(&package, &external).unwrap();
+    fs::write(
+        root.path().join(".deployment/development/config.toml"),
+        "version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='data'\n[app]\n",
+    )
+    .unwrap();
+    for target in [external.clone(), root.path().join("missing-release")] {
+        std::os::unix::fs::symlink(&target, &package).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_snap"))
+            .current_dir(root.path())
+            .arg("build")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("Package output must not be a symlink"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fs::read_link(&package).unwrap(), target);
+        assert_eq!(
+            fs::read_to_string(external.join("previous")).unwrap(),
+            "retained"
+        );
+        fs::remove_file(&package).unwrap();
+    }
 }
 
 #[test]

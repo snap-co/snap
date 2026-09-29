@@ -63,6 +63,10 @@ filename within `host.data_dir`; `host.web_dir` defaults to adjacent `web/`.
 Persistent data must stay outside the replaceable `dist/` tree. The build checks
 paths as they will resolve from the final package, including existing symlink aliases,
 and refuses unsafe storage before publishing or replacing any package.
+An existing `dist/<environment>` symlink, including a dangling one, is rejected
+without replacing it. Publication installs a real directory; following the old
+output symlink would check the wrong storage location. Symlinks in stable parent
+directories and to external persistent storage remain supported.
 Portable modules receive typed inputs, not loaders, files or environment access.
 
 `server --check-config` validates shared and app-owned schemas and requires a bag

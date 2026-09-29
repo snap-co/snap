@@ -89,6 +89,16 @@ impl<T: DeserializeOwned> Config<T> {
     /// Packaging relocates relative paths. Reject storage under the replaceable
     /// dist tree, including paths routed there through existing symlinks.
     pub fn validate_package_data(&self, package: &Path) -> Result<()> {
+        // Publication replaces this node. Following its old symlink would validate
+        // a different layout than the real directory that will be installed.
+        match std::fs::symlink_metadata(package) {
+            Ok(metadata) => ensure!(
+                !metadata.file_type().is_symlink(),
+                "Package output must not be a symlink"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("Cannot inspect package output"),
+        }
         let dist = resolved_path(package.parent().context("Missing output directory")?)?;
         for path in [
             package.join(&self.host.data_dir),
