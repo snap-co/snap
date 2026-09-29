@@ -51,7 +51,7 @@ export function clientOrigins(hosts: string[], env: Record<string, string | unde
     const prefix = app.toUpperCase();
     const canonical = env[`${prefix}_ORIGIN`] ? publicOrigin(env[`${prefix}_ORIGIN`]!) : undefined;
     const listen = new URL(`http://${env[`${prefix}_WEB_ADDR`] ?? `0.0.0.0:${fallback}`}`);
-    const port = canonical?.port || listen.port || "80";
+    const port = canonical ? canonical.port || "80" : listen.port || "80";
     if (port === "0") throw new Error(`${prefix}_ORIGIN must supply the app's allocated port to Authy`);
     return [app, [...new Set([...originsFor(hosts, port), ...(canonical ? [canonical.origin] : [])])]];
   }));

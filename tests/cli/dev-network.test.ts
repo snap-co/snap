@@ -20,5 +20,12 @@ test("client callback origins share discovered hosts and preserve configured cli
     "http://127.0.0.1:7777", "http://100.64.1.2:7777", "http://host.tail.test:7777",
   ]);
   expect(localIPv4Hosts({})).toEqual(["127.0.0.1", "localhost"]);
+  for (const app of ["chatty", "factorio"] as const) {
+    for (const canonical of ["http://192.168.1.2", "http://192.168.1.2:80"]) {
+      expect(clientOrigins(["127.0.0.1", "192.168.1.2"], { [`${app.toUpperCase()}_ORIGIN`]: canonical })[app]).toEqual([
+        "http://127.0.0.1", "http://192.168.1.2",
+      ]);
+    }
+  }
   for (const value of ["http://0.0.0.0:3852", "http://host/path", "http://user@host", "https://host"]) expect(() => publicOrigin(value)).toThrow();
 });

@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
-import { chromium } from "@playwright/test";
+import { chromium, type Browser } from "@playwright/test";
 import { request } from "node:http";
 import { pair } from "../../apps/chatty/tests/support/pair";
 import { devHosts, originsFor } from "../../scripts/dev-network";
 
 test("network dev preserves alias callbacks and logout, blocks spoofed hosts and origins, and serves HMR", async () => {
   const server = await pair({ dev: true });
-  const browser = await chromium.launch();
+  let browser: Browser | undefined;
   try {
+    browser = await chromium.launch();
     const aliases = originsFor(await devHosts(), new URL(server.base).port);
     const candidates = aliases.filter(o => o !== server.base);
     expect(candidates.length).toBeGreaterThan(0);
@@ -59,5 +60,5 @@ test("network dev preserves alias callbacks and logout, blocks spoofed hosts and
       } finally { await context.close(); }
     }
   } catch (error) { console.error(server.logs); throw error; }
-  finally { await browser.close(); await server.close(); }
+  finally { try { await browser?.close(); } finally { await server.close(); } }
 }, 120000);
