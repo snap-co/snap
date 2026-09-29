@@ -71,4 +71,21 @@ fn dev_validates_installation_and_options_before_starting_processes() {
             "Invalid inputs must not start a development generation"
         );
     }
+    fs::write(
+        root.path().join("snap.toml"),
+        "version=1\napplication='testy'\n",
+    )
+    .unwrap();
+    fs::write(&config, "version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='data'\n[dev]\nlisten='0.0.0.0:0'\n[app]\n").unwrap();
+    let testy = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(&nested)
+        .arg("dev")
+        .output()
+        .unwrap();
+    assert!(!testy.status.success());
+    assert!(
+        String::from_utf8_lossy(&testy.stderr)
+            .contains("Testy development requires a loopback frontend")
+    );
+    assert!(!root.path().join(".snap").exists());
 }

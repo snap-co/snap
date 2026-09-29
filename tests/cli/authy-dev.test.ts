@@ -10,6 +10,7 @@ test("Authy dev retains failed builds and sessions across native/Wasm replacemen
   const fixture = await mkdtemp(`${root}/.tmp/authy-dev-`);
   const browser = await chromium.launch();
   let child: ReturnType<typeof Bun.spawn> | undefined;
+  let protocolContext: Awaited<ReturnType<typeof browser.newContext>> | undefined;
   let logs = "";
   async function until(predicate: () => boolean | Promise<boolean>) {
     const deadline = Date.now() + 60000;
@@ -60,8 +61,18 @@ test("Authy dev retains failed builds and sessions across native/Wasm replacemen
     await writeFile(ui, (await readFile(ui,"utf8")).replace("Manage your profile and active sessions.", "Manage your profile and active sessions after reload."));
     await page.getByText("Manage your profile and active sessions after reload.", { exact: true }).waitFor();
     expect(await page.evaluate(() => (window as any).__authyDev)).toBe("same");
+    protocolContext = await browser.newContext({ javaScriptEnabled: false });
+    const protocol = await protocolContext.newPage();
+    await protocol.goto(`${url}/oauth/authorize?client_id=unknown`);
+    await protocol.getByText("Return to the application and try again, or check your Authy session.", { exact: true }).waitFor();
+    const sharedUI = `${fixture}/apps/authy/web/auth-ui.tsx`;
+    const serverPages = (logs.match(/generation ready/g) ?? []).length;
+    await writeFile(sharedUI, (await readFile(sharedUI, "utf8")).replace("Return to the application and try again, or check your Authy session.", "Updated server-rendered authorization guidance."));
+    await until(() => (logs.match(/generation ready/g) ?? []).length > serverPages);
+    await protocol.reload();
+    await protocol.getByText("Updated server-rendered authorization guidance.", { exact: true }).waitFor();
     child.kill("SIGTERM"); expect(await child.exited).toBe(143);
     await until(async () => { try { await fetch(url); return false; } catch { return true; } });
   } catch (error) { console.error(logs); throw error; }
-  finally { if (child && child.exitCode === null) { child.kill("SIGTERM"); await child.exited; } await browser.close(); await rm(fixture,{recursive:true,force:true}); }
+  finally { if (child && child.exitCode === null) { child.kill("SIGTERM"); await child.exited; } await protocolContext?.close(); await browser.close(); await rm(fixture,{recursive:true,force:true}); }
 },120000);

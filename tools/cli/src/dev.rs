@@ -31,7 +31,12 @@ struct Installation {
     origins: Vec<String>,
 }
 impl Installation {
-    async fn load(path: &Path, runner: &Runner, previous: Option<SocketAddr>) -> Result<Self> {
+    async fn load(
+        path: &Path,
+        runner: &Runner,
+        previous: Option<SocketAddr>,
+        application: &str,
+    ) -> Result<Self> {
         let config = snap_config::Config::<toml::Table>::read(path)?;
         ensure!(
             config.host.mode == snap_config::Mode::Development,
@@ -41,6 +46,11 @@ impl Installation {
             .dev
             .as_ref()
             .map_or(config.host.listen, |dev| dev.listen);
+        // Testy's debugger is trusted control IO, unlike the other apps' LAN UI.
+        ensure!(
+            application != "testy" || listen.ip().is_loopback(),
+            "Testy development requires a loopback frontend"
+        );
         let tls = config
             .host
             .origin
@@ -442,7 +452,7 @@ fn changes(event: notify::Event, configuration: &Path, adapter: &Path) -> Change
         if path.extension().is_some_and(|extension| extension == "rs")
             || matches!(
                 path.file_name().and_then(|name| name.to_str()),
-                Some("Cargo.toml" | "Cargo.lock" | "snap.toml" | "server.tsx")
+                Some("Cargo.toml" | "Cargo.lock" | "snap.toml" | "server.tsx" | "auth-ui.tsx")
             )
         {
             result.build = true;
@@ -457,7 +467,8 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
     let configuration = configuration
         .canonicalize()
         .context("Cannot open config.toml")?;
-    let mut installation = Installation::load(&configuration, runner, None).await?;
+    let mut installation =
+        Installation::load(&configuration, runner, None, &project.config.application).await?;
     let (_, metadata) = cargo::metadata(&project, runner, Path::new("wasm/Cargo.toml")).await?;
     let workspace = PathBuf::from(
         metadata["workspace_root"]
@@ -543,7 +554,7 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                         continue;
                 }
                 if pending.config {
-                    match Installation::load(&configuration, runner, Some(installation.listen)).await {
+                    match Installation::load(&configuration, runner, Some(installation.listen), &project.config.application).await {
                         Ok(next) => installation = next,
                         Err(error) => { runner.check()?; eprintln!("Configuration rejected; previous generation retained: {error:#}"); pending = Changes::default(); continue; }
                     }
@@ -589,14 +600,38 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                     }
                 }
                 let restart_adapter = pending.adapter || current.as_ref().is_some_and(|(_, old)| old.listen != installation.listen || old.origin != installation.origin || old.origins != installation.origins);
-                if restart_adapter {
-                    if let Some(old) = &mut adapter { old.process.stop().await?; }
-                    adapter = None;
+                let previous_code = adapter.as_ref().map(|old| old.code.clone());
+                let published = async {
+                    if restart_adapter {
+                        if let Some(old) = &mut adapter { old.process.stop().await?; }
+                        adapter = None;
+                    }
+                    if let Some(adapter) = &mut adapter {
+                        adapter.publish(frontend.state(&candidate, &installation), runner).await?;
+                    } else {
+                        adapter = Some(Adapter::start(&frontend, &candidate, &installation, &adapter_code(&adapter_source)?, runner).await?);
+                    }
+                    Ok::<_, anyhow::Error>(())
+                }.await;
+                if let Err(error) = published {
+                    runner.check()?;
+                    if let (Some((directory, previous)), Some(code)) = (&current, previous_code) {
+                        // Publication includes Vite readiness. Restore both owners if
+                        // its new listener/code fails, without overlapping DB opens.
+                        if let Some(old) = &mut adapter { old.process.stop().await?; }
+                        adapter = None;
+                        if let Some(process) = &mut running { process.stop().await?; }
+                        running = None;
+                        running = Some(launch(directory, previous, backend, runner).await?);
+                        adapter = Some(Adapter::start(&frontend, directory, previous, &code, runner).await?);
+                        installation = previous.clone();
+                        eprintln!("Frontend replacement failed; previous generation retained: {error:#}");
+                        pending = Changes::default();
+                        continue;
+                    }
+                    return Err(error);
                 }
-                if let Some(adapter) = &mut adapter {
-                    adapter.publish(frontend.state(&candidate, &installation), runner).await?;
-                } else {
-                    adapter = Some(Adapter::start(&frontend, &candidate, &installation, &adapter_code(&adapter_source)?, runner).await?);
+                if restart_adapter || current.is_none() {
                     println!("{title} dev origins: {}", installation.origins.join(", "));
                     println!("{title} dev {} (frontend HMR; Rust/Wasm rebuild and reload)", installation.origin);
                 }

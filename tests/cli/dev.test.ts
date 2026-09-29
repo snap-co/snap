@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { chromium } from "@playwright/test";
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createServer } from "node:net";
 import { deployment } from "../support/deployment";
 
 // Explicit cross-process gate. Edits happen only in a disposable source copy.
@@ -10,6 +11,7 @@ test("dev publishes real generations, hot-reloads frontend and tooling, and reta
   await mkdir(`${root}/.tmp`, { recursive: true });
   const fixture = await mkdtemp(`${root}/.tmp/dev-cli-`);
   let child: ReturnType<typeof Bun.spawn> | undefined;
+  let occupied: ReturnType<typeof createServer> | undefined;
   const browser = await chromium.launch();
   let logs = "";
   async function until(predicate: () => boolean | Promise<boolean>) {
@@ -123,6 +125,37 @@ test("dev publishes real generations, hot-reloads frontend and tooling, and reta
     await page.getByText("Connected", { exact: true }).waitFor();
     expect(await page.getByLabel("Email", { exact: true }).count()).toBe(0);
     await writeFile(setup.path, configuration);
+    const recovered = (logs.match(/generation ready/g) ?? []).length;
+    await until(() => (logs.match(/generation ready/g) ?? []).length > recovered);
+
+    occupied = createServer();
+    await new Promise<void>(resolve => occupied!.listen(0, "127.0.0.1", resolve));
+    const address = occupied.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+    await writeFile(setup.path, configuration + `\n[dev]\nlisten = "127.0.0.1:${address.port}"\n`);
+    await until(() => logs.includes("Frontend replacement failed; previous generation retained"));
+    await page.reload();
+    await page.getByText("Connected", { exact: true }).waitFor();
+    expect(await page.getByLabel("Email", { exact: true }).count()).toBe(0);
+
+    const frontendFailures = (logs.match(/Frontend replacement failed/g) ?? []).length;
+    // A config change and invalid adapter edit in the same debounce batch must
+    // use the same rollback as an occupied listener, not the adapter-only path.
+    await writeFile(adapter, knownAdapter + "\ninvalid JavaScript syntax;\n");
+    await writeFile(setup.path, configuration);
+    await until(() => (logs.match(/Frontend replacement failed/g) ?? []).length > frontendFailures);
+    expect((await fetch(url)).headers.get("x-dev-adapter")).toBe("restarted");
+    await page.reload();
+    await page.getByText("Connected", { exact: true }).waitFor();
+    const restored = (logs.match(/generation ready/g) ?? []).length;
+    await writeFile(adapter, knownAdapter);
+    await writeFile(setup.path, configuration);
+    await until(() => (logs.match(/generation ready/g) ?? []).length > restored);
+
+    const rejected = (logs.match(/Configuration rejected/g) ?? []).length;
+    await writeFile(setup.path, configuration + '\n[dev]\nlisten = "0.0.0.0:0"\n');
+    await until(() => (logs.match(/Configuration rejected/g) ?? []).length > rejected);
+    expect((await fetch(`${url}/__dev`)).status).toBe(200);
     expect(errors).toEqual([]);
 
     child.kill("SIGTERM");
@@ -137,6 +170,7 @@ test("dev publishes real generations, hot-reloads frontend and tooling, and reta
     throw error;
   } finally {
     if (child && child.exitCode === null) { child.kill("SIGTERM"); await child.exited; }
+    if (occupied) await new Promise<void>(resolve => occupied!.close(() => resolve()));
     await browser.close();
     await rm(fixture, { recursive: true, force: true });
   }

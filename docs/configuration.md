@@ -146,7 +146,10 @@ process-group shutdown. Apps use their `[build]` target selection for developmen
 too; `snap.toml` no longer accepts `[dev].commands`. React/CSS changes use Vite HMR.
 Rust changes publish matching native and Wasm artifacts, then reload browsers.
 Compilation failures keep the current backend running. Replacement stops the old
-backend before opening its database; startup failure restarts the preceding one.
+backend before opening its database; backend or frontend startup failure restores
+the preceding generation. Testy's trusted debugger requires a loopback frontend,
+including when configuration changes. Authy's shared server-page component edits
+rebuild its backend templates; ordinary client components use HMR.
 
 `tools/cli/web-dev.mjs` is the framework-owned Node adapter for Vite, React refresh,
 generated bindings and the checked proxy policy. It receives no deployment key.
