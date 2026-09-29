@@ -213,7 +213,7 @@ pub fn register(
                 let v = &invocation.input;
                 let workspace = || text(v, "workspace");
                 Ok(match name {
-                    "factorio.identity" => json!({"owner":actor,"human":session(tx,bearer.ok_or(Error::NotFound)?)?.1}),
+                    "factorio.identity" => json!({"owner":actor}),
                     "factorio.logout" => {
                         let id = rp::digest(bearer.ok_or(Error::NotFound)?);
                         if tx.get("factorio.cli", &[id.clone().into()])?.is_some() { tx.delete("factorio.cli", &[id.into()])?; }

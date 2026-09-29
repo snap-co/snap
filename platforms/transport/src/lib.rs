@@ -28,23 +28,67 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Opti
     .await?
 }
 pub async fn read_command<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Option<Command>> {
-    let Some((kind, bytes)) = read_frame(reader).await? else {
+    Ok(read_command_sized(reader)
+        .await?
+        .map(|(command, _)| command))
+}
+/// Wire payload size lets hosts bound aggregate queued input as well as each
+/// logical message, without reserializing credentials or application data.
+pub async fn read_command_sized<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> io::Result<Option<(Command, usize)>> {
+    let Some((kind, bytes)) = read_payload(reader).await? else {
         return Ok(None);
     };
     binary::read_command(kind, &bytes)
-        .map(Some)
+        .map(|command| Some((command, bytes.len())))
         .map_err(protocol)
 }
 pub async fn read_response<R: AsyncRead + Unpin>(
     reader: &mut R,
-) -> io::Result<(Response, Option<u64>)> {
-    let (kind, bytes) = read_frame(reader).await?.ok_or_else(|| {
+) -> io::Result<(Response, Option<binary::AttachmentInfo>)> {
+    let (kind, bytes) = read_payload(reader).await?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "TCP detached; outstanding outcome is unknown",
         )
     })?;
     binary::read_response(kind, &bytes).map_err(protocol)
+}
+/// Reassembly preserves stream order and forbids interleaving. Grow only by bytes
+/// actually received, not by an untrusted declared total. The entire continuation
+/// sequence has a five-second deadline and a 16 MiB logical limit.
+pub async fn read_payload<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> io::Result<Option<(u8, Vec<u8>)>> {
+    let Some((kind, bytes)) = read_frame(reader).await? else {
+        return Ok(None);
+    };
+    if kind != binary::SEGMENT {
+        return Ok(Some((kind, bytes)));
+    }
+    let (total, offset, data) = binary::segment(&bytes).map_err(protocol)?;
+    if offset != 0 {
+        return Err(protocol(snap_transport::Error::Protocol));
+    }
+    let mut assembled = data.to_vec();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while assembled.len() < total {
+            let (kind, payload) = read_frame(reader).await?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "Truncated segmented message")
+            })?;
+            if kind != binary::SEGMENT {
+                return Err(protocol(snap_transport::Error::Protocol));
+            }
+            let (next_total, offset, data) = binary::segment(&payload).map_err(protocol)?;
+            if next_total != total || offset != assembled.len() {
+                return Err(protocol(snap_transport::Error::Protocol));
+            }
+            assembled.extend_from_slice(data);
+        }
+        Ok(Some((binary::MESSAGE, assembled)))
+    })
+    .await?
 }
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &[u8]) -> io::Result<()> {
     tokio::time::timeout(Duration::from_secs(5), writer.write_all(frame)).await??;
@@ -60,11 +104,11 @@ pub async fn write_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     response: &Response,
     connect: bool,
-    retention_ms: u64,
+    attachment: Option<&binary::AttachmentInfo>,
 ) -> io::Result<()> {
     write_frame(
         writer,
-        &binary::response(response, connect, retention_ms).map_err(protocol)?,
+        &binary::response(response, connect, attachment).map_err(protocol)?,
     )
     .await
 }
@@ -89,7 +133,7 @@ impl Client {
     pub async fn send(&mut self, command: &Command) -> io::Result<()> {
         write_command(&mut self.stream, command).await
     }
-    pub async fn receive(&mut self) -> io::Result<(Response, Option<u64>)> {
+    pub async fn receive(&mut self) -> io::Result<(Response, Option<binary::AttachmentInfo>)> {
         read_response(&mut self.stream).await
     }
 }

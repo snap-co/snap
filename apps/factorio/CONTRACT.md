@@ -120,7 +120,8 @@ model. Browser intake continues to use the server's explicit model selection.
 releasing residency. Later processes reuse the saved client ID; logical expiry or
 host restart creates a fresh lifetime. An interrupted invocation is saved before
 sending. `factory retry` recovers only that exact invocation on a confirmed retained
-lifetime, never after expiry/restart. Login explicitly abandons unresolved recovery
+lifetime with its original opaque identifier, never after expiry/restart or an
+unobserved replacement handshake. Login explicitly abandons unresolved recovery
 state without undoing server commits. No mutation or credential exchange is
 automatically replayed after IO failure.
 
@@ -129,6 +130,8 @@ They cannot refresh OAuth; run login again after expiry. Logout revokes the curr
 CLI credential, not the browser session. Native TCP rejects non-loopback endpoints;
 use an SSH tunnel when the server is remote. Port 1248 is also used by Hermes and
 is configurable to avoid conflicts.
+Logical TCP results and Document updates can span bounded 64 KiB physical frames,
+up to 16 MiB per logical message. Upgrade client and server together.
 
 ## Intake and tickets
 

@@ -322,6 +322,7 @@ async fn run(mut args: Args) -> Result<()> {
         credentials.value.next_id = 1;
         credentials.value.pending = None;
         credentials.value.pending_replayable = true;
+        credentials.value.lifetime = None;
         credentials.save()?;
         return print(
             &json!({"logged_in":true,"owner":issued["owner"],"expires":issued["expires"],"credentials":path,"note":"CLI credentials cannot approve candidates or refresh OAuth. Run login again after expiry."}),

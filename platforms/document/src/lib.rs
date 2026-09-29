@@ -247,6 +247,16 @@ impl<B: Backend> Host<B> {
     pub fn retention_ms(&self) -> u64 {
         self.retention_ms
     }
+    /// Identifies the exact logical lifetime, including its fresh boot namespace.
+    /// A carrier must expose this only after successful authenticated attachment.
+    pub fn attachment_lifetime(&self, peer: u64) -> Result<String, Error> {
+        let attachment = self
+            .peers
+            .get(&peer)
+            .and_then(|p| p.attachment.as_ref())
+            .ok_or(Error::StaleConnection)?;
+        Ok(self.lifetime(attachment.connection().0))
+    }
 
     pub fn preconnection_request(
         &mut self,

@@ -16,7 +16,7 @@ fn v1_independent_frames_and_bounds() {
         client_id: "y".into(),
     };
     assert_eq!(binary::command(&command).unwrap(), frame);
-    for (index, value) in [(0, b'X'), (4, 2), (5, 3), (6, 1)] {
+    for (index, value) in [(0, b'X'), (4, 2), (5, 4), (6, 1)] {
         let mut header: [u8; 12] = frame[..12].try_into().unwrap();
         header[index] = value;
         assert!(binary::header(&header).is_err());
@@ -43,12 +43,16 @@ fn exact_numbers_and_connect_reply_metadata() {
         operation: "probe".into(),
         input: json!({"signed":i64::MIN,"unsigned":u64::MAX,"bytes":"x".repeat(4096)}),
     };
-    let frame = binary::response(&response, false, 0).unwrap();
+    let frame = binary::response(&response, false, None).unwrap();
     assert_eq!(binary::read_response(2, &frame[12..]).unwrap().0, response);
-    let frame = binary::response(&Response::Attached { resumed: true }, true, 1800000).unwrap();
+    let info = binary::AttachmentInfo {
+        retention_ms: 1800000,
+        lifetime: "boot:17".into(),
+    };
+    let frame = binary::response(&Response::Attached { resumed: true }, true, Some(&info)).unwrap();
     assert_eq!(
         binary::read_response(1, &frame[12..]).unwrap(),
-        (Response::Attached { resumed: true }, Some(1800000))
+        (Response::Attached { resumed: true }, Some(info))
     );
     assert!(binary::read_response(2, &frame[12..]).is_err());
 }

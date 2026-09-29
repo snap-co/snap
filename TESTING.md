@@ -135,6 +135,11 @@ which checks TCP acquisition, private credentials, operation sequencing, stdin i
 tools, revision rejection, reattachment and logout with no shell environment.
 The Authy/browser journey also approves a native login, denies cross-origin
 confirmation, drives native Git workflow commands and verifies browser compatibility.
+The native transport stream test owns segmentation order and malformed continuation
+bounds. Factorio's process journey also loses a replacement handshake, retries it
+again without replay, and carries three valid 24 KiB tickets through status,
+command completions and a concurrent Document watch. Its operation-boundary test
+checks captured identity after authority revocation and denies new admission.
 
 The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper preserves
 the caller's directory, so app-local commands work. `[check].rust` selects fast packages,

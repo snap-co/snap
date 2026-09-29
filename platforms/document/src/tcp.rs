@@ -66,38 +66,43 @@ async fn connection<B: Backend + Send + 'static>(
     .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
     let (mut reader, mut writer) = socket.into_split();
     let mut pending = std::collections::VecDeque::new();
+    let mut pending_bytes = 0usize;
     let mut flush = tokio::time::interval(Duration::from_millis(2));
     let mut connected = false;
     let mut submitted = false;
+    let mut attachment = None;
     loop {
         // Never cancel a partial frame on a flush tick.
         let waiting_connected = connected;
         let read = async {
             if waiting_connected {
-                io::read_command(&mut reader).await
+                io::read_command_sized(&mut reader).await
             } else {
-                tokio::time::timeout(Duration::from_secs(30), io::read_command(&mut reader)).await?
+                tokio::time::timeout(Duration::from_secs(30), io::read_command_sized(&mut reader))
+                    .await?
             }
         };
         tokio::pin!(read);
         loop {
             tokio::select! {
                 decoded = &mut read => {
-                    let Some(command) = decoded? else { return Ok(()); };
+                    let Some((command,size)) = decoded? else { return Ok(()); };
                     if matches!(command, Command::Close | Command::Disconnect) {
                         if matches!(command, Command::Close) { control.close(shared.now()); }
                         return Ok(());
                     }
-                    if pending.len() >= 1024 { return Ok(()); }
+                    if pending.len() >= 1024 || pending_bytes + size > snap_transport::binary::LOGICAL_MESSAGE_LIMIT { return Ok(()); }
                     if matches!(command, Command::Connect { .. }) { connected = true; }
-                    pending.push_back(command);
+                    pending_bytes += size;
+                    pending.push_back((command,size));
                     break;
                 },
                 _ = flush.tick() => {
                     let mut failed = None;
                     let mut acquisition = None;
                     if let Ok(mut host) = shared.host.try_lock() {
-                        while let Some(command) = pending.pop_front() {
+                        while let Some((command,size)) = pending.pop_front() {
+                            pending_bytes -= size;
                             if let Command::Request { invocation, .. } = &command
                                 && host.is_preconnection_request(&invocation.operation)
                             {
@@ -108,6 +113,9 @@ async fn connection<B: Backend + Send + 'static>(
                             let connect = matches!(command, Command::Connect { .. });
                             submitted = true;
                             if let Err(error) = host.submit(peer, command, shared.now()) { failed = Some((Response::Failed(error), connect)); break; }
+                            if connect {
+                                attachment = host.attachment_lifetime(peer).ok().map(|lifetime|snap_transport::binary::AttachmentInfo {retention_ms:retention,lifetime});
+                            }
                         }
                     }
                     if let Some(Command::Request { invocation, bearer }) = acquisition {
@@ -117,7 +125,7 @@ async fn connection<B: Backend + Send + 'static>(
                         let id = invocation.id;
                         let exchange = shared.clone();
                         let outcome = tokio::task::spawn_blocking(move || exchange.host.lock().unwrap().preconnection_request(invocation, bearer)).await.map_err(std::io::Error::other)?;
-                        io::write_response(&mut writer, &Response::Events(vec![Event::Completed { id, outcome }]), false, retention).await?;
+                        io::write_response(&mut writer, &Response::Events(vec![Event::Completed { id, outcome }]), false, None).await?;
                         return Ok(());
                     }
                     // Drain queued replies before a subsequent command's immediate
@@ -125,11 +133,11 @@ async fn connection<B: Backend + Send + 'static>(
                     while let Some(response) = output.pop_front() {
                         let connect = matches!(response, Response::Attached { .. } | Response::Failed(_));
                         let rejected = matches!(response, Response::Failed(_));
-                        io::write_response(&mut writer, &response, connect, retention).await?;
+                        io::write_response(&mut writer, &response, connect, attachment.as_ref()).await?;
                         if rejected { return Ok(()); }
                     }
                     if let Some((response, connect)) = failed {
-                        io::write_response(&mut writer, &response, connect, retention).await?;
+                        io::write_response(&mut writer, &response, connect, attachment.as_ref()).await?;
                         return Ok(());
                     }
                     if shared.host.try_lock().is_ok_and(|host| host.retired(peer)) { return Ok(()); }

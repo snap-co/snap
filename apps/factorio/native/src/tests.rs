@@ -2,6 +2,89 @@ use crate::effects;
 use factorio::{Candidate, Config, Phase, Session};
 use std::path::Path;
 
+#[test]
+fn accepted_identity_uses_captured_authority_while_new_admissions_reject() {
+    use snap_document_local::Host;
+    use snap_transport::{Command, Event, Invocation, Response, json};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let mut store = snap_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
+    for table in snap_access::TABLES
+        .iter()
+        .chain(snap_document::server::TABLES.iter())
+        .chain(snap_oidc::relying_party::TABLES.iter())
+        .chain(["factorio.agents", "factorio.cli", "factorio.cli_login"].iter())
+    {
+        store.load(table).unwrap();
+    }
+    let live = Arc::new(AtomicBool::new(true));
+    let authority = live.clone();
+    let host = Host::new(
+        store,
+        factorio::documents::document(),
+        Arc::new(move |_, _| {
+            if authority.load(Ordering::SeqCst) {
+                Ok("captured-owner".into())
+            } else {
+                Err(snap_store::Error::NotFound)
+            }
+        }),
+        Default::default(),
+        "accepted-authority".into(),
+    );
+    let config = factorio::Config {
+        repository: "/repo".into(),
+        mainline: "main".into(),
+        modules: Default::default(),
+        resources: "/resources".into(),
+        first_port: 15000,
+        setup: vec![],
+        teardown: vec![],
+    };
+    let mut host = crate::operations::register(host, config, "http://localhost".into());
+    let peer = host.open().unwrap();
+    host.submit(
+        peer,
+        Command::Connect {
+            bearer: "opaque-private-credential".into(),
+            client_id: "identity-test".into(),
+        },
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        host.drain(peer).unwrap(),
+        vec![Response::Attached { resumed: false }]
+    );
+    let invoke = |id| {
+        Command::Invoke(Invocation {
+            id,
+            operation: "factorio.identity".into(),
+            input: json!({}),
+        })
+    };
+    host.submit(peer, invoke(1), 0).unwrap();
+    assert_eq!(
+        host.drain(peer).unwrap(),
+        vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+    );
+    live.store(false, Ordering::SeqCst);
+    assert!(host.step());
+    let completion = host.drain(peer).unwrap().into_iter().find_map(|response| {
+        let Response::Events(events) = response else {
+            return None;
+        };
+        events.into_iter().find_map(|event| match event {
+            Event::Completed { id: 1, outcome } => Some(outcome),
+            _ => None,
+        })
+    });
+    assert_eq!(completion, Some(Ok(json!({"owner":"captured-owner"}))));
+    assert!(host.submit(peer, invoke(2), 1).is_err());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real native CLI processes"]
 async fn native_cli_login_intake_tools_and_authority_without_shell_environment() {
@@ -207,8 +290,6 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     })
     .await
     .unwrap();
-    watcher.kill().await.unwrap();
-    let _ = watcher.wait().await;
     let (ok, _, _) = call(
         &binary,
         &credentials,
@@ -223,6 +304,8 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap().to_string();
     let upstream_addr = addr.clone();
+    let drop_handshake = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let proxy_drop_handshake = drop_handshake.clone();
     let proxy = tokio::spawn(async move {
         let mut first = true;
         let mut peers = tokio::task::JoinSet::new();
@@ -232,15 +315,19 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
                     let (mut down,_) = accepted.unwrap();
                     let mut up = tokio::net::TcpStream::connect(&upstream_addr).await.unwrap();
                     let lose = first; first = false;
+                    let lose_handshake=proxy_drop_handshake.swap(false,std::sync::atomic::Ordering::SeqCst);
                     peers.spawn(async move {
-                        if !lose {let _=tokio::io::copy_bidirectional(&mut down,&mut up).await;return;}
+                        if !lose && !lose_handshake {let _=tokio::io::copy_bidirectional(&mut down,&mut up).await;return;}
                         let (mut down_read,mut down_write)=down.into_split();
                         let (mut up_read,mut up_write)=up.into_split();
                         let forwarding=tokio::spawn(async move {let _=tokio::io::copy(&mut down_read,&mut up_write).await;});
                         loop {
                             let (response,retention)=snap_transport_native::read_response(&mut up_read).await.unwrap();
+                            if lose_handshake && matches!(response,snap_transport::Response::Attached {..}) {
+                                forwarding.abort();let _=forwarding.await;break;
+                            }
                             let accepted=matches!(&response,snap_transport::Response::Events(events) if events.iter().any(|e|matches!(e,snap_transport::Event::Accepted {..})));
-                            snap_transport_native::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.unwrap_or_default()).await.unwrap();
+                            snap_transport_native::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.as_ref()).await.unwrap();
                             if accepted {forwarding.abort();let _=forwarding.await;break;}
                         }
                     });
@@ -291,6 +378,13 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     fenced["pending"] = json!({"id":fenced["next_id"],"operation":"factorio.intake-drafts","input":{"workspace":fenced["workspace"],"id":id,"drafts":{"revision":2,"route":"triage","rationale":"must never replay on new lifetime","tickets":[]}}});
     fenced["next_id"] = json!(fenced["next_id"].as_u64().unwrap() + 1);
     std::fs::write(&credentials, serde_json::to_vec(&fenced).unwrap()).unwrap();
+    drop_handshake.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (ok, _, error) = call(&binary, &credentials, &["retry"], None).await;
+    assert!(!ok && error.contains("TCP detached"), "{error}");
+    let after_loss: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
+    assert_eq!(after_loss["pending_replayable"], true);
+    assert_eq!(after_loss["lifetime"], fenced["lifetime"]);
     for _ in 0..2 {
         let (ok, _, error) = call(&binary, &credentials, &["retry"], None).await;
         assert!(!ok && error.contains("Logical lifetime ended"), "{error}");
@@ -307,6 +401,34 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     .await;
     assert!(ok, "{error}");
     assert_eq!(read["intake"]["revision"], 2);
+    for n in 1..=3 {
+        let (ok,state,error)=call(&binary,&credentials,&["ticket","-"],Some(json!({"id":format!("large-ticket-{n}"),"title":format!("Large ticket {n}"),"description":"x".repeat(24000),"modules":["a"],"status":"draft","notes":"","parent":null,"blockers":[]}))).await;
+        assert!(ok, "{error}");
+        assert_eq!(
+            state["tickets"][format!("large-ticket-{n}")]["description"]
+                .as_str()
+                .unwrap()
+                .len(),
+            24000
+        );
+    }
+    let (ok, state, error) = call(&binary, &credentials, &["status"], None).await;
+    assert!(ok, "{error}");
+    assert_eq!(state["tickets"].as_object().unwrap().len(), 3);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let update = observations.next_line().await.unwrap().unwrap();
+            if update.contains("Large ticket 3") {
+                assert!(update.len() > 65536);
+                assert!(update.contains("Large ticket 1") && update.contains("Large ticket 2"));
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    watcher.kill().await.unwrap();
+    let _ = watcher.wait().await;
     let (ok, _, error) = call(&binary, &credentials, &["logout"], None).await;
     assert!(ok, "{error}");
     let (ok, _, _) = call(&binary, &credentials, &["status"], None).await;

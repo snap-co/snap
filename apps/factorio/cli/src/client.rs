@@ -31,15 +31,25 @@ impl Client {
                 client_id: credentials.value.client_id.clone(),
             })
             .await?;
-            let (reply, _) = tokio::time::timeout(Duration::from_secs(10), tcp.receive()).await??;
+            let (reply, info) =
+                tokio::time::timeout(Duration::from_secs(10), tcp.receive()).await??;
             match reply {
                 Response::Attached { resumed } => {
-                    if !resumed && credentials.value.pending.is_some() {
+                    let info =
+                        info.ok_or_else(|| anyhow::anyhow!("Missing logical lifetime identity"))?;
+                    ensure!(!info.lifetime.is_empty(), "Empty logical lifetime identity");
+                    if credentials.value.pending.is_some() {
                         // Persist the fence: a second attempt must not mistake
                         // this newly-created lifetime for the original one.
-                        credentials.value.pending_replayable = false;
-                        credentials.save()?;
+                        if !resumed
+                            || credentials.value.lifetime.as_deref() != Some(info.lifetime.as_str())
+                        {
+                            credentials.value.pending_replayable = false;
+                        }
+                    } else {
+                        credentials.value.lifetime = Some(info.lifetime);
                     }
+                    credentials.save()?;
                     return Ok(Self {
                         tcp,
                         credentials,

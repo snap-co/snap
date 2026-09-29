@@ -8,6 +8,9 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
+// CBOR strings may expand sixfold into JSON escapes. Keep exact pending input
+// recoverable at the logical wire bound, but reject corrupt/unbounded state files.
+const STATE_LIMIT: usize = snap_transport::binary::LOGICAL_MESSAGE_LIMIT * 6 + 65536;
 
 fn client_id() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -36,6 +39,8 @@ pub struct Credentials {
     pub pending: Option<snap_transport::Invocation>,
     #[serde(default = "replayable")]
     pub pending_replayable: bool,
+    #[serde(default)]
+    pub lifetime: Option<String>,
 }
 pub struct Locked {
     file: Option<File>,
@@ -73,7 +78,7 @@ impl Locked {
             );
         }
         ensure!(
-            file.metadata()?.is_file() && file.metadata()?.len() <= 1048576,
+            file.metadata()?.is_file() && file.metadata()?.len() <= STATE_LIMIT as u64,
             "Invalid credential file"
         );
         let mut bytes = Vec::new();
@@ -90,6 +95,7 @@ impl Locked {
                 expires: None,
                 pending: None,
                 pending_replayable: true,
+                lifetime: None,
             }
         } else {
             serde_json::from_slice(&bytes)
@@ -107,6 +113,10 @@ impl Locked {
             return Ok(());
         };
         let bytes = serde_json::to_vec(&self.value)?;
+        ensure!(
+            bytes.len() <= STATE_LIMIT,
+            "Credential/recovery state exceeds the bounded file limit"
+        );
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&bytes)?;
         file.set_len(bytes.len() as u64)?;
@@ -120,6 +130,7 @@ impl Locked {
         self.value.client_id = client_id();
         self.value.next_id = 1;
         self.value.pending = None;
+        self.value.lifetime = None;
         self
     }
     pub fn reserve(&mut self) -> Result<u64> {

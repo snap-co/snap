@@ -80,7 +80,9 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         .await
         .unwrap();
     assert_eq!(reply, Response::Attached { resumed: false });
-    assert_eq!(retention, Some(300000));
+    let attachment = retention.unwrap();
+    assert_eq!(attachment.retention_ms, 300000);
+    assert!(!attachment.lifetime.is_empty());
     async fn completion(socket: &mut tokio::net::TcpStream) {
         let mut accepted = false;
         loop {
@@ -107,8 +109,12 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         loop {
             let mut c = Client::open(addr).await.unwrap();
             c.send(&connect).await.unwrap();
-            match c.receive().await.unwrap().0 {
-                Response::Attached { resumed: true } => break c,
+            let (reply, info) = c.receive().await.unwrap();
+            match reply {
+                Response::Attached { resumed: true } => {
+                    assert_eq!(info.as_ref(), Some(&attachment));
+                    break c;
+                }
                 Response::Failed(snap_transport::Error::Occupied) => tokio::task::yield_now().await,
                 other => panic!("{other:?}"),
             }

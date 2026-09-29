@@ -188,15 +188,27 @@ public origin; forwarding headers do not choose configuration.
 
 Factorio's binary TCP adapter shares the Document host, authority, FIFO, output
 handles and detached lifetimes with WebSocket. Its 12-byte header is `SNAP`, version
-1, kind 1 for CONNECT or 2 for MESSAGE, two reserved zero bytes, and a big-endian
+1, kind 1 for CONNECT, 2 for MESSAGE or 3 for SEGMENT, two reserved zero bytes, and a big-endian
 u32 payload length. One CBOR value follows. CONNECT carries bearer/client ID and
-replies with Attached including resumed/retention_ms, or Failed. MESSAGE carries
+replies with Attached including resumed, retention_ms and an opaque boot/lifetime
+identifier, or Failed. MESSAGE carries
 the existing Transport envelopes. Limits are 4 KiB for CONNECT and 64 KiB for
-MESSAGE, with a 32-level decoding limit and five-second partial-frame/write
+MESSAGE/SEGMENT, with a 32-level decoding limit and five-second partial-frame/write
 deadlines. Unknown versions/kinds/flags, truncation and trailing CBOR close the
 physical stream. At most 128 physical TCP peers may wait, and pre-authentication
 reads expire after 30 seconds. Binary TCP currently binds loopback only. Remote
 operators must use a protected tunnel; there is no native TLS implementation.
+
+Larger logical messages use consecutive, non-interleaved SEGMENT frames. Each
+payload begins with a big-endian u32 total byte length and u32 offset, followed by
+raw pieces of the same CBOR envelope. The first offset is zero; subsequent offsets
+must match bytes already received and every total must agree. Completion occurs
+at exactly that total. CONNECT is never segmented. A logical message is bounded
+at 16 MiB. Reassembly grows only with received bytes and the entire continuation
+sequence has a five-second deadline. The TCP pending-command queue is bounded by
+both 1,024 commands and 16 MiB of logical wire payloads. Malformed, interleaved,
+inconsistent or truncated segments close the physical stream. Both endpoints must
+use this v1 contract; the earlier throwaway framing prototype is not compatible.
 
 The native client sends and receives independently, including any number of
 ACK/progress events and Document notifications. It never retries after IO failure.
@@ -204,7 +216,9 @@ ACK/progress events and Document notifications. It never retries after IO failur
 IDs before sending, so later processes can resume without result-cache collisions.
 EOF detaches; explicit Close retires. Factorio selects 30-minute detached retention
 independently of credential expiry. `factory retry` resubmits only its exact saved
-interrupted invocation and only when the host confirms that lifetime resumed.
+interrupted invocation and only when the host confirms that lifetime resumed and
+its opaque identifier matches the original one durably saved before submission.
+The identifier remains pinned with pending input even if a CONNECT reply is lost.
 An expired lifetime or host restart must not replay uncertain work.
 
 Sensitive pre-connection operations use an exchange policy separate from HTTP
