@@ -67,8 +67,12 @@ pub fn registry() -> Registry {
                 apply: |before, args, _| {
                     let mut child: Child<Ticket> = serde_json::from_value(before.clone())
                         .map_err(|_| snap_document::Error::Invalid)?;
-                    child.data = serde_json::from_value(args.clone())
+                    let mut ticket: Ticket = serde_json::from_value(args.clone())
                         .map_err(|_| snap_document::Error::Invalid)?;
+                    // Match composed commands: editing must not reorder work, and
+                    // an undated legacy Document must stay undated.
+                    ticket.created_at = child.data.created_at;
+                    child.data = ticket;
                     serde_json::to_value(child).map_err(|_| snap_document::Error::Invalid)
                 },
             }],

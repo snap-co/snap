@@ -107,6 +107,83 @@ fn creation_dates_are_server_owned_and_survive_edits_and_legacy_snapshots() {
             Ok(())
         })
         .unwrap();
+    store
+        .run("load a legacy undated ticket", |tx| {
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                false,
+                0,
+                Command::Ticket {
+                    ticket: ticket("legacy"),
+                },
+            )?;
+            let id = graph::child_id(ROOT, graph::TICKET_KIND, "legacy");
+            let mut snapshot = graph::document().read(tx, &id, Some("alice"))?.value;
+            snapshot["data"]
+                .as_object_mut()
+                .unwrap()
+                .remove("created_at");
+            graph::document().replace(tx, &id, "alice", snapshot)?;
+            Ok(())
+        })
+        .unwrap();
+    for (record, expected) in [("one", Some(100)), ("legacy", None)] {
+        for (n, supplied) in [
+            Some(serde_json::json!(999)),
+            Some(serde_json::Value::Null),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut args = store
+                .inspect("read editable ticket", |tx| {
+                    Ok(
+                        serde_json::to_value(&graph::load(tx, ROOT, "alice")?.tickets[record])
+                            .unwrap(),
+                    )
+                })
+                .unwrap();
+            let title = format!("Named edit {record} {n}");
+            args["title"] = title.clone().into();
+            if let Some(date) = supplied {
+                args["created_at"] = date;
+            } else {
+                args.as_object_mut().unwrap().remove("created_at");
+            }
+            let intent = Intent {
+                id: (n + if record == "one" { 1 } else { 4 }) as u64,
+                document: graph::child_id(ROOT, graph::TICKET_KIND, record),
+                mutation: "ticket.edit".into(),
+                version: "1".into(),
+                args,
+            };
+            let accepted = store
+                .inspect("admit named edit", |tx| {
+                    graph::document().admit(tx, "alice", &intent)
+                })
+                .unwrap()
+                .unwrap();
+            store
+                .run("commit named edit", |tx| {
+                    let result =
+                        graph::document().execute_recorded(tx, "creation-date-test", accepted)?;
+                    assert!(result.completion.result.is_ok());
+                    Ok(())
+                })
+                .unwrap();
+            store
+                .inspect("named edit preserves creation date", |tx| {
+                    let state = graph::load(tx, ROOT, "alice")?;
+                    assert_eq!(state.tickets[record].title, title);
+                    assert_eq!(state.tickets[record].created_at, expected);
+                    Ok(())
+                })
+                .unwrap();
+        }
+    }
     value["tickets"]["one"]
         .as_object_mut()
         .unwrap()
