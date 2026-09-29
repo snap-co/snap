@@ -16,6 +16,10 @@ async function send(page: Page, message: string) {
 }
 
 test("WebSocket mutations synchronize conversations, enforce Access, and survive restart", async ({ page, browser }) => {
+  const login = await page.request.get(`${process.env.CHATTY_TEST_URL}/auth/login`, {
+    maxRedirects: 0, headers: { "x-snap-dev-origin": "http://evil.test" },
+  });
+  expect(new URL(login.headers().location!).searchParams.get("redirect_uri")).toBe(`${process.env.CHATTY_TEST_URL}/auth/callback`);
   const errors: string[] = [];
   const frames: string[] = [];
   page.on("pageerror", error => errors.push(error.message));

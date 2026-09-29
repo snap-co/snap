@@ -7,7 +7,7 @@ export class TransportError extends Error {
 }
 
 export class Transport {
-  private readonly clientId = crypto.randomUUID();
+  private readonly clientId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
   private nextId = 0;
 
   async request<T>(operation: string, method: "GET" | "POST", input?: unknown): Promise<T> {

@@ -146,14 +146,13 @@ async fn configure(
     }
     std::fs::rename(temporary, config).map_err(|e| e.to_string())?;
     let path = format!("/api/session/{}", item.conversation);
-    let model = std::env::var("FACTORIO_INTAKE_MODEL")
-        .ok()
-        .map(|v| {
-            v.split_once('/')
-                .map(|(p, m)| json!({"providerID":p,"id":m}))
-                .ok_or("FACTORIO_INTAKE_MODEL must be provider/model")
-        })
-        .transpose()?;
+    let model =
+        std::env::var("FACTORIO_INTAKE_MODEL").unwrap_or_else(|_| effects::DEFAULT_MODEL.into());
+    let (provider, id) = model
+        .split_once('/')
+        .filter(|(p, m)| !p.is_empty() && !m.is_empty())
+        .ok_or("FACTORIO_INTAKE_MODEL must be provider/model")?;
+    let model = json!({"providerID":provider,"id":id});
     let existing = match api("GET",&path,None).await {
         Ok(v) => v,
         Err(_) => api("POST","/api/session",Some(json!({"id":item.conversation,"model":model,"title":format!("Intake: {}",item.description.chars().take(70).collect::<String>()),"location":{"directory":w.config.repository},"metadata":{"factorio_intake":item.id,"factorio_workspace":workspace},"permissions":[{"action":"edit","resource":"*","effect":"deny"}]}))).await?,
@@ -163,6 +162,15 @@ async fn configure(
         || existing["data"]["location"]["directory"] != w.config.repository
     {
         return Err("OpenCode session ownership or directory changed".into());
+    }
+    // Apply the policy to retained conversations before submitting another turn.
+    if existing["data"]["model"] != model {
+        api(
+            "POST",
+            &format!("{path}/model"),
+            Some(json!({"model":model})),
+        )
+        .await?;
     }
     Ok(())
 }

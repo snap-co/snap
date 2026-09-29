@@ -57,6 +57,7 @@ const id=path.split('/')[3];
 if(method==='get'){if(!sessions[id])process.exit(1);console.log(JSON.stringify({data:sessions[id]}));}
 else if(path==='/api/session'){if(!body.id||!body.location?.directory)process.exit(2);sessions[body.id]={id:body.id,directory:body.location.directory};console.log(JSON.stringify({data:sessions[body.id]}));}
 else if(path.endsWith('/move')){if(!sessions[id]||!body.directory)process.exit(2);sessions[id].directory=body.directory;}
+else if(path.endsWith('/model')){if(!sessions[id]||!body.model?.providerID||!body.model?.id)process.exit(2);sessions[id].model=body.model;}
 else process.exit(2);
 await fs.writeFile(file,JSON.stringify(sessions));
 `);await chmod(`${directory}/bin/opencode`,0o755);

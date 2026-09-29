@@ -713,7 +713,9 @@ fn wrong_verifier_redirect_mismatch_fail_without_revocation() {
     let authority = TestAuthority {
         identity: snap_identity::Identity::default(),
     };
-    let config = config();
+    let mut config = config();
+    let alternate = "http://100.64.1.2:3850/auth/callback";
+    config.clients[0].redirect_uris.push(alternate.into());
     let mut crypto = IdCrypto::new();
     let (_bearer, session) = enroll(&mut store, &mut crypto);
     let handle = authorize(&mut store, &mut host, &authority, &config, &session, NOW);
@@ -750,7 +752,8 @@ fn wrong_verifier_redirect_mismatch_fail_without_revocation() {
                 &snap_oidc::ExchangeRequest {
                     auth: &public_auth(),
                     code: &code,
-                    redirect_uri: "https://attacker.example/",
+                    // Even another registered callback cannot redeem this code.
+                    redirect_uri: alternate,
                     verifier: VERIFIER,
                     claims: &claims(),
                 },
@@ -842,8 +845,10 @@ fn opaque_state_round_trips_success_and_logout_with_existing_queries() {
     let mut config = config();
     let callback = format!("{CALLBACK}?registered=keep");
     let logged_out = format!("{LOGGED_OUT}?registered=keep");
-    config.clients[0].redirect_uri = callback.clone();
-    config.clients[0].post_logout_redirect_uri = logged_out.clone();
+    config.clients[0].redirect_uris.push(callback.clone());
+    config.clients[0]
+        .post_logout_redirect_uris
+        .push(logged_out.clone());
     let mut req = authorize_request();
     req.redirect_uri = &callback;
     req.state = "opaque &+suffix=1%# fragment λ";
@@ -2005,7 +2010,11 @@ fn consent_details_names_app_and_scopes() {
         .value;
     assert_eq!(
         details,
-        Some(("chatty".to_string(), "openid profile email".to_string()))
+        Some((
+            "chatty".to_string(),
+            "openid profile email".to_string(),
+            CALLBACK.to_string()
+        ))
     );
     // Consumed continuations and other kinds report nothing.
     let _ = consent(

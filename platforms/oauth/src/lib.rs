@@ -183,6 +183,7 @@ pub struct OAuth {
     pub config: Config,
     http: reqwest::Client,
     refresh: tokio::sync::Mutex<()>,
+    dev_origins: Vec<String>,
 }
 impl OAuth {
     pub fn new(
@@ -194,6 +195,17 @@ impl OAuth {
         config.issuer = origin(&config.issuer)?;
         if config.secret.len() < 32 || config.client.is_empty() {
             return Err(Error::Invalid);
+        }
+        let dev_origins: Vec<String> = if std::env::var("SNAP_DEV_MODE").as_deref() == Ok("1") {
+            serde_json::from_str(&std::env::var("SNAP_DEV_ORIGINS").map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?
+        } else {
+            Vec::new()
+        };
+        for value in &dev_origins {
+            if origin(value)? != *value || !value.starts_with("http://") {
+                return Err(Error::Invalid);
+            }
         }
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -212,6 +224,7 @@ impl OAuth {
             config,
             http,
             refresh: tokio::sync::Mutex::new(()),
+            dev_origins,
         }))
     }
     pub fn run<T>(
@@ -362,7 +375,25 @@ impl OAuth {
         }
         Ok(())
     }
+    // Only snap dev supplies this header after checking the incoming Host and
+    // Origin pair. Packaged hosts ignore it; dev hosts also enforce the startup
+    // allowlist. The issuer and token validation never change with the browser URL.
+    fn browser_origin<'a>(&'a self, headers: &HeaderMap) -> Result<&'a str, Error> {
+        if self.dev_origins.is_empty() {
+            return Ok(&self.config.origin);
+        }
+        match headers.get("x-snap-dev-origin") {
+            None => Ok(&self.config.origin),
+            Some(value) => self
+                .dev_origins
+                .iter()
+                .find(|origin| value.to_str().ok() == Some(origin.as_str()))
+                .map(String::as_str)
+                .ok_or(Error::Invalid),
+        }
+    }
     async fn login(&self, headers: &HeaderMap) -> Result<Response, Error> {
+        let origin = self.browser_origin(headers)?;
         let metadata = self.discovery().await?;
         let state = random();
         let binding = random();
@@ -370,7 +401,7 @@ impl OAuth {
             binding: rp::digest(&binding),
             nonce: random(),
             verifier: random(),
-            redirect: format!("{}/auth/callback", self.config.origin),
+            redirect: format!("{origin}/auth/callback"),
             issuer: self.config.issuer.clone(),
             old_session: self.cookies.read(headers, false).map(|b| rp::digest(&b)),
             logout: false,
@@ -406,7 +437,11 @@ impl OAuth {
         let state = params.get("state").ok_or(Error::Invalid)?;
         let binding = self.cookies.read(headers, true).ok_or(Error::NotFound)?;
         let attempt = self.run("oauth.code.begin", |tx| {
-            rp::consume(tx, state, &binding, false, now())
+            let attempt = rp::consume(tx, state, &binding, false, now())?;
+            if attempt.redirect != format!("{}/auth/callback", self.browser_origin(headers)?) {
+                return Err(Error::Invalid);
+            }
+            Ok(attempt)
         })?;
         if params.contains_key("error")
             || params.get("iss") != Some(&self.config.issuer)
@@ -463,6 +498,7 @@ impl OAuth {
         Ok(response)
     }
     fn logout(&self, headers: &HeaderMap) -> Result<Response, Error> {
+        let redirect_uri = format!("{}/auth/logged-out", self.browser_origin(headers)?);
         let bearer = self.cookies.read(headers, false).ok_or(Error::NotFound)?;
         let old = self.cookies.read(headers, true);
         let state = random();
@@ -479,7 +515,7 @@ impl OAuth {
                     binding: rp::digest(&binding),
                     nonce: String::new(),
                     verifier: String::new(),
-                    redirect: String::new(),
+                    redirect: redirect_uri.clone(),
                     issuer: self.config.issuer.clone(),
                     old_session: None,
                     logout: true,
@@ -493,10 +529,7 @@ impl OAuth {
             .map_err(|_| Error::Invalid)?;
         target.query_pairs_mut().extend_pairs([
             ("client_id", self.config.client.as_str()),
-            (
-                "post_logout_redirect_uri",
-                &format!("{}/auth/logged-out", self.config.origin),
-            ),
+            ("post_logout_redirect_uri", &redirect_uri),
             ("state", &state),
         ]);
         let mut response = no_store(json!({"redirect":target.as_str()}));
@@ -512,7 +545,10 @@ impl OAuth {
         let state = params.get("state").ok_or(Error::Invalid)?;
         let binding = self.cookies.read(headers, true).ok_or(Error::NotFound)?;
         self.run("oauth.logout.finish", |tx| {
-            rp::consume(tx, state, &binding, true, now())?;
+            let attempt = rp::consume(tx, state, &binding, true, now())?;
+            if attempt.redirect != format!("{}/auth/logged-out", self.browser_origin(headers)?) {
+                return Err(Error::Invalid);
+            }
             rp::finish_logout(tx, state)
         })?;
         let mut response = redirect("/")?;

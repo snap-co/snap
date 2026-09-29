@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./style.css";
-import { Chatty, type Session, type Thread, type View } from "../client";
+import { Chatty, randomID, type Session, type Thread, type View } from "../client";
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -45,7 +45,7 @@ function App() {
   async function action(work: () => Promise<void>) { setBusy(true); setError(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   const create = async () => {
     const chosen = selection.current;
-    const thread = await api<{ id: string }>("chatty.create", { id: crypto.randomUUID(), title: "New thread", created: Math.floor(Date.now() / 1000) });
+    const thread = await api<{ id: string }>("chatty.create", { id: randomID(), title: "New thread", created: Math.floor(Date.now() / 1000) });
     if (selection.current === chosen) choose(thread.id); return thread.id;
   };
   async function editThread(thread: Thread, title: string, effort: string) {

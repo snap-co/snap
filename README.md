@@ -92,6 +92,41 @@ immediate input resolver supplies a ceiling of 1000 for `calc.add_checked`.
 The in-process memory/execution demos explicitly select a fixed test authority;
 network hosts accept only Store-backed sessions.
 
+## Network development
+
+Authy, Chatty and Factorio's `snap dev` runners listen on `0.0.0.0` by default.
+They discover local IPv4 addresses, including LAN and Tailscale, plus the local
+Tailscale DNS name and short name when those resolve to this machine. Each address
+gets the same frontend HMR and Rust/Wasm rebuild workflow. The native backend stays
+on loopback behind the development proxy.
+
+`AUTHY_WEB_ADDR`, `CHATTY_WEB_ADDR` and `FACTORIO_WEB_ADDR` override the listen address
+and port. `SNAP_ORIGIN` sets the current app's canonical public origin independently
+of its bind address. Without it, the runner uses `http://127.0.0.1:<port>`.
+
+Keep Authy's `SNAP_ORIGIN` stable and reachable from your development devices. Set
+the same URL as `AUTHY_ORIGIN` in Chatty and Factorio. Run Authy in dev mode too so it
+registers exact callbacks for discovered addresses. `CHATTY_ORIGIN` and
+`FACTORIO_ORIGIN` on Authy select the corresponding app's canonical URL and port;
+the defaults are 3850 and 3852. Restart the dev runners after network-address or
+port changes. Browser sessions are separate per hostname/IP.
+
+For example, in separate terminals with the existing databases and client secrets:
+
+```sh
+SNAP_ORIGIN=http://192.168.0.2:3846 ./bin/snap dev apps/authy
+AUTHY_ORIGIN=http://192.168.0.2:3846 ./bin/snap dev apps/factorio
+```
+
+The proxy accepts only discovered/configured authorities and requires a browser's
+Origin to match the requested authority. It translates those checked requests to
+the loopback backend's canonical authority and supplies their external origin for
+OAuth callbacks. It overwrites forwarding headers. HMR and application WebSockets
+use the address opened in the browser and undergo the same authority checks.
+Dev callback registration is enabled only by the runner's `SNAP_DEV_MODE=1` and
+explicit origin lists. Packaged hosts ignore dev-origin headers by default.
+Production retains explicit exact callback registration and a fixed issuer.
+
 ## Run Authy
 
 ```sh

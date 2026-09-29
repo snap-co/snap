@@ -75,6 +75,28 @@ impl Issuer {
             client.secret_digest = Some(Sha256::digest(secret.as_bytes()).to_vec());
             clients.push(client);
         }
+        if std::env::var("SNAP_DEV_MODE").as_deref() == Ok("1") {
+            let origins: BTreeMap<String, Vec<String>> = serde_json::from_str(
+                &std::env::var("SNAP_DEV_CLIENT_ORIGINS").unwrap_or_else(|_| "{}".into()),
+            )?;
+            for client in &mut clients {
+                for value in origins.get(&client.id).into_iter().flatten() {
+                    let url = url::Url::parse(value)?;
+                    if url.scheme() != "http" || url.origin().ascii_serialization() != *value {
+                        return Err("Invalid development client origin".into());
+                    }
+                    for (uris, path) in [
+                        (&mut client.redirect_uris, "callback"),
+                        (&mut client.post_logout_redirect_uris, "logged-out"),
+                    ] {
+                        let uri = format!("{value}/auth/{path}");
+                        if !uris.contains(&uri) {
+                            uris.push(uri);
+                        }
+                    }
+                }
+            }
+        }
         Ok(Self {
             config: oidc::Config {
                 issuer: origin.into(),
@@ -185,7 +207,11 @@ fn page(app: &App, title: &str, body: String) -> Response {
     // still validates the exact registered redirect URI before issuing a code.
     let mut actions = String::from("'self'");
     for client in &app.issuer.config.clients {
-        for uri in [&client.redirect_uri, &client.post_logout_redirect_uri] {
+        for uri in client
+            .redirect_uris
+            .iter()
+            .chain(&client.post_logout_redirect_uris)
+        {
             if let Ok(uri) = url::Url::parse(uri)
                 && matches!(uri.scheme(), "http" | "https")
             {
@@ -232,9 +258,9 @@ fn consent_page(app: &App, headers: &HeaderMap, handle: String) -> Response {
         let session = browser(app, tx, headers)?.ok_or(Error::NotFound)?;
         let email = authy::profile_info(tx, &session.subject)?.email;
         Ok(oidc::consent_details(tx, &CryptoHost(&app.keys), &handle)?
-            .map(|(client, scope)| (client, scope, email)))
+            .map(|(client, scope, redirect)| (client, scope, redirect, email)))
     });
-    let (client, scope, email) = match details {
+    let (client, scope, redirect, email) = match details {
         Ok(Some(details)) => details,
         Ok(None) => return problem(StatusCode::BAD_REQUEST, "invalid_grant"),
         Err(error) => return store_error(error),
@@ -245,11 +271,8 @@ fn consent_page(app: &App, headers: &HeaderMap, handle: String) -> Response {
         .client(&client)
         .map(|c| c.name.as_str())
         .unwrap_or(&client);
-    let origin = app
-        .issuer
-        .config
-        .client(&client)
-        .and_then(|client| url::Url::parse(&client.redirect_uri).ok())
+    let origin = url::Url::parse(&redirect)
+        .ok()
         .map(|url| url.origin().ascii_serialization())
         .unwrap_or_default();
     page(

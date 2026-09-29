@@ -106,8 +106,8 @@ pub trait Authority {
 pub struct Client {
     pub id: String,
     pub name: String,
-    pub redirect_uri: String,
-    pub post_logout_redirect_uri: String,
+    pub redirect_uris: Vec<String>,
+    pub post_logout_redirect_uris: Vec<String>,
     pub secret_digest: Option<Vec<u8>>,
 }
 
@@ -125,8 +125,8 @@ impl Client {
         Ok(Self {
             id: id.into(),
             name: name.into(),
-            redirect_uri: redirect_uri.into(),
-            post_logout_redirect_uri: post_logout_redirect_uri.into(),
+            redirect_uris: alloc::vec![redirect_uri.into()],
+            post_logout_redirect_uris: alloc::vec![post_logout_redirect_uri.into()],
             secret_digest: None,
         })
     }
@@ -145,8 +145,8 @@ impl Client {
         Ok(Self {
             id: id.into(),
             name: name.into(),
-            redirect_uri: redirect_uri.into(),
-            post_logout_redirect_uri: post_logout_redirect_uri.into(),
+            redirect_uris: alloc::vec![redirect_uri.into()],
+            post_logout_redirect_uris: alloc::vec![post_logout_redirect_uri.into()],
             secret_digest: Some(secret_digest),
         })
     }
@@ -437,13 +437,17 @@ pub fn authorize(
         });
     };
     // Never redirect on an unrecognized URI, including error paths.
-    if req.redirect_uri != client.redirect_uri {
+    if !client
+        .redirect_uris
+        .iter()
+        .any(|uri| uri == req.redirect_uri)
+    {
         return Ok(AuthorizeOutcome::DirectError {
             description: "Unregistered redirect URI",
         });
     }
     let error = |error: &'static str, description: &'static str| AuthorizeOutcome::RedirectError {
-        redirect: client.redirect_uri.clone(),
+        redirect: req.redirect_uri.into(),
         error,
         description,
         state: req.state.into(),
@@ -533,7 +537,7 @@ pub fn authorize(
         let handle = host.random()?;
         let data = Record {
             client: client.id.clone(),
-            redirect: client.redirect_uri.clone(),
+            redirect: req.redirect_uri.into(),
             scope: req.scope.into(),
             state: req.state.into(),
             nonce: req.nonce.into(),
@@ -566,7 +570,7 @@ pub fn authorize(
     let handle = host.random()?;
     let data = Record {
         client: client.id.clone(),
-        redirect: client.redirect_uri.clone(),
+        redirect: req.redirect_uri.into(),
         scope: req.scope.into(),
         state: req.state.into(),
         nonce: req.nonce.into(),
@@ -998,7 +1002,14 @@ pub fn logout(
         .post_logout_redirect_uri
         .filter(|s| !s.is_empty())
         .unwrap_or("/");
-    if redirect != "/" && client.is_none_or(|client| client.post_logout_redirect_uri != redirect) {
+    if redirect != "/"
+        && client.is_none_or(|client| {
+            !client
+                .post_logout_redirect_uris
+                .iter()
+                .any(|uri| uri == redirect)
+        })
+    {
         return Ok(LogoutOutcome::DirectError {
             description: "Unregistered logout redirect",
         });
@@ -1113,7 +1124,7 @@ pub fn token_subject(
 
 /// Host-only consent summary for a raw continuation handle.
 ///
-/// Digests `handle` and returns `(client_id, scope)` when it matches a live
+/// Digests `handle` and returns `(client_id, scope, redirect_uri)` when it matches a live
 /// `consent` continuation, so the host can name the requesting app (via its
 /// static registry) and the requested scopes on the explicit-consent page
 /// instead of rendering a blind approve prompt. Other kinds (`login`,
@@ -1126,7 +1137,7 @@ pub fn consent_details(
     tx: &mut Transaction<'_>,
     host: &impl Host,
     handle: &str,
-) -> Result<Option<(String, String)>, Error> {
+) -> Result<Option<(String, String, String)>, Error> {
     if handle.is_empty() {
         return Err(Error::Invalid);
     }
@@ -1137,7 +1148,11 @@ pub fn consent_details(
     if flow.kind != "consent" {
         return Ok(None);
     }
-    Ok(Some((flow.data.client, flow.data.scope)))
+    Ok(Some((
+        flow.data.client,
+        flow.data.scope,
+        flow.data.redirect,
+    )))
 }
 
 /// Delete expired continuations, codes, tokens, and grants. Hosts call this

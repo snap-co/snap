@@ -9,6 +9,7 @@ type Conversation = {
   forms: Question[];
   permissions: { id: string; action: string; resources: string[] }[];
   outcome?: string;
+  model?: { providerID: string; id: string; variant?: string };
 };
 
 function QuestionForm({ question, reply, busy }: { question: Question; reply: (answer: Answer) => void; busy: boolean }) {
@@ -114,7 +115,7 @@ export function IntakeDesk({ client, workspace, selected = "" }: { client: Facto
       {intake.tickets.length > 0 && <div className="draft-summary"><h3>Drafted tickets</h3>{intake.tickets.map(id => <p key={id}><a href={`#ticket-${id}`}>{workspace.tickets[id]?.title ?? id}</a> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}{intake.route === "implement" && intake.tickets.some(id => workspace.tickets[id]?.status === "draft" && !Object.values(workspace.tickets).some(t => t.parent === id)) && <button disabled={busy} className="primary" onClick={() => void run(() => action({ action: "ready", revision: intake.revision }))}>Mark implementation tickets ready</button>}</div>}
       </div></div>
       {newMessages && <button className="latest-message" onClick={() => { follow.current = true; setNewMessages(false); scroller.current?.scrollTo({top:scroller.current.scrollHeight}); }}>Latest messages ↓</button>}
-      <div className="thread-bottom">{error && <p role="alert">{error}</p>}<form className="thread-composer" onSubmit={e => { e.preventDefault(); void run(async () => { if (!pending.current || pending.current.text !== text) pending.current = { id: `msg_${randomID()}`, text }; await action({ action: "message", ...pending.current }); setText(""); pending.current = null; follow.current = true; }); }}><label className="reply-label">Reply<textarea aria-label="Reply" rows={2} maxLength={16384} required value={text} onChange={e => setText(e.target.value)} placeholder="Reply or add context…"/></label><div className="actions"><button type="button" disabled={busy} onClick={() => void run(() => action({ action: "interrupt" }))}>Stop</button><button className="primary" disabled={busy || !text.trim()}>Send reply</button></div></form></div>
+      <div className="thread-bottom">{error && <p role="alert">{error}</p>}<form className="thread-composer" onSubmit={e => { e.preventDefault(); void run(async () => { if (!pending.current || pending.current.text !== text) pending.current = { id: `msg_${randomID()}`, text }; await action({ action: "message", ...pending.current }); setText(""); pending.current = null; follow.current = true; }); }}><label className="reply-label">Reply<textarea aria-label="Reply" rows={2} maxLength={16384} required value={text} onChange={e => setText(e.target.value)} placeholder="Reply or add context…"/></label><div className="composer-footer"><span className="composer-model" aria-label="OpenCode model">{conversation?.model ? <>{conversation.model.providerID}/<wbr/>{conversation.model.id}{conversation.model.variant && ` · ${conversation.model.variant}`}</> : "Model unavailable"}</span><div className="actions"><button type="button" disabled={busy} onClick={() => void run(() => action({ action: "interrupt" }))}>Stop</button><button className="primary" disabled={busy || !text.trim()}>Send reply</button></div></div></form></div>
     </>}
   </section>;
 }

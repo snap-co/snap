@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { host as authyHost } from "../../../authy/tests/support/upgraded-host";
+import { devHosts, originsFor } from "../../../../scripts/dev-network";
 
 export async function pair(options: { root?: string; dev?: boolean } = {}) {
   const root = options.root ?? resolve(import.meta.dir, "../../../..");
@@ -23,7 +24,7 @@ export async function pair(options: { root?: string; dev?: boolean } = {}) {
     child = Bun.spawn(options.dev ? [`${root}/target/debug/snap`, "dev", `${root}/apps/chatty`] : [`${root}/target/debug/chatty`], { cwd: root, env: { ...process.env,
       SNAP_DATABASE: `${directory}/chatty.sqlite`, SNAP_WEB_DIR: `${root}/apps/chatty/.snap/web`,
       CHATTY_ADDR: new URL(base).host, SNAP_ORIGIN: base, AUTHY_ORIGIN: authy!.base,
-      CHATTY_WEB_ADDR: new URL(base).host,
+      CHATTY_WEB_ADDR: options.dev ? `0.0.0.0:${new URL(base).port}` : new URL(base).host,
       CHATTY_CLIENT_SECRET: authy!.clientSecret,
     }, stdout: "pipe", stderr: "pipe" });
     const running = child;
@@ -37,7 +38,9 @@ export async function pair(options: { root?: string; dev?: boolean } = {}) {
   }
   async function close() { await stop(); await authy?.close(); control.stop(true); await rm(directory, { recursive: true, force: true }); }
   try {
-    authy = await authyHost(base);
+    authy = await authyHost(base, options.dev ? {
+      SNAP_DEV_MODE: "1", SNAP_DEV_CLIENT_ORIGINS: JSON.stringify({ chatty: originsFor(await devHosts(), new URL(base).port) }),
+    } : {});
     const migrate = Bun.spawn([`${root}/target/debug/chatty`, "--migrate"], { env: { ...process.env, SNAP_DATABASE: `${directory}/chatty.sqlite` }, stdout: "ignore", stderr: "inherit" });
     if (await migrate.exited !== 0) throw new Error("Chatty migration failed");
     await start(); restart = async () => { await stop(); await start(); };

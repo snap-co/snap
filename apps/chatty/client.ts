@@ -1,4 +1,11 @@
 import { Invocations } from "../../platforms/document/client";
+export function randomID() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 export type Session = { identified: boolean; csrf?: string; account?: { id: string; owner: string; name: string; email: string } };
 export type Thread = { id: string; title: string; effort: string; active_turn: string; updated: number };
 export type Turn = { id: string; user: string; text: string; summary: string; status: string; error: string; tools: { call_id: string; name: string; arguments: unknown; status: string; result?: unknown }[]; usage: { input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; context_omitted?: number } };
@@ -33,7 +40,7 @@ export class Chatty {
   private closed = false;
   private epoch = 0;
   private backoff = 250;
-  private readonly id = crypto.randomUUID();
+  private readonly id = randomID();
   getSnapshot = () => this.snapshot;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private set(next: Partial<Snapshot>) { if (this.closed) return; this.snapshot = Object.freeze({ ...this.snapshot, ...next }); for (const listener of this.listeners) listener(); }

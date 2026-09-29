@@ -97,6 +97,13 @@ logout. Its native OAuth gate checks pinned RSA verification.
 `bun test tests/cli/chatty-dev.test.ts` covers the shared dev driver.
 Set `TMPDIR=/tmp/opencode` for disposable filesystem gates.
 
+`mise exec -- bun test tests/cli/dev-network.test.ts tests/cli/dev-origins.test.ts`
+checks discovered-origin policy and real development OAuth across multiple local
+addresses, including callback/logout return addresses, authenticated WebSockets,
+HMR connections and rejected foreign Host/Origin pairs. Build `authy-native` and
+`chatty-native` and Authy's web assets first. The dev-origin journey owns temporary
+databases and uses the shared Chatty development runner.
+
 Factorio's linked-Document domain tests cover inherited workspace ownership,
 multi-Document rollback, exclusive claims, intake revision guards, retained cleanup,
 and atomic ticket/session completion. Its separate property consumer runs with

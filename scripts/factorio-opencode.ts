@@ -25,7 +25,7 @@ async function snapshot() {
     messages: (messages.data as Message[]).toReversed().flatMap<Record<string, unknown>>(m => m.type === "user"
       ? [{ id: m.id, role: "user", text: m.metadata?.factorio_initial ? input.description : m.text }]
       : m.type === "assistant" ? [{ id: m.id, role: "assistant", parts: m.content?.flatMap<Record<string, unknown>>(c => c.type === "text" ? [{ type: "text", text: c.text }] : c.type === "tool" ? [{ type: "tool", name: c.name, status: c.state?.status }] : []), error: m.error?.message }] : []),
-    forms: forms.data, permissions: permissions.data, outcome: session.data.outcome,
+    forms: forms.data, permissions: permissions.data, outcome: session.data.outcome, model: session.data.model,
   };
 }
 if (input.watch) {

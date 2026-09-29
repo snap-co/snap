@@ -81,6 +81,12 @@ Chatty is registered as `chatty`. `CHATTY_ORIGIN` defaults to
 least 32 bytes selects confidential `client_secret_basic`; otherwise it is a
 public PKCE client.
 
+Clients register exact callback and post-logout URI lists. `snap dev` additionally
+registers the machine's discovered development origins at each client's configured
+port, while keeping the issuer fixed. Consent displays the origin selected by the
+current flow. No wildcard or request-derived registration is used. See
+[network development](../../README.md#network-development).
+
 Every code flow requires PKCE S256. Scopes are `openid`, `profile` and `email`.
 Every authorization displays consent. `prompt=none` returns an interaction error;
 `prompt=login`, `select_account` and stale `max_age` require fresh authentication.

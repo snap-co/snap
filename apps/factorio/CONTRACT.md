@@ -41,6 +41,12 @@ you want to work on. `SNAP_DATABASE`, `SNAP_ORIGIN`, `SNAP_WEB_DIR`, `FACTORIO_A
 and `FACTORIO_WEB_ADDR` retain their usual native/dev overrides. Packaged builds
 include the executable, web bindings and OpenCode bridge.
 
+`snap dev` binds its frontend to `0.0.0.0:3852` and accepts this machine's discovered
+LAN/Tailscale addresses and Tailscale names. Run Authy in dev mode for matching
+callback registration. Keep `AUTHY_ORIGIN` pinned to Authy's stable issuer URL.
+See [network development](../../README.md#network-development) for configuration.
+Packaged executables have no source watcher.
+
 ## Documents and transport
 
 Workspace, Ticket, Session and Intake are separate Documents. Workspace indexes
@@ -108,6 +114,11 @@ The host owns their process groups and records PID/birth markers for crash recov
 
 Use OpenCode V2. `FACTORIO_OPENCODE` selects its CLI; `FACTORIO_BUN` selects Bun.
 The bridge uses the official client and local service discovery/authentication.
-`FACTORIO_INTAKE_MODEL=provider/model` optionally selects new intake models.
+Factorio selects `opencode-go/muse-spark-1.3-contributor` explicitly for intake
+conversations and ticket session setup. `FACTORIO_INTAKE_MODEL=provider/model`
+overrides intake selection, including retained conversations on reconnect or reply.
+The reply footer shows the session model reported by OpenCode, including its provider
+and variant when present. Selection failures stop submission rather than falling back
+to the global default.
 `FACTORIO_OPENCODE_BRIDGE` supports isolated contract fixtures. Factorio does not
 change global OpenCode configuration or wait for an agent turn under its gate.

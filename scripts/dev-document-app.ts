@@ -2,14 +2,18 @@ import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
+import { clientOrigins, devHosts, originsFor, publicOrigin, requestOrigin } from "./dev-network";
 
 export async function dev(app: "authy" | "chatty" | "factorio", entry: "app" | "main", port: number) {
 const title = app[0].toUpperCase() + app.slice(1);
 const prefix = app.toUpperCase();
 const root = resolve(import.meta.dir, "..");
 process.chdir(root);
-const publicURL = new URL(`http://${process.env[`${prefix}_WEB_ADDR`] ?? `127.0.0.1:${port}`}`);
-if (!["127.0.0.1", "[::1]"].includes(publicURL.hostname)) throw new Error(`${title} development requires loopback`);
+const listenURL = new URL(`http://${process.env[`${prefix}_WEB_ADDR`] ?? `0.0.0.0:${port}`}`);
+const publicURL = publicOrigin(process.env.SNAP_ORIGIN ?? `http://127.0.0.1:${listenURL.port || 80}`);
+const hosts = await devHosts();
+hosts.push(publicURL.hostname);
+let origins: string[] = [];
 await mkdir(`apps/${app}/.snap`, { recursive: true });
 const session = await mkdtemp(resolve(`apps/${app}/.snap/dev-`));
 const children = new Set<ReturnType<typeof Bun.spawn>>();
@@ -46,6 +50,8 @@ async function launch(directory: string) {
   const child = spawn([`${directory}/${app}`], { ...process.env,
     [`${prefix}_ADDR`]: backend ? new URL(backend).host : "127.0.0.1:0",
     SNAP_ORIGIN: publicURL.origin,
+    SNAP_DEV_MODE: "1", SNAP_DEV_ORIGINS: JSON.stringify(origins),
+    SNAP_DEV_CLIENT_ORIGINS: app === "authy" ? JSON.stringify(clientOrigins(hosts)) : undefined,
     SNAP_DATABASE: resolve(process.env.SNAP_DATABASE ?? `apps/${app}/.snap/${app}-store.sqlite`), SNAP_WEB_DIR: directory }, true);
   let address = "";
   void (async () => { let output = ""; for await (const chunk of child.stdout as ReadableStream<Uint8Array>) {
@@ -65,7 +71,12 @@ try {
   vite = await createServer({ configFile: false, root: resolve(`apps/${app}/web`), publicDir: false,
     plugins: [react(), { name: `${app}-bindings`, enforce: "pre",
       transformIndexHtml: { order: "pre", handler(html) { return html.replace(`<link rel="stylesheet" href="/${entry}.css" />`, "").replace(`src="/${entry}.js"`, `src="/${entry}.tsx"`); } },
-      configureServer(server) { server.middlewares.use(async (req, res, next) => {
+      configureServer(server) {
+        server.httpServer?.prependListener("upgrade", (req, socket) => {
+          if (!requestOrigin(origins, req.headers)) { socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); socket.destroy(); }
+        });
+        server.middlewares.use(async (req, res, next) => {
+        if (!requestOrigin(origins, req.headers)) { res.statusCode = 403; res.end("Unrecognized development origin"); return; }
         const path = req.url?.split("?")[0];
         if (path !== `/bindings/${app}_wasm.js` && path !== `/bindings/${app}_wasm_bg.wasm`) return next();
         if (!current) { res.statusCode = 503; res.end(); return; }
@@ -73,10 +84,24 @@ try {
         res.setHeader("Cache-Control", "no-store"); res.end(Buffer.from(await Bun.file(`${current}${path}`).arrayBuffer()));
       }); },
     }],
-    server: { host: publicURL.hostname.replace(/[\[\]]/g, ""), port: Number(publicURL.port || 80), strictPort: true,
+    server: { host: listenURL.hostname.replace(/[\[\]]/g, ""), port: Number(listenURL.port || 80), strictPort: true,
+      allowedHosts: [...hosts], cors: false,
       fs: { allow: [resolve(`apps/${app}/web`), session, resolve("node_modules")] },
       proxy: { "^/(api|identity|auth|oauth|\\.well-known|transport)(/|$)": { target, ws: true, changeOrigin: false,
-        bypass(request) { if (request.headers.host !== publicURL.host || (request.headers.origin && request.headers.origin !== publicURL.origin)) return false; } } },
+        configure(proxy) {
+          // The loopback host retains one canonical authority. Only this dev proxy
+          // translates already-validated same-origin requests and supplies the
+          // external origin used for OAuth callbacks. Never trust incoming forwarding headers.
+          const forward = (outgoing: import("node:http").ClientRequest, request: import("node:http").IncomingMessage) => {
+            const external = requestOrigin(origins, request.headers);
+            if (!external) { outgoing.destroy(); return; }
+            outgoing.setHeader("host", publicURL.host);
+            if (request.headers.origin) outgoing.setHeader("origin", publicURL.origin);
+            outgoing.setHeader("x-snap-dev-origin", external);
+            for (const header of ["forwarded", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-for"]) outgoing.removeHeader(header);
+          };
+          proxy.on("proxyReq", forward); proxy.on("proxyReqWs", forward);
+        } } },
       watch: { ignored: ["**/target/**", "**/.snap/**", "**/.git/**"] } },
   });
   vite.watcher.add([resolve("crates"), resolve("platforms"), resolve(`apps/${app}`), resolve("Cargo.toml"), resolve("Cargo.lock")]);
@@ -103,7 +128,11 @@ try {
     revision++; clearTimeout(timer); timer = setTimeout(() => void rebuild().catch(error => { console.error(error); void shutdown(1); }), 150);
   });
   await vite.listen(); const address = vite.httpServer!.address();
-  if (address && typeof address !== "string") publicURL.port = String(address.port);
+  if (address && typeof address !== "string") {
+    if (!process.env.SNAP_ORIGIN) publicURL.port = String(address.port);
+    origins = [...new Set([...originsFor(hosts, address.port), publicURL.origin])];
+  }
+  console.log(`${title} dev origins: ${origins.join(", ")}`);
   await rebuild(); console.log(`${title} dev ${publicURL.origin} (frontend HMR; Rust/Wasm rebuild and reload)`);
   setInterval(() => { if (!building && running?.exitCode !== null) { console.error(`${title} host exited`); void shutdown(1); } }, 250).unref();
 } catch (error) { console.error(error); await shutdown(1); }

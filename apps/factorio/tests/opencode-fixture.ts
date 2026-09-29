@@ -2,7 +2,7 @@ type FixtureSession = { data: Record<string, unknown>; environment: Record<strin
 export function openCodeFixture() {
   const sessions = new Map<string, FixtureSession>();
   const watchers = new Map<string, Set<ReadableStreamDefaultController<Uint8Array>>>();
-  function snapshot(s: FixtureSession) { return { messages: s.messages, forms: s.forms, permissions: s.permissions }; }
+  function snapshot(s: FixtureSession) { return { messages: s.messages, forms: s.forms, permissions: s.permissions, model: s.data.model }; }
   function notify(id: string) { const s = sessions.get(id)!; for (const sink of watchers.get(id) ?? []) sink.enqueue(new TextEncoder().encode(JSON.stringify(snapshot(s)) + "\n")); }
   async function save(s: FixtureSession) {
     const tool = async (body: unknown) => {
@@ -38,7 +38,8 @@ export function openCodeFixture() {
     const s = sessions.get(id);
     if (method === "DELETE") { sessions.delete(id); for (const sink of watchers.get(id) ?? []) sink.close(); watchers.delete(id); return Response.json(null); }
     if (!s) return new Response("missing", { status: 404 });
-    if (api.endsWith("/environment")) s.environment = body.variables;
+    if (api.endsWith("/model")) s.data.model = body.model;
+    else if (api.endsWith("/environment")) s.environment = body.variables;
     else if (api.endsWith("/prompt")) {
       if (!s.seen.has(body.id)) {
         s.seen.add(body.id);

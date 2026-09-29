@@ -42,6 +42,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByLabel("Your idea",{exact:true}).fill("Improve navigation on my phone");
   await page.getByRole("button",{name:"Work through this",exact:true}).click();
   await expect(page.getByText("Which navigation outcome matters most?",{exact:true})).toBeVisible();
+  await expect(page.getByLabel("OpenCode model",{exact:true})).toHaveText("opencode-go/muse-spark-1.3-contributor");
   await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toHaveCount(0);
   for (const height of [844, 420, 844]) {
     await page.setViewportSize({width:390,height});
@@ -78,6 +79,14 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
   const conversationURL=page.url();
   const intakeID=new URL(conversationURL).hash.slice(1);
+  const state=(await invoke(page,"factorio.workspace",{workspace})).Ok;
+  const sessionPath=`/api/session/${state.intakes[intakeID].conversation}`;
+  await page.request.post(`${process.env.FACTORIO_FIXTURE_URL}/opencode/request`,{data:{method:"POST",path:`${sessionPath}/model`,body:{model:{providerID:"openai",id:"expensive-fixture"}}}});
+  await expect(page.getByLabel("OpenCode model",{exact:true})).toHaveText("openai/expensive-fixture");
+  await page.getByText("Drafts and session details",{exact:false}).click();
+  await page.getByRole("button",{name:"Reconnect session",exact:true}).click();
+  await expect(page.getByLabel("OpenCode model",{exact:true})).toHaveText("opencode-go/muse-spark-1.3-contributor");
+  await page.getByText("Drafts and session details",{exact:false}).click();
   const stranger=await browser.newContext();
   try {
     const other=await stranger.newPage();await other.goto(base);await other.getByRole("link",{name:"Continue with Authy"}).click();await other.getByRole("button",{name:"New here? Create account",exact:true}).click();await other.getByLabel("Email",{exact:true}).fill(`other-${Date.now()}@example.test`);await other.getByLabel("Password",{exact:true}).fill("Other fixture password");await other.getByRole("button",{name:"Create account",exact:true}).click();await other.getByRole("button",{name:"Allow",exact:true}).click();await expect(other.getByRole("heading",{name:"Create your first workspace",exact:true})).toBeVisible();
@@ -92,6 +101,10 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   expect(page.url()).toBe(conversationURL);
   await page.getByRole("button",{name:"Mark implementation tickets ready",exact:true}).click();
   await page.screenshot({path:"/tmp/opencode/factorio-thread-ui.png"});
+  await page.setViewportSize({width:1280,height:900});
+  await expect(page.getByLabel("OpenCode model",{exact:true})).toBeVisible();
+  await page.screenshot({path:"/tmp/opencode/factorio-thread-desktop-ui.png"});
+  await page.setViewportSize({width:390,height:844});
   await page.getByRole("link",{name:"Back to workspace"}).click();
   await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
   await page.goBack();

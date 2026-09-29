@@ -76,6 +76,8 @@ pub async fn verify_worktree(s: &Session) -> Result<(), String> {
     }
     Ok(())
 }
+pub const DEFAULT_MODEL: &str = "opencode-go/muse-spark-1.3-contributor";
+
 pub async fn setup(c: &Config, s: &Session) -> Result<(), String> {
     std::fs::create_dir_all(Path::new(&s.worktree).parent().ok_or("Invalid worktree")?)
         .map_err(|e| e.to_string())?;
@@ -104,9 +106,17 @@ pub async fn setup(c: &Config, s: &Session) -> Result<(), String> {
     // Supplying a stable ID makes an interrupted create recoverable without
     // allocating a second conversation. Existing conversations are moved explicitly.
     let path = format!("/api/session/{}", s.conversation);
+    let (provider, model) = DEFAULT_MODEL.split_once('/').unwrap();
+    let model = json!({"providerID":provider,"id":model});
     if opencode("get", &path, None).await.is_err() {
-        opencode("post", "/api/session", Some(json!({"id":s.conversation,"title":format!("Factorio {}",s.id),"location":{"directory":s.worktree}}))).await?;
+        opencode("post", "/api/session", Some(json!({"id":s.conversation,"model":model,"title":format!("Factorio {}",s.id),"location":{"directory":s.worktree}}))).await?;
     }
+    opencode(
+        "post",
+        &format!("{path}/model"),
+        Some(json!({"model":model})),
+    )
+    .await?;
     opencode(
         "post",
         &format!("{path}/move"),
