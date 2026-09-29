@@ -25,7 +25,7 @@ article, form { min-width: 0; background: #fff; padding: 24px; border: 1px solid
 form h3 { margin-bottom: 20px; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 label { display: block; font-size: 14px; font-weight: 550; margin-bottom: 16px; }
-input, textarea, select { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; font: inherit; font-size: 16px; font-weight: 400; color: #23332d; background: #fff; border: 1px solid #bbc8be; border-radius: 6px; min-height: 44px; }
+input, textarea, select { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; font: inherit; font-size: 16px; font-weight: 400; color: #23332d; background: #fff; border: 1px solid #73877a; border-radius: 6px; min-height: 44px; }
 textarea { resize: vertical; }
 input::placeholder, textarea::placeholder { color: #657169; }
 button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 9px 14px; font: inherit; font-size: 14px; font-weight: 550; line-height: 1.4; color: #31483a; background: #fff; border: 1px solid #c2cdc4; border-radius: 7px; cursor: pointer; text-decoration: none; }
@@ -35,7 +35,7 @@ button:hover, .button:hover { background: #edf2ed; }
 button:disabled { opacity: .5; cursor: wait; }
 .quiet { background: transparent; border-color: transparent; }
 .danger { color: #9c3735; }
-:focus-visible { outline: 3px solid #7cb69a; outline-offset: 3px; }
+:focus-visible { outline: 3px solid #286044; outline-offset: 3px; }
 a { color: #286044; text-underline-offset: 3px; }
 .ticket-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
 .ticket-meta h3 { margin: 0; }
