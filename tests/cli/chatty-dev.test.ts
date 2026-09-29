@@ -49,7 +49,7 @@ test("Chatty dev retains OAuth sessions and threads across failed builds and nat
     await reloaded;
     await page.locator(".transcript .user-message p").filter({ hasText: "Persistent dev thread" }).waitFor();
     await page.evaluate(() => { (window as any).__chattyDev = "same"; });
-    const ui = `${fixture}/apps/chatty/web/pages.tsx`;
+    const ui = `${fixture}/apps/chatty/web/pages/conversations.tsx`;
     await writeFile(ui, (await readFile(ui, "utf8")).replace("YOUR CONVERSATIONS", "UPDATED CONVERSATIONS"));
     await page.getByText("UPDATED CONVERSATIONS", { exact: true }).waitFor();
     expect(await page.evaluate(() => (window as any).__chattyDev)).toBe("same");

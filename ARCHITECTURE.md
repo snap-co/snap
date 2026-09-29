@@ -37,6 +37,11 @@ independent consumer or enforceable dependency/portability rule requires it.
   guards, startup failures and reconnect status. Authy, Factorio and Chatty own
   their route trees, page components, branding and domain loaders. Other browser
   framework kits can reuse the browser runtime; native kits need native adapters.
+  React apps keep `web/app.tsx` as the client/router/mount entrypoint, export
+  `createAppRouter(client)` from `web/routes.tsx`, and organize pages and app layouts
+  under `web/pages/`. Routes own guards and loaders, not client construction or mounting.
+  Testy uses the same router host without a Document session runtime; its root waits
+  for Wasm initialization and each experiment page owns its explicit SDK connection.
 - `platforms/sqlite` implements Store's host IO and database-backed durability.
   It is separately consumable by the CLI without importing application execution.
 - `crates/identity` owns credentials, sessions and their operation dispatch using
@@ -73,8 +78,10 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `apps/testy/local` owns the executable entry points and selects the platform,
   authority, application implementation and host input resolver.
 - `apps/testy/wasm` binds the same Rust SDK to browser-owned WebSocket IO.
-- `apps/testy/web` owns the launcher, Healthy and calculator screens, and the
-  development execution desk. Routing into `/calc` bootstraps the SDK.
+- `apps/testy/web` owns the launcher, Healthy and calculator pages, and the
+  development execution desk. Routing into `/calc` bootstraps the SDK. Leaving an
+  experiment page disposes its carrier and calculator; router navigation does not
+  reload the document.
 
 Transport and execution do not depend on each other or on Store. Testy selects
 transport and execution. Native IO is

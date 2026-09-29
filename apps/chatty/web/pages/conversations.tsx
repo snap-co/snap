@@ -1,9 +1,9 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import "./style.css";
-import { Chatty, randomID, type Thread, type View } from "../client";
+import { Chatty, randomID, type Thread, type View } from "../../client";
+import { Text } from "./text";
 
-export function App({ sdk }: { sdk: Chatty }) {
+export function ConversationsPage({ sdk }: { sdk: Chatty }) {
   const session = useSyncExternalStore(sdk.subscribe, sdk.getSnapshot).session;
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { thread?: string };
@@ -84,7 +84,6 @@ export function App({ sdk }: { sdk: Chatty }) {
     await client.current?.logout();
   });
   if (!session) return <main className="welcome"><div className="mark">c</div><h1>Chatty</h1><p>{error || "Opening your workspace…"}</p>{error && <button onClick={() => location.reload()}>Retry</button>}</main>;
-  if (!session.identified) return <main className="welcome"><div className="mark">c</div><h1>Chatty</h1><p>Your conversations, synchronized across connected clients.</p><a className="primary" href="/auth/login">Continue with Authy <span>↗</span></a><small>Sign in or create an account at Authy.</small>{error && <p role="alert">{error}</p>}</main>;
   return <div className="app">
     <aside className={sidebar ? "open" : ""}>
       <header><span className="wordmark"><span className="mark">c</span>chatty</span><button className="icon mobile" aria-label="Close sidebar" onClick={() => setSidebar(false)}>×</button></header>
@@ -115,14 +114,4 @@ export function App({ sdk }: { sdk: Chatty }) {
       </div>
     </main>
   </div>;
-}
-
-/** React escapes source text; only explicit HTTP(S) URLs become navigable links. */
-function Text({ value }: { value: string }) {
-  return <>{value.split(/(```[\s\S]*?```)/g).map((part, i) => part.startsWith("```") ? <pre key={i}><code>{part.replace(/^```[^\n]*\n?/, "").replace(/```$/, "")}</code></pre> : part.split(/\n\n+/).filter(Boolean).map((paragraph, j) => <p key={`${i}-${j}`}>{paragraph.split(/(\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>]+)/g).map((piece, k) => {
-    const link = piece.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-    if (link) return <a key={k} href={link[2]} target="_blank" rel="noopener noreferrer">{link[1]}</a>;
-    if (/^https?:\/\//.test(piece)) { const url = piece.replace(/[.,;!?)]+$/, ""); return <span key={k}><a href={url} target="_blank" rel="noopener noreferrer">{url}</a>{piece.slice(url.length)}</span>; }
-    return piece;
-  })}</p>))}</>;
 }

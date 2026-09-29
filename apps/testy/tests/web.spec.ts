@@ -177,6 +177,7 @@ test("launcher, health, calculator, reload and explicit close", async ({
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(server);
+  await page.evaluate(() => { (window as any).__testyDocument = "same"; });
   await page
     .getByRole("link", { name: "Healthy Check the connection" })
     .click();
@@ -191,6 +192,17 @@ test("launcher, health, calculator, reload and explicit close", async ({
   await page.getByLabel("Operand", { exact: true }).fill("12");
   await page.getByRole("button", { name: "+", exact: true }).click();
   await expect(page.getByTestId("accumulator")).toHaveText("12");
+  // Router navigation keeps the document but retires the page's calculator.
+  await page.getByRole("link", { name: "All apps" }).click();
+  await page.getByRole("link", { name: "Healthy Check the connection" }).click();
+  await page.getByRole("button", { name: "Check health" }).click();
+  await expect(page.getByText("OK", { exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Your testing ground." })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("accumulator")).toHaveText("0");
+  expect(await page.evaluate(() => (window as any).__testyDocument)).toBe("same");
   await page.reload();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await expect(page.getByTestId("accumulator")).toHaveText("0");
@@ -207,6 +219,18 @@ test("launcher, health, calculator, reload and explicit close", async ({
   await page.getByLabel("Operand", { exact: true }).fill("9007199254740993");
   await page.getByRole("button", { name: "+", exact: true }).click();
   await expect(page.getByTestId("accumulator")).toHaveText("9007199254740993");
+  // Leaving while an async Wasm method borrows the SDK must still cleanly unmount.
+  await page.request.post(`${server}/__dev`, { data: { action: "breakpoint", enabled: true } });
+  await page.getByLabel("Operand", { exact: true }).fill("0");
+  await page.getByRole("button", { name: "Checked +", exact: true }).click();
+  await expect(page.locator(".execution-status")).toContainText("ready for attempt");
+  await page.getByRole("link", { name: "All apps" }).click();
+  await expect(page.getByRole("heading", { name: "Your testing ground." })).toBeVisible();
+  await page.request.post(`${server}/__dev`, { data: { action: "breakpoint", enabled: false } });
+  await page.request.post(`${server}/__dev`, { data: { action: "mode", manual: false } });
+  await page.goBack();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("accumulator")).toHaveText("0");
   expect(errors).toEqual([]);
 });
 

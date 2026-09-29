@@ -4,9 +4,15 @@ import { RouterProvider, type AnyRouter } from "@tanstack/react-router";
 import type { SessionRuntime } from "../../platforms/browser/runtime";
 import { SessionPublication } from "./publication";
 
-/** Own subscriptions and client lifetime outside React effects, including HMR. */
-export function mount<A>(options: { router: AnyRouter; runtime: SessionRuntime<A>; element: HTMLElement; dispose?: () => void }) {
+/** Own subscriptions and client lifetime outside React effects, including HMR.
+ * Apps with explicit per-page connections can omit the session runtime. */
+export function mount<A>(options: { router: AnyRouter; runtime?: SessionRuntime<A>; element: HTMLElement; dispose?: () => void }) {
   const { router, runtime } = options;
+  if (!runtime) {
+    const root = createRoot(options.element);
+    root.render(<RouterProvider router={router} />);
+    return () => { root.unmount(); options.dispose?.(); };
+  }
   let current = runtime.getSnapshot();
   let publishedEpoch: number | null = null;
   let generation = 0, invalidating = false, disposed = false;

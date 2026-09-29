@@ -22,7 +22,7 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
   }
   try {
     for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates",
-      "platforms", "tools/cli", "apps", "tests/properties"])
+      "platforms", "kits", "tools/cli", "apps", "tests/properties"])
       await cp(`${root}/${path}`, `${fixture}/${path}`, {
         recursive: true, filter: path => !/(^|\/)(\.snap|\.deployment|node_modules|target|build|dist)(\/|$)/.test(path),
       });
@@ -73,8 +73,8 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
     await until(async () => await page.getByTestId("accumulator").textContent() === "0");
     // Component edits are React refresh, not document navigation.
     await page.evaluate(() => { (window as any).__devDocument = "same"; });
-    const screens = `${fixture}/apps/testy/web/screens.tsx`;
-    await writeFile(screens, (await readFile(screens, "utf8")).replace("SNAP / TESTY", "SNAP / RELOADED"));
+    const layout = `${fixture}/apps/testy/web/pages/layout.tsx`;
+    await writeFile(layout, (await readFile(layout, "utf8")).replace("SNAP / TESTY", "SNAP / RELOADED"));
     await page.getByText("SNAP / RELOADED", { exact: true }).waitFor();
     expect(await page.evaluate(() => (window as any).__devDocument)).toBe("same");
     expect(errors).toEqual([]);

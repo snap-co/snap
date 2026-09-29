@@ -1,7 +1,9 @@
-import React from "react";
-import { createRoot } from "react-dom/client";
-import init from "@snap/wasm";
-import { App } from "./screens";
+import { mount } from "../../../kits/react/host";
+import { TestyClient } from "./client";
+import { createAppRouter } from "./routes";
+import "./style.css";
 
-await init({ module_or_path: "/bindings/testy_wasm_bg.wasm" });
-createRoot(document.getElementById("root")!).render(<App />);
+const client = new TestyClient();
+const router = createAppRouter(client);
+const dispose = mount({ router, element: document.getElementById("root")! });
+if (import.meta.hot) import.meta.hot.dispose(dispose);
