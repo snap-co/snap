@@ -63,6 +63,15 @@ test("dev publishes real generations, hot-reloads frontend and tooling, and reta
     await until(() => page.evaluate(() => getComputedStyle(document.body).getPropertyValue("--dev-probe").trim() === "active"));
     expect(await page.getByTestId("accumulator").textContent()).toBe("12");
     expect((await fetch(`${url}/__dev`, { headers: { Origin: "http://elsewhere.invalid" } })).status).toBe(403);
+    const privateDirectory = `${fixture}/apps/testy/.deployment/development`;
+    await mkdir(privateDirectory, { recursive: true });
+    await writeFile(`${privateDirectory}/secrets.key`, "fixture-private-key-do-not-serve");
+    await writeFile(`${privateDirectory}/secrets.toml`, "fixture-private-key-do-not-serve");
+    for (const path of [`${privateDirectory}/secrets.key`, `${privateDirectory}/secrets.toml`, database]) {
+      const response = await fetch(`${url}/@fs${path}`);
+      expect(response.status).toBe(403);
+      expect(await response.text()).not.toContain("fixture-private-key-do-not-serve");
+    }
 
     const source = `${fixture}/apps/testy/src/lib.rs`;
     const original = await readFile(source, "utf8");

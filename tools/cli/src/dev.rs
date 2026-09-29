@@ -256,14 +256,13 @@ struct Adapter {
 }
 struct Frontend {
     project: PathBuf,
-    workspace: PathBuf,
     session: PathBuf,
     library: String,
     backend: SocketAddr,
 }
 impl Frontend {
     fn state(&self, directory: &Path, installation: &Installation) -> Value {
-        json!({"project":self.project, "workspace":self.workspace, "session":self.session, "library":self.library,
+        json!({"project":self.project, "session":self.session, "library":self.library,
             "generation":directory, "backend":format!("http://{}", self.backend), "origin":installation.origin,
             "origins":installation.origins, "listenHost":installation.listen.ip().to_string(), "listenPort":installation.listen.port()})
     }
@@ -509,7 +508,6 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
     let backend = TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let frontend = Frontend {
         project: project.root.clone(),
-        workspace: workspace.clone(),
         session: session.path().to_owned(),
         library,
         backend,

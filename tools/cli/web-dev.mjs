@@ -1,12 +1,13 @@
 // Vite adapter only. Rust owns configuration, builds and backend lifetime.
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
 
 const initial = JSON.parse(await readFile(process.argv[2], "utf8"));
 // The embedded helper runs from a private directory, not the app's node_modules.
 const require = createRequire(join(initial.project, "package.json"));
+const dependencies = dirname(dirname(require.resolve("vite/package.json")));
 const { createServer } = await import(require.resolve("vite"));
 const { default: react } = await import(require.resolve("@vitejs/plugin-react"));
 let state = initial;
@@ -64,7 +65,11 @@ const server = await createServer({
   server: {
     host: state.listenHost, port: state.listenPort, strictPort: true,
     allowedHosts: state.origins.map(origin => new URL(origin).hostname), cors: false,
-    fs: { allow: [state.workspace, resolve(state.project, "../../node_modules"), state.session] },
+    fs: {
+      allow: [join(state.project, "web"), dependencies, state.session],
+      deny: ["**/.env", "**/.env.*", "**/*.{crt,pem,key}", "**/.git/**", "**/.deployment/**",
+        "**/secrets.{key,toml,enc}", "**/config.toml", "**/*.{sqlite,sqlite-*,db,db-*}"],
+    },
     proxy: { "^/(api|identity|auth|oauth|\\.well-known|transport|__dev)(/|$)": {
       target, ws: true, changeOrigin: false,
       configure(proxy) { proxy.on("proxyReq", forward); proxy.on("proxyReqWs", forward); },
