@@ -40,6 +40,9 @@ pub enum Status {
 #[serde(deny_unknown_fields)]
 pub struct Ticket {
     pub id: String,
+    /// Server-owned creation time in Unix seconds. Legacy records have no date.
+    #[serde(default)]
+    pub created_at: Option<i64>,
     pub title: String,
     pub description: String,
     pub modules: Vec<String>,
@@ -83,6 +86,8 @@ pub struct Approval {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    #[serde(default)]
+    pub created_at: Option<i64>,
     pub owner: String,
     pub prompt: String,
     pub tickets: Vec<String>,
@@ -359,7 +364,7 @@ pub fn transition(
             }
             s.desired = Desired::Integrated;
         }
-        Command::Ticket { ticket } => {
+        Command::Ticket { mut ticket } => {
             if !valid_id(&ticket.id)
                 || ticket.title.trim().is_empty()
                 || ticket.title.len() > 200
@@ -390,6 +395,7 @@ pub fn transition(
             {
                 return Err(Error::Constraint);
             }
+            ticket.created_at = old.map_or(Some(now), |old| old.created_at);
             let id = ticket.id.clone();
             w.tickets.insert(id.clone(), ticket);
             if cycles(&w, &id, false, &mut vec![]) || cycles(&w, &id, true, &mut vec![]) {
@@ -465,6 +471,7 @@ pub fn transition(
                 id.clone(),
                 Session {
                     id: id.clone(),
+                    created_at: Some(now),
                     owner: owner.into(),
                     prompt,
                     tickets,

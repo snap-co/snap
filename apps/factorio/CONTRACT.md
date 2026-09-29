@@ -48,6 +48,28 @@ callback registration. Keep `[app.oauth].issuer` pinned to Authy's stable URL.
 See [network development](../../README.md#network-development) for configuration.
 Packaged executables have no source watcher.
 
+## Workspace interface
+
+Intakes, Tickets and Sessions are separate sections. Desktop uses top navigation
+and a 280px ticket/session sidebar with independently scrolling details. At widths
+of 800px or less, navigation moves to the bottom and the list opens in a native
+modal bottom drawer. Selecting a record closes the drawer; Escape and its close
+button restore focus to the list trigger. Account holds sign-out and agent-token
+actions. Mobile conversations resize to the visual viewport and hide bottom
+navigation while the software keyboard takes space.
+
+`/intakes/:id`, `/tickets/:id` and `/sessions/:id` identify selected records.
+Section navigation remembers selections within the mounted workspace. Index
+routes select the first visible ticket/session, while missing direct links show an
+unavailable state. Old root intake/ticket hashes and section anchors redirect to
+their corresponding routes.
+
+Ticket/session lists default to open records, excluding done/cancelled tickets and
+complete/abandoned sessions. The All filter includes those records. Lists sort by
+server-owned `created_at` Unix seconds, newest first, then ID. Editing and lifecycle
+changes preserve creation time. Legacy Documents deserialize without a timestamp
+and sort last by ID; their original creation dates are not fabricated.
+
 ## Documents and transport
 
 Workspace, Ticket, Session and Intake are separate Documents. Workspace indexes

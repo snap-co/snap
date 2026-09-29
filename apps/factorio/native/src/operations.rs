@@ -164,7 +164,7 @@ pub fn register(
                         let item = w.intakes.get(text(v,"id")?).ok_or(Error::NotFound)?;
                         json!({"intake":item,"modules":w.config.modules,"tickets":w.tickets})
                     }
-                    "factorio.intake-drafts" => json!(graph::drafts(tx, workspace()?, actor, text(v,"id")?, serde_json::from_value(v["drafts"].clone()).map_err(|_| Error::Invalid)?)?),
+                    "factorio.intake-drafts" => json!(graph::drafts(tx, workspace()?, actor, text(v,"id")?, serde_json::from_value(v["drafts"].clone()).map_err(|_| Error::Invalid)?, crate::now())?),
                     "factorio.intake-ready" => json!(graph::ready(tx, workspace()?, actor, text(v,"id")?, v["revision"].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or(Error::Invalid)?)?),
                     "factorio.intake-delete" => { graph::delete_intake(tx, workspace()?, actor, text(v,"id")?)?; Value::Null }
                     _ => return Err(Error::Invalid),

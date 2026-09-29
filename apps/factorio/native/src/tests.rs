@@ -103,6 +103,7 @@ async fn fixture() -> (tempfile::TempDir, Config, Session) {
         .unwrap();
     let s = Session {
         id: "work".into(),
+        created_at: None,
         owner: "fixture".into(),
         prompt: "fixture".into(),
         tickets: vec![],

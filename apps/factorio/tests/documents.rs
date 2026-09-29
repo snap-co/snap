@@ -38,6 +38,7 @@ fn config() -> Config {
 fn ticket(id: &str) -> Ticket {
     Ticket {
         id: id.into(),
+        created_at: None,
         title: "Implement one".into(),
         description: "A bounded change".into(),
         modules: vec!["one".into()],
@@ -56,6 +57,68 @@ fn start(id: &str) -> Command {
         base: "a".repeat(40),
         conversation: format!("ses_{id}"),
     }
+}
+
+#[test]
+fn creation_dates_are_server_owned_and_survive_edits_and_legacy_snapshots() {
+    let mut store = store();
+    let mut supplied = ticket("one");
+    supplied.created_at = Some(999);
+    store
+        .run("create dated work", |tx| {
+            graph::onboard(tx, ROOT, "alice", config())?;
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                false,
+                100,
+                Command::Ticket { ticket: supplied },
+            )?;
+            graph::command(tx, ROOT, "alice", false, 200, start("first"))
+        })
+        .unwrap();
+    let mut value = store
+        .inspect("creation dates", |tx| {
+            Ok(serde_json::to_value(graph::load(tx, ROOT, "alice")?).unwrap())
+        })
+        .unwrap();
+    assert_eq!(value["tickets"]["one"]["created_at"], 100);
+    assert_eq!(value["sessions"]["first"]["created_at"], 200);
+    value["tickets"]["one"]["created_at"] = 999.into();
+    let mut edited: Ticket = serde_json::from_value(value["tickets"]["one"].clone()).unwrap();
+    edited.title = "Updated title".into();
+    store
+        .run("edit without moving creation date", |tx| {
+            graph::command(
+                tx,
+                ROOT,
+                "alice",
+                false,
+                300,
+                Command::Ticket { ticket: edited },
+            )
+        })
+        .unwrap();
+    store
+        .inspect("date retained", |tx| {
+            let current = serde_json::to_value(graph::load(tx, ROOT, "alice")?).unwrap();
+            assert_eq!(current["tickets"]["one"]["created_at"], 100);
+            Ok(())
+        })
+        .unwrap();
+    value["tickets"]["one"]
+        .as_object_mut()
+        .unwrap()
+        .remove("created_at");
+    value["sessions"]["first"]
+        .as_object_mut()
+        .unwrap()
+        .remove("created_at");
+    let legacy: factorio::Workspace = serde_json::from_value(value).unwrap();
+    let legacy = serde_json::to_value(legacy).unwrap();
+    assert!(legacy["tickets"]["one"]["created_at"].is_null());
+    assert!(legacy["sessions"]["first"]["created_at"].is_null());
 }
 
 #[test]
@@ -289,19 +352,23 @@ fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     };
     store
         .run("draft batch", |tx| {
-            graph::drafts(tx, ROOT, "alice", "request", batch.clone())
+            graph::drafts(tx, ROOT, "alice", "request", batch.clone(), 400)
         })
         .unwrap();
     assert!(
         store
             .run("stale batch", |tx| graph::drafts(
-                tx, ROOT, "alice", "request", batch
+                tx, ROOT, "alice", "request", batch, 500
             ))
             .is_err()
     );
     let snapshot = store
         .inspect("documents", |tx| {
             assert_eq!(graph::document().authorized_ids(tx, "alice")?.len(), 4);
+            assert_eq!(
+                graph::load(tx, ROOT, "alice")?.tickets["request-first"].created_at,
+                Some(400)
+            );
             assert_eq!(
                 graph::load(tx, ROOT, "alice")?.intakes["request"].revision,
                 1
@@ -326,7 +393,7 @@ fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     assert!(
         store
             .run("invalid batch", |tx| graph::drafts(
-                tx, ROOT, "alice", "request", rejected
+                tx, ROOT, "alice", "request", rejected, 600
             ))
             .is_err()
     );

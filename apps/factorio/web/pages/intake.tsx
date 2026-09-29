@@ -59,16 +59,6 @@ export function IntakeDesk({ client, workspace, selected = "" }: { client: Facto
   const intakes = Object.values(workspace.intakes ?? {}).filter(i => i.owner === client.identity.owner);
   const intake = intakes.find(i => i.id === selected);
   useEffect(() => {
-    if (!selected) return;
-    const viewport = window.visualViewport;
-    const resize = () => {
-      document.documentElement.style.setProperty("--thread-height", `${viewport?.height ?? window.innerHeight}px`);
-      document.documentElement.style.setProperty("--thread-top", `${viewport?.offsetTop ?? 0}px`);
-    };
-    resize(); viewport?.addEventListener("resize", resize); viewport?.addEventListener("scroll", resize);
-    return () => { viewport?.removeEventListener("resize", resize); viewport?.removeEventListener("scroll", resize); document.documentElement.style.removeProperty("--thread-height"); document.documentElement.style.removeProperty("--thread-top"); };
-  }, [selected]);
-  useEffect(() => {
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
     else setNewMessages(true);
   }, [conversation]);
@@ -91,7 +81,7 @@ export function IntakeDesk({ client, workspace, selected = "" }: { client: Facto
     setDescription(""); creating.current = null;
   }
   const action = (value: Record<string, unknown>) => client.intakeAction(intake!.id, value);
-  if (selected && !intake) return <section className="intake-desk"><Link to="/" hash="intake">← Workspace</Link><p role="status">Conversation unavailable. Return to the workspace to refresh or start again.</p></section>;
+  if (selected && !intake) return <section className="intake-desk"><Link to="/intakes">Back to intakes</Link><p role="status">Conversation unavailable. Return to intakes to refresh or start again.</p></section>;
   return <section id="intake" className={intake ? "intake-thread" : "intake-desk"}>
     {!intake && <><div className="section-heading"><h2>What would you like to work on?</h2></div>
     <p className="muted">Describe the change. The agent will explore the code, ask what it needs to know, and draft the tickets.</p>
@@ -99,14 +89,14 @@ export function IntakeDesk({ client, workspace, selected = "" }: { client: Facto
     {!intake && <form onSubmit={e => { e.preventDefault(); void run(start); }}><label>Your idea<textarea aria-label="Your idea" rows={4} required maxLength={16384} placeholder="What should change, and why? Rough ideas are welcome." value={description} onChange={e => setDescription(e.target.value)}/></label><button className="primary" disabled={busy}>{busy ? "Starting…" : "Work through this"}</button></form>}
     {error && <p role="alert">{error}</p>}</>}
     {intake && <>
-      <header className="thread-header"><Link className="button quiet" to="/" hash="intake" aria-label="Back to workspace">← Back</Link><div><h1>{intake.description}</h1><span role="status">{connection}</span></div><span className="badge">{intake.route}</span></header>
+      <header className="thread-header"><Link className="button quiet" to="/intakes" aria-label="Back to intakes">Back</Link><div><h1>{intake.description}</h1><span role="status">{connection}</span></div><span className="badge">{intake.route}</span></header>
       <div className="thread-scroll" ref={scroller} onScroll={() => { const s = scroller.current!; follow.current = s.scrollHeight - s.scrollTop - s.clientHeight < 80; if (follow.current) setNewMessages(false); }}>
       <div className="thread-content">
       <details className="thread-details"><summary>Drafts and session details{intake.tickets.length ? ` · ${intake.tickets.length}` : ""}</summary>
       {intake.rationale && <p>{intake.rationale}</p>}
-      {intake.tickets.map(id => <p key={id}><Link to="/" hash={`ticket-${id}`}>{workspace.tickets[id]?.title ?? id}</Link> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}
+       {intake.tickets.map(id => <p key={id}><Link to="/tickets/$ticketId" params={{ ticketId: id }}>{workspace.tickets[id]?.title ?? id}</Link> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}
       <p>Full history in OpenCode:</p><code>opencode --session {intake.conversation}</code><p><button disabled={busy} onClick={() => void run(() => action({ action: "resume" }))}>Reconnect session</button></p>
-      <button className="danger quiet" disabled={busy} onClick={() => { if (window.confirm("Delete this conversation? Any saved tickets will remain.")) void run(async () => { await action({action:"delete"}); void navigate({ to: "/", hash: "intake" }); }); }}>Delete conversation</button>
+       <button className="danger quiet" disabled={busy} onClick={() => { if (window.confirm("Delete this conversation? Any saved tickets will remain.")) void run(async () => { await action({action:"delete"}); void navigate({ to: "/intakes" }); }); }}>Delete conversation</button>
       </details>
       <div className="conversation" aria-label="Intake conversation">
         {!conversation?.messages.length && <article className="chat-user"><strong>You</strong><p className="prose">{intake.description}</p></article>}
@@ -114,7 +104,7 @@ export function IntakeDesk({ client, workspace, selected = "" }: { client: Facto
       </div>
       {conversation?.forms.map(q => <QuestionForm key={q.id} question={q} busy={busy} reply={answer => void run(() => action({ action: "form", id: q.id, reply: { answer } }))}/>)}
       {conversation?.permissions.map(p => <article key={p.id}><h4>OpenCode needs permission</h4><p>{p.action}</p><pre>{p.resources.join("\n")}</pre><div className="actions"><button disabled={busy} onClick={() => void run(() => action({ action: "permission", id: p.id, reply: "once" }))}>Allow once</button><button disabled={busy} onClick={() => void run(() => action({ action: "permission", id: p.id, reply: "reject" }))}>Decline</button></div></article>)}
-      {intake.tickets.length > 0 && <div className="draft-summary"><h3>Drafted tickets</h3>{intake.tickets.map(id => <p key={id}><Link to="/" hash={`ticket-${id}`}>{workspace.tickets[id]?.title ?? id}</Link> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}{intake.route === "implement" && intake.tickets.some(id => workspace.tickets[id]?.status === "draft" && !Object.values(workspace.tickets).some(t => t.parent === id)) && <button disabled={busy} className="primary" onClick={() => void run(() => action({ action: "ready", revision: intake.revision }))}>Mark implementation tickets ready</button>}</div>}
+       {intake.tickets.length > 0 && <div className="draft-summary"><h3>Drafted tickets</h3>{intake.tickets.map(id => <p key={id}><Link to="/tickets/$ticketId" params={{ ticketId: id }}>{workspace.tickets[id]?.title ?? id}</Link> <span className="badge">{workspace.tickets[id]?.status ?? "removed"}</span></p>)}{intake.route === "implement" && intake.tickets.some(id => workspace.tickets[id]?.status === "draft" && !Object.values(workspace.tickets).some(t => t.parent === id)) && <button disabled={busy} className="primary" onClick={() => void run(() => action({ action: "ready", revision: intake.revision }))}>Mark implementation tickets ready</button>}</div>}
       </div></div>
       {newMessages && <button className="latest-message" onClick={() => { follow.current = true; setNewMessages(false); scroller.current?.scrollTo({top:scroller.current.scrollHeight}); }}>Latest messages ↓</button>}
       <div className="thread-bottom">{error && <p role="alert">{error}</p>}<form className="thread-composer" onSubmit={e => { e.preventDefault(); void run(async () => { if (!pending.current || pending.current.text !== text) pending.current = { id: `msg_${randomID()}`, text }; await action({ action: "message", ...pending.current }); setText(""); pending.current = null; follow.current = true; }); }}><label className="reply-label">Reply<textarea aria-label="Reply" rows={2} maxLength={16384} required value={text} onChange={e => setText(e.target.value)} placeholder="Reply or add context…"/></label><div className="composer-footer"><span className="composer-model" aria-label="OpenCode model">{conversation?.model ? <>{conversation.model.providerID}/<wbr/>{conversation.model.id}{conversation.model.variant && ` · ${conversation.model.variant}`}</> : "Model unavailable"}</span><div className="actions"><button type="button" disabled={busy} onClick={() => void run(() => action({ action: "interrupt" }))}>Stop</button><button className="primary" disabled={busy || !text.trim()}>Send reply</button></div></div></form></div>

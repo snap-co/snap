@@ -52,6 +52,7 @@ fn linked_claims_and_cleanup_match_committed_resource_ownership(tc: TestCase) {
                     Command::Ticket {
                         ticket: Ticket {
                             id: n.to_string(),
+                            created_at: None,
                             title: format!("Module {n}"),
                             description: String::new(),
                             modules: vec![n.to_string()],

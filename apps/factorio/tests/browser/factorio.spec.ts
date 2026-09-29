@@ -34,8 +34,9 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByRole("button",{name:"Create account",exact:true}).click();await page.getByRole("button",{name:"Allow",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Create your first workspace",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Create workspace",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
+  await page.getByRole("navigation",{name:"Workspace"}).getByRole("link",{name:"Tickets",exact:true}).click();
   await expect(page.getByText("No tickets yet",{exact:true})).toBeVisible();
+  await page.getByRole("navigation",{name:"Workspace"}).getByRole("link",{name:"Intakes",exact:true}).click();
   const identity=await(await page.request.get(`${base}/api/session`)).json();
   const mutationHeaders={origin:base,"x-snap-csrf":identity.csrf};
   const workspace=(await invoke(page,"factorio.workspaces",{})).Ok[0].id;
@@ -47,7 +48,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toHaveCount(0);
   for (const height of [844, 420, 844]) {
     await page.setViewportSize({width:390,height});
-    await expect.poll(async()=>page.locator(".thread-bottom").evaluate(e=>Math.abs(e.getBoundingClientRect().bottom-(window.visualViewport?.height??innerHeight))<2)).toBe(true);
+    await expect.poll(async()=>page.locator(".thread-bottom").evaluate(e=>Math.abs(e.getBoundingClientRect().bottom-document.querySelector(".mobile-navigation")!.getBoundingClientRect().top)<2)).toBe(true);
     await page.locator(".thread-scroll").evaluate(e=>e.scrollTop=0);
     await expect(page.getByRole("button",{name:"Send reply",exact:true})).toBeVisible();
   }
@@ -71,10 +72,33 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByLabel("Desired outcome",{exact:true}).fill("Keep ticket links visible on my phone");
   await page.getByRole("button",{name:"Send answers",exact:true}).click();
   const draft=page.locator("article").filter({has:page.getByRole("heading",{name:"Improve mobile navigation",exact:true})});
+  const initialConversationURL = page.url();
   await expect(page.locator(".draft-summary").getByRole("link",{name:"Improve mobile navigation",exact:true})).toBeVisible();
   await page.locator(".draft-summary").getByRole("link",{name:"Improve mobile navigation",exact:true}).click();
   await expect.poll(()=>draft.evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.top<innerHeight;})).toBe(true);
-  await page.goBack();
+  const draftURL = page.url();
+  await page.getByRole("button",{name:/Open tickets/}).click();
+  const drawer = page.getByRole("dialog", {name:"Open tickets",exact:true});
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("link").first()).toContainText("Improve mobile navigation");
+  await drawer.getByRole("link",{name:/Earlier ticket 0/}).click();
+  await expect(drawer).not.toBeVisible();
+  await expect(page.getByRole("heading",{name:"Earlier ticket 0",exact:true})).toBeVisible();
+  await page.getByRole("navigation",{name:"Workspace"}).getByRole("link",{name:"Intakes",exact:true}).click();
+  await expect(page.getByLabel("Reply",{exact:true})).toBeVisible();
+  await page.getByRole("navigation",{name:"Workspace"}).getByRole("link",{name:"Tickets",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Earlier ticket 0",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:/Open tickets/}).click();
+  await page.keyboard.press("Escape");
+  await expect(drawer).not.toBeVisible();
+  await expect(page.getByRole("button",{name:/Open tickets/})).toBeFocused();
+  await page.goto(draftURL);
+  await expect(draft).toBeVisible();
+  await page.reload();
+  await expect(draft).toBeVisible();
+  await page.goto(new URL(draftURL).origin + "/#ticket-" + decodeURIComponent(new URL(draftURL).pathname.split("/").at(-1)!));
+  await expect(page).toHaveURL(draftURL);
+  await page.goto(initialConversationURL);
   await page.getByLabel("Reply",{exact:true}).fill("That is the right scope.");
   await page.getByRole("button",{name:"Send reply",exact:true}).click();
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
@@ -101,30 +125,43 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
   expect(page.url()).toBe(conversationURL);
   await page.getByRole("button",{name:"Mark implementation tickets ready",exact:true}).click();
+  await expect(page.locator(".draft-summary").getByText("ready",{exact:true})).toBeVisible();
   await page.screenshot({path:"/tmp/opencode/factorio-thread-ui.png"});
   await page.setViewportSize({width:1280,height:900});
   await expect(page.getByLabel("OpenCode model",{exact:true})).toBeVisible();
   await page.screenshot({path:"/tmp/opencode/factorio-thread-desktop-ui.png"});
   await page.setViewportSize({width:390,height:844});
-  await page.getByRole("link",{name:"Back to workspace"}).click();
-  await expect(page.getByRole("heading",{name:"Tickets",exact:true})).toBeVisible();
+  await page.getByRole("link",{name:"Back to intakes"}).click();
+  await expect(page.getByLabel("Your idea",{exact:true})).toBeVisible();
   await page.goBack();
   await expect(page.getByLabel("Reply",{exact:true})).toBeVisible();
   await page.goForward();
+  await page.goto(draftURL);
   await expect(draft.getByText("ready",{exact:true})).toBeVisible();
-  await draft.getByRole("link",{name:"Edit",exact:true}).click();
+  await page.getByRole("button",{name:/Open tickets/}).click();
+  await page.screenshot({path:"/tmp/opencode/factorio-drawer-ui.png"});
+  await page.getByRole("button",{name:"Close work list"}).click();
+  await page.screenshot({path:"/tmp/opencode/factorio-mobile-ui.png"});
+  await page.setViewportSize({width:1440,height:900});
+  await expect(page.getByRole("navigation",{name:"Ticket list"})).toBeVisible();
+  await page.screenshot({path:"/tmp/opencode/factorio-desktop-ui.png"});
+  await page.setViewportSize({width:390,height:844});
+  await draft.getByRole("button",{name:"Edit ticket",exact:true}).click();
   await expect(page.getByLabel("description",{exact:true})).toHaveValue(/Acceptance:/);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  await page.screenshot({path:"/tmp/opencode/factorio-mobile-ui.png",fullPage:true});
+  await draft.getByText("More ticket actions",{exact:true}).click();
+  page.once("dialog",d=>d.accept());
   await draft.getByRole("button",{name:"Delete",exact:true}).click();
   await expect(draft).toHaveCount(0);
+  await page.getByLabel("Account",{exact:true}).click();
   await page.getByRole("button",{name:"Create agent token",exact:true}).click();const token=await page.getByLabel("Agent token",{exact:true}).inputValue();expect(token.length).toBeGreaterThan(32);await page.getByRole("button",{name:"Dismiss token"}).click();
+  await page.getByLabel("Account",{exact:true}).click();
   async function cli(args:string[]){const {stdout}=await exec("bun",[`${root}/apps/factorio/cli.ts`,...args],{cwd:root,timeout:15000,env:{...process.env,FACTORIO_OPENCODE:`${dir}/bin/opencode`,FACTORIO_ORIGIN:base,FACTORIO_TOKEN:token}});return JSON.parse(stdout);}
   const intake=(Object.values((await cli(["status"])).intakes) as {id:string;conversation:string}[])[0]!;
   expect((await cli(["intake","--resume",intake.id])).resumed).toBe(intake.conversation);
   const readIntake=()=>invoke(page,"factorio.intake-read",{workspace,id:intake.id},token);
   expect((await readIntake()).Ok.intake.id).toBe(intake.id);
-  await page.getByRole("navigation",{name:"Conversations"}).getByRole("link").click();
+  await page.goto(`${base}/intakes`);await page.getByRole("navigation",{name:"Conversations"}).getByRole("link").click();
   await page.getByText("Drafts and session details",{exact:true}).click();
   page.once("dialog",d=>d.accept());
   await page.getByRole("button",{name:"Delete conversation",exact:true}).click();
@@ -137,7 +174,8 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   expect((await page.request.post(`${base}/api/command`,{headers:mutationHeaders,data:{command:"delete_ticket",id:"preceding-0"}})).ok()).toBe(false);
   const ticket=(id:string,blockers:string[]=[])=>({id,title:id,description:"Fixture implementation",modules:["a"],status:"ready",notes:"",parent:null,blockers});
   for(const t of [ticket("first"),ticket("dependent",["first"])]){const file=`${dir}/${t.id}.json`;await writeFile(file,JSON.stringify(t));await cli(["ticket",file]);}
-  await expect(page.locator("#ticket-first").getByRole("heading",{name:"first",exact:true})).toBeVisible();await expect(page.getByRole("link",{name:"first (ready)"})).toBeVisible();
+  await page.goto(`${base}/tickets/first`);await expect(page.locator("#ticket-first").getByRole("heading",{name:"first",exact:true})).toBeVisible();
+  await page.goto(`${base}/tickets/dependent`);await expect(page.getByRole("link",{name:"first (ready)"})).toBeVisible();
   await expect(cli(["start","--id","blocked","--tickets","dependent","--modules","a","--","blocked"])).rejects.toThrow();
   const a=(await cli(["start","--id","one","--tickets","first","--modules","a","--","first change"])).session;
   const b=(await cli(["start","--id","two","--modules","b","--","parallel change"])).session;
@@ -151,17 +189,24 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await expect(cli(["accept","one"])).rejects.toThrow();
   const denied=await invoke(page,"factorio.command",{workspace,command:{command:"approve",id:"one",commit:candidate}},token);expect(denied.accepted).toBe(false);expect(denied.Err).toBeDefined();
   // This automated account approves disposable fixture code, never user work.
+  await page.goto(`${base}/sessions/one`);
   page.once("dialog",d=>d.accept());await page.getByRole("button",{name:"Approve candidate as human"}).click();
   await expect.poll(async()=>Boolean((await cli(["status"])).sessions.one.candidate.approval)).toBe(true);
   await cli(["accept","one"]);expect(await readFile(`${dir}/repo/crates/a/file`,"utf8")).toBe("implemented");
   await expect(page.locator("article").filter({has:page.getByRole("heading",{name:"one",exact:true})}).getByText("complete",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:/Open sessions/}).click();
+  await expect(page.getByRole("dialog").getByRole("navigation",{name:"Session list"}).getByRole("link",{name:/^one /})).toHaveCount(0);
+  await page.getByRole("dialog").getByRole("combobox",{name:"Show sessions",exact:true}).selectOption("all");
+  await expect(page.getByRole("dialog").getByRole("navigation",{name:"Session list"}).getByRole("link",{name:/^one /})).toBeVisible();
+  await page.getByRole("button",{name:"Close work list"}).click();
+  await page.goto(`${base}/tickets/dependent`);
   await expect(page.getByRole("link",{name:"first (done)"})).toBeVisible();
   const dependent=(await cli(["start","--id","next","--tickets","dependent","--modules","a","--","dependent now ready"])).session;expect(dependent.phase).toBe("active");
   await cli(["abandon","two"]);await expect(cli(["start","--id","fail","--modules","b","--","failed setup"])).rejects.toThrow(/fixture setup failure/);
   await fetch(`${process.env.FACTORIO_FIXTURE_URL}/restart`);await expect(cli(["start","--id","collision","--modules","b","--","collision"])).rejects.toThrow();
   const failed=(await cli(["status"])).sessions.fail;expect(failed.phase).toBe("starting");await writeFile(`${failed.data}/permit`,"retry fixture hook");
   await cli(["recover","fail"]);expect((await cli(["status"])).sessions.fail.phase).toBe("active");
-  await page.reload();const failedCard=page.locator("article").filter({has:page.getByRole("heading",{name:"fail",exact:true})});await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
+  await page.goto(`${base}/sessions/fail`);await page.reload();const failedCard=page.locator("article").filter({has:page.getByRole("heading",{name:"fail",exact:true})});await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
   if(process.env.FACTORIO_TEST_DEV){
     const css=`${root}/apps/factorio/web/style.css`;await writeFile(css,await readFile(css,"utf8")+"\nbody { --factorio-probe: active; }\n");
     await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.body).getPropertyValue("--factorio-probe").trim())).toBe("active");
@@ -173,7 +218,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
     const generations=(await state()).generations;await writeFile(source,original);
     await expect.poll(async()=>(await state()).generations,{timeout:60000}).toBeGreaterThan(generations);
     await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
-    const ui=`${root}/apps/factorio/web/pages/workspace.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Track work from idea to review.","Updated Factorio development UI."));
+    const ui=`${root}/apps/factorio/web/pages/workspace.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Factorio</span>","Updated Factorio development UI.</span>"));
     await expect(page.getByText("Updated Factorio development UI.")).toBeVisible();
   }
   await writeFile(`${failed.worktree}/dirty`,"keep");

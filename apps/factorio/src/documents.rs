@@ -502,6 +502,7 @@ pub fn drafts(
     actor: &str,
     id: &str,
     input: intake::Drafts,
+    now: i64,
 ) -> Result<intake::Intake, Error> {
     require_owner(tx, workspace, actor)?;
     let before = load(tx, workspace, actor)?;
@@ -522,7 +523,7 @@ pub fn drafts(
         if !item.tickets.contains(&ticket.id) {
             item.tickets.push(ticket.id.clone());
         }
-        after = transition(after, actor, false, 0, Command::Ticket { ticket })?;
+        after = transition(after, actor, false, now, Command::Ticket { ticket })?;
     }
     item.route = input.route;
     item.rationale = input.rationale;

@@ -263,6 +263,7 @@ fn intake_batches_are_atomic_revision_guarded_and_only_single_module_leaves_beco
 fn ticket(id: &str, blockers: &[&str]) -> Ticket {
     Ticket {
         id: id.into(),
+        created_at: None,
         title: id.into(),
         description: String::new(),
         modules: vec!["a".into()],

@@ -298,6 +298,7 @@ mod tests {
                     Command::Ticket {
                         ticket: Ticket {
                             id: "ticket".into(),
+                            created_at: None,
                             title: "Change".into(),
                             description: String::new(),
                             modules: vec!["one".into()],
