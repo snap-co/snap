@@ -396,6 +396,97 @@ fn interrupted_completion_recovers_once_only_inside_surviving_lifetime() {
 
 #[tokio::test]
 #[ignore = "real socket suite"]
+async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_policies() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Error, Message, client::IntoClientRequest},
+    };
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    for (required, cookie, explicit, allowed) in [
+        (false, None, "alice", true),
+        (false, Some("invalid"), "alice", true),
+        (false, Some("alice"), "", true),
+        (true, None, "alice", false),
+        (true, Some("invalid"), "alice", false),
+        (true, Some("alice"), "invalid", true),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let read: snap_document_local::web::ReadCookie = Arc::new(|headers| {
+            headers
+                .get("cookie")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        });
+        let shared = if required {
+            snap_document_local::web::Shared::with_required_cookie(
+                fixture(),
+                format!("http://{address}"),
+                read,
+            )
+        } else {
+            snap_document_local::web::Shared::with_cookie(
+                fixture(),
+                format!("http://{address}"),
+                read,
+            )
+        };
+        let router = snap_document_local::web::router(shared);
+        let _stop = Stop(tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        }));
+        let mut request = format!("ws://{address}/transport")
+            .into_client_request()
+            .unwrap();
+        if let Some(cookie) = cookie {
+            request
+                .headers_mut()
+                .insert("cookie", cookie.parse().unwrap());
+        }
+        let connection =
+            tokio::time::timeout(std::time::Duration::from_secs(2), connect_async(request))
+                .await
+                .unwrap();
+        if !allowed {
+            match connection {
+                Err(Error::Http(response)) => assert_eq!(response.status(), 401),
+                other => panic!("expected rejected upgrade: {other:?}"),
+            }
+            continue;
+        }
+        let (mut socket, _) = connection.unwrap();
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&Command::Connect {
+                    bearer: explicit.into(),
+                    client_id: "policy-fixture".into(),
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(response.to_text().unwrap()).unwrap(),
+            Response::Attached { resumed: false }
+        ));
+        socket.close(None).await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "real socket suite"]
 async fn websocket_delivers_ack_before_execution_and_serializes_following_acceptance() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{connect_async, tungstenite::Message};

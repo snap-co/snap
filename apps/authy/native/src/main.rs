@@ -154,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let keys = keys.clone();
         Arc::new(move |headers| keys.read_cookie(headers))
     };
-    let documents = Shared::with_cookie(host, origin.clone(), cookie);
+    let documents = Shared::with_required_cookie(host, origin.clone(), cookie);
     let issuer = oidc_http::Issuer::new(&origin)?;
     let assets = std::env::var("SNAP_WEB_DIR").unwrap_or_else(|_| {
         let adjacent = std::env::current_exe()

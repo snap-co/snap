@@ -24,6 +24,7 @@ pub struct Shared<B: Backend> {
     clock: Instant,
     origin: String,
     cookie: Option<ReadCookie>,
+    require_cookie: bool,
 }
 
 pub type ReadCookie = Arc<dyn Fn(&HeaderMap) -> Option<String> + Send + Sync>;
@@ -192,15 +193,31 @@ impl<B: Backend> Shared<B> {
             clock: Instant::now(),
             origin,
             cookie: None,
+            require_cookie: false,
         })
     }
 
+    /// Mixed browser/agent carrier. An empty Connect bearer uses the browser
+    /// cookie; explicit credentials still reach the configured authority.
     pub fn with_cookie(host: Host<B>, origin: String, cookie: ReadCookie) -> Arc<Self> {
         Arc::new(Self {
             host: Mutex::new(host),
             clock: Instant::now(),
             origin,
             cookie: Some(cookie),
+            require_cookie: false,
+        })
+    }
+
+    /// Browser-only carrier: validate the cookie before WebSocket upgrade and
+    /// use that authority for Connect regardless of client-supplied credentials.
+    pub fn with_required_cookie(host: Host<B>, origin: String, cookie: ReadCookie) -> Arc<Self> {
+        Arc::new(Self {
+            host: Mutex::new(host),
+            clock: Instant::now(),
+            origin,
+            cookie: Some(cookie),
+            require_cookie: true,
         })
     }
 
@@ -234,13 +251,15 @@ async fn upgrade<B: Backend + Send + 'static>(
     }
     let opening = shared.clone();
     let bearer = shared.cookie.as_ref().and_then(|read| read(&headers));
-    if shared.cookie.is_some() && bearer.is_none() {
+    if shared.require_cookie && bearer.is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let credential = bearer.clone();
     let opened = tokio::task::spawn_blocking(move || {
         let mut host = opening.host.lock().unwrap();
-        if let Some(bearer) = credential {
+        if opening.require_cookie
+            && let Some(bearer) = credential
+        {
             host.authorize_upgrade(&bearer)?;
         }
         host.open()
@@ -281,13 +300,14 @@ async fn connection<B: Backend + Send + 'static>(
             message = stream.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let Ok(mut command) = serde_json::from_str(&text) else { break; };
-                    if shared.cookie.is_some() && matches!(command, snap_transport::Command::Request { .. }) { break; }
+                    if shared.require_cookie && matches!(command, snap_transport::Command::Request { .. }) { break; }
                     if matches!(command, snap_transport::Command::Close | snap_transport::Command::Disconnect) {
                         if matches!(command, snap_transport::Command::Close) { control.close(shared.now()); }
                         else { control.detach(shared.now()); }
                         break;
                     }
                     if let snap_transport::Command::Connect { bearer, .. } = &mut command
+                        && (shared.require_cookie || bearer.is_empty())
                         && let Some(cookie) = &cookie_bearer {
                         *bearer = cookie.clone();
                     }

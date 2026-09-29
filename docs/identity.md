@@ -9,6 +9,8 @@ to their respective consumers.
 
 ### Browser bootstrap
 
+Authy's cookie-authenticated browser flow follows this sequence:
+
 1. `Identity.acquire({ email, password })` submits `identity.acquire` over HTTP
    at `/identity/acquire`. The shared Transport dispatcher validates, admits and
    executes the operation. After durable completion, the platform sets the
@@ -21,7 +23,7 @@ to their respective consumers.
    is HTTP-only and cannot be invoked over the connected carrier.
 
 On reload, `Identity.fetch()` uses `/identity/fetch` to resolve the cookie before
-connecting. Anonymous or expired sessions do not open WebSockets. HTTP and
+connecting. Authy's anonymous or expired sessions do not open WebSockets. HTTP and
 WebSocket are carriers for Transport, not separate application dispatch paths.
 Applications register operations and compose enrollment hooks; they do not add
 REST login/signup handlers. OAuth/OIDC protocol endpoints keep their standard
@@ -32,6 +34,9 @@ The Authy implementation uses `platforms/identity/client.ts`,
 HTTP completions use the same correlated `Event::Completed` outcome as connected
 operations. Credential submissions are never automatically retried. The host
 removes their temporary peer, inputs and results after the HTTP exchange.
+Authy selects the cookie-required carrier. Mixed browser/agent hosts retain
+explicit agent-bearer authentication through their configured authority; see
+[Transport composition](../ARCHITECTURE.md#transport-and-connection-lifetime).
 
 ### Portable operation names
 

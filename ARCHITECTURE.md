@@ -81,8 +81,10 @@ the session over Transport's HTTP carrier, set the HttpOnly cookie, then connect
 The browser platform owns client IDs. HTTP operation projections and connected
 messages share operation validation and serialized dispatch. Authy composes
 enrollment through Identity's transaction hook; its HTTP host does not implement
-an independent credential API. Cookie-based WebSocket carriers reject anonymous
-or invalid sessions before upgrade.
+an independent credential API. Authy selects `Shared::with_required_cookie` to
+reject anonymous or invalid sessions before upgrade. Mixed browser/agent hosts
+use `Shared::with_cookie`: an explicit agent bearer reaches the configured
+authority, while an empty Connect bearer uses the browser cookie.
 
 One configured authority exchanges opaque bearers for identity strings or explicit
 errors. No session ID or lease enters transport. Non-connection requests resolve
