@@ -68,7 +68,7 @@ each permission. JSON protocol errors remain JSON for non-browser clients.
 | --- | --- |
 | `/.well-known/openid-configuration` | Issuer metadata |
 | `/oauth/jwks` | Public RS256 key |
-| `/oauth/authorize` | Code authorization and explicit consent |
+| `/oauth/authorize` | Code authorization and consent policy |
 | `/oauth/resume` | Resume after password authentication |
 | `/oauth/token` | Code redemption and refresh rotation |
 | `/oauth/userinfo` | GET/POST with an access-token Bearer header |
@@ -88,7 +88,16 @@ current flow. No wildcard or request-derived registration is used. See
 [network development](../../README.md#network-development).
 
 Every code flow requires PKCE S256. Scopes are `openid`, `profile` and `email`.
-Every authorization displays consent. `prompt=none` returns an interaction error;
+Registered HTTPS callbacks on `snapco.dev` and its subdomains skip consent by
+default. `AUTHY_AUTO_APPROVE_DOMAIN` replaces that domain; an empty value disables
+auto-approval. Matching uses the parsed hostname and a DNS label boundary, never
+the request Host/Origin or a substring. Each callback must still be registered
+exactly for its client; approval of one callback does not approve its siblings.
+HTTP callbacks and external domains retain explicit consent.
+
+`prompt=consent` always displays consent, including after login. Trusted callbacks
+with a live session support `prompt=none`; otherwise it returns `login_required`
+or `consent_required` without UI. Preapproval never creates an Identity session;
 `prompt=login`, `select_account` and stale `max_age` require fresh authentication.
 Codes expire after 60 seconds, continuations after five minutes, access/ID tokens
 after ten minutes, and refresh families after 30 days. Refresh authority depends
@@ -110,6 +119,9 @@ local-session lifetimes.
 
 Dynamic registration, request objects, implicit/hybrid flows, encrypted ID tokens,
 key rotation, introspection and front/back-channel logout are not implemented.
+Factorio-generated apps must still be registered by the operator before using
+Authy. Domain preapproval changes consent only. Apps may select built-in Identity
+or another provider instead of Authy.
 
 ## Run and verify
 

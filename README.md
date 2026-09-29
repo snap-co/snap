@@ -111,6 +111,12 @@ callback and logout URLs for each registered client ID. It overrides individual
 client origin variables. It does not register unknown clients or allow one client
 to redirect to another client's subdomain. Leave it unset to use explicit origins.
 
+Authy skips OAuth consent for registered HTTPS callbacks on `snapco.dev` and its
+subdomains. Set `AUTHY_AUTO_APPROVE_DOMAIN` to replace this domain, or to an empty
+value to require consent everywhere. This is independent of `AUTHY_APP_DOMAIN`:
+callback registration remains exact, and login is still required when no live
+Authy session exists. `prompt=consent` explicitly requests the permission screen.
+
 Authy, Chatty and Factorio's `snap dev` runners listen on `0.0.0.0` by default.
 They discover local IPv4 addresses, including LAN and Tailscale, plus the local
 Tailscale DNS name and short name when those resolve to this machine. Each address

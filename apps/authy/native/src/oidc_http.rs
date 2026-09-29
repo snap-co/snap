@@ -96,6 +96,9 @@ impl Issuer {
                 }
             }
         }
+        let consent_domain =
+            std::env::var("AUTHY_AUTO_APPROVE_DOMAIN").unwrap_or_else(|_| "snapco.dev".into());
+        configure_auto_approval(&mut clients, &consent_domain)?;
         Ok(Self {
             config: oidc::Config {
                 issuer: origin.into(),
@@ -103,6 +106,37 @@ impl Issuer {
             },
         })
     }
+}
+
+// Approval is derived only from registered callbacks, never Host, Origin or a
+// caller's claimed client name. Empty configuration disables automatic consent.
+fn configure_auto_approval(
+    clients: &mut [oidc::Client],
+    domain: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !domain.is_empty() {
+        domain_app_origin(domain, "validate")?;
+    }
+    let domain = domain.to_ascii_lowercase();
+    let suffix = format!(".{domain}");
+    for client in clients {
+        client.preapproved_redirect_uris.clear();
+        for uri in &client.redirect_uris {
+            let url = url::Url::parse(uri)?;
+            if !domain.is_empty()
+                && url.scheme() == "https"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+                && url
+                    .host_str()
+                    .is_some_and(|host| host == domain || host.ends_with(&suffix))
+            {
+                client.preapproved_redirect_uris.push(uri.clone());
+            }
+        }
+    }
+    Ok(())
 }
 
 // A configured domain derives one exact origin per registered client. It never
@@ -384,6 +418,7 @@ async fn authorize(
         )
     });
     match result {
+        Ok(oidc::AuthorizeOutcome::Redirect { uri }) => redirect(&uri),
         Ok(oidc::AuthorizeOutcome::ShowConsent { handle }) => consent_page(&app, &headers, handle),
         Ok(oidc::AuthorizeOutcome::RequireLogin { handle, reauth }) => {
             let resume = format!(
@@ -435,6 +470,7 @@ async fn resume(
             now(),
         )
     }) {
+        Ok(oidc::ResumeOutcome::Redirect { uri }) => redirect(&uri),
         Ok(oidc::ResumeOutcome::ShowConsent { handle }) => consent_page(&app, &headers, handle),
         Ok(_) => problem(StatusCode::BAD_REQUEST, "login_required"),
         Err(error) => store_error(error),
@@ -824,7 +860,38 @@ pub fn routes(app: Arc<App>) -> Router<Arc<App>> {
 
 #[cfg(test)]
 mod domain_tests {
-    use super::domain_app_origin;
+    use super::{configure_auto_approval, domain_app_origin};
+    #[test]
+    fn auto_approval_selects_only_registered_https_domain_callbacks() {
+        let approved = [
+            "https://snapco.dev/auth/callback",
+            "https://factorio.snapco.dev/auth/callback",
+            "https://app.team.snapco.dev/auth/callback",
+        ];
+        let denied = [
+            "http://factorio.snapco.dev/auth/callback",
+            "https://notsnapco.dev/auth/callback",
+            "https://snapco.dev.evil.test/auth/callback",
+            "https://snapco.dev@evil.test/auth/callback",
+            "https://evil.test/auth/callback?next=https://snapco.dev",
+            "https://user@app.snapco.dev/auth/callback",
+            "https://app.snapco.dev/auth/callback#fragment",
+            "http://127.0.0.1:3852/auth/callback",
+        ];
+        let mut client = snap_oidc::Client::public("app", "App", approved[0], "").unwrap();
+        client.redirect_uris = approved
+            .iter()
+            .chain(&denied)
+            .map(|s| (*s).into())
+            .collect();
+        let mut clients = [client];
+        configure_auto_approval(&mut clients, "Snapco.dev").unwrap();
+        assert_eq!(clients[0].preapproved_redirect_uris, approved);
+        configure_auto_approval(&mut clients, "").unwrap();
+        assert!(clients[0].preapproved_redirect_uris.is_empty());
+        assert!(configure_auto_approval(&mut clients, "*.snapco.dev").is_err());
+    }
+
     #[test]
     fn derives_separate_exact_https_origins_and_rejects_url_components() {
         assert_eq!(

@@ -191,6 +191,208 @@ fn authorize_request<'a>() -> AuthorizeRequest<'a> {
     }
 }
 
+#[test]
+fn preapproved_authorization_preserves_prompt_registration_and_pkce_rules() {
+    let mut store = store();
+    let mut host = TestHost::new();
+    let mut crypto = IdCrypto::new();
+    let authority = TestAuthority {
+        identity: snap_identity::Identity::default(),
+    };
+    let (_, session) = enroll(&mut store, &mut crypto);
+    let mut config = config();
+    config.clients[0]
+        .preapproved_redirect_uris
+        .push(CALLBACK.into());
+    for (prompt, logged_in, expected) in [
+        ("", true, "code"),
+        ("none", true, "code"),
+        ("consent", true, "consent"),
+        ("login", true, "login"),
+        ("select_account", true, "login"),
+        ("", false, "login"),
+        ("none", false, "login_required"),
+    ] {
+        let req = AuthorizeRequest {
+            prompt,
+            ..authorize_request()
+        };
+        let outcome = store
+            .run("authorize", |tx| {
+                snap_oidc::authorize(
+                    tx,
+                    &mut host,
+                    &authority,
+                    &config,
+                    &req,
+                    logged_in.then_some(&session),
+                    NOW,
+                )
+            })
+            .unwrap()
+            .value;
+        match outcome {
+            AuthorizeOutcome::Redirect { uri } => {
+                assert_eq!(expected, "code");
+                let url = url::Url::parse(&uri).unwrap();
+                let params: std::collections::BTreeMap<_, _> =
+                    url.query_pairs().into_owned().collect();
+                assert_eq!(params["state"], "test-state");
+                assert_eq!(params["iss"], ISSUER);
+                for (verifier, issued) in [("wrong-verifier", false), (VERIFIER, true)] {
+                    let result = store
+                        .run("exchange", |tx| {
+                            snap_oidc::exchange_code(
+                                tx,
+                                &mut host,
+                                &authority,
+                                &config,
+                                &snap_oidc::ExchangeRequest {
+                                    auth: &public_auth(),
+                                    code: &params["code"],
+                                    redirect_uri: CALLBACK,
+                                    verifier,
+                                    claims: &claims(),
+                                },
+                                NOW,
+                            )
+                        })
+                        .unwrap()
+                        .value;
+                    assert_eq!(matches!(result, ExchangeOutcome::Issued(_)), issued);
+                }
+            }
+            AuthorizeOutcome::ShowConsent { .. } => assert_eq!(expected, "consent"),
+            AuthorizeOutcome::RequireLogin { .. } => assert_eq!(expected, "login"),
+            AuthorizeOutcome::RedirectError { error, .. } => assert_eq!(expected, error),
+            _ => panic!("unexpected authorization outcome"),
+        }
+    }
+    // A preapproval entry cannot register a callback or approve a sibling callback.
+    let other = "https://other.test/auth/callback";
+    config.clients[0]
+        .preapproved_redirect_uris
+        .push(other.into());
+    let req = AuthorizeRequest {
+        redirect_uri: other,
+        ..authorize_request()
+    };
+    let outcome = store
+        .run("authorize", |tx| {
+            snap_oidc::authorize(
+                tx,
+                &mut host,
+                &authority,
+                &config,
+                &req,
+                Some(&session),
+                NOW,
+            )
+        })
+        .unwrap()
+        .value;
+    assert!(matches!(outcome, AuthorizeOutcome::DirectError { .. }));
+    config.clients[0].redirect_uris.push(other.into());
+    config.clients[0].preapproved_redirect_uris.pop();
+    let outcome = store
+        .run("authorize", |tx| {
+            snap_oidc::authorize(
+                tx,
+                &mut host,
+                &authority,
+                &config,
+                &req,
+                Some(&session),
+                NOW,
+            )
+        })
+        .unwrap()
+        .value;
+    assert!(matches!(outcome, AuthorizeOutcome::ShowConsent { .. }));
+}
+
+#[test]
+fn preapproved_login_resume_is_single_use_and_retains_explicit_consent() {
+    for prompt in ["", "consent"] {
+        let mut store = store();
+        let mut host = TestHost::new();
+        let mut crypto = IdCrypto::new();
+        let authority = TestAuthority {
+            identity: snap_identity::Identity::default(),
+        };
+        let mut config = config();
+        config.clients[0]
+            .preapproved_redirect_uris
+            .push(CALLBACK.into());
+        let req = AuthorizeRequest {
+            prompt,
+            ..authorize_request()
+        };
+        let outcome = store
+            .run("authorize", |tx| {
+                snap_oidc::authorize(tx, &mut host, &authority, &config, &req, None, NOW)
+            })
+            .unwrap()
+            .value;
+        let AuthorizeOutcome::RequireLogin { handle, .. } = outcome else {
+            panic!("login required")
+        };
+        let (_, session) = enroll(&mut store, &mut crypto);
+        for replay in [false, true] {
+            let result = store
+                .run("resume", |tx| {
+                    snap_oidc::resume(
+                        tx,
+                        &mut host,
+                        &authority,
+                        &config,
+                        &snap_oidc::ResumeRequest { handle: &handle },
+                        Some(&session),
+                        NOW,
+                    )
+                })
+                .unwrap()
+                .value;
+            if replay {
+                assert!(matches!(result, ResumeOutcome::InvalidGrant));
+            } else if prompt == "consent" {
+                assert!(matches!(result, ResumeOutcome::ShowConsent { .. }));
+            } else {
+                let ResumeOutcome::Redirect { uri } = result else {
+                    panic!("code required")
+                };
+                let code = url::Url::parse(&uri)
+                    .unwrap()
+                    .query_pairs()
+                    .find(|(key, _)| key == "code")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                let exchanged = store
+                    .run("exchange", |tx| {
+                        snap_oidc::exchange_code(
+                            tx,
+                            &mut host,
+                            &authority,
+                            &config,
+                            &snap_oidc::ExchangeRequest {
+                                auth: &public_auth(),
+                                code: &code,
+                                redirect_uri: CALLBACK,
+                                verifier: VERIFIER,
+                                claims: &claims(),
+                            },
+                            NOW,
+                        )
+                    })
+                    .unwrap()
+                    .value;
+                assert!(matches!(exchanged, ExchangeOutcome::Issued(_)));
+            }
+        }
+    }
+}
+
 fn authorize(
     store: &mut Store<snap_sqlite::Sqlite>,
     host: &mut TestHost,

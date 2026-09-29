@@ -107,6 +107,10 @@ pub struct Client {
     pub id: String,
     pub name: String,
     pub redirect_uris: Vec<String>,
+    /// Host-approved exact callbacks that may skip consent for supported scopes.
+    /// Still requires registration, live authentication and PKCE. Other callbacks
+    /// on the same client do not inherit this approval.
+    pub preapproved_redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
     pub secret_digest: Option<Vec<u8>>,
 }
@@ -126,6 +130,7 @@ impl Client {
             id: id.into(),
             name: name.into(),
             redirect_uris: alloc::vec![redirect_uri.into()],
+            preapproved_redirect_uris: Vec::new(),
             post_logout_redirect_uris: alloc::vec![post_logout_redirect_uri.into()],
             secret_digest: None,
         })
@@ -146,6 +151,7 @@ impl Client {
             id: id.into(),
             name: name.into(),
             redirect_uris: alloc::vec![redirect_uri.into()],
+            preapproved_redirect_uris: Vec::new(),
             post_logout_redirect_uris: alloc::vec![post_logout_redirect_uri.into()],
             secret_digest: Some(secret_digest),
         })
@@ -275,6 +281,9 @@ pub struct AuthorizeRequest<'a> {
 /// embeds only after commit. `RedirectError` targets the registered redirect;
 /// `DirectError` must not redirect (unknown client or redirect).
 pub enum AuthorizeOutcome {
+    Redirect {
+        uri: String,
+    },
     ShowConsent {
         handle: String,
     },
@@ -301,6 +310,7 @@ pub struct ResumeRequest<'a> {
 /// `resume` result. `LoginRequired` means the browser must complete a fresh
 /// sign-in with the requested account first.
 pub enum ResumeOutcome {
+    Redirect { uri: String },
     ShowConsent { handle: String },
     InvalidGrant,
     LoginRequired,
@@ -418,7 +428,8 @@ pub enum LogoutConfirmOutcome {
 
 /// Validate an authorization request, creating a login continuation when a
 /// fresh password login is required or a consent continuation otherwise.
-/// Every authorization displays consent; `prompt=none` never shows UI.
+/// Host-preapproved callbacks may skip consent unless explicitly requested.
+/// `prompt=none` never shows UI.
 pub fn authorize(
     tx: &mut Transaction<'_>,
     host: &mut impl Host,
@@ -497,12 +508,13 @@ pub fn authorize(
     let mut prompt_none = false;
     let mut prompt_login = false;
     let mut prompt_select = false;
+    let mut prompt_consent = false;
     for prompt in req.prompt.split_whitespace() {
         match prompt {
             "none" => prompt_none = true,
             "login" => prompt_login = true,
             "select_account" => prompt_select = true,
-            "consent" => {}
+            "consent" => prompt_consent = true,
             _ => return Ok(error("invalid_request", "Invalid prompt combination")),
         }
     }
@@ -548,6 +560,7 @@ pub fn authorize(
                 .map(|valid| encode_b64(&valid.session))
                 .unwrap_or_default(),
             auth_time: now,
+            require_consent: prompt_consent,
             ..Record::default()
         };
         flow_insert(
@@ -564,10 +577,14 @@ pub fn authorize(
         });
     }
     let valid = live.expect("reauth covers missing session");
-    if prompt_none {
+    let preapproved = !prompt_consent
+        && client
+            .preapproved_redirect_uris
+            .iter()
+            .any(|uri| uri == req.redirect_uri);
+    if prompt_none && !preapproved {
         return Ok(error("consent_required", "Interactive consent is required"));
     }
-    let handle = host.random()?;
     let data = Record {
         client: client.id.clone(),
         redirect: req.redirect_uri.into(),
@@ -580,6 +597,12 @@ pub fn authorize(
         auth_time: valid.auth_time,
         ..Record::default()
     };
+    if preapproved {
+        return Ok(AuthorizeOutcome::Redirect {
+            uri: issue_code(tx, host, config, &data, now)?,
+        });
+    }
+    let handle = host.random()?;
     flow_insert(
         tx,
         &host.digest(&handle),
@@ -592,7 +615,7 @@ pub fn authorize(
 }
 
 /// Resume a login continuation after a fresh password login. The continuation
-/// is single-use: resuming deletes it and issues a consent continuation.
+/// is single-use: resuming deletes it and issues a code or consent continuation.
 pub fn resume(
     tx: &mut Transaction<'_>,
     host: &mut impl Host,
@@ -630,10 +653,12 @@ pub fn resume(
     {
         return Ok(ResumeOutcome::LoginRequired);
     }
-    if config.client(&flow.data.client).is_none() {
+    let Some(client) = config.client(&flow.data.client) else {
+        return Ok(ResumeOutcome::InvalidGrant);
+    };
+    if !client.redirect_uris.contains(&flow.data.redirect) {
         return Ok(ResumeOutcome::InvalidGrant);
     }
-    let handle = host.random()?;
     let data = Record {
         subject: valid.subject.clone(),
         session: encode_b64(&valid.session),
@@ -641,6 +666,12 @@ pub fn resume(
         ..flow.data
     };
     flow_delete(tx, &digest)?;
+    if !data.require_consent && client.preapproved_redirect_uris.contains(&data.redirect) {
+        return Ok(ResumeOutcome::Redirect {
+            uri: issue_code(tx, host, config, &data, now)?,
+        });
+    }
+    let handle = host.random()?;
     flow_insert(
         tx,
         &host.digest(&handle),
@@ -696,18 +727,33 @@ pub fn consent(
             state: flow.data.state,
         });
     }
-    let code = host.random()?;
     flow_delete(tx, &digest)?;
+    Ok(ConsentOutcome::Redirect {
+        uri: issue_code(tx, host, config, &flow.data, now)?,
+    })
+}
+
+fn issue_code(
+    tx: &mut Transaction<'_>,
+    host: &mut impl Host,
+    config: &Config,
+    data: &Record,
+    now: i64,
+) -> Result<String, Error> {
+    let code = host.random()?;
     flow_insert(
         tx,
         &host.digest(&code),
         "code",
-        &flow.data,
+        data,
         now.checked_add(CODE_SECONDS).ok_or(Error::Invalid)?,
     )?;
-    Ok(ConsentOutcome::Redirect {
-        uri: authorize_redirect(&flow.data.redirect, &code, &flow.data.state, &config.issuer),
-    })
+    Ok(authorize_redirect(
+        &data.redirect,
+        &code,
+        &data.state,
+        &config.issuer,
+    ))
 }
 
 /// Redeem a code for tokens. Consumed-code replay deactivates the grant
@@ -1186,6 +1232,9 @@ pub fn prune_expired(tx: &mut Transaction<'_>, now: i64) -> Result<usize, Error>
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Record {
+    // Old pending logins predate this policy and must retain explicit consent.
+    #[serde(default = "require_consent_default")]
+    require_consent: bool,
     #[serde(default)]
     grant: String,
     #[serde(default)]
@@ -1206,6 +1255,10 @@ struct Record {
     session: String,
     #[serde(default)]
     auth_time: i64,
+}
+
+fn require_consent_default() -> bool {
+    true
 }
 
 struct Flow {

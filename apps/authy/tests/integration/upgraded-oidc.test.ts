@@ -2,6 +2,35 @@ import { test, expect } from "bun:test";
 import { createPublicKey, verify, createHash } from "node:crypto";
 import { host } from "../support/upgraded-host";
 
+test("snapco app login returns a redeemable code without a consent page", async () => {
+  const origin = "https://chatty.snapco.dev";
+  const server = await host(origin);
+  const callback = `${origin}/auth/callback`;
+  const request = (path: string, cookie = "") => fetch(`${server.base}${path}`, { headers: { cookie }, redirect: "manual" });
+  const params = new URLSearchParams({ client_id: "chatty", redirect_uri: callback, response_type: "code", scope: "openid profile email", state: "snapco-login", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" });
+  try {
+    const start = await request(`/oauth/authorize?${params}`);
+    expect(start.status).toBe(303);
+    const resume = new URL(start.headers.get("location")!, server.base).searchParams.get("continue")!;
+    expect(resume).toStartWith("/oauth/resume?");
+    const enrolled = await fetch(`${server.base}/identity/enroll`, { method: "POST", headers: { origin: server.base, "content-type": "application/json" }, body: JSON.stringify({ email: "snapco@example.test", password: "snapco fixture password" }) });
+    expect(enrolled.status).toBe(200);
+    const cookie = enrolled.headers.get("set-cookie")!.split(";")[0];
+    for (const path of [resume, `/oauth/authorize?${params}&prompt=none`]) {
+      const response = await request(path, cookie);
+      expect(response.status).toBe(303);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const destination = new URL(response.headers.get("location")!);
+      expect(`${destination.origin}${destination.pathname}`).toBe(callback);
+      expect(destination.searchParams.get("state")).toBe("snapco-login");
+      expect(destination.searchParams.get("iss")).toBe(server.base);
+      const token = await fetch(`${server.base}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Basic ${Buffer.from(`chatty:${server.clientSecret}`).toString("base64")}` }, body: new URLSearchParams({ grant_type: "authorization_code", code: destination.searchParams.get("code")!, redirect_uri: callback, code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" }) });
+      expect(token.status).toBe(200);
+      expect((await token.json()).access_token).toBeString();
+    }
+  } finally { await server.close(); }
+}, 120000);
+
 test("real issuer: consent, PKCE, signed claims, restart, refresh replay, revocation and logout", async () => {
   const server = await host();
   const base = server.base;
