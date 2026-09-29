@@ -77,7 +77,7 @@ impl FactorioClient {
         } else {
             vec![]
         };
-        serde_json::to_string(&serde_json::json!({"documents":self.client.view(),"send":send}))
+        serde_json::to_string(&serde_json::json!({"documents":self.client.view(),"send":send,"ready":!self.client.is_reconciling() && !self.client.needs_recovery()}))
             .map_err(error)
     }
 }

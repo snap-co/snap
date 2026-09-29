@@ -1,4 +1,7 @@
 import { Invocations } from "../../platforms/document/client";
+import { BrowserRuntime, type Publication } from "../../platforms/browser/runtime";
+import { wasmModule } from "../../platforms/browser/wasm";
+import { OAuthIdentity } from "../../platforms/identity/oauth";
 export type Ticket = { id: string; title: string; description: string; modules: string[]; status: "draft" | "ready" | "done" | "cancelled"; notes: string; parent: string | null; blockers: string[] };
 export type Candidate = { commit: string; target: string; evidence: string; findings: { text: string; disposition: string }[]; approval: { human: string; at: number; commit: string } | null };
 export type Session = { id: string; owner: string; prompt: string; tickets: string[]; modules: string[]; phase: string; base: string; branch: string; worktree: string; data: string; port: number; conversation: string; candidate: Candidate | null; integration: string | null; error: string };
@@ -8,6 +11,8 @@ export type Repository = { id: string; path: string; modules: Record<string,stri
 export type Identity = { identified: boolean; csrf?: string; owner?: string; human?: boolean };
 type Binding = { connect(id: string): string; invoke(operation: string,input: string): string; receive(text: string): string; free(): void };
 type Snapshot = { id: string; kind: string; value: any };
+type Result = Publication & { documents: Record<string, Snapshot> };
+const bindings = wasmModule<{ default(options: { module_or_path: string }): Promise<void>; FactorioClient: new (actor: string) => Binding }>("factorio");
 type Update = (workspace: Workspace | null, error?: string) => void;
 export function randomID() { return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""); }
 
@@ -31,7 +36,27 @@ export class Factorio {
     if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) throw new Error("Disconnected");
     this.socket.send(frame);
   });
-  constructor(readonly origin: string, private readonly token?: string, private readonly transport: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+  readonly runtime?: BrowserRuntime<Identity, Binding, Result>;
+  constructor(readonly origin: string, private readonly token?: string, private readonly transport: typeof fetch = globalThis.fetch.bind(globalThis)) {
+    if (typeof window !== "undefined" && !token) {
+      this.runtime = new BrowserRuntime({
+        identity: new OAuthIdentity<Identity>(origin, transport),
+        key: identity => identity.owner!,
+        create: async identity => new (await bindings()).FactorioClient(identity.owner!),
+        decode: raw => JSON.parse(raw) as Result,
+        publish: result => {
+          this.documents = result?.documents ?? {};
+          if (!result) { this.workspaceID = ""; this.credential = undefined; }
+          this.emit(result?.error ?? undefined);
+        },
+      });
+      this.runtime.subscribe(() => {
+        const state = this.runtime!.getSnapshot();
+        this.identity = state.account ?? { identified: false };
+        this.emit(state.error ?? (state.phase === "ready" && state.connection !== "connected" ? "Reconnecting" : undefined));
+      });
+    }
+  }
   private async request<T>(path: string, body?: unknown): Promise<T> {
     const headers: Record<string,string> = {};
     if (this.token) headers.authorization = `Bearer ${this.token}`;
@@ -41,8 +66,12 @@ export class Factorio {
     if (!response.ok) throw new Error(value?.error_description??`Request failed (${response.status})`);
     return value as T;
   }
-  async identify() { return this.identity = await this.request<Identity>("/api/session"); }
+  async identify() {
+    if (this.runtime) { await this.runtime.resolve(); return this.identity; }
+    return this.identity = await this.request<Identity>("/api/session");
+  }
   private async connect(): Promise<void> {
+    if (this.runtime) { await this.runtime.resolve(); if (!this.identity.identified) throw new Error("Sign in to continue"); return; }
     if (this.closed) throw new Error("Client closed");
     if (this.ready) return;
     if (this.opening) return this.opening;
@@ -53,12 +82,6 @@ export class Factorio {
       if (!this.identity.identified) {
         this.calls.close("Sign-in ended; outstanding outcomes are unknown");
         throw new Error("Sign in to continue");
-      }
-      if (typeof window !== "undefined" && !this.binding) {
-        const path="/bindings/factorio_wasm.js";
-        const module=await import(/* @vite-ignore */ path);
-        await module.default({module_or_path:"/bindings/factorio_wasm_bg.wasm"});
-        this.binding=new module.FactorioClient(this.identity.owner);
       }
       await new Promise<void>((resolve,reject)=>{
         const socket=this.socket=new WebSocket(`${this.origin.replace(/^http/,"ws")}/transport`);
@@ -107,7 +130,7 @@ export class Factorio {
     clearTimeout(this.timer);
     this.timer=setTimeout(()=>void this.connect().catch(error=>this.emit(String(error))),500);
   }
-  async invoke<T>(operation: string, input: unknown): Promise<T> { await this.connect(); return this.calls.invoke<T>(operation,input); }
+  async invoke<T>(operation: string, input: unknown): Promise<T> { await this.connect(); return this.runtime ? this.runtime.invoke<T>(operation,input) : this.calls.invoke<T>(operation,input); }
   repositories() { return this.invoke<Repository[]>("factorio.repositories",{}); }
   async workspaces() { return this.invoke<{id:string;repository:string}[]>("factorio.workspaces",{}); }
   async onboard(repository: string) { const value=await this.invoke<{id:string}>("factorio.onboard",{repository});this.workspaceID=value.id;return this.workspace(); }
@@ -133,7 +156,7 @@ export class Factorio {
   }
   approve(id:string,commit:string) { return this.command({command:"approve",id,commit}); }
   agentToken() { return this.invoke<{token:string}>("factorio.agent-token",{}); }
-  logout() { return this.request<{redirect:string}>("/auth/logout",{}); }
+  async logout() { const result = await this.request<{redirect:string}>("/auth/logout",{}); await this.runtime?.replace(null); return result; }
   async intake(id:string,description:string) {
     await this.workspace();
     const intake=await this.invoke<Intake>("factorio.intake-create",{workspace:this.workspaceID,id,description});
@@ -154,7 +177,7 @@ export class Factorio {
     return value;
   }
   eventsURL(id:string) { return `${this.origin}/api/workspaces/${encodeURIComponent(this.workspaceID)}/intakes/${encodeURIComponent(id)}/events`; }
-  watch(update:Update) { this.listeners.add(update);void this.connect().catch(error=>update(null,String(error)));this.emit();return ()=>this.listeners.delete(update); }
+  watch(update:Update) { this.listeners.add(update);void this.connect().catch(error=>update(null,String(error)));this.emit();return ()=>{ this.listeners.delete(update); }; }
   private emit(error?:string) {
     const roots=Object.values(this.documents).filter(d=>d.kind==="factorio.workspace");
     if(!this.workspaceID && roots[0]) this.workspaceID=roots[0].id;
@@ -163,6 +186,6 @@ export class Factorio {
     const workspace=root ? {config:root.config,tickets:values(root.tickets),sessions:values(root.sessions),intakes:values(root.intakes)} as Workspace : null;
     for(const listener of this.listeners) listener(workspace,error);
   }
-  close() { this.closed=true;clearTimeout(this.timer);this.calls.close();this.socket?.close();this.binding?.free();this.binding=undefined; }
+  close() { this.runtime?.close();this.closed=true;clearTimeout(this.timer);this.calls.close();this.socket?.close();this.binding?.free();this.binding=undefined; }
 }
 export async function subscribe(client:Factorio, update:Update) { const stop=client.watch(update);return ()=>{stop();client.close();}; }

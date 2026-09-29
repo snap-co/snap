@@ -2,8 +2,8 @@ import { type ReactNode, type ButtonHTMLAttributes } from "react";
 
 /** Shared by the interactive account UI and build-time rendered protocol pages.
  * Keep presentation here; neither view owns authentication or redirect policy. */
-export function AuthShell({ children, status }: { children: ReactNode; status?: ReactNode }) {
-  return <main className="auth-shell"><header className="auth-header"><a className="brand" href="/" aria-label="Authy home">Snap <span className="brand-divider">/</span> Authy</a>{status}</header>{children}<footer className="auth-footer">Your account for Snap apps.</footer></main>;
+export function AuthShell({ children, status, brand }: { children: ReactNode; status?: ReactNode; brand?: ReactNode }) {
+  return <main className="auth-shell"><header className="auth-header">{brand ?? <a className="brand" href="/" aria-label="Authy home">Snap <span className="brand-divider">/</span> Authy</a>}{status}</header>{children}<footer className="auth-footer">Your account for Snap apps.</footer></main>;
 }
 
 export function AuthHeading({ title, children }: { title: string; children?: ReactNode }) {

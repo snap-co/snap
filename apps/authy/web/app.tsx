@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import { createRoot } from "react-dom/client";
-import { startAuthy, type AuthyClient } from "../client";
+import { createRoute, createRouter, redirect, Link } from "@tanstack/react-router";
+import { mount } from "../../../kits/react/host";
+import { sessionRoot, requireSignedIn, requireSignedOut } from "../../../kits/react/router";
+import { AuthyClient } from "../client";
 import "./style.css";
 import { AuthShell, AuthHeading, AuthActions, AuthButton, AuthField } from "./auth-ui";
 
@@ -286,7 +288,7 @@ export function View({ client }: { client: AuthyClient }) {
          : "Reconnecting…";
 
   return (
-    <AuthShell status={snapshot.account && <span className="connection" data-testid="connection">
+    <AuthShell brand={<Link className="brand" to="/" aria-label="Authy home">Snap <span className="brand-divider">/</span> Authy</Link>} status={snapshot.account && <span className="connection" data-testid="connection">
           {connectionLabel}
         </span>}>
       {snapshot.phase === "loading" ? (
@@ -320,44 +322,11 @@ export function View({ client }: { client: AuthyClient }) {
   );
 }
 
-function App() {
-  const [client, setClient] = useState<AuthyClient | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    let instance: AuthyClient | null = null;
-    startAuthy()
-      .then((started) => {
-        if (!live) {
-          started.close();
-          return;
-        }
-        instance = started;
-        setClient(started);
-      })
-      .catch((e) => {
-        if (live) setFailed(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      live = false;
-      instance?.close();
-    };
-  }, []);
-  if (failed) {
-    return (
-      <AuthShell>
-        <AuthHeading title="Authy is unavailable" />
-         <p role="alert">Authy couldn't load. Check your connection and reload the page.</p>
-         <AuthButton onClick={() => location.reload()}>Reload Authy</AuthButton>
-      </AuthShell>
-    );
-  }
-  if (!client) {
-    return (
-      <AuthShell><AuthHeading title="Checking your session…" /></AuthShell>
-    );
-  }
-  return <View client={client} />;
-}
-
-createRoot(document.getElementById("root")!).render(<App />);
+const client = new AuthyClient();
+const root = sessionRoot(client.runtime, client);
+const index = createRoute({ getParentRoute: () => root, path: "/", beforeLoad: ({ context }) => { throw redirect({ to: context.session.account ? "/account" : "/sign-in", search: true, replace: true }); } });
+const signIn = createRoute({ getParentRoute: () => root, path: "/sign-in", beforeLoad: ({ context }) => requireSignedOut(context.session, "/account"), component: () => <View client={client} /> });
+const account = createRoute({ getParentRoute: () => root, path: "/account", beforeLoad: ({ context, location }) => requireSignedIn(context.session, location.href), component: () => <View client={client} /> });
+const router = createRouter({ routeTree: root.addChildren([index, signIn, account]), context: { client, session: client.runtime.getSnapshot() } });
+const dispose = mount({ router, runtime: client.runtime, element: document.getElementById("root")!, dispose: () => client.close() });
+if (import.meta.hot) import.meta.hot.dispose(dispose);

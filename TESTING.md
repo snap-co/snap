@@ -94,6 +94,12 @@ Access and retained deletion. Its browser gate starts real Authy and Chatty host
 covering OAuth, cross-client synchronization, denied writes before ACK, restart and
 logout. Its native OAuth gate checks pinned RSA verification.
 `bun test platforms/document/tests/client.test.ts` checks shared invocation channels.
+`bun test platforms/browser/runtime.test.ts` checks anonymous/error startup,
+acquisition racing router resolution, initial manifest readiness, identity-epoch
+fences, reconnect preservation and disposal during pending IO. All three app
+browser gates exercise the shared React kit. Authy covers startup retry and guarded
+deep links; Factorio covers empty-account onboarding, intake routes and back/forward;
+Chatty covers search-state navigation without another connection.
 `bun test tests/cli/chatty-dev.test.ts` covers the shared dev driver.
 Set `TMPDIR=/tmp/opencode` for disposable filesystem gates.
 

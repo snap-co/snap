@@ -6,7 +6,7 @@ const root = resolve(process.env.FACTORIO_SOURCE_ROOT ?? resolve(import.meta.dir
 if (process.argv.includes("--dev") && !process.env.FACTORIO_SOURCE_ROOT) {
   const copy = await mkdtemp("/tmp/opencode/factorio-dev-source-");
   try {
-    for (const path of ["Cargo.toml","Cargo.lock","package.json","tsconfig.json","scripts","crates","platforms","tools/cli","apps","tests/properties"])
+    for (const path of ["Cargo.toml","Cargo.lock","package.json","tsconfig.json","scripts","crates","platforms","kits","tools/cli","apps","tests/properties"])
       await cp(`${root}/${path}`,`${copy}/${path}`,{recursive:true,filter:path=>!/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path)});
     for (const path of ["node_modules",".tools","target"]) await symlink(`${root}/${path}`,`${copy}/${path}`);
     const rust=(await Bun.file(`${root}/mise.toml`).text()).match(/rust = "([^"]+)"/)![1];

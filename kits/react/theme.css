@@ -1,0 +1,4 @@
+.snap-state { max-width: 36rem; margin: 12vh auto; padding: 1.5rem; }
+.snap-state h1 { font-size: 1.5rem; line-height: 1.3; }
+.snap-state p { line-height: 1.6; }
+.snap-reconnecting { position: fixed; bottom: 1rem; right: 1rem; z-index: 20; max-width: calc(100vw - 2rem); padding: .65rem 1rem; border: 1px solid currentColor; border-radius: .5rem; background: var(--snap-status-background, #20252c); color: var(--snap-status-foreground, #f4f5f7); font: inherit; }

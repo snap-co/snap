@@ -18,7 +18,7 @@ test("Authy dev retains failed builds and sessions across native/Wasm replacemen
     }
   }
   try {
-    for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates", "platforms", "tools/cli", "apps", "tests/properties"])
+    for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates", "platforms", "kits", "tools/cli", "apps", "tests/properties"])
       await cp(`${root}/${path}`, `${fixture}/${path}`, { recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path) });
     for (const path of ["node_modules", ".tools", "target"]) await symlink(`${root}/${path}`, `${fixture}/${path}`);
     const database = `${fixture}/authy.sqlite`;

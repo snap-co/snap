@@ -133,6 +133,6 @@ impl ChattyClient {
     fn result(&self, send: Vec<String>, error: Option<String>) -> Result<String, JsValue> {
         // Revisions are rendered as strings rather than lossy JavaScript numbers.
         let documents:Vec<_>=self.client.view().values().map(|s|serde_json::json!({"id":s.id,"revision":s.revision.to_string(),"value":s.value})).collect();
-        serde_json::to_string(&serde_json::json!({"documents":documents,"pending":self.client.pending().len(),"send":send,"error":error})).map_err(crate::error)
+        serde_json::to_string(&serde_json::json!({"documents":documents,"pending":self.client.pending().len(),"send":send,"error":error,"ready":!self.client.is_reconciling() && !self.client.needs_recovery()})).map_err(crate::error)
     }
 }

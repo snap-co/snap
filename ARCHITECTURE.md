@@ -26,6 +26,13 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `platforms/document` composes Document, Store and transport with a globally
   serialized FIFO and a local WebSocket carrier. Testy's ephemeral Executor host
   remains its separate application-selected composition.
+- `platforms/browser` owns browser session startup, Wasm initialization, connection
+  recovery and disposal. It has no React or router dependency. Applications supply
+  an Identity adapter and their Rust binding, including Document readiness.
+- `kits/react` mounts TanStack Router and supplies its session-resolving root layout,
+  guards, startup failures and reconnect status. Authy, Factorio and Chatty own
+  their route trees, page components, branding and domain loaders. Other browser
+  framework kits can reuse the browser runtime; native kits need native adapters.
 - `platforms/sqlite` implements Store's host IO and database-backed durability.
   It is separately consumable by the CLI without importing application execution.
 - `crates/identity` owns credentials, sessions and their operation dispatch using
@@ -75,6 +82,33 @@ The supported applications use the current Store and transport. Authy and Chatty
 have native hosts; their superseded Workers compositions have been removed.
 
 ## Transport and connection lifetime
+
+Authy, Factorio and Chatty use `BrowserRuntime.resolve()` through the React kit's
+root `beforeLoad`. Anonymous Identity opens no socket. Identified Identity creates
+one Wasm binding and connects with a platform-owned client ID. Protected routes
+publish only after Rust finishes the initial correlated Document manifest, even
+when it contains no Documents. Factorio onboarding follows that empty manifest;
+workspace existence is an application concern, not a readiness condition.
+
+`refresh()` deduplicates HTTP resolution and preserves the binding when the actor
+is unchanged. `replace()` follows committed acquisition/sign-out and fences older
+checks. Epochs fence late binding creation and socket events. The runtime uses
+a new platform client ID when it replaces the binding's logical lifetime;
+physical reconnects retain their ID. An Identity lookup
+error has its own retryable state, rather than becoming anonymous. Transient
+disconnects retain mounted pages and the last converged view while the existing
+binding reconciles. Confirmed identity changes clear Documents, invocation
+channels and app page state before the next session publishes.
+
+The React host owns focus/visibility revalidation, router invalidation and HMR
+cleanup. Apps call `mount` once and register its disposer with `import.meta.hot`;
+page effects must not start or close the client. Use ordinary TanStack routes and
+typed `context.client` in loaders. `requireSignedIn` can retain a local deep link
+in tab storage through external OAuth and restore it after sign-in. Authy routes
+use `/sign-in` and `/account`; Factorio uses `/intakes/$intakeId` with workspace
+anchors and redirects old intake hashes. Chatty keeps `?thread=` as router search
+state, with browser back/forward support. Native hosts retain SPA file fallback;
+OAuth protocol paths still belong to their HTTP handlers.
 
 Browser bootstrap follows [Identity](docs/identity.md#browser-bootstrap): acquire
 the session over Transport's HTTP carrier, set the HttpOnly cookie, then connect.

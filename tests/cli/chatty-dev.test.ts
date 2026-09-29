@@ -18,7 +18,7 @@ test("Chatty dev retains OAuth sessions and threads across failed builds and nat
     }
   }
   try {
-    for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates", "platforms", "tools/cli", "apps", "tests/properties"])
+    for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates", "platforms", "kits", "tools/cli", "apps", "tests/properties"])
       await cp(`${root}/${path}`, `${fixture}/${path}`, { recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path) });
     for (const path of ["node_modules", ".tools", "target"]) await symlink(`${root}/${path}`, `${fixture}/${path}`);
     server = await pair({ root: fixture, dev: true });
@@ -49,7 +49,7 @@ test("Chatty dev retains OAuth sessions and threads across failed builds and nat
     await reloaded;
     await page.locator(".transcript .user-message p").filter({ hasText: "Persistent dev thread" }).waitFor();
     await page.evaluate(() => { (window as any).__chattyDev = "same"; });
-    const ui = `${fixture}/apps/chatty/web/main.tsx`;
+    const ui = `${fixture}/apps/chatty/web/pages.tsx`;
     await writeFile(ui, (await readFile(ui, "utf8")).replace("YOUR CONVERSATIONS", "UPDATED CONVERSATIONS"));
     await page.getByText("UPDATED CONVERSATIONS", { exact: true }).waitFor();
     expect(await page.evaluate(() => (window as any).__chattyDev)).toBe("same");

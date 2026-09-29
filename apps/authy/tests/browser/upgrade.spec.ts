@@ -1,5 +1,25 @@
 import { test, expect } from "@playwright/test";
 
+test("Identity failure offers retry and a protected deep link survives sign-in", async ({ page }) => {
+  let unavailable = true;
+  const sockets: string[] = [];
+  page.on("websocket", socket => sockets.push(socket.url()));
+  await page.route("**/identity/fetch", route => unavailable ? route.fulfill({ status: 503, contentType: "application/json", body: "{}" }) : route.continue());
+  await page.goto("/account");
+  await expect(page.getByRole("heading", { name: "Unable to open your workspace" })).toBeVisible();
+  await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0);
+  expect(sockets).toEqual([]);
+  unavailable = false;
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await page.getByRole("button", { name: "New here? Create account", exact: true }).click();
+  await page.getByLabel("Email", { exact: true }).fill(`kit-deep-link-${Date.now()}@example.test`);
+  await page.getByLabel("Password", { exact: true }).fill("kit deep link password");
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect(page.getByLabel("Name", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/account$/);
+  expect(sockets).toHaveLength(1);
+});
+
 test("account, optimistic Document profile, reload, logout and login", async ({ page, context, baseURL }) => {
   const events: string[] = [];
   page.on("response", response => {

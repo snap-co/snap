@@ -78,7 +78,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByRole("button",{name:"Send reply",exact:true}).click();
   await expect(page.getByText("Your additional context is recorded.")).toBeVisible();
   const conversationURL=page.url();
-  const intakeID=new URL(conversationURL).hash.slice(1);
+  const intakeID=decodeURIComponent(new URL(conversationURL).pathname.split("/").at(-1)!);
   const state=(await invoke(page,"factorio.workspace",{workspace})).Ok;
   const sessionPath=`/api/session/${state.intakes[intakeID].conversation}`;
   await page.request.post(`${process.env.FACTORIO_FIXTURE_URL}/opencode/request`,{data:{method:"POST",path:`${sessionPath}/model`,body:{model:{providerID:"openai",id:"expensive-fixture"}}}});

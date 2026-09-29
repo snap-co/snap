@@ -1,6 +1,8 @@
 import React, { useEffect, useLayoutEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
-import { Factorio, randomID, subscribe, type Workspace, type Ticket, type Session, type Repository } from "../client";
+import { createRoute, createRouter, redirect, useLocation, useNavigate, useParams } from "@tanstack/react-router";
+import { mount } from "../../../kits/react/host";
+import { sessionRoot, requireSignedIn, requireSignedOut } from "../../../kits/react/router";
+import { Factorio, randomID, type Workspace, type Ticket, type Session, type Repository } from "../client";
 import { IntakeDesk } from "./intake";
 import "./style.css";
 
@@ -42,46 +44,37 @@ function TicketEditor({ initial, workspace, busy, run, close }: { initial: Ticke
 }
 
 function App() {
+  const navigate = useNavigate();
+  const params = useParams({ strict: false }) as { intakeId?: string };
+  const hash = useLocation({ select: location => location.hash });
+  const loaded = protectedRoute.useLoaderData();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [repositories, setRepositories] = useState<Repository[] | null>(null);
   const [repository, setRepository] = useState("");
-  const [identified, setIdentified] = useState(false);
+  const identified = client.identity.identified;
   const [error, setError] = useState("");
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
-  const [hash, setHash] = useState(location.hash);
-  useEffect(() => { const changed = () => setHash(location.hash); window.addEventListener("hashchange", changed); return () => window.removeEventListener("hashchange", changed); }, []);
   // Thread routes unmount workspace anchors. Scroll only after the destination
   // DOM exists, including direct links restored after the initial snapshot.
   useLayoutEffect(() => {
-    if (workspace && !hash.startsWith("#intake-")) document.getElementById(hash.slice(1))?.scrollIntoView({block:"start"});
+    if (workspace && !params.intakeId) document.getElementById(hash)?.scrollIntoView({block:"start"});
   }, [hash, Boolean(workspace)]);
   useEffect(() => {
-    let close: (() => void) | undefined, disposed = false;
-    void client.identify().then(async identity => {
-      if (disposed) return;
-      setIdentified(identity.identified);
-      if (identity.identified) {
-        const roots = await client.workspaces();
-        if (roots.length === 0) {
-          const choices = await client.repositories();
-          if (!disposed) { setRepositories(choices); setRepository(choices[0]?.id ?? ""); }
-        } else client.workspaceID = roots[0]!.id;
-        const stop = await subscribe(client, (w, e) => { if (!disposed) { setWorkspace(w); setError(e ?? ""); } });
-        if (disposed) stop(); else close = stop;
-      }
-    }).catch(e => setError(String(e)));
-    return () => { disposed = true; close?.(); };
+    if (!identified) return;
+    const choices = loaded?.repositories ?? [];
+    setRepositories(choices); setRepository(choices[0]?.id ?? "");
+    return client.watch((w, e) => { setWorkspace(w); setError(e ?? ""); });
   }, []);
   async function run(action: () => Promise<unknown>) { setBusy(true); setError(""); try { await action(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function grill(t: Ticket) {
     const text=`Use grill-me to sharpen ticket ${t.id} before implementation. Keep it a draft until its questions are resolved.\n\n${t.title}\n${t.description}\nModules: ${t.modules.join(", ")}\nBlockers: ${t.blockers.join(", ")}`;
     const intake=Object.values(workspace?.intakes??{}).find(item=>item.tickets.includes(t.id));
-    if(intake) { await client.intakeAction(intake.id,{action:"message",id:`msg_${randomID()}`,text});location.hash=intake.id; }
-    else { const id=`intake-${randomID()}`;await client.intake(id,text);location.hash=id; }
+    if(intake) { await client.intakeAction(intake.id,{action:"message",id:`msg_${randomID()}`,text});void navigate({to:"/intakes/$intakeId",params:{intakeId:intake.id}}); }
+    else { const id=`intake-${randomID()}`;await client.intake(id,text);void navigate({to:"/intakes/$intakeId",params:{intakeId:id}}); }
   }
-  if (workspace && hash.startsWith("#intake-")) return <main className="thread-shell"><IntakeDesk key={hash} client={client} workspace={workspace} selected={hash.slice(1)}/></main>;
+  if (workspace && params.intakeId) return <main className="thread-shell"><IntakeDesk key={params.intakeId} client={client} workspace={workspace} selected={params.intakeId}/></main>;
   return <main>
     <header><div><h1>Factorio</h1><p className="subtitle">Track work from idea to review.</p></div>
       {identified ? <div className="account-actions"><button disabled={busy} onClick={() => void run(async () => setToken((await client.agentToken()).token))}>Create agent token</button><button disabled={busy} onClick={() => void run(async () => location.assign((await client.logout()).redirect))}>Sign out</button></div> : <a className="button primary" href="/auth/login">Continue with Authy</a>}
@@ -114,4 +107,21 @@ function App() {
     </>}
   </main>;
 }
-createRoot(document.getElementById("root")!).render(<App/>);
+const runtime = client.runtime!;
+const root = sessionRoot(runtime, client);
+const signIn = createRoute({ getParentRoute: () => root, path: "/sign-in", beforeLoad: ({ context }) => requireSignedOut(context.session), component: () => <main><header><div><h1>Factorio</h1><p className="subtitle">Track work from idea to review.</p></div><a className="button primary" href="/auth/login">Continue with Authy</a></header></main> });
+const protectedRoute = createRoute({ getParentRoute: () => root, id: "workspace", beforeLoad: ({ context, location }) => requireSignedIn(context.session, location.href), loader: async ({ context }) => {
+  const epoch = context.session.epoch;
+  const roots = await context.client.workspaces();
+  const choices = roots.length ? [] : await context.client.repositories();
+  if (epoch !== runtime.getSnapshot().epoch) throw new Error("Session changed");
+  client.workspaceID = roots[0]?.id ?? "";
+  return { repositories: choices };
+} });
+const workspaceRoute = createRoute({ getParentRoute: () => protectedRoute, path: "/", beforeLoad: ({ location }) => {
+  if (location.hash.startsWith("intake-")) throw redirect({ to: "/intakes/$intakeId", params: { intakeId: location.hash }, replace: true });
+}, component: App });
+const intakeRoute = createRoute({ getParentRoute: () => protectedRoute, path: "/intakes/$intakeId", component: App });
+const router = createRouter({ routeTree: root.addChildren([signIn, protectedRoute.addChildren([workspaceRoute, intakeRoute])]), context: { client, session: runtime.getSnapshot() } });
+const dispose = mount({ router, runtime, element: document.getElementById("root")!, dispose: () => client.close() });
+if (import.meta.hot) import.meta.hot.dispose(dispose);

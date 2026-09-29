@@ -38,6 +38,18 @@ Authy selects the cookie-required carrier. Mixed browser/agent hosts retain
 explicit agent-bearer authentication through their configured authority; see
 [Transport composition](../ARCHITECTURE.md#transport-and-connection-lifetime).
 
+The React kit resolves this SDK through `platforms/browser/runtime.ts` before
+publishing protected routes. Acquisition calls `runtime.replace(account)` only
+after the HTTP cookie response commits. The runtime, rather than a React page
+effect, creates and disposes the identity-owned Wasm binding and Transport.
+
+Chatty and Factorio select `platforms/identity/oauth.ts`. Its `fetch()` adapts the
+relying-party host's `/api/session` projection to the same account-or-null contract.
+That host endpoint refreshes OAuth leases and supplies browser CSRF metadata; it
+is not a password credential API. Standard OAuth login/callback/logout endpoints
+remain host-owned. Explicit Factorio agent tokens use their existing non-browser
+carrier and never gain the browser adapter's refresh authority.
+
 ### Portable operation names
 
 | Request | Input | Result |
