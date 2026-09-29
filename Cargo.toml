@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "platforms/config",
     "apps/factorio",
     "apps/factorio/native",
     "apps/factorio/wasm",
@@ -33,6 +34,7 @@ members = [
 ]
 resolver = "3"
 default-members = [
+    "platforms/config",
     "apps/factorio",
     "apps/factorio/native",
     "apps/factorio/wasm",
@@ -66,6 +68,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+snap-config = { path = "platforms/config" }
 snap-http = { path = "crates/http" }
 snap-model-local = { path = "platforms/model" }
 chatty = { path = "apps/chatty" }

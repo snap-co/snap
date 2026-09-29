@@ -1,0 +1,318 @@
+//! Host-owned startup configuration. Portable modules receive resolved inputs,
+//! never this loader, filesystem paths to secrets, or ambient configuration.
+use age::secrecy::{ExposeSecret, SecretString};
+use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, de::DeserializeOwned};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Development,
+    Production,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Host {
+    pub mode: Mode,
+    pub listen: SocketAddr,
+    pub origin: Option<String>,
+    pub data_dir: PathBuf,
+    #[serde(default = "database_name")]
+    pub database: PathBuf,
+    #[serde(default = "web_name")]
+    pub web_dir: PathBuf,
+    #[serde(default)]
+    pub dev_origins: Vec<String>,
+    #[serde(default)]
+    pub dev_client_origins: BTreeMap<String, Vec<String>>,
+}
+fn database_name() -> PathBuf {
+    "store.sqlite".into()
+}
+fn web_name() -> PathBuf {
+    "web".into()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config<T> {
+    pub version: u32,
+    pub host: Host,
+    pub app: T,
+    pub dev: Option<Development>,
+    #[serde(skip)]
+    root: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Development {
+    pub listen: SocketAddr,
+}
+impl<T: DeserializeOwned> Config<T> {
+    /// Config-relative resource paths do not depend on the process working directory.
+    pub fn read(path: &Path) -> Result<Self> {
+        let path = path.canonicalize().context("Cannot open config.toml")?;
+        let text = std::fs::read_to_string(&path).context("Cannot read config.toml")?;
+        // Parser diagnostics can contain source lines. Do not echo configuration.
+        let mut config: Self =
+            toml::from_str(&text).map_err(|_| anyhow::anyhow!("Invalid config.toml schema"))?;
+        ensure!(config.version == 1, "Unsupported config.toml version");
+        config.root = path
+            .parent()
+            .context("Config directory missing")?
+            .to_owned();
+        config.host.validate()?;
+        ensure!(
+            config.host.mode != Mode::Production || config.dev.is_none(),
+            "Production forbids development configuration"
+        );
+        Ok(config)
+    }
+    pub fn path(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.root.join(path)
+    }
+    pub fn database(&self) -> PathBuf {
+        self.path(&self.host.data_dir).join(&self.host.database)
+    }
+    pub fn assets(&self) -> PathBuf {
+        self.path(&self.host.web_dir)
+    }
+    pub fn require_bag(&self, required: bool) -> Result<()> {
+        if required {
+            ensure!(
+                self.root.join("secrets.enc").is_file(),
+                "Required secrets.enc is missing; initialize and seal the deployment bag"
+            );
+        }
+        Ok(())
+    }
+    /// A missing bag is allowed for secretless applications. Required references
+    /// still fail when resolved. Present bags always require a valid identity.
+    pub fn secrets(&self, identity: Option<&age::x25519::Identity>) -> Result<Secrets> {
+        let path = self.root.join("secrets.enc");
+        match std::fs::read(path) {
+            Ok(bytes) => Secrets::decrypt(&bytes, identity.context("SNAP_MASTER_KEY is required")?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Secrets::default()),
+            Err(_) => bail!("Cannot read secrets.enc"),
+        }
+    }
+    pub fn load_secrets(&self) -> Result<Secrets> {
+        let identity = std::env::var("SNAP_MASTER_KEY")
+            .ok()
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<age::x25519::Identity>()
+                    .map_err(|_| anyhow::anyhow!("Invalid SNAP_MASTER_KEY"))
+            })
+            .transpose()?;
+        self.secrets(identity.as_ref())
+    }
+}
+impl Host {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.data_dir.as_os_str().is_empty(),
+            "host.data_dir is required"
+        );
+        ensure!(
+            self.database.components().count() == 1
+                && matches!(
+                    self.database.components().next(),
+                    Some(std::path::Component::Normal(_))
+                ),
+            "host.database must be a filename"
+        );
+        if self.mode == Mode::Development {
+            ensure!(
+                self.listen.ip().is_loopback(),
+                "Development server must bind loopback"
+            );
+        } else {
+            ensure!(
+                self.dev_origins.is_empty() && self.dev_client_origins.is_empty(),
+                "Production forbids development origins"
+            );
+            ensure!(
+                self.data_dir.is_absolute(),
+                "Production host.data_dir must be absolute"
+            );
+            ensure!(
+                self.origin
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("https://")),
+                "Production requires an HTTPS host.origin"
+            );
+        }
+        if let Some(origin) = &self.origin {
+            validate_origin(origin)?;
+        }
+        for origin in self
+            .dev_origins
+            .iter()
+            .chain(self.dev_client_origins.values().flatten())
+        {
+            validate_origin(origin)?;
+        }
+        Ok(())
+    }
+    pub fn public_origin(&self, actual: SocketAddr) -> String {
+        self.origin
+            .clone()
+            .unwrap_or_else(|| format!("http://{actual}"))
+    }
+}
+pub fn validate_origin(origin: &str) -> Result<()> {
+    let url = url::Url::parse(origin).map_err(|_| anyhow::anyhow!("Invalid configured origin"))?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.username().is_empty()
+            && url.password().is_none(),
+        "Configured URL must be an HTTP(S) origin"
+    );
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct SecretRef(String);
+impl<'de> Deserialize<'de> for SecretRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        if name.split('.').any(str::is_empty)
+            || !name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+        {
+            return Err(serde::de::Error::custom("Invalid secret reference"));
+        }
+        Ok(Self(name))
+    }
+}
+impl SecretRef {
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+}
+pub struct Secret(SecretString);
+impl Clone for Secret {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+impl Secret {
+    pub fn expose(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+#[derive(Default)]
+pub struct Secrets(BTreeMap<String, Secret>);
+impl Secrets {
+    pub fn resolve(&self, reference: &SecretRef) -> Result<&Secret> {
+        self.0
+            .get(reference.name())
+            .with_context(|| format!("Missing secret: {}", reference.name()))
+    }
+    pub fn encrypt(plaintext: &[u8], recipients: &[age::x25519::Recipient]) -> Result<Vec<u8>> {
+        use std::io::Write;
+        // Validate the bag before encrypting. No plaintext appears in diagnostics.
+        Self::parse(plaintext)?;
+        let encryptor =
+            age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))
+                .context("No age recipients")?;
+        let mut output = Vec::new();
+        let mut writer = encryptor.wrap_output(&mut output)?;
+        writer.write_all(plaintext)?;
+        writer.finish()?;
+        Ok(output)
+    }
+    pub fn decrypt(ciphertext: &[u8], identity: &age::x25519::Identity) -> Result<Self> {
+        let plaintext = age::decrypt(identity, ciphertext)
+            .map_err(|_| anyhow::anyhow!("Secrets decryption failed"))?;
+        Self::parse(&plaintext)
+    }
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("Invalid secrets bag"))?;
+        let table: toml::Table =
+            toml::from_str(text).map_err(|_| anyhow::anyhow!("Invalid secrets bag"))?;
+        fn collect(
+            prefix: &str,
+            table: toml::Table,
+            output: &mut BTreeMap<String, Secret>,
+        ) -> Result<()> {
+            for (key, value) in table {
+                ensure!(
+                    !key.is_empty() && !key.contains('.'),
+                    "Secret keys must be nonempty without dots"
+                );
+                let name = if prefix.is_empty() {
+                    key
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                match value {
+                    toml::Value::String(s) => {
+                        output.insert(name, Secret(s.into()));
+                    }
+                    toml::Value::Table(t) => collect(&name, t, output)?,
+                    _ => bail!("Secrets must be strings or nested tables"),
+                }
+            }
+            Ok(())
+        }
+        let mut output = BTreeMap::new();
+        collect("", table, &mut output)?;
+        Ok(Self(output))
+    }
+}
+
+/// The same arguments are accepted by all native servers. Schema checking and
+/// migration never decrypt secrets or open a listener.
+pub struct Options {
+    pub config: PathBuf,
+    pub action: Action,
+}
+#[derive(PartialEq, Eq)]
+pub enum Action {
+    Serve,
+    Check,
+    Migrate,
+}
+impl Options {
+    pub fn parse() -> Result<Self> {
+        Self::from_args(std::env::args().skip(1))
+    }
+    pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self> {
+        let mut config = std::env::current_exe()?.with_file_name("config.toml");
+        let mut action = Action::Serve;
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--config" => config = args.next().context("--config requires a path")?.into(),
+                "--check-config" if action == Action::Serve => action = Action::Check,
+                "--migrate" if action == Action::Serve => action = Action::Migrate,
+                _ => bail!("usage: server [--config PATH] [--check-config | --migrate]"),
+            }
+        }
+        Ok(Self { config, action })
+    }
+}

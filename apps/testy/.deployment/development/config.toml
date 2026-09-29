@@ -1,0 +1,8 @@
+version = 1
+[host]
+mode = "development"
+listen = "127.0.0.1:3848"
+origin = "http://127.0.0.1:3848"
+data_dir = "../../.snap"
+database = "testy-identity.sqlite"
+[app]

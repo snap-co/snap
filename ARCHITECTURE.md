@@ -16,6 +16,10 @@ independent consumer or enforceable dependency/portability rule requires it.
   serialized host execution and in-memory commit. `src/program.rs` defines the
   application interface; `src/executor.rs` implements the host state machine.
 - `platforms/local` composes transport and execution with memory or native IO.
+- `platforms/config` owns native startup parsing, config-relative paths and age
+  secrets loading. App hosts define typed settings and resolve secrets once before
+  serving. Portable modules never discover configuration. The CLI owns conventional
+  builds and allowlisted deployment packaging; see [configuration](docs/configuration.md).
 - `crates/store` owns portable server-side resident transactions,
   index knowledge, miss diagnostics and explicit schema migration declarations.
 - `crates/access` owns resource registration, direct grants, parent links and
@@ -165,7 +169,9 @@ bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preservi
 64-bit integers. Rust SDK results cross the UI binding as decimal strings.
 Development controls also use the Rust binding to validate supplied JSON text and
 format inspection records/trace without passing integers through JavaScript numbers.
-Workers and TLS deployment are subsequent work.
+Workers and native TLS termination are subsequent work. Native production hosts
+can bind external interfaces behind a TLS proxy with an explicitly pinned HTTPS
+public origin; forwarding headers do not choose configuration.
 
 ## Application interface and global gate
 

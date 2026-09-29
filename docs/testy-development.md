@@ -29,15 +29,15 @@ loses calculators and debugger state. Persisted accounts/sessions survive, and t
 browser retains its tab-scoped bearer. This is process replacement, not in-process
 Rust code hot swapping.
 
-`TESTY_WEB_ADDR` sets Vite's public loopback address (default `127.0.0.1:3848`). The
+The deployment config selects Vite's public loopback address. The
 Rust host uses a private loopback port; Vite proxies transport and debugger HTTP/WS
 after checking the public Host/Origin. An occupied public port fails startup.
-`TESTY_DATABASE` selects an already-migrated database. Stop development before
+`host.data_dir` and `host.database` select a migrated database. Stop development before
 running migrations. Changes to the dev/build scripts require restarting `snap dev`.
 
-`./bin/snap build apps/testy` (or `./bin/build`) produces `dist/testy-web` and `dist/web`.
-The packaged executable serves adjacent assets without Vite. It uses `TESTY_WEB_ADDR`,
-`TESTY_WEB_DIR` and `TESTY_DATABASE` as documented in the README.
+App-local `snap build` produces `dist/development/server`, config and clients.
+The executable serves adjacent assets without Vite. Production omits debugger
+routes. See [configuration](configuration.md).
 
 ## Observe and control
 

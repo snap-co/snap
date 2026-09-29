@@ -1,3 +1,4 @@
+mod config;
 mod controller;
 mod effects;
 mod intake;
@@ -14,7 +15,7 @@ use axum::{
 use factorio::{Workspace, documents as graph};
 use serde_json::{Value, json};
 use snap_document_local::{Host, web::Shared};
-use snap_oauth_local::{Config, Cookies, OAuth, failure, no_store, now, random};
+use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
 use snap_oidc::relying_party as rp;
 use snap_store::Error;
 use std::{path::PathBuf, sync::Arc};
@@ -22,6 +23,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 struct App {
     oauth: Arc<OAuth>,
+    tools: config::Tools,
 }
 impl App {
     async fn actor(
@@ -55,9 +57,6 @@ async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         Err(e) => failure(e),
     }
 }
-fn env(key: &str, fallback: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| fallback.into())
-}
 fn migrations() -> Vec<snap_store::migration::Migration> {
     // Historical migrations stay immutable. Intake keys are no longer used.
     let mut migrations: Vec<snap_store::migration::Migration> = [
@@ -77,18 +76,38 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let database = PathBuf::from(env("SNAP_DATABASE", ".snap/factorio-store.sqlite"));
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    if args == ["--migrate"] {
+    let options = snap_config::Options::parse()?;
+    let startup = snap_config::Config::<config::Settings>::read(&options.config)?;
+    startup.app.validate()?;
+    if options.action == snap_config::Action::Check {
+        startup.require_bag(true)?;
+    }
+    if options.action == snap_config::Action::Check {
+        return Ok(());
+    }
+    let database = startup.database();
+    if options.action == snap_config::Action::Migrate {
+        std::fs::create_dir_all(database.parent().unwrap())?;
         snap_sqlite::migrate(&database, &migrations())?;
         println!("Factorio migrations applied");
         return Ok(());
     }
-    if !args.is_empty() {
-        return Err("usage: factorio [--migrate]".into());
-    }
-    let mut config: factorio::Config =
-        serde_json::from_slice(&std::fs::read(env("FACTORIO_CONFIG", "factorio.json"))?)?;
+    let secrets = startup.load_secrets()?;
+    let oauth_config = startup.app.oauth.resolve(
+        startup.host.public_origin(startup.host.listen),
+        &secrets,
+        startup.host.dev_origins.clone(),
+    )?;
+    let mut tools = startup.app.tools.clone();
+    tools.bridge = Some(
+        startup.path(
+            tools
+                .bridge
+                .as_deref()
+                .unwrap_or(std::path::Path::new("bridge.js")),
+        ),
+    );
+    let mut config = startup.app.repository.clone();
     for path in [&config.repository, &config.resources] {
         if !PathBuf::from(path).is_absolute() {
             return Err("Repository and resources must be absolute paths".into());
@@ -138,12 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     effects::head(&config).await?;
-    let listener = tokio::net::TcpListener::bind(env("FACTORIO_ADDR", "127.0.0.1:3852")).await?;
+    let listener = tokio::net::TcpListener::bind(startup.host.listen).await?;
     let address = listener.local_addr()?;
-    if !address.ip().is_loopback() {
-        return Err("Factorio requires loopback".into());
-    }
-    let origin = snap_oauth_local::origin(&env("SNAP_ORIGIN", &format!("http://{address}")))?;
+    let origin = snap_oauth_local::origin(&startup.host.public_origin(address))?;
     let mut store = snap_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
@@ -162,30 +178,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         random(),
     );
     let host = operations::register(host, config);
-    let mut host = controller::register(host, tokio::runtime::Handle::current());
+    let mut host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
     tokio::task::block_in_place(|| host.recover_controllers())?;
     let documents = Shared::with_cookie(host, origin.clone(), cookies.reader());
     let oauth = OAuth::new(
         documents.clone(),
         cookies,
-        Config {
+        snap_oauth_local::Config {
             origin,
-            issuer: env("AUTHY_ORIGIN", "http://127.0.0.1:3846"),
-            client: "factorio".into(),
-            secret: env("FACTORIO_CLIENT_SECRET", ""),
+            ..oauth_config
         },
     )?;
     let app = Arc::new(App {
         oauth: oauth.clone(),
+        tools,
     });
-    let assets = std::env::var("SNAP_WEB_DIR").unwrap_or_else(|_| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("web")))
-            .filter(|p| p.is_dir())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "apps/factorio/.snap/web".into())
-    });
+    let assets = startup.assets().to_string_lossy().into_owned();
     let router = Router::new()
         .route("/health", get(|| async { "OK" }))
         .route("/api/session", get(session))

@@ -125,8 +125,8 @@ and a real Authy OAuth CLI/browser journey in disposable repositories. The journ
 uses an explicit OpenCode V2 contract fixture. Candidate approval is a fixture-only
 browser action. Live V2 service compatibility requires an installed V2 CLI.
 
-The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper runs from
-the repository root, so pass the app directory. `[check].rust` selects fast packages,
+The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper preserves
+the caller's directory, so app-local commands work. `[check].rust` selects fast packages,
 defaulting to the application's `Cargo.toml`; `[check].commands` adds source checks.
 Each `[test.<platform>]` declares nonempty literal `commands`, run from the app directory
 with `SNAP_TEST_PLATFORM` set. The commands own any required build preparation.
@@ -137,12 +137,18 @@ because Workers and browser have different host contracts; Testy has no Workers 
 Slow memory cases may use `#[ignore = "memory suite"]` and an explicit `--include-ignored`
 suite. Browser and stress cases belong in separate targets.
 
-`snap build apps/testy` and `snap dev apps/testy` run the app's `[build].commands`
-and `[dev].commands`. These use the same literal command and process-group ownership
-as test suites. Testy's dev driver provides frontend HMR and Rust/Wasm rebuilds.
+`snap build [environment]` owns conventional native/Wasm/client builds and allowlisted
+deployment packaging. Root tooling can select `--project apps/testy`. Applications
+cannot declare `[build].commands`. `snap dev apps/testy` retains app development
+commands with process-group ownership. Testy's driver provides HMR and Rust/Wasm rebuilds.
 Former `[server]`, `[web]`, `[prepare]` and suite `build` configuration remain rejected.
 
 Run `mise exec -- cargo test -p snap-cli` for CLI dispatch and migration coverage.
+`mise exec -- cargo test -p snap-config` owns config validation and authenticated
+age-bag loading. `mise exec -- cargo test -p snap-cli --test application -- --ignored
+--test-threads=1` builds real development/production packages, checks private-file
+exclusion, relocated startup, and production debugger isolation. Test fixtures create
+real encrypted bags through the CLI and never require operator secrets.
 After building the CLI, `bun test tests/cli/dev.test.ts` is the explicit development
 workflow gate (requires installed Playwright Chromium). It uses a disposable source
 copy and migrated database, shares the build cache, and checks CSS/React hot reload,

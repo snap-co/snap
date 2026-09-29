@@ -1,0 +1,11 @@
+version = 1
+[host]
+mode = "development"
+listen = "127.0.0.1:3850"
+origin = "http://127.0.0.1:3850"
+data_dir = "../../.snap"
+database = "chatty-store.sqlite"
+[app.oauth]
+issuer = "http://127.0.0.1:3846"
+client_id = "chatty"
+client_secret_ref = "oauth.client_secret"

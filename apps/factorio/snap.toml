@@ -8,7 +8,6 @@ rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
 commands = [["bun", "../../scripts/dev-factorio.ts"]]
 
 [build]
-commands = [["bun", "../../scripts/build-factorio.ts", "--package"]]
 
 [test.memory]
 commands = [["cargo", "test", "-p", "factorio"]]

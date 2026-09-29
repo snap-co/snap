@@ -57,32 +57,33 @@ HTTP application command routes exist.
 From the repository root:
 
 ```sh
-# Explicit setup: builds, migrations and local client-secret creation if absent.
+# After explicitly initializing and sealing matching Authy/Chatty secrets.
 mise exec -- bun scripts/chatty.ts --migrate
 mise exec -- bun scripts/chatty.ts
 ```
 
-The runner reads `.snap/chatty.env`, with environment overrides. Authy defaults to
-`127.0.0.1:3846` and Chatty to `127.0.0.1:3850`; `AUTHY_WEB_ADDR` and
-`CHATTY_WEB_ADDR` change loopback ports. Startup never silently migrates or replaces
+The runner reads each app's `.deployment/development/config.toml` and encrypted bag.
+The checked-in configs select Authy at `127.0.0.1:3846` and Chatty at `127.0.0.1:3850`.
+Startup never silently migrates or replaces
 an occupied listener. Dev supports frontend HMR and native/Wasm replacement;
 failed builds retain the previous generation.
 
-Independent `./bin/snap dev apps/chatty` needs `AUTHY_ORIGIN` and the matching
-`CHATTY_CLIENT_SECRET`. `./bin/snap build apps/chatty` produces `dist/chatty/chatty`
-and adjacent assets. Standalone use:
+App-local `snap dev` uses `[app.oauth]` and resolves `client_secret_ref` through the
+encrypted bag. `snap build` produces `dist/development/server`, config and clients.
+Standalone use from the repository root:
 
 ```sh
-SNAP_DATABASE=apps/chatty/.snap/chatty-store.sqlite ./dist/chatty/chatty --migrate
-SNAP_DATABASE=apps/chatty/.snap/chatty-store.sqlite ./dist/chatty/chatty
+./apps/chatty/dist/development/server --migrate
+# Inject SNAP_MASTER_KEY through the process launcher.
+./apps/chatty/dist/development/server
 ```
 
-`CHATTY_ADDR` selects the native loopback listener. `SNAP_ORIGIN`, `AUTHY_ORIGIN`,
-`SNAP_WEB_DIR` select origins and assets. Standalone
-database defaults to `.snap/chatty-store.sqlite` relative to cwd; dev uses
+`[host]` selects the listener, public origin, assets and persistent data directory.
+Paths resolve against config.toml. The checked-in development config uses
 `apps/chatty/.snap/chatty-store.sqlite`. Preserve SQLite for sessions, keys and
-threads. Old databases are not automatically imported. Workers and public
-deployment are not supported targets.
+threads. Old databases are not imported automatically. Workers remains unsupported.
+Native production packages support HTTP behind a TLS proxy; see
+[configuration](../../docs/configuration.md) for the requirements.
 
 ## Verification
 

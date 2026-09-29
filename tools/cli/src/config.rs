@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub version: u32,
     pub application: String,
-    pub build: Option<TestSuite>,
+    pub build: Option<Build>,
     pub dev: Option<TestSuite>,
     #[serde(default)]
     pub check: Check,
@@ -23,6 +23,20 @@ pub struct Check {
     pub rust: Vec<PathBuf>,
     #[serde(default)]
     pub commands: Vec<Vec<String>>,
+}
+
+/// Only target selection varies. Compilation and packaging belong to Snap.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Build {
+    #[serde(default = "native")]
+    pub server: String,
+    pub binary: Option<String>,
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+fn native() -> String {
+    "native".into()
 }
 
 /// Suites own literal commands, including any host preparation they require.
@@ -67,7 +81,7 @@ impl Project {
                         "application must not be empty"
                     );
                     validate_commands("check", &config.check.commands)?;
-                    for (name, workflow) in [("build", &config.build), ("dev", &config.dev)] {
+                    for (name, workflow) in [("dev", &config.dev)] {
                         if let Some(workflow) = workflow {
                             ensure!(
                                 !workflow.commands.is_empty(),

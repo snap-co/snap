@@ -2,6 +2,7 @@ import { test as base, expect, type Page } from "@playwright/test";
 import { spawn, execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { deployment } from "../../../tests/support/deployment";
 
 const test = base.extend<{ server: string }>({
   server: async ({}, use) => {
@@ -11,9 +12,10 @@ const test = base.extend<{ server: string }>({
     const database = resolve(directory, "identity.sqlite");
     execFileSync(resolve(root, "target/debug/snap"), ["migrate", "--database", database,
       "--migrations", "crates/identity/migrations"], { cwd: root });
-    const child = spawn(resolve(root, "target/debug/testy-web"), [], {
+    const setup = await deployment(directory, { host: { mode: "development", listen: "127.0.0.1:0", data_dir: directory, database: "identity.sqlite", web_dir: `${root}/apps/testy/dist/development/web` }, app: {} });
+    const child = spawn(resolve(root, "target/debug/testy-web"), ["--config", setup.path], {
       cwd: root,
-      env: { ...process.env, TESTY_WEB_ADDR: "127.0.0.1:0", TESTY_DATABASE: database },
+      env: setup.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let logs = "";

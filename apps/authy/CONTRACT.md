@@ -75,11 +75,10 @@ each permission. JSON protocol errors remain JSON for non-browser clients.
 | `/oauth/revoke` | Revoke a token's grant family |
 | `/oauth/logout` | RP-initiated logout with browser confirmation |
 
-Chatty is registered as `chatty`. `CHATTY_ORIGIN` defaults to
-`http://127.0.0.1:3850`; exact redirects are `/auth/callback` and
-`/auth/logged-out` at that origin. Configuring `CHATTY_CLIENT_SECRET` with at
-least 32 bytes selects confidential `client_secret_basic`; otherwise it is a
-public PKCE client.
+The development config registers Chatty and Factorio through `app.clients`.
+Entries supply IDs, names and exact origins; redirects are `/auth/callback` and
+`/auth/logged-out` there. An explicit `client_secret_ref` resolving to at least
+32 bytes selects confidential `client_secret_basic`; omitting it selects public PKCE.
 
 Clients register exact callback and post-logout URI lists. `snap dev` additionally
 registers the machine's discovered development origins at each client's configured
@@ -89,7 +88,7 @@ current flow. No wildcard or request-derived registration is used. See
 
 Every code flow requires PKCE S256. Scopes are `openid`, `profile` and `email`.
 Registered HTTPS callbacks on `snapco.dev` and its subdomains skip consent by
-default. `AUTHY_AUTO_APPROVE_DOMAIN` replaces that domain; an empty value disables
+default. `app.auto_approve_domain` replaces that domain; an empty value disables
 auto-approval. Matching uses the parsed hostname and a DNS label boundary, never
 the request Host/Origin or a substring. Each callback must still be registered
 exactly for its client; approval of one callback does not approve its siblings.
@@ -129,29 +128,29 @@ From the repository root, after installing the tools described in the README:
 
 ```sh
 mise exec -- cargo build -p authy-native
-SNAP_DATABASE=apps/authy/.snap/authy-store.sqlite target/debug/authy --migrate
+target/debug/authy --config apps/authy/.deployment/development/config.toml --migrate
 ./bin/snap dev apps/authy
-./bin/snap build apps/authy
-SNAP_DATABASE=apps/authy/.snap/authy-store.sqlite ./dist/authy/authy
+./bin/snap build --project apps/authy
+# The launcher supplies SNAP_MASTER_KEY for the encrypted bag.
+./apps/authy/dist/development/server
 ./bin/snap test apps/authy full
 TMPDIR=/tmp/opencode mise exec -- bun test tests/cli/authy-dev.test.ts
 ```
 
-Dev opens `http://127.0.0.1:3846`; `AUTHY_WEB_ADDR` overrides it. Vite owns frontend
+Dev opens `http://127.0.0.1:3846`; deployment TOML controls its listener. Vite owns frontend
 HMR; successful Rust builds replace both native host and Wasm SDK, then reload.
 Failed builds retain the previous generation. Persisted accounts/profiles survive.
-The package places web assets beside `dist/authy/authy`.
+The package places config and assets beside `dist/<environment>/server`.
 
-`SNAP_DATABASE` selects the database. Dev defaults to
-`apps/authy/.snap/authy-store.sqlite`; standalone defaults to
-`.snap/authy-store.sqlite` relative to its working directory. Startup verifies and
+`host.data_dir` and `host.database` select the database. The checked-in development
+config uses `apps/authy/.snap/authy-store.sqlite`. Startup verifies and
 loads an explicitly migrated database. Close the host before migrations. There is
 no automatic import from old Passport databases; preserve those files separately.
 
-`AUTHY_ADDR` sets the native loopback listener. `SNAP_ORIGIN` sets the canonical
-browser/issuer origin; dev supplies its public Vite origin. `SNAP_WEB_DIR` overrides
-assets. `SNAP_SESSION_KEY` may override the persisted cookie key with at least
-32 bytes; changing it invalidates existing cookies. Preserve SQLite to retain
+`host.listen`, `host.origin` and `host.web_dir` configure host IO.
+`app.cookie_key_ref` may override the persisted cookie key; changing it invalidates
+existing cookies. See [configuration](../../docs/configuration.md) for packages,
+explicit age-bag initialization and runtime key injection. Preserve SQLite to retain
 credentials, sessions and signing identity. Local tests do not establish a public
 deployment or OIDC certification.
 

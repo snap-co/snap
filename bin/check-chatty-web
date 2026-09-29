@@ -2,8 +2,8 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-bun scripts/build-authy.ts
-bun scripts/build-chatty.ts
+./bin/snap build --project apps/authy --web-only --output apps/authy/dist/development/web
+./bin/snap build --project apps/chatty --web-only --output apps/chatty/dist/development/web
 bunx tsc -p apps/chatty/web/tsconfig.json
 mise exec -- cargo build -p authy-native -p chatty-native
 bun scripts/test-chatty.ts

@@ -10,6 +10,8 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+snap-config.workspace = true
+serde.workspace = true
 chatty.workspace = true
 snap-document.workspace = true
 snap-document-local = { path = "../../../platforms/document" }

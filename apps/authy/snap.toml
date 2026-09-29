@@ -2,7 +2,6 @@ version = 1
 application = "authy"
 
 [build]
-commands = [["bun", "../../scripts/build-authy.ts", "--package"]]
 
 [dev]
 commands = [["bun", "../../scripts/dev-authy.ts"]]

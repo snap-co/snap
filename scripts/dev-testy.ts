@@ -2,11 +2,13 @@ import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer, type ProxyOptions, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
+import { development, generation } from "../platforms/config/development";
 
 // App-owned host composition; snap owns the process group and signal forwarding.
 const root = resolve(import.meta.dir, "..");
 process.chdir(root);
-const publicURL = new URL(`http://${process.env.TESTY_WEB_ADDR ?? "127.0.0.1:3848"}`);
+const input = await development("testy", root);
+const publicURL = new URL(`http://${input.config.dev?.listen ?? input.config.host.listen}`);
 if (!["127.0.0.1", "[::1]"].includes(publicURL.hostname))
   throw new Error("Testy development requires a loopback address");
 await mkdir("apps/testy/.snap", { recursive: true });
@@ -56,9 +58,7 @@ process.on("SIGTERM", () => void shutdown(143));
 async function build() {
   const directory = `${session}/${++serial}`;
   await mkdir(directory);
-  await run(["bun", "scripts/build-testy.ts", "--bindings-only"], {
-    ...process.env, TESTY_BUILD_DIR: directory,
-  });
+  await run([process.env.SNAP_CLI!, "build", "--project", "apps/testy", "--web-only", "--output", directory]);
   await run(["mise", "exec", "--", "cargo", "build", "-p", "testy-local",
     "--no-default-features", "--features", "web", "--bin", "testy-web"]);
   await copyFile("target/debug/testy-web", `${directory}/testy-web`);
@@ -66,11 +66,8 @@ async function build() {
 }
 
 async function launch(directory: string) {
-  const child = spawn([`${directory}/testy-web`], {
-    ...process.env,
-    TESTY_WEB_ADDR: backend ? new URL(backend).host : "127.0.0.1:0",
-    TESTY_WEB_DIR: directory,
-  }, true);
+  const config = await generation(directory, input, { listen: backend ? new URL(backend).host : "127.0.0.1:0", origin: backend || undefined, web_dir: directory });
+  const child = spawn([`${directory}/testy-web`, "--config", config], { ...process.env, SNAP_MASTER_KEY: input.key }, true);
   let address = "";
   void (async () => {
     let output = "";
@@ -94,7 +91,7 @@ async function launch(directory: string) {
       }
       await Bun.sleep(30);
     }
-    throw new Error("Testy host did not become ready; check the explicitly migrated TESTY_DATABASE");
+    throw new Error("Testy host did not become ready; check the explicitly migrated database");
   } catch (error) {
     await stop(child);
     throw error;
@@ -144,7 +141,7 @@ try {
       port: Number(publicURL.port || 80), strictPort: true,
       fs: { allow: [resolve("apps/testy/web"), session, resolve("node_modules")] },
       proxy: { "^/(transport|__dev)(/|$)": proxy },
-      watch: { ignored: ["**/target/**", "**/.snap/**", "**/.git/**"] },
+      watch: { ignored: ["**/target/**", "**/.snap/**", "**/dist/**", "**/.git/**"] },
     },
   });
   vite.watcher.add([resolve("crates"), resolve("platforms"), resolve("apps/testy"),
@@ -181,7 +178,7 @@ try {
     } finally { building = false; }
   };
   vite.watcher.on("all", (_event, path) => {
-    if (!/\.(rs|toml|lock)$/.test(path) || path.includes("/.snap/")) return;
+    if (!/\.(rs|toml|lock)$/.test(path) || path.includes("/.snap/") || path.includes("/dist/")) return;
     revision++;
     clearTimeout(timer);
     timer = setTimeout(() => void rebuild().catch(error => {

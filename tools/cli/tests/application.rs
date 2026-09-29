@@ -1,7 +1,280 @@
 use std::{fs, process::Command};
 
 #[test]
-fn app_workflows_run_from_the_project_and_propagate_failure() {
+fn build_selects_the_named_environment_without_development_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("snap.toml"),
+        "version=1\napplication='fixture'\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join(".deployment/development")).unwrap();
+    fs::write(
+        root.path().join(".deployment/development/config.toml"),
+        "version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='data'\n[app]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("dist/production")).unwrap();
+    fs::write(root.path().join("dist/production/previous"), "retained").unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root.path())
+        .args(["build", "production"])
+        .output()
+        .unwrap();
+    assert!(!build.status.success());
+    assert!(String::from_utf8_lossy(&build.stderr).contains("config.toml"));
+    assert_eq!(
+        fs::read_to_string(root.path().join("dist/production/previous")).unwrap(),
+        "retained"
+    );
+    let traversal = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root.path())
+        .args(["build", "../production"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&traversal.stderr).contains("Invalid environment"));
+}
+
+#[test]
+#[ignore = "native packaging"]
+fn native_package_is_relocatable_and_excludes_private_deployment_files() {
+    use age::secrecy::ExposeSecret;
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpStream,
+        process::Stdio,
+    };
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    for name in ["native", "wasm", "web", "client.ts"] {
+        std::os::unix::fs::symlink(
+            repository.join("apps/chatty").join(name),
+            root.path().join(name),
+        )
+        .unwrap();
+    }
+    std::os::unix::fs::symlink(
+        repository.join("node_modules"),
+        root.path().join("node_modules"),
+    )
+    .unwrap();
+    fs::copy(
+        repository.join("apps/chatty/Cargo.toml"),
+        root.path().join("Cargo.toml"),
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("snap.toml"),
+        "version=1\napplication='chatty'\n[build]\n",
+    )
+    .unwrap();
+    let input = root.path().join(".deployment/development");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("config.toml"), "version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='data'\n[app.oauth]\nissuer='http://127.0.0.1:3846'\nclient_id='chatty'\nclient_secret_ref='oauth.client_secret'\n").unwrap();
+    let identity = age::x25519::Identity::generate();
+    let secret = "packaging-test-client-credential-at-least-32-bytes";
+    fs::write(
+        input.join("secrets.key"),
+        identity.to_string().expose_secret(),
+    )
+    .unwrap();
+    fs::write(input.join("secrets.toml"), secret).unwrap();
+    fs::write(input.join("private-notes.txt"), "not packaged").unwrap();
+    fs::write(
+        input.join("secrets.enc"),
+        snap_config::Secrets::encrypt(
+            format!("[oauth]\nclient_secret='{secret}'\n").as_bytes(),
+            &[identity.to_public()],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root.path())
+        .arg("build")
+        .env_remove("SNAP_MASTER_KEY")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let package = root.path().join("dist/development");
+    for name in [
+        "secrets.key",
+        "secrets.toml",
+        "private-notes.txt",
+        "web-build.mjs",
+    ] {
+        assert!(!package.join(name).exists());
+    }
+    assert!(package.join("web/index.html").is_file());
+    assert!(package.join("web/bindings/chatty_wasm_bg.wasm").is_file());
+    assert!(package.join("client.js").is_file());
+    let relocated = root.path().join("relocated");
+    fs::rename(package, &relocated).unwrap();
+    let migrate = Command::new(relocated.join("server"))
+        .current_dir(&repository)
+        .arg("--migrate")
+        .output()
+        .unwrap();
+    assert!(
+        migrate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+    let mut server = Command::new(relocated.join("server"))
+        .current_dir(&repository)
+        .env("SNAP_MASTER_KEY", identity.to_string().expose_secret())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    struct Stop<'a>(&'a mut std::process::Child);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let guard = Stop(&mut server);
+    let stdout = guard.0.stdout.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+        let _ = send.send(result);
+    });
+    let line = receive
+        .recv_timeout(std::time::Duration::from_secs(15))
+        .expect("bounded readiness")
+        .unwrap();
+    let address = line
+        .trim()
+        .strip_prefix("Chatty http://")
+        .expect("server readiness");
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /health HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"));
+}
+
+#[test]
+#[ignore = "native production packaging"]
+fn production_package_serves_without_publishing_testy_debugger_controls() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpStream,
+        process::Stdio,
+    };
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    for name in ["local", "wasm", "web"] {
+        std::os::unix::fs::symlink(
+            repository.join("apps/testy").join(name),
+            root.path().join(name),
+        )
+        .unwrap();
+    }
+    std::os::unix::fs::symlink(
+        repository.join("node_modules"),
+        root.path().join("node_modules"),
+    )
+    .unwrap();
+    fs::copy(
+        repository.join("apps/testy/Cargo.toml"),
+        root.path().join("Cargo.toml"),
+    )
+    .unwrap();
+    fs::write(root.path().join("snap.toml"), "version=1\napplication='testy'\n[build]\nserver='local'\nbinary='testy-web'\nfeatures=['web']\n").unwrap();
+    let input = root.path().join(".deployment/production");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='production'\nlisten='0.0.0.0:0'\norigin='https://testy.example.test'\ndata_dir='{}'\n[app]\n", root.path().join("data").display())).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root.path())
+        .args(["build", "production"])
+        .env_remove("SNAP_MASTER_KEY")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let package = root.path().join("dist/production");
+    assert!(!package.join("web/app.js.map").exists());
+    assert!(package.join("web/app.js").is_file());
+    assert!(
+        Command::new(package.join("server"))
+            .arg("--migrate")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut server = Command::new(package.join("server"))
+        .env_remove("SNAP_MASTER_KEY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    struct Stop<'a>(&'a mut std::process::Child);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let guard = Stop(&mut server);
+    let stdout = guard.0.stdout.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = send.send(BufReader::new(stdout).read_line(&mut line).map(|_| line));
+    });
+    let line = receive
+        .recv_timeout(std::time::Duration::from_secs(15))
+        .unwrap()
+        .unwrap();
+    let address: std::net::SocketAddr = line
+        .trim()
+        .strip_prefix("Testy http://")
+        .expect("server readiness")
+        .parse()
+        .unwrap();
+    for path in ["/__dev", "/__dev/ws"] {
+        let mut stream = TcpStream::connect(("127.0.0.1", address.port())).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: testy.example.test\r\nOrigin: https://testy.example.test\r\nConnection: close\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+    }
+}
+
+#[test]
+fn development_workflows_run_from_the_project_and_propagate_failure() {
     let root = std::env::temp_dir().join(format!("snap-workflow-{}", std::process::id()));
     fs::create_dir_all(root.join("nested")).unwrap();
     fs::write(
@@ -14,32 +287,21 @@ fn app_workflows_run_from_the_project_and_propagate_failure() {
         r#"
 version = 1
 application = "fixture"
-[build]
-commands = [["sh", "-c", "pwd > built"]]
 [dev]
-commands = [["sh", "-c", "test -f built && exit 17"], ["touch", "should-not-run"]]
+commands = [["sh", "-c", "pwd > built; exit 17"], ["touch", "should-not-run"]]
 "#,
     )
     .unwrap();
-    let build = Command::new(env!("CARGO_BIN_EXE_snap"))
+    let dev = Command::new(env!("CARGO_BIN_EXE_snap"))
         .current_dir(root.join("nested"))
-        .arg("build")
+        .arg("dev")
         .output()
         .unwrap();
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
+    assert_eq!(dev.status.code(), Some(17));
     assert_eq!(
         fs::read_to_string(root.join("built")).unwrap().trim(),
         root.to_str().unwrap()
     );
-    let dev = Command::new(env!("CARGO_BIN_EXE_snap"))
-        .args(["dev", root.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert_eq!(dev.status.code(), Some(17));
     assert!(!root.join("should-not-run").exists());
     fs::remove_dir_all(root).unwrap();
 }

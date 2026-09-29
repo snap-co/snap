@@ -1,3 +1,4 @@
+mod config;
 mod keys;
 mod oidc_http;
 mod operations;
@@ -18,7 +19,6 @@ use snap_document_local::{
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
 use std::{
-    path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -91,11 +91,25 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let database = PathBuf::from(
-        std::env::var("SNAP_DATABASE").unwrap_or_else(|_| ".snap/authy-store.sqlite".into()),
-    );
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    if args == ["--migrate"] {
+    let options = snap_config::Options::parse()?;
+    let config = snap_config::Config::<config::Settings>::read(&options.config)?;
+    config.app.validate()?;
+    if options.action == snap_config::Action::Check {
+        config.require_bag(
+            config.app.cookie_key_ref.is_some()
+                || config
+                    .app
+                    .clients
+                    .iter()
+                    .any(|c| c.client_secret_ref.is_some()),
+        )?;
+    }
+    if options.action == snap_config::Action::Check {
+        return Ok(());
+    }
+    let database = config.database();
+    if options.action == snap_config::Action::Migrate {
+        std::fs::create_dir_all(database.parent().unwrap())?;
         let report = snap_sqlite::migrate(&database, &migrations())?;
         println!(
             "Applied {} migrations to {}",
@@ -104,18 +118,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    if !args.is_empty() {
-        return Err("usage: authy [--migrate]".into());
+    let secrets = config.load_secrets()?;
+    let cookie_key = config.app.cookie_key(&secrets)?;
+    if cookie_key
+        .as_ref()
+        .is_some_and(|key| key.expose().len() < 32)
+    {
+        return Err("Cookie key must contain at least 32 bytes".into());
     }
-    let listener = tokio::net::TcpListener::bind(
-        std::env::var("AUTHY_ADDR").unwrap_or_else(|_| "127.0.0.1:3846".into()),
-    )
-    .await?;
+    // Resolve required issuer secrets before opening a listener or mutating Store.
+    let mut issuer = oidc_http::Issuer::new(
+        &config.host.public_origin(config.host.listen),
+        &config.app,
+        &secrets,
+        &config.host.dev_client_origins,
+    )?;
+    let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
     let address = listener.local_addr()?;
-    if !address.ip().is_loopback() {
-        return Err("Authy development host requires loopback".into());
-    }
-    let origin = std::env::var("SNAP_ORIGIN").unwrap_or_else(|_| format!("http://{address}"));
+    let origin = config.host.public_origin(address);
     let parsed = url::Url::parse(&origin)?;
     if !["http", "https"].contains(&parsed.scheme())
         || parsed.path() != "/"
@@ -124,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        return Err("SNAP_ORIGIN must be an HTTP(S) origin".into());
+        return Err("host.origin must be an HTTP(S) origin".into());
     }
     let origin = parsed.origin().ascii_serialization();
     let mut store = snap_sqlite::Sqlite::open(&database)?;
@@ -137,7 +157,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         store.load(table)?;
     }
-    let keys = Arc::new(keys::Keys::load(&mut store, parsed.scheme() == "https")?);
+    let keys = Arc::new(keys::Keys::load(
+        &mut store,
+        parsed.scheme() == "https",
+        cookie_key.as_ref(),
+    )?);
     let host = Host::new(
         store,
         authy::document(),
@@ -155,16 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(move |headers| keys.read_cookie(headers))
     };
     let documents = Shared::with_required_cookie(host, origin.clone(), cookie);
-    let issuer = oidc_http::Issuer::new(&origin)?;
-    let assets = std::env::var("SNAP_WEB_DIR").unwrap_or_else(|_| {
-        let adjacent = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("web")));
-        adjacent
-            .filter(|p| p.is_dir())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".snap/web".into())
-    });
+    issuer.config.issuer = origin.clone();
+    let assets = config.assets().to_string_lossy().into_owned();
     let app = Arc::new(App {
         documents: documents.clone(),
         keys,

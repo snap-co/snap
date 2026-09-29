@@ -1,10 +1,10 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::{Value, json};
 use snap_document_local::{Host, Request, web::Shared};
-use snap_oauth_local::{Config, Cookies, OAuth, failure, no_store, now, random};
+use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
 use snap_oidc::relying_party as rp;
 use snap_store::Error;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
 async fn session(State(oauth): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
@@ -63,8 +63,10 @@ fn operations(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> 
     host
 }
 
-fn env(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.into())
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    oauth: snap_oauth_local::Settings,
 }
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut values: Vec<snap_store::migration::Migration> = [
@@ -84,22 +86,31 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let database = PathBuf::from(env("SNAP_DATABASE", ".snap/chatty-store.sqlite"));
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    if args == ["--migrate"] {
+    let options = snap_config::Options::parse()?;
+    let config = snap_config::Config::<Settings>::read(&options.config)?;
+    config.app.oauth.validate()?;
+    if options.action == snap_config::Action::Check {
+        config.require_bag(true)?;
+    }
+    if options.action == snap_config::Action::Check {
+        return Ok(());
+    }
+    let database = config.database();
+    if options.action == snap_config::Action::Migrate {
+        std::fs::create_dir_all(database.parent().unwrap())?;
         snap_sqlite::migrate(&database, &migrations())?;
         println!("Chatty migrations applied");
         return Ok(());
     }
-    if !args.is_empty() {
-        return Err("usage: chatty [--migrate]".into());
-    }
-    let listener = tokio::net::TcpListener::bind(env("CHATTY_ADDR", "127.0.0.1:3850")).await?;
+    let secrets = config.load_secrets()?;
+    let oauth_config = config.app.oauth.resolve(
+        config.host.public_origin(config.host.listen),
+        &secrets,
+        config.host.dev_origins.clone(),
+    )?;
+    let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
     let address = listener.local_addr()?;
-    if !address.ip().is_loopback() {
-        return Err("Chatty development host requires loopback".into());
-    }
-    let origin = snap_oauth_local::origin(&env("SNAP_ORIGIN", &format!("http://{address}")))?;
+    let origin = snap_oauth_local::origin(&config.host.public_origin(address))?;
     let mut store = snap_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
@@ -121,21 +132,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oauth = OAuth::new(
         documents.clone(),
         cookies,
-        Config {
+        snap_oauth_local::Config {
             origin,
-            issuer: env("AUTHY_ORIGIN", "http://127.0.0.1:3846"),
-            client: "chatty".into(),
-            secret: env("CHATTY_CLIENT_SECRET", ""),
+            ..oauth_config
         },
     )?;
-    let assets = std::env::var("SNAP_WEB_DIR").unwrap_or_else(|_| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("web")))
-            .filter(|p| p.is_dir())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".snap/web".into())
-    });
+    let assets = config.assets().to_string_lossy().into_owned();
     let router = Router::new()
         .route("/health", get(|| async { "OK" }))
         .route("/api/session", get(session))

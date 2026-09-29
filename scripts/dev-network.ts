@@ -48,16 +48,14 @@ export function publicOrigin(value: string) {
   return url;
 }
 
-export function clientOrigins(hosts: string[], env: Record<string, string | undefined> = process.env) {
+export function clientOrigins(hosts: string[], clients: { id: string; origin: string }[] = [], appDomain?: string) {
   // Authy's native configuration derives exact per-client HTTPS callbacks.
-  if (env.AUTHY_APP_DOMAIN) return {};
-  return Object.fromEntries(([ ["chatty", 3850], ["factorio", 3852] ] as const).map(([app, fallback]) => {
-    const prefix = app.toUpperCase();
-    const canonical = env[`${prefix}_ORIGIN`] ? publicOrigin(env[`${prefix}_ORIGIN`]!) : undefined;
-    if (canonical?.protocol === "https:") return [app, [canonical.origin]];
-    const listen = new URL(`http://${env[`${prefix}_WEB_ADDR`] ?? `0.0.0.0:${fallback}`}`);
-    const port = canonical ? canonical.port || "80" : listen.port || "80";
-    if (port === "0") throw new Error(`${prefix}_ORIGIN must supply the app's allocated port to Authy`);
-    return [app, [...new Set([...originsFor(hosts, port), ...(canonical ? [canonical.origin] : [])])]];
+  if (appDomain) return {};
+  return Object.fromEntries(clients.map(({id, origin}) => {
+    const canonical = publicOrigin(origin);
+    if (canonical.protocol === "https:") return [id, [canonical.origin]];
+    const port = canonical.port || "80";
+    if (port === "0") throw new Error(`Client origin must supply the app's allocated port`);
+    return [id, [...new Set([...originsFor(hosts, port), canonical.origin])]];
   }));
 }

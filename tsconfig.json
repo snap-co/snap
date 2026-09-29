@@ -10,5 +10,5 @@
     "types": ["bun", "react", "react-dom"],
     "skipLibCheck": true
   },
-  "include": ["apps/testy/web/**/*.ts", "apps/testy/web/**/*.tsx", "apps/testy/tests/**/*.ts", "scripts/build-testy.ts"]
+  "include": ["apps/testy/web/**/*.ts", "apps/testy/web/**/*.tsx", "apps/testy/tests/**/*.ts"]
 }

@@ -1,2 +1,2 @@
 import { dev } from "./dev-document-app";
-await dev("chatty", "main", 3850);
+await dev("chatty", "app", 3850);

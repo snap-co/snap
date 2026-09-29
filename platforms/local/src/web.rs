@@ -47,10 +47,19 @@ impl<P: Program, R: Authority> Shared<P, R> {
 
 // Reject cross-origin browser control requests and DNS-rebinding Host headers.
 fn local(headers: &HeaderMap, authority: &str) -> bool {
-    headers.get("host").and_then(|h| h.to_str().ok()) == Some(authority)
+    let host = authority
+        .strip_prefix("http://")
+        .or_else(|| authority.strip_prefix("https://"))
+        .unwrap_or(authority);
+    let origin = if authority.contains("://") {
+        authority.to_owned()
+    } else {
+        format!("http://{authority}")
+    };
+    headers.get("host").and_then(|h| h.to_str().ok()) == Some(host)
         && headers
             .get("origin")
-            .is_none_or(|origin| origin.to_str().ok() == Some(&format!("http://{authority}")))
+            .is_none_or(|header| header.to_str().ok() == Some(&origin))
 }
 async fn inspect<P: Program, R: Authority>(
     State(shared): State<Host<P, R>>,
@@ -145,8 +154,20 @@ pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
     host: Development<P, R>,
     assets: String,
 ) -> std::io::Result<()> {
+    let origin = format!("http://{}", listener.local_addr()?);
+    serve_configured(listener, host, assets, origin, true).await
+}
+
+/// Production serves transport without publishing trusted debugger controls.
+pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send + 'static>(
+    listener: tokio::net::TcpListener,
+    host: Development<P, R>,
+    assets: String,
+    origin: String,
+    development: bool,
+) -> std::io::Result<()> {
     let address = listener.local_addr()?;
-    if !address.ip().is_loopback() {
+    if development && !address.ip().is_loopback() {
         return Err(std::io::Error::other(
             "development controls require a loopback listener",
         ));
@@ -155,17 +176,30 @@ pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
     let shared = Arc::new(Shared {
         host: Mutex::new(host),
         clock: Instant::now(),
-        authority: address.to_string(),
+        authority: origin,
         updates,
     });
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/transport", get(upgrade::<P, R>))
-        .route("/__dev", get(inspect::<P, R>).post(control::<P, R>))
-        .route("/__dev/ws", get(debugger::upgrade::<P, R>))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
-        )
-        .with_state(shared.clone());
+        );
+    if development {
+        app = app
+            .route("/__dev", get(inspect::<P, R>).post(control::<P, R>))
+            .route("/__dev/ws", get(debugger::upgrade::<P, R>));
+    } else {
+        app = app
+            .route(
+                "/__dev",
+                axum::routing::any(|| async { StatusCode::NOT_FOUND }),
+            )
+            .route(
+                "/__dev/{*path}",
+                axum::routing::any(|| async { StatusCode::NOT_FOUND }),
+            );
+    }
+    let app = app.with_state(shared.clone());
     let sweep = async {
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         loop {

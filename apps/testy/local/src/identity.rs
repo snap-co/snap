@@ -124,11 +124,10 @@ pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
         move |invocation, bearer| requests.prepare(invocation, bearer),
     )
 }
-pub fn open()
--> Result<Sessions<snap_sqlite::Sqlite, snap_crypto::Native>, Box<dyn std::error::Error>> {
-    let path =
-        std::env::var("TESTY_DATABASE").unwrap_or_else(|_| ".snap/testy-identity.sqlite".into());
-    let mut store = snap_sqlite::Sqlite::open(std::path::Path::new(&path))?;
+pub fn open(
+    path: &std::path::Path,
+) -> Result<Sessions<snap_sqlite::Sqlite, snap_crypto::Native>, Box<dyn std::error::Error>> {
+    let mut store = snap_sqlite::Sqlite::open(path)?;
     for table in snap_identity::TABLES {
         store.load(table)?;
     }

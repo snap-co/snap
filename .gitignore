@@ -3,6 +3,9 @@
 /.tools/
 /node_modules/
 /dist/
+**/dist/
+**/.deployment/*/secrets.key
+**/.deployment/*/secrets.toml
 /test-results/
 /playwright-report/
 .snap/

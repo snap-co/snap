@@ -3,10 +3,4 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-bun scripts/build-testy.ts
-mise exec -- cargo build -p testy-local --no-default-features --features web --bin testy-web --release "$@"
-mkdir -p "$root/dist"
-cp "$root/target/release/testy-web" "$root/dist/testy-web"
-rm -rf "$root/dist/web"
-cp -a "$root/apps/testy/.snap/web" "$root/dist/web"
-echo "Run ./dist/testy-web; it serves the adjacent web/ directory."
+exec "$root/bin/snap" build --project "$root/apps/testy" "$@"

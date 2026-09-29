@@ -12,6 +12,7 @@ The active Rust flow requires mise and its pinned Rust toolchain:
 mise trust
 mise install rust
 mise exec -- rustup target add wasm32v1-none
+export PATH="$PWD/bin:$PATH"
 ./bin/check
 ```
 
@@ -44,7 +45,8 @@ For the browser host, install Bun dependencies and the browser Wasm target once:
 ```sh
 bun install
 mise exec -- rustup target add wasm32-unknown-unknown
-./bin/snap migrate --database .snap/testy-identity.sqlite --migrations crates/identity/migrations
+./bin/snap build --project apps/testy
+apps/testy/dist/development/server --migrate
 ./bin/snap dev apps/testy
 ```
 
@@ -52,10 +54,10 @@ Open `http://127.0.0.1:3848`. The runner builds the Rust SDK binding and web ass
 then starts the host and Vite. Frontend edits hot-reload; Rust edits rebuild the
 native host and Wasm SDK, restart the host and reload the browser. Failed builds
 keep the previous generation running. Restart/reload discards Calc state while
-retaining the tab's login. `TESTY_WEB_ADDR` overrides the public loopback address.
-`./bin/snap build apps/testy` creates `dist/testy-web` and adjacent assets for the
-same local development host. Run `./dist/testy-web` from the repository root.
-`TESTY_DATABASE` selects the explicitly migrated Identity database. Startup loads
+retaining the tab's login. Configure the listener in the app's deployment TOML.
+`cd apps/testy && snap build` creates `dist/development/server`, adjacent assets
+and config. Run it from any working directory. `host.data_dir` and `host.database`
+select the explicitly migrated Identity database. Startup loads
 Identity's tables; it never creates or migrates them. Close the host before migrations.
 See [Identity](docs/identity.md) for operation and session contracts.
 
@@ -74,7 +76,7 @@ mise exec -- cargo run -p testy-local --bin testy-execution-demo
 mise exec -- cargo run -p testy-local --bin testy-memory-demo
 
 # In separate terminals, run the TCP server and an explicit SDK login:
-mise exec -- cargo run -p testy-local --no-default-features --features native --bin testy-server-native
+mise exec -- cargo run -p testy-local --no-default-features --features native --bin testy-server-native -- --config apps/testy/.deployment/development/config.toml
 export TESTY_EMAIL='you@example.com' TESTY_PASSWORD='your-test-password'
 # Set TESTY_ENROLL=1 only for the first enrollment; omit it for subsequent logins.
 mise exec -- cargo run -p testy-local --no-default-features --features native --bin testy-client-native
@@ -86,7 +88,8 @@ input commits 52, then 72. The demo then replaces the addition implementation,
 restores the saved 42, and replays +10 under replacement code to produce 62.
 Replacement uses ordinary Rust calls; a Wasm/shared-library loader is future work.
 
-The native programs use `127.0.0.1:3847` by default; `TESTY_ADDR` overrides it. They
+The TCP server uses its config's listener; set the demo client's `TESTY_ADDR` to
+that address. They
 use the same Identity database and plaintext TCP for local experiments. The server's
 immediate input resolver supplies a ceiling of 1000 for `calc.add_checked`.
 The in-process memory/execution demos explicitly select a fixed test authority;
@@ -94,88 +97,48 @@ network hosts accept only Store-backed sessions.
 
 ## Network development
 
-For HTTPS behind a local reverse proxy, set `SNAP_ORIGIN` to the public HTTPS
-origin and bind the dev frontend to loopback with `<APP>_WEB_ADDR`. For example:
+Set `host.origin` in `.deployment/development/config.toml` to the app's stable public
+origin. Optional `[dev].listen` controls the frontend listener; the backend remains
+loopback. For HTTPS behind a proxy, the frontend must also bind loopback. For HTTP
+LAN/Tailscale access, explicitly select `0.0.0.0:<port>` for the frontend.
 
-```sh
-SNAP_ORIGIN=https://authy.cc.example.test AUTHY_WEB_ADDR=127.0.0.1:3846 AUTHY_APP_DOMAIN=cc.example.test ./bin/snap dev apps/authy
-SNAP_ORIGIN=https://factorio.cc.example.test FACTORIO_WEB_ADDR=127.0.0.1:3852 AUTHY_ORIGIN=https://authy.cc.example.test ./bin/snap dev apps/factorio
-```
+Set the same Authy URL as `[app.oauth].issuer` in Chatty and Factorio. Authy's
+`[[app.clients]]` entries declare each client origin. Optional `app.app_domain`
+derives exact HTTPS origins per registered client; `app.auto_approve_domain`
+controls consent independently. The default development config uses `snapco.dev`.
 
-The proxy must preserve Host and Origin. The dev server admits only the configured
-HTTPS authority in this mode, ignores incoming forwarding headers, and refuses
-non-loopback bind addresses. HMR uses the browser's HTTPS hostname over WSS.
-Direct LAN HTTP aliases are available only in the HTTP development mode below.
-`AUTHY_APP_DOMAIN` is Authy's optional configuration for deriving exact HTTPS
-callback and logout URLs for each registered client ID. It overrides individual
-client origin variables. It does not register unknown clients or allow one client
-to redirect to another client's subdomain. Leave it unset to use explicit origins.
-
-Authy skips OAuth consent for registered HTTPS callbacks on `snapco.dev` and its
-subdomains. Set `AUTHY_AUTO_APPROVE_DOMAIN` to replace this domain, or to an empty
-value to require consent everywhere. This is independent of `AUTHY_APP_DOMAIN`:
-callback registration remains exact, and login is still required when no live
-Authy session exists. `prompt=consent` explicitly requests the permission screen.
-
-Authy, Chatty and Factorio's `snap dev` runners listen on `0.0.0.0` by default.
-They discover local IPv4 addresses, including LAN and Tailscale, plus the local
-Tailscale DNS name and short name when those resolve to this machine. Each address
-gets the same frontend HMR and Rust/Wasm rebuild workflow. The native backend stays
-on loopback behind the development proxy.
-
-`AUTHY_WEB_ADDR`, `CHATTY_WEB_ADDR` and `FACTORIO_WEB_ADDR` override the listen address
-and port. `SNAP_ORIGIN` sets the current app's canonical public origin independently
-of its bind address. Without it, the runner uses `http://127.0.0.1:<port>`.
-
-Keep Authy's `SNAP_ORIGIN` stable and reachable from your development devices. Set
-the same URL as `AUTHY_ORIGIN` in Chatty and Factorio. Run Authy in dev mode too so it
-registers exact callbacks for discovered addresses. `CHATTY_ORIGIN` and
-`FACTORIO_ORIGIN` on Authy select the corresponding app's canonical URL and port;
-the defaults are 3850 and 3852. Restart the dev runners after network-address or
-port changes. Browser sessions are separate per hostname/IP.
-
-For example, in separate terminals with the existing databases and client secrets:
-
-```sh
-SNAP_ORIGIN=http://192.168.0.2:3846 ./bin/snap dev apps/authy
-AUTHY_ORIGIN=http://192.168.0.2:3846 ./bin/snap dev apps/factorio
-```
-
-The proxy accepts only discovered/configured authorities and requires a browser's
-Origin to match the requested authority. It translates those checked requests to
-the loopback backend's canonical authority and supplies their external origin for
-OAuth callbacks. It overwrites forwarding headers. HMR and application WebSockets
-use the address opened in the browser and undergo the same authority checks.
-Dev callback registration is enabled only by the runner's `SNAP_DEV_MODE=1` and
-explicit origin lists. Packaged hosts ignore dev-origin headers by default.
-Production retains explicit exact callback registration and a fixed issuer.
+The proxy admits only discovered/configured authorities and matching Origin headers,
+overwrites forwarding headers, and supplies checked alias origins for development
+callbacks. Production forbids development-origin lists. Restart runners after config
+or network changes. See [configuration and packages](docs/configuration.md).
 
 ## Run Authy
 
 ```sh
 mise exec -- cargo build -p authy-native
-SNAP_DATABASE=apps/authy/.snap/authy-store.sqlite target/debug/authy --migrate
+target/debug/authy --config apps/authy/.deployment/development/config.toml --migrate
 ./bin/snap dev apps/authy
 ```
 
 Open `http://127.0.0.1:3846` to create an account and edit its private profile.
 Authy persists credentials, sessions, profile documents and OIDC signing keys in
 SQLite. Frontend HMR and native/Wasm rebuilds retain the account and profile.
-`./bin/snap build apps/authy` creates `dist/authy/authy` with adjacent web assets.
+`cd apps/authy && snap build` creates `dist/development/server` with adjacent web
+assets and configuration. Initialize and seal its required secrets first.
 See [Authy's contract](apps/authy/CONTRACT.md) for OAuth registration, configuration,
 packaged launch and verification commands.
 
 ## Run Authy and Chatty together
 
 ```sh
-# Explicitly build and migrate fresh stores, generating a local client secret if needed:
+# After explicitly initializing and sealing each app's matching client secrets:
 mise exec -- bun scripts/chatty.ts --migrate
 # Start both dev servers, with frontend HMR and native/Wasm rebuilds:
 mise exec -- bun scripts/chatty.ts
 ```
 
 Open `http://127.0.0.1:3850` and choose Continue with Authy. The runner reads
-`.snap/chatty.env`; environment variables override it. Chatty stores and synchronizes
+each app's `.deployment/development/config.toml` and encrypted bag. Chatty synchronizes
 conversation messages between clients. See [Chatty](apps/chatty/CONTRACT.md) for
 configuration and verification.
 
@@ -239,7 +202,8 @@ Testy, Authy and Chatty have supported native hosts. The obsolete Authy/Chatty
 Workers compositions have been removed. Outbound HTTP has a portable contract;
 streamed model generation and tools run in native hosts.
 
-The CLI owns `dev`, `build`, `check`, `test` and `migrate`. Applications declare
-literal `[dev].commands` and `[build].commands` in `snap.toml`; the CLI runs them
-from the app directory and owns their process groups. Testy's dev driver owns its
+The CLI owns `dev`, `build`, `check`, `test`, `migrate` and `secrets`. `snap build
+[environment]` owns conventional compilation and deployment packaging; apps do not
+declare build commands. Development commands retain owned process groups.
+Testy's dev driver owns its
 Vite and Rust/Wasm reload workflow. `bin/dev` and `bin/build` remain Testy shortcuts.

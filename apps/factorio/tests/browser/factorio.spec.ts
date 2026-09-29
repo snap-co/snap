@@ -172,7 +172,7 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
     const generations=(await state()).generations;await writeFile(source,original);
     await expect.poll(async()=>(await state()).generations,{timeout:60000}).toBeGreaterThan(generations);
     await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
-    const ui=`${root}/apps/factorio/web/main.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Track work from idea to review.","Updated Factorio development UI."));
+    const ui=`${root}/apps/factorio/web/app.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Track work from idea to review.","Updated Factorio development UI."));
     await expect(page.getByText("Updated Factorio development UI.")).toBeVisible();
   }
   await writeFile(`${failed.worktree}/dirty`,"keep");

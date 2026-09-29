@@ -1,10 +1,31 @@
 use snap_platform_local::{development::Development, web};
 use snap_transport::json;
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let sessions =
-        testy_local::identity::open().map_err(|error| std::io::Error::other(error.to_string()))?;
+    let options = snap_config::Options::parse().map_err(std::io::Error::other)?;
+    let config =
+        snap_config::Config::<Settings>::read(&options.config).map_err(std::io::Error::other)?;
+    if options.action == snap_config::Action::Check {
+        return Ok(());
+    }
+    if options.action == snap_config::Action::Migrate {
+        let database = config.database();
+        std::fs::create_dir_all(database.parent().unwrap())?;
+        snap_sqlite::migrate(
+            &database,
+            &[toml::from_str(snap_identity::MIGRATION).map_err(std::io::Error::other)?],
+        )
+        .map_err(std::io::Error::other)?;
+        return Ok(());
+    }
+    config.load_secrets().map_err(std::io::Error::other)?;
+    let sessions = testy_local::identity::open(&config.database())
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let platform = testy_local::identity::platform(sessions);
     let host = Development::new(
         platform,
@@ -23,20 +44,16 @@ async fn main() -> std::io::Result<()> {
             _ => None,
         },
     );
-    let address = std::env::var("TESTY_WEB_ADDR").unwrap_or_else(|_| "127.0.0.1:3848".into());
-    let assets = std::env::var("TESTY_WEB_DIR").unwrap_or_else(|_| {
-        let sibling = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("web");
-        if sibling.is_dir() {
-            sibling.to_string_lossy().into_owned()
-        } else {
-            "apps/testy/.snap/web".into()
-        }
-    });
-    let listener = tokio::net::TcpListener::bind(&address).await?;
+    let assets = config.assets().to_string_lossy().into_owned();
+    let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
+    let origin = config.host.public_origin(listener.local_addr()?);
     println!("Testy http://{}", listener.local_addr()?);
-    web::serve(listener, host, assets).await
+    web::serve_configured(
+        listener,
+        host,
+        assets,
+        origin,
+        config.host.mode == snap_config::Mode::Development,
+    )
+    .await
 }

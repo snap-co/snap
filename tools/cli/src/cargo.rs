@@ -14,6 +14,7 @@ pub async fn metadata(
         .run(
             Command::new("cargo")
                 .current_dir(&project.root)
+                .env_remove("SNAP_MASTER_KEY")
                 .args([
                     "metadata",
                     "--format-version=1",

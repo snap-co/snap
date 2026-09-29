@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { host as authyHost } from "../../../authy/tests/support/upgraded-host";
 import { devHosts, originsFor } from "../../../../scripts/dev-network";
+import { deployment } from "../../../../tests/support/deployment";
 
 export async function pair(options: { root?: string; dev?: boolean } = {}) {
   const root = options.root ?? resolve(import.meta.dir, "../../../..");
@@ -11,6 +12,7 @@ export async function pair(options: { root?: string; dev?: boolean } = {}) {
   let authy: Awaited<ReturnType<typeof authyHost>> | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let logs = "";
+  let setup: Awaited<ReturnType<typeof deployment>>;
   let restart: () => Promise<void> = async () => {};
   const control = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
@@ -21,12 +23,7 @@ export async function pair(options: { root?: string; dev?: boolean } = {}) {
   async function stop() { if (child && child.exitCode === null) { child.kill("SIGTERM"); await child.exited; } }
   async function start() {
     logs = "";
-    child = Bun.spawn(options.dev ? [`${root}/target/debug/snap`, "dev", `${root}/apps/chatty`] : [`${root}/target/debug/chatty`], { cwd: root, env: { ...process.env,
-      SNAP_DATABASE: `${directory}/chatty.sqlite`, SNAP_WEB_DIR: `${root}/apps/chatty/.snap/web`,
-      CHATTY_ADDR: new URL(base).host, SNAP_ORIGIN: base, AUTHY_ORIGIN: authy!.base,
-      CHATTY_WEB_ADDR: options.dev ? `0.0.0.0:${new URL(base).port}` : new URL(base).host,
-      CHATTY_CLIENT_SECRET: authy!.clientSecret,
-    }, stdout: "pipe", stderr: "pipe" });
+    child = Bun.spawn(options.dev ? [`${root}/target/debug/snap`, "dev", `${root}/apps/chatty`, "--config", setup.path] : [`${root}/target/debug/chatty`, "--config", setup.path], { cwd: root, env: setup.env, stdout: "pipe", stderr: "pipe" });
     const running = child;
     for (const stream of [running.stdout, running.stderr]) void (async () => { for await (const bytes of stream as ReadableStream<Uint8Array>) logs += new TextDecoder().decode(bytes); })();
     const deadline = Date.now() + 20000;
@@ -41,7 +38,10 @@ export async function pair(options: { root?: string; dev?: boolean } = {}) {
     authy = await authyHost(base, options.dev ? {
       SNAP_DEV_MODE: "1", SNAP_DEV_CLIENT_ORIGINS: JSON.stringify({ chatty: originsFor(await devHosts(), new URL(base).port) }),
     } : {});
-    const migrate = Bun.spawn([`${root}/target/debug/chatty`, "--migrate"], { env: { ...process.env, SNAP_DATABASE: `${directory}/chatty.sqlite` }, stdout: "ignore", stderr: "inherit" });
+    setup = await deployment(directory, { host: { mode: "development", listen: new URL(base).host, origin: base, data_dir: directory, database: "chatty.sqlite", web_dir: `${root}/apps/chatty/dist/development/web` },
+      app: { oauth: { issuer: authy.base, client_id: "chatty", client_secret_ref: "oauth.client_secret" } },
+      ...(options.dev ? { dev: { listen: `0.0.0.0:${new URL(base).port}` } } : {}) }, { oauth: { client_secret: authy.clientSecret } });
+    const migrate = Bun.spawn([`${root}/target/debug/chatty`, "--migrate", "--config", setup.path], { env: setup.env, stdout: "ignore", stderr: "inherit" });
     if (await migrate.exited !== 0) throw new Error("Chatty migration failed");
     await start(); restart = async () => { await stop(); await start(); };
   } catch (error) { await close(); throw error; }

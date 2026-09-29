@@ -149,7 +149,7 @@ mise exec -- cargo test -p snap-crypto --test native -- --ignored
 ./bin/check-testy-web
 ```
 
-`TESTY_DATABASE` overrides the database path. Startup opens an explicitly migrated
+Testy's deployment `host.data_dir` and `host.database` select its database. Startup opens an explicitly migrated
 database and loads Identity tables; stop the host before running migrations. Credentials
 and revocations survive restart. Calculator state and physical attachments do not.
 

@@ -3,8 +3,7 @@
   "include": [
     "./**/*.ts",
     "./**/*.tsx",
-    "../tests/**/*.ts",
-    "../../../scripts/build-testy.ts"
+    "../tests/**/*.ts"
   ],
   "compilerOptions": { "types": ["bun", "react", "react-dom"] }
 }

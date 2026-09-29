@@ -17,21 +17,11 @@ use tokio::{
     process::Command,
 };
 
-fn bridge() -> String {
-    std::env::var("FACTORIO_OPENCODE_BRIDGE").unwrap_or_else(|_| {
-        let packaged = std::env::current_exe()
-            .unwrap()
-            .with_file_name("opencode-bridge.js");
-        if packaged.is_file() {
-            packaged.to_string_lossy().into_owned()
-        } else {
-            "scripts/factorio-opencode.ts".into()
-        }
-    })
-}
-async fn process(input: Value) -> Result<tokio::process::Child, String> {
-    let mut child = Command::new(std::env::var("FACTORIO_BUN").unwrap_or_else(|_| "bun".into()))
-        .arg(bridge())
+async fn process(app: &App, mut input: Value) -> Result<tokio::process::Child, String> {
+    input["opencode"] = app.tools.opencode.clone().into();
+    let mut child = Command::new(&app.tools.bun)
+        .env_remove("SNAP_MASTER_KEY")
+        .arg(app.tools.bridge.as_ref().ok_or("Missing tools.bridge")?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -47,10 +37,10 @@ async fn process(input: Value) -> Result<tokio::process::Child, String> {
         .map_err(|e| e.to_string())?;
     Ok(child)
 }
-async fn api(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+async fn api(app: &App, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     let output = tokio::time::timeout(
         Duration::from_secs(40),
-        process(json!({"method":method,"path":path,"body":body}))
+        process(app, json!({"method":method,"path":path,"body":body}))
             .await?
             .wait_with_output(),
     )
@@ -88,7 +78,7 @@ fn owned(
 fn cli_path() -> Result<PathBuf, String> {
     let packaged = std::env::current_exe()
         .map_err(|e| e.to_string())?
-        .with_file_name("factory.js");
+        .with_file_name("cli.js");
     Ok(if packaged.is_file() {
         packaged
     } else {
@@ -146,16 +136,15 @@ async fn configure(
     }
     std::fs::rename(temporary, config).map_err(|e| e.to_string())?;
     let path = format!("/api/session/{}", item.conversation);
-    let model =
-        std::env::var("FACTORIO_INTAKE_MODEL").unwrap_or_else(|_| effects::DEFAULT_MODEL.into());
+    let model = &app.tools.model;
     let (provider, id) = model
         .split_once('/')
         .filter(|(p, m)| !p.is_empty() && !m.is_empty())
-        .ok_or("FACTORIO_INTAKE_MODEL must be provider/model")?;
+        .ok_or("tools.model must be provider/model")?;
     let model = json!({"providerID":provider,"id":id});
-    let existing = match api("GET",&path,None).await {
+    let existing = match api(app, "GET",&path,None).await {
         Ok(v) => v,
-        Err(_) => api("POST","/api/session",Some(json!({"id":item.conversation,"model":model,"title":format!("Intake: {}",item.description.chars().take(70).collect::<String>()),"location":{"directory":w.config.repository},"metadata":{"factorio_intake":item.id,"factorio_workspace":workspace},"permissions":[{"action":"edit","resource":"*","effect":"deny"}]}))).await?,
+        Err(_) => api(app, "POST","/api/session",Some(json!({"id":item.conversation,"model":model,"title":format!("Intake: {}",item.description.chars().take(70).collect::<String>()),"location":{"directory":w.config.repository},"metadata":{"factorio_intake":item.id,"factorio_workspace":workspace},"permissions":[{"action":"edit","resource":"*","effect":"deny"}]}))).await?,
     };
     if existing["data"]["metadata"]["factorio_intake"] != item.id
         || existing["data"]["metadata"]["factorio_workspace"] != workspace
@@ -166,6 +155,7 @@ async fn configure(
     // Apply the policy to retained conversations before submitting another turn.
     if existing["data"]["model"] != model {
         api(
+            app,
             "POST",
             &format!("{path}/model"),
             Some(json!({"model":model})),
@@ -174,13 +164,13 @@ async fn configure(
     }
     Ok(())
 }
-fn instructions(item: &Intake, w: &Workspace, owner: &str) -> Result<String, String> {
-    let bun = std::env::var("FACTORIO_BUN").unwrap_or_else(|_| "bun".into());
+fn instructions(app: &App, item: &Intake, w: &Workspace, owner: &str) -> Result<String, String> {
+    let bun = &app.tools.bun;
     let executable = if bun.contains('/') {
         PathBuf::from(bun)
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .map(|p| p.join(&bun))
+            .map(|p| p.join(bun))
             .find(|p| p.is_file())
             .ok_or("Bun executable not found")?
     }
@@ -233,11 +223,11 @@ pub async fn action(
                 return error(e);
             }
             if input["action"] == "resume" {
-                let text = match instructions(&item, &w, &s.owner) {
+                let text = match instructions(&app, &item, &w, &s.owner) {
                     Ok(v) => v,
                     Err(e) => return error(e),
                 };
-                api("POST",&format!("{path}/prompt"),Some(json!({"id":format!("msg_{}_initial",item.id),"text":text,"metadata":{"factorio_initial":true}}))).await
+                api(&app, "POST",&format!("{path}/prompt"),Some(json!({"id":format!("msg_{}_initial",item.id),"text":text,"metadata":{"factorio_initial":true}}))).await
             } else {
                 let (Some(text), Some(message)) = (input["text"].as_str(), input["id"].as_str())
                 else {
@@ -251,6 +241,7 @@ pub async fn action(
                     return failure(Error::Invalid);
                 }
                 api(
+                    &app,
                     "POST",
                     &format!("{path}/prompt"),
                     Some(json!({"id":message,"text":text})),
@@ -258,9 +249,10 @@ pub async fn action(
                 .await
             }
         }
-        Some("delete") => api("DELETE", &path, None).await,
+        Some("delete") => api(&app, "DELETE", &path, None).await,
         Some("interrupt") => {
             api(
+                &app,
                 "POST",
                 &format!("{path}/interrupt"),
                 Some(json!({"continue":false})),
@@ -273,6 +265,7 @@ pub async fn action(
             };
             if input["action"] == "form" {
                 api(
+                    &app,
                     "POST",
                     &format!("{path}/form/{key}/reply"),
                     Some(input["reply"].clone()),
@@ -283,6 +276,7 @@ pub async fn action(
                     return failure(Error::Invalid);
                 }
                 api(
+                    &app,
                     "POST",
                     &format!("{path}/permission/{key}/reply"),
                     Some(json!({"reply":input["reply"]})),
@@ -315,11 +309,15 @@ pub async fn events(
         Ok(v) => v,
         Err(e) => return failure(e),
     };
-    let mut child =
-        match process(json!({"watch":item.conversation,"description":item.description})).await {
-            Ok(v) => v,
-            Err(e) => return error(e),
-        };
+    let mut child = match process(
+        &app,
+        json!({"watch":item.conversation,"description":item.description}),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return error(e),
+    };
     let Some(output) = child.stdout.take() else {
         return error("Missing event stream");
     };

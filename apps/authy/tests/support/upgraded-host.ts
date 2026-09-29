@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { deployment } from "../../../../tests/support/deployment";
 
 export async function host(relyingPartyOrigin = "http://127.0.0.1:3850", overrides: Record<string, string> = {}) {
   const root = resolve(import.meta.dir, "../../../..");
@@ -10,10 +11,18 @@ export async function host(relyingPartyOrigin = "http://127.0.0.1:3850", overrid
   let base = "";
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let logs = "";
-  const env = { ...process.env, SNAP_DATABASE: database, SNAP_WEB_DIR: resolve(root, "apps/authy/.snap/web"),
-    CHATTY_ORIGIN: relyingPartyOrigin, CHATTY_CLIENT_SECRET: clientSecret, ...overrides };
+  const clients = [{ id: "chatty", name: "Chatty", origin: relyingPartyOrigin, client_secret_ref: "clients.chatty" }];
+  if (overrides.FACTORIO_CLIENT_SECRET) clients.push({ id: "factorio", name: "Factorio", origin: overrides.FACTORIO_ORIGIN, client_secret_ref: "clients.factorio" });
+  let setup: Awaited<ReturnType<typeof deployment>>;
+  async function configure() {
+    setup = await deployment(directory, { host: { mode: "development", listen: base ? new URL(base).host : "127.0.0.1:0", data_dir: directory, database: "authy.sqlite", web_dir: resolve(root, "apps/authy/dist/development/web"),
+      ...(overrides.SNAP_DEV_CLIENT_ORIGINS ? { dev_client_origins: JSON.parse(overrides.SNAP_DEV_CLIENT_ORIGINS) } : {}) },
+      app: { clients, auto_approve_domain: overrides.AUTHY_AUTO_APPROVE_DOMAIN ?? "snapco.dev", ...(overrides.AUTHY_APP_DOMAIN ? { app_domain: overrides.AUTHY_APP_DOMAIN } : {}) } },
+      { clients: { chatty: clientSecret, ...(overrides.FACTORIO_CLIENT_SECRET ? { factorio: overrides.FACTORIO_CLIENT_SECRET } : {}) } });
+  }
   async function start() {
-    child = Bun.spawn([binary], { cwd: root, env: { ...env, AUTHY_ADDR: base ? new URL(base).host : "127.0.0.1:0" }, stdout: "pipe", stderr: "pipe" });
+    await configure();
+    child = Bun.spawn([binary, "--config", setup.path], { cwd: root, env: setup.env, stdout: "pipe", stderr: "pipe" });
     const running = child;
     let address = "";
     for (const stream of [running.stdout, running.stderr]) void (async () => {
@@ -35,7 +44,8 @@ export async function host(relyingPartyOrigin = "http://127.0.0.1:3850", overrid
     if (child && child.exitCode === null) { child.kill("SIGTERM"); await child.exited; }
   }
   try {
-    const migrate = Bun.spawn([binary, "--migrate"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    await configure();
+    const migrate = Bun.spawn([binary, "--migrate", "--config", setup.path], { cwd: root, env: setup.env, stdout: "pipe", stderr: "pipe" });
     if (await migrate.exited !== 0) throw new Error(await new Response(migrate.stderr).text());
     await start();
   } catch (error) { await stop(); await rm(directory, { recursive: true, force: true }); throw error; }

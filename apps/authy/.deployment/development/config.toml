@@ -1,0 +1,19 @@
+version = 1
+[host]
+mode = "development"
+listen = "127.0.0.1:3846"
+origin = "http://127.0.0.1:3846"
+data_dir = "../../.snap"
+database = "authy-store.sqlite"
+[app]
+auto_approve_domain = "snapco.dev"
+[[app.clients]]
+id = "chatty"
+name = "Chatty"
+origin = "http://127.0.0.1:3850"
+client_secret_ref = "clients.chatty"
+[[app.clients]]
+id = "factorio"
+name = "Factorio"
+origin = "http://127.0.0.1:3852"
+client_secret_ref = "clients.factorio"

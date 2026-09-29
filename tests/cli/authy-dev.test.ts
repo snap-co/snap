@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { chromium } from "@playwright/test";
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { deployment } from "../support/deployment";
 
 test("Authy dev retains failed builds and sessions across native/Wasm replacement", async () => {
   const root = resolve(import.meta.dir, "../..");
@@ -19,12 +20,13 @@ test("Authy dev retains failed builds and sessions across native/Wasm replacemen
   }
   try {
     for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates", "platforms", "kits", "tools/cli", "apps", "tests/properties"])
-      await cp(`${root}/${path}`, `${fixture}/${path}`, { recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path) });
+      await cp(`${root}/${path}`, `${fixture}/${path}`, { recursive: true, filter: path => !/(^|\/)(\.snap|\.deployment|node_modules|target|build|dist)(\/|$)/.test(path) });
     for (const path of ["node_modules", ".tools", "target"]) await symlink(`${root}/${path}`, `${fixture}/${path}`);
     const database = `${fixture}/authy.sqlite`;
-    const migrate = Bun.spawn([`${root}/target/debug/authy`, "--migrate"], { env: { ...process.env, SNAP_DATABASE: database }, stdout: "ignore", stderr: "inherit" });
+    const setup = await deployment(`${fixture}/host`, { host: { mode: "development", listen: "127.0.0.1:0", data_dir: fixture, database: "authy.sqlite" }, app: { clients: [], auto_approve_domain: "" } });
+    const migrate = Bun.spawn([`${root}/target/debug/authy`, "--migrate", "--config", setup.path], { env: setup.env, stdout: "ignore", stderr: "inherit" });
     expect(await migrate.exited).toBe(0);
-    child = Bun.spawn([`${root}/target/debug/snap`, "dev", `${fixture}/apps/authy`], { env: { ...process.env, SNAP_DATABASE: database, AUTHY_WEB_ADDR: "127.0.0.1:0" }, stdout: "pipe", stderr: "pipe" });
+    child = Bun.spawn([`${root}/target/debug/snap`, "dev", `${fixture}/apps/authy`, "--config", setup.path], { env: setup.env, stdout: "pipe", stderr: "pipe" });
     for (const stream of [child.stdout, child.stderr]) void (async () => { for await (const chunk of stream as ReadableStream<Uint8Array>) logs += new TextDecoder().decode(chunk); })();
     await until(() => logs.includes("Authy dev http"));
     const url = /Authy dev (http:\/\/[^\s]+)/.exec(logs)![1];

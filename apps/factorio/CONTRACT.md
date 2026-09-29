@@ -5,18 +5,18 @@ ticket-backed work and human-approved local integration. Authy owns sign-in.
 
 ## Setup and onboarding
 
-`FACTORIO_CONFIG` names a JSON file describing an existing server-hosted repository:
+`[app.repository]` in `.deployment/<environment>/config.toml` describes the existing
+server-hosted repository:
 
-```json
-{
-  "repository": "/absolute/path/to/repository",
-  "mainline": "main",
-  "modules": { "my-crate": "crates/my-crate" },
-  "resources": "/absolute/path/outside/repository/factorio-resources",
-  "first_port": 15000,
-  "setup": [],
-  "teardown": []
-}
+```toml
+[app.repository]
+repository = "/absolute/path/to/repository"
+mainline = "main"
+modules = { "my-crate" = "crates/my-crate" }
+resources = "/absolute/path/outside/repository/factorio-resources"
+first_port = 15000
+setup = []
+teardown = []
 ```
 
 Module directories must exist, be non-overlapping and contain no symlinks. The host
@@ -25,25 +25,26 @@ filesystem paths from clients. One workspace per repository keeps claims and por
 allocation repository-wide. Onboarding grants the authenticated creator ownership.
 Another identity receives no access unless granted through Access.
 
-Set the same `FACTORIO_CLIENT_SECRET` on Authy and Factorio. Authy uses
-`FACTORIO_ORIGIN` to register the callback. Factorio uses `AUTHY_ORIGIN` to reach
-Authy. Preserve these credentials and Authy's database when resetting Factorio.
+Give Authy's registered Factorio client and Factorio's `oauth.client_secret` the
+same credential in their respective encrypted bags. Authy's client entry registers
+Factorio's origin; `[app.oauth].issuer` pins Authy. Preserve these credentials and
+Authy's database when resetting Factorio.
 
 ```sh
 mise exec -- cargo build -p factorio-native
-SNAP_DATABASE=apps/factorio/.snap/factorio-store.sqlite target/debug/factorio --migrate
+target/debug/factorio --config apps/factorio/.deployment/development/config.toml --migrate
 ./bin/snap dev apps/factorio
 ```
 
 Startup verifies migrations and leaves an empty database empty. After sign-in,
 choose the repository and create the first workspace. The next screen asks what
-you want to work on. `SNAP_DATABASE`, `SNAP_ORIGIN`, `SNAP_WEB_DIR`, `FACTORIO_ADDR`
-and `FACTORIO_WEB_ADDR` retain their usual native/dev overrides. Packaged builds
+you want to work on. `[host]` configures native IO and optional `[dev].listen`
+selects the frontend listener. Packaged builds
 include the executable, web bindings and OpenCode bridge.
 
-`snap dev` binds its frontend to `0.0.0.0:3852` and accepts this machine's discovered
+With `[dev].listen = "0.0.0.0:3852"`, `snap dev` accepts this machine's discovered
 LAN/Tailscale addresses and Tailscale names. Run Authy in dev mode for matching
-callback registration. Keep `AUTHY_ORIGIN` pinned to Authy's stable issuer URL.
+callback registration. Keep `[app.oauth].issuer` pinned to Authy's stable URL.
 See [network development](../../README.md#network-development) for configuration.
 Packaged executables have no source watcher.
 
@@ -112,13 +113,14 @@ Setup/teardown argv receive `PORT`, `SNAP_DATABASE`, `FACTORIO_DATA`,
 120 seconds, explicitly migrate their own database and leave no detached services.
 The host owns their process groups and records PID/birth markers for crash recovery.
 
-Use OpenCode V2. `FACTORIO_OPENCODE` selects its CLI; `FACTORIO_BUN` selects Bun.
+Use OpenCode V2. `[app.tools].opencode` selects its CLI; `bun` selects Bun.
 The bridge uses the official client and local service discovery/authentication.
 Factorio selects `opencode-go/muse-spark-1.3-contributor` explicitly for intake
-conversations and ticket session setup. `FACTORIO_INTAKE_MODEL=provider/model`
-overrides intake selection, including retained conversations on reconnect or reply.
+conversations and ticket session setup. `[app.tools].model = "provider/model"`
+overrides selection, including retained conversations on reconnect or reply.
 The reply footer shows the session model reported by OpenCode, including its provider
 and variant when present. Selection failures stop submission rather than falling back
 to the global default.
-`FACTORIO_OPENCODE_BRIDGE` supports isolated contract fixtures. Factorio does not
+`[app.tools].bridge` supports installations and isolated fixtures. See
+[configuration](../../docs/configuration.md) for packaging and secrets. Factorio does not
 change global OpenCode configuration or wait for an agent turn under its gate.

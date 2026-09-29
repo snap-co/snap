@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { chromium } from "@playwright/test";
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { deployment } from "../support/deployment";
 
 // Explicit cross-process gate. Edits happen only in a disposable source copy.
 test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", async () => {
@@ -23,7 +24,7 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
     for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates",
       "platforms", "tools/cli", "apps", "tests/properties"])
       await cp(`${root}/${path}`, `${fixture}/${path}`, {
-        recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path),
+        recursive: true, filter: path => !/(^|\/)(\.snap|\.deployment|node_modules|target|build|dist)(\/|$)/.test(path),
       });
     // Share build caches/tools, never application data or editable source.
     for (const path of ["node_modules", ".tools", "target"])
@@ -32,8 +33,9 @@ test("dev keeps failed builds live, reloads Rust/Wasm and hot-replaces CSS", asy
     const migration = Bun.spawn([`${root}/target/debug/snap`, "migrate", "--database", database,
       "--migrations", `${fixture}/crates/identity/migrations`], { stdout: "ignore", stderr: "inherit" });
     expect(await migration.exited).toBe(0);
-    child = Bun.spawn([`${root}/target/debug/snap`, "dev", `${fixture}/apps/testy`], {
-      env: { ...process.env, TESTY_DATABASE: database, TESTY_WEB_ADDR: "127.0.0.1:0" },
+    const setup = await deployment(`${fixture}/host`, { host: { mode: "development", listen: "127.0.0.1:0", data_dir: fixture, database: "identity.sqlite" }, app: {} });
+    child = Bun.spawn([`${root}/target/debug/snap`, "dev", `${fixture}/apps/testy`, "--config", setup.path], {
+      env: setup.env,
       stdout: "pipe", stderr: "pipe",
     });
     for (const stream of [child.stdout, child.stderr]) void (async () => {

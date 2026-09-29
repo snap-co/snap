@@ -18,7 +18,7 @@ trait Effects: Send + 'static {
     fn cleanup(&mut self, config: &Config, session: &Session) -> Result<(), String>;
 }
 
-struct Native(tokio::runtime::Handle);
+struct Native(tokio::runtime::Handle, crate::config::Tools);
 impl Native {
     fn run<T>(&self, future: impl std::future::Future<Output = T>) -> T {
         tokio::task::block_in_place(|| self.0.block_on(future))
@@ -29,7 +29,7 @@ impl Effects for Native {
         self.run(crate::effects::head(c))
     }
     fn setup(&mut self, c: &Config, s: &Session) -> Result<(), String> {
-        self.run(crate::effects::setup(c, s))
+        self.run(crate::effects::setup(c, s, &self.1))
     }
     fn candidate(&mut self, c: &Config, s: &Session) -> Result<(String, String), String> {
         self.run(crate::effects::candidate(c, s))
@@ -50,8 +50,9 @@ impl Effects for Native {
 pub fn register(
     host: Host<snap_sqlite::Sqlite>,
     runtime: tokio::runtime::Handle,
+    tools: crate::config::Tools,
 ) -> Host<snap_sqlite::Sqlite> {
-    with_effects(host, Native(runtime))
+    with_effects(host, Native(runtime, tools))
 }
 
 fn with_effects(

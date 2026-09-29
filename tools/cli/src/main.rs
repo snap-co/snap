@@ -1,11 +1,13 @@
 //! Local developer tooling. Application execution stays in the selected host executable.
 mod application;
 mod architecture;
+mod build;
 mod cargo;
 mod check;
 mod config;
 mod migrate;
 mod process;
+mod secrets;
 mod test;
 
 use clap::{Parser, Subcommand};
@@ -25,9 +27,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Build the application's configured artifacts
-    Build { project: Option<PathBuf> },
+    Build(build::Args),
     /// Run the application's development server and reload workflow
-    Dev { project: Option<PathBuf> },
+    Dev {
+        project: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Manage convention-based encrypted deployment bags
+    Secrets(secrets::Args),
     /// Create or apply explicit Store schema migrations
     Migrate(migrate::Args),
     /// Run a project's tests; defaults to the memory platform
@@ -56,12 +64,11 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
-            Command::Build { project } => {
-                application::run(config::Project::discover(project)?, &runner, false).await
+            Command::Build(args) => build::run(args, &runner).await,
+            Command::Dev { project, config } => {
+                application::run(config::Project::discover(project)?, &runner, config).await
             }
-            Command::Dev { project } => {
-                application::run(config::Project::discover(project)?, &runner, true).await
-            }
+            Command::Secrets(args) => secrets::run(args),
             Command::Migrate(args) => migrate::run(args),
             Command::Test {
                 project_or_platform,

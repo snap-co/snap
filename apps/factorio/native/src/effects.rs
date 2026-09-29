@@ -19,6 +19,7 @@ pub async fn run(dir: &str, argv: &[&str], env: &[(&str, String)]) -> Result<Str
     let (program, args) = argv.split_first().ok_or("Empty command")?;
     let mut cmd = Command::new(program);
     cmd.args(args)
+        .env_remove("SNAP_MASTER_KEY")
         .current_dir(dir)
         .kill_on_drop(true)
         .envs(env.iter().cloned())
@@ -76,9 +77,7 @@ pub async fn verify_worktree(s: &Session) -> Result<(), String> {
     }
     Ok(())
 }
-pub const DEFAULT_MODEL: &str = "opencode-go/muse-spark-1.3-contributor";
-
-pub async fn setup(c: &Config, s: &Session) -> Result<(), String> {
+pub async fn setup(c: &Config, s: &Session, tools: &crate::config::Tools) -> Result<(), String> {
     std::fs::create_dir_all(Path::new(&s.worktree).parent().ok_or("Invalid worktree")?)
         .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&s.data).map_err(|e| e.to_string())?;
@@ -106,18 +105,20 @@ pub async fn setup(c: &Config, s: &Session) -> Result<(), String> {
     // Supplying a stable ID makes an interrupted create recoverable without
     // allocating a second conversation. Existing conversations are moved explicitly.
     let path = format!("/api/session/{}", s.conversation);
-    let (provider, model) = DEFAULT_MODEL.split_once('/').unwrap();
+    let (provider, model) = tools.model.split_once('/').ok_or("Invalid tools.model")?;
     let model = json!({"providerID":provider,"id":model});
-    if opencode("get", &path, None).await.is_err() {
-        opencode("post", "/api/session", Some(json!({"id":s.conversation,"model":model,"title":format!("Factorio {}",s.id),"location":{"directory":s.worktree}}))).await?;
+    if opencode(tools, "get", &path, None).await.is_err() {
+        opencode(tools, "post", "/api/session", Some(json!({"id":s.conversation,"model":model,"title":format!("Factorio {}",s.id),"location":{"directory":s.worktree}}))).await?;
     }
     opencode(
+        tools,
         "post",
         &format!("{path}/model"),
         Some(json!({"model":model})),
     )
     .await?;
     opencode(
+        tools,
         "post",
         &format!("{path}/move"),
         Some(json!({"directory":s.worktree})),
@@ -125,10 +126,14 @@ pub async fn setup(c: &Config, s: &Session) -> Result<(), String> {
     .await?;
     Ok(())
 }
-pub async fn opencode(method: &str, path: &str, body: Option<Value>) -> Result<String, String> {
+pub async fn opencode(
+    tools: &crate::config::Tools,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<String, String> {
     // CLI owns V2 service discovery and authentication. Never read global config.
-    let binary = std::env::var("FACTORIO_OPENCODE").unwrap_or_else(|_| "opencode".into());
-    let mut args = vec![binary.as_str(), "api", method, path];
+    let mut args = vec![tools.opencode.as_str(), "api", method, path];
     let data = body.map(|v| v.to_string());
     if let Some(data) = data.as_deref() {
         args.extend(["--data", data]);
@@ -151,6 +156,7 @@ pub async fn hook(c: &Config, s: &Session, argv: &[String]) -> Result<(), String
     // Restart kills only the still-matching owned group, never a recycled PID.
     reap_hook(s)?;
     let mut cmd = Command::new("/bin/sh");
+    cmd.env_remove("SNAP_MASTER_KEY");
     cmd.args(["-c", "read -r go || exit 1; \"$@\" </dev/null >/dev/null; code=$?; printf '%s\\n' \"$code\"; read -r finish", "factorio-hook"]).args(argv).current_dir(&s.worktree).envs(env).process_group(0).kill_on_drop(true).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let pid = child.id().ok_or("Missing hook PID")?;

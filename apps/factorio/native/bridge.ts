@@ -3,9 +3,9 @@
 import { OpenCode } from "@opencode/client";
 import { Service } from "@opencode/client/service";
 
-const endpoint = await Service.ensure({ command: [process.env.FACTORIO_OPENCODE ?? "opencode", "serve", "--service"] });
+const input = await Bun.stdin.json() as { opencode?: string; method?: string; path?: string; body?: unknown; watch?: string; description?: string };
+const endpoint = await Service.ensure({ command: [input.opencode ?? "opencode", "serve", "--service"] });
 const headers = Service.headers(endpoint);
-const input = await Bun.stdin.json() as { method?: string; path?: string; body?: unknown; watch?: string; description?: string };
 async function request(path: string, method = "GET", body?: unknown) {
   const response = await fetch(new URL(path, endpoint.url), {
     method, headers: { ...headers, "content-type": "application/json" },

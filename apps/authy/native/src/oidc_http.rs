@@ -22,60 +22,33 @@ pub struct Issuer {
     pub config: oidc::Config,
 }
 impl Issuer {
-    pub fn new(origin: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let rp = configured_app_origin("chatty", "http://127.0.0.1:3850")?;
-        let rp = url::Url::parse(&rp)?;
-        if !["http", "https"].contains(&rp.scheme())
-            || rp.path() != "/"
-            || rp.query().is_some()
-            || rp.fragment().is_some()
-            || !rp.username().is_empty()
-            || rp.password().is_some()
-        {
-            return Err("CHATTY_ORIGIN must be an HTTP(S) origin".into());
-        }
-        let rp = rp.origin().ascii_serialization();
-        let mut client = oidc::Client::public(
-            "chatty",
-            "Chatty",
-            &format!("{rp}/auth/callback"),
-            &format!("{rp}/auth/logged-out"),
-        )?;
-        if let Ok(secret) = std::env::var("CHATTY_CLIENT_SECRET") {
-            if secret.len() < 32 {
-                return Err("CHATTY_CLIENT_SECRET must contain at least 32 bytes".into());
-            }
-            client.secret_digest = Some(Sha256::digest(secret.as_bytes()).to_vec());
-        }
-        let mut clients = vec![client];
-        if let Ok(secret) = std::env::var("FACTORIO_CLIENT_SECRET") {
-            if secret.len() < 32 {
-                return Err("FACTORIO_CLIENT_SECRET must contain at least 32 bytes".into());
-            }
-            let rp = url::Url::parse(&configured_app_origin("factorio", "http://127.0.0.1:3852")?)?;
-            if !["http", "https"].contains(&rp.scheme())
-                || rp.path() != "/"
-                || rp.query().is_some()
-                || rp.fragment().is_some()
-                || !rp.username().is_empty()
-                || rp.password().is_some()
-            {
-                return Err("FACTORIO_ORIGIN must be an HTTP(S) origin".into());
-            }
-            let rp = rp.origin().ascii_serialization();
+    pub fn new(
+        origin: &str,
+        settings: &crate::config::Settings,
+        secrets: &snap_config::Secrets,
+        origins: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        settings.validate()?;
+        let mut clients = Vec::new();
+        for configured in &settings.clients {
+            let rp = settings.client_origin(configured)?;
+            let rp = url::Url::parse(&rp)?.origin().ascii_serialization();
             let mut client = oidc::Client::public(
-                "factorio",
-                "Factorio",
+                &configured.id,
+                &configured.name,
                 &format!("{rp}/auth/callback"),
                 &format!("{rp}/auth/logged-out"),
             )?;
-            client.secret_digest = Some(Sha256::digest(secret.as_bytes()).to_vec());
+            if let Some(reference) = &configured.client_secret_ref {
+                let secret = secrets.resolve(reference)?;
+                if secret.expose().len() < 32 {
+                    return Err("OAuth client secret must contain at least 32 bytes".into());
+                }
+                client.secret_digest = Some(Sha256::digest(secret.expose().as_bytes()).to_vec());
+            }
             clients.push(client);
         }
-        if std::env::var("SNAP_DEV_MODE").as_deref() == Ok("1") {
-            let origins: BTreeMap<String, Vec<String>> = serde_json::from_str(
-                &std::env::var("SNAP_DEV_CLIENT_ORIGINS").unwrap_or_else(|_| "{}".into()),
-            )?;
+        {
             for client in &mut clients {
                 for value in origins.get(&client.id).into_iter().flatten() {
                     let url = url::Url::parse(value)?;
@@ -96,9 +69,7 @@ impl Issuer {
                 }
             }
         }
-        let consent_domain =
-            std::env::var("AUTHY_AUTO_APPROVE_DOMAIN").unwrap_or_else(|_| "snapco.dev".into());
-        configure_auto_approval(&mut clients, &consent_domain)?;
+        configure_auto_approval(&mut clients, &settings.auto_approve_domain)?;
         Ok(Self {
             config: oidc::Config {
                 issuer: origin.into(),
@@ -141,15 +112,16 @@ fn configure_auto_approval(
 
 // A configured domain derives one exact origin per registered client. It never
 // registers arbitrary request-supplied subdomains or makes clients interchangeable.
-fn configured_app_origin(app: &str, fallback: &str) -> Result<String, Box<dyn std::error::Error>> {
-    if let Ok(domain) = std::env::var("AUTHY_APP_DOMAIN") {
-        return domain_app_origin(&domain, app);
-    }
-    Ok(std::env::var(format!("{}_ORIGIN", app.to_uppercase())).unwrap_or_else(|_| fallback.into()))
-}
-
-fn domain_app_origin(domain: &str, app: &str) -> Result<String, Box<dyn std::error::Error>> {
-    if domain.len() > 253
+pub(crate) fn domain_app_origin(
+    domain: &str,
+    app: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if app.is_empty()
+        || app.len() > 63
+        || app.starts_with('-')
+        || app.ends_with('-')
+        || !app.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        || domain.len() > 253
         || !domain.contains('.')
         || domain.split('.').any(|label| {
             label.is_empty()
@@ -162,7 +134,7 @@ fn domain_app_origin(domain: &str, app: &str) -> Result<String, Box<dyn std::err
         })
     {
         return Err(
-            "AUTHY_APP_DOMAIN must be a DNS domain without scheme, port or wildcard".into(),
+            "Configured domain must be a DNS domain without scheme, port or wildcard".into(),
         );
     }
     Ok(format!("https://{app}.{}", domain.to_ascii_lowercase()))

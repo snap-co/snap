@@ -10,6 +10,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+snap-config.workspace = true
 authy.workspace = true
 snap-store.workspace = true
 snap-identity.workspace = true

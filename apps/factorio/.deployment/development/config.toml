@@ -1,0 +1,20 @@
+version = 1
+[host]
+mode = "development"
+listen = "127.0.0.1:3852"
+origin = "http://127.0.0.1:3852"
+data_dir = "../../.snap"
+database = "factorio-store.sqlite"
+[app.oauth]
+issuer = "http://127.0.0.1:3846"
+client_id = "factorio"
+client_secret_ref = "oauth.client_secret"
+[app.repository]
+# Set these installation-specific absolute paths before starting Factorio.
+repository = "/path/to/repository"
+resources = "/path/to/factorio-resources"
+mainline = "main"
+modules = { "snap-store" = "crates/store" }
+first_port = 15000
+setup = []
+teardown = []

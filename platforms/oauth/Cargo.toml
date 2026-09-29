@@ -5,6 +5,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+snap-config.workspace = true
+serde.workspace = true
 snap-oidc.workspace = true
 snap-store.workspace = true
 snap-sqlite = { path = "../sqlite" }

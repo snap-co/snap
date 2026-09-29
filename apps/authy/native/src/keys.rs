@@ -22,7 +22,11 @@ pub struct Keys {
 }
 
 impl Keys {
-    pub fn load(store: &mut Store<snap_sqlite::Sqlite>, secure: bool) -> Result<Self, Error> {
+    pub fn load(
+        store: &mut Store<snap_sqlite::Sqlite>,
+        secure: bool,
+        cookie_key: Option<&snap_config::Secret>,
+    ) -> Result<Self, Error> {
         store.load(TABLE)?;
         let material = store
             .run("authy.keys", |tx| {
@@ -64,9 +68,9 @@ impl Keys {
             })?
             .value;
         let signing = RsaPrivateKey::from_pkcs8_der(&material[0]).map_err(|_| Error::Invalid)?;
-        let cookie = std::env::var("SNAP_SESSION_KEY")
-            .map(|key| key.into_bytes())
-            .unwrap_or_else(|_| material[1].clone());
+        let cookie = cookie_key
+            .map(|key| key.expose().as_bytes().to_vec())
+            .unwrap_or_else(|| material[1].clone());
         if cookie.len() < 32 {
             return Err(Error::Invalid);
         }

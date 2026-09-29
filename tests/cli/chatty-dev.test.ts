@@ -19,7 +19,7 @@ test("Chatty dev retains OAuth sessions and threads across failed builds and nat
   }
   try {
     for (const path of ["Cargo.toml", "Cargo.lock", "package.json", "tsconfig.json", "scripts", "crates", "platforms", "kits", "tools/cli", "apps", "tests/properties"])
-      await cp(`${root}/${path}`, `${fixture}/${path}`, { recursive: true, filter: path => !/(^|\/)(\.snap|node_modules|target|build)(\/|$)/.test(path) });
+      await cp(`${root}/${path}`, `${fixture}/${path}`, { recursive: true, filter: path => !/(^|\/)(\.snap|\.deployment|node_modules|target|build|dist)(\/|$)/.test(path) });
     for (const path of ["node_modules", ".tools", "target"]) await symlink(`${root}/${path}`, `${fixture}/${path}`);
     server = await pair({ root: fixture, dev: true });
     const page = await browser.newPage();

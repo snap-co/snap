@@ -171,11 +171,47 @@ impl Cookies {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret_ref: snap_config::SecretRef,
+}
+impl Settings {
+    pub fn validate(&self) -> Result<(), Error> {
+        origin(&self.issuer)?;
+        if self.client_id.is_empty() || self.client_secret_ref.name().is_empty() {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    pub fn resolve(
+        &self,
+        origin: String,
+        secrets: &snap_config::Secrets,
+        dev_origins: Vec<String>,
+    ) -> Result<Config, Box<dyn std::error::Error>> {
+        self.validate()?;
+        let secret = secrets.resolve(&self.client_secret_ref)?.clone();
+        if secret.expose().len() < 32 {
+            return Err("OAuth client secret must contain at least 32 bytes".into());
+        }
+        Ok(Config {
+            origin,
+            issuer: self.issuer.clone(),
+            client: self.client_id.clone(),
+            secret,
+            dev_origins,
+        })
+    }
+}
 pub struct Config {
     pub origin: String,
     pub issuer: String,
     pub client: String,
-    pub secret: String,
+    pub secret: snap_config::Secret,
+    pub dev_origins: Vec<String>,
 }
 pub struct OAuth {
     pub documents: Arc<Shared<snap_sqlite::Sqlite>>,
@@ -193,15 +229,10 @@ impl OAuth {
     ) -> Result<Arc<Self>, Error> {
         config.origin = origin(&config.origin)?;
         config.issuer = origin(&config.issuer)?;
-        if config.secret.len() < 32 || config.client.is_empty() {
+        if config.secret.expose().len() < 32 || config.client.is_empty() {
             return Err(Error::Invalid);
         }
-        let dev_origins: Vec<String> = if std::env::var("SNAP_DEV_MODE").as_deref() == Ok("1") {
-            serde_json::from_str(&std::env::var("SNAP_DEV_ORIGINS").map_err(|_| Error::Invalid)?)
-                .map_err(|_| Error::Invalid)?
-        } else {
-            Vec::new()
-        };
+        let dev_origins = std::mem::take(&mut config.dev_origins);
         for value in &dev_origins {
             if origin(value)? != *value {
                 return Err(Error::Invalid);
@@ -293,7 +324,7 @@ impl OAuth {
             STANDARD.encode(format!(
                 "{}:{}",
                 encode(&self.config.client),
-                encode(&self.config.secret)
+                encode(self.config.secret.expose())
             ))
         )
     }

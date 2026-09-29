@@ -3,17 +3,18 @@ import { resolve } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { clientOrigins, devHosts, originsFor, publicOrigin, requestOrigin } from "./dev-network";
+import { development, generation } from "../platforms/config/development";
 
 export async function dev(app: "authy" | "chatty" | "factorio", entry: "app" | "main", port: number) {
 const title = app[0].toUpperCase() + app.slice(1);
-const prefix = app.toUpperCase();
 const root = resolve(import.meta.dir, "..");
 process.chdir(root);
-const listenURL = new URL(`http://${process.env[`${prefix}_WEB_ADDR`] ?? `0.0.0.0:${port}`}`);
-const publicURL = publicOrigin(process.env.SNAP_ORIGIN ?? `http://127.0.0.1:${listenURL.port || 80}`);
+const input = await development(app, root);
+const listenURL = new URL(`http://${input.config.dev?.listen ?? input.config.host.listen}`);
+const publicURL = publicOrigin(input.config.host.origin ?? `http://127.0.0.1:${listenURL.port || 80}`);
 const behindTLS = publicURL.protocol === "https:";
 if (behindTLS && !["127.0.0.1", "[::1]"].includes(listenURL.hostname)) {
-  throw new Error("HTTPS public origins require a loopback WEB_ADDR behind the TLS proxy");
+  throw new Error("HTTPS public origins require a loopback dev.listen behind the TLS proxy");
 }
 const hosts = await devHosts();
 hosts.push(publicURL.hostname);
@@ -46,17 +47,21 @@ async function shutdown(code: number) {
 process.on("SIGINT", () => void shutdown(130)); process.on("SIGTERM", () => void shutdown(143));
 async function build() {
   const directory = `${session}/${++serial}`; await mkdir(directory);
-  await run(["bun", `scripts/build-${app}.ts`, "--bindings-only"], { ...process.env, [`${prefix}_BUILD_DIR`]: directory });
+  await run([process.env.SNAP_CLI!, "build", "--project", `apps/${app}`, "--web-only", "--output", directory]);
   await run(["mise", "exec", "--", "cargo", "build", "-p", `${app}-native`]);
   await copyFile(`target/debug/${app}`, `${directory}/${app}`); return directory;
 }
 async function launch(directory: string) {
-  const child = spawn([`${directory}/${app}`], { ...process.env,
-    [`${prefix}_ADDR`]: backend ? new URL(backend).host : "127.0.0.1:0",
-    SNAP_ORIGIN: publicURL.origin,
-    SNAP_DEV_MODE: "1", SNAP_DEV_ORIGINS: JSON.stringify(origins),
-    SNAP_DEV_CLIENT_ORIGINS: app === "authy" ? JSON.stringify(clientOrigins(hosts)) : undefined,
-    SNAP_DATABASE: resolve(process.env.SNAP_DATABASE ?? `apps/${app}/.snap/${app}-store.sqlite`), SNAP_WEB_DIR: directory }, true);
+  if (await Bun.file(`${root}/apps/${app}/native/bridge.ts`).exists()) {
+    input.config.app.tools ??= {};
+    input.config.app.tools.bridge ??= `${root}/apps/${app}/native/bridge.ts`;
+  }
+  const config = await generation(directory, input, {
+    listen: backend ? new URL(backend).host : "127.0.0.1:0", origin: publicURL.origin,
+    dev_origins: origins, web_dir: directory,
+    dev_client_origins: app === "authy" ? clientOrigins(hosts, input.config.app.clients, input.config.app.app_domain) : {},
+  });
+  const child = spawn([`${directory}/${app}`, "--config", config], { ...process.env, SNAP_MASTER_KEY: input.key }, true);
   let address = "";
   void (async () => { let output = ""; for await (const chunk of child.stdout as ReadableStream<Uint8Array>) {
     const text = new TextDecoder().decode(chunk); process.stdout.write(text); output = (output + text).slice(-4096);
@@ -68,7 +73,7 @@ async function launch(directory: string) {
       if (address && (await fetch(`${address}/health`, { signal: AbortSignal.timeout(500) })).ok) { backend = address; target.href = address; return child; }
       await Bun.sleep(30);
     }
-    throw new Error(`${title} host did not become ready; explicitly migrate SNAP_DATABASE first`);
+    throw new Error(`${title} host did not become ready; explicitly migrate the configured database first`);
   } catch (error) { await stop(child); throw error; }
 }
 try {
@@ -106,7 +111,7 @@ try {
           };
           proxy.on("proxyReq", forward); proxy.on("proxyReqWs", forward);
         } } },
-      watch: { ignored: ["**/target/**", "**/.snap/**", "**/.git/**"] } },
+      watch: { ignored: ["**/target/**", "**/.snap/**", "**/dist/**", "**/.git/**"] } },
   });
   vite.watcher.add([resolve("crates"), resolve("platforms"), resolve(`apps/${app}`), resolve("Cargo.toml"), resolve("Cargo.lock")]);
   async function rebuild() {
@@ -128,12 +133,12 @@ try {
     } finally { building = false; }
   }
   vite.watcher.on("all", (_event, path) => {
-    if ((!/\.(rs|toml|lock)$/.test(path) && !(app === "authy" && path.endsWith("/auth-ui.tsx"))) || path.includes("/.snap/")) return;
+    if ((!/\.(rs|toml|lock)$/.test(path) && !(app === "authy" && path.endsWith("/auth-ui.tsx"))) || path.includes("/.snap/") || path.includes("/dist/")) return;
     revision++; clearTimeout(timer); timer = setTimeout(() => void rebuild().catch(error => { console.error(error); void shutdown(1); }), 150);
   });
   await vite.listen(); const address = vite.httpServer!.address();
   if (address && typeof address !== "string") {
-    if (!process.env.SNAP_ORIGIN) publicURL.port = String(address.port);
+    if (!input.config.host.origin) publicURL.port = String(address.port);
     origins = behindTLS ? [publicURL.origin] : [...new Set([...originsFor(hosts, address.port), publicURL.origin])];
   }
   console.log(`${title} dev origins: ${origins.join(", ")}`);
