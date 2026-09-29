@@ -149,6 +149,8 @@ age-bag loading. `mise exec -- cargo test -p snap-cli --test application -- --ig
 --test-threads=1` builds real development/production packages, checks private-file
 exclusion, relocated startup, and production debugger isolation. Test fixtures create
 real encrypted bags through the CLI and never require operator secrets.
+`mise exec -- cargo test -p testy-local --no-default-features --features native
+--test startup -- --ignored` checks TCP startup schema/bag rejection before binding.
 After building the CLI, `bun test tests/cli/dev.test.ts` is the explicit development
 workflow gate (requires installed Playwright Chromium). It uses a disposable source
 copy and migrated database, shares the build cache, and checks CSS/React hot reload,

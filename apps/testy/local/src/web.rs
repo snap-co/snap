@@ -1,15 +1,11 @@
 use snap_platform_local::{development::Development, web};
 use snap_transport::json;
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Settings {}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
     let options = snap_config::Options::parse().map_err(std::io::Error::other)?;
-    let config =
-        snap_config::Config::<Settings>::read(&options.config).map_err(std::io::Error::other)?;
+    let config = snap_config::Config::<testy_local::config::Settings>::read(&options.config)
+        .map_err(std::io::Error::other)?;
     if options.action == snap_config::Action::Check {
         return Ok(());
     }

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Client } from "../.snap/web/bindings/testy_wasm.js";
+import { Client } from "@snap/wasm";
 import { WebChannel } from "./channel";
 import {
   DevelopmentChannel,

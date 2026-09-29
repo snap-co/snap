@@ -1,13 +1,14 @@
 fn main() -> std::io::Result<()> {
     let options = snap_config::Options::parse().map_err(std::io::Error::other)?;
-    let config =
-        snap_config::Config::<toml::Table>::read(&options.config).map_err(std::io::Error::other)?;
+    let config = snap_config::Config::<testy_local::config::Settings>::read(&options.config)
+        .map_err(std::io::Error::other)?;
     if options.action == snap_config::Action::Check {
         return Ok(());
     }
     if options.action != snap_config::Action::Serve {
         return Err(std::io::Error::other("Migrate using the packaged server"));
     }
+    config.load_secrets().map_err(std::io::Error::other)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?

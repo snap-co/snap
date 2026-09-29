@@ -22,7 +22,7 @@ snap-crypto = { path = "../../../platforms/crypto", optional = true }
 [features]
 default = ["memory"]
 memory = ["dep:futures"]
-native = ["snap-platform-local/native", "dep:tokio", "identity", "dep:snap-config"]
+native = ["snap-platform-local/native", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
 web = ["snap-platform-local/web", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
 store = ["testy/store", "dep:snap-store", "dep:snap-sqlite", "dep:toml"]
 identity = ["store", "dep:snap-identity", "dep:snap-crypto"]
@@ -63,6 +63,14 @@ required-features = ["native"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "startup"
+path = "../tests/startup.rs"
+required-features = ["native"]
 
 [[test]]
 name = "memory"

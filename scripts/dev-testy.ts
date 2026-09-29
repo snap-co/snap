@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer, type ProxyOptions, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
@@ -58,16 +58,13 @@ process.on("SIGTERM", () => void shutdown(143));
 async function build() {
   const directory = `${session}/${++serial}`;
   await mkdir(directory);
-  await run([process.env.SNAP_CLI!, "build", "--project", "apps/testy", "--web-only", "--output", directory]);
-  await run(["mise", "exec", "--", "cargo", "build", "-p", "testy-local",
-    "--no-default-features", "--features", "web", "--bin", "testy-web"]);
-  await copyFile("target/debug/testy-web", `${directory}/testy-web`);
+  await run([process.env.SNAP_CLI!, "build", "--project", "apps/testy", "--output", directory]);
   return directory;
 }
 
 async function launch(directory: string) {
-  const config = await generation(directory, input, { listen: backend ? new URL(backend).host : "127.0.0.1:0", origin: backend || undefined, web_dir: directory });
-  const child = spawn([`${directory}/testy-web`, "--config", config], { ...process.env, SNAP_MASTER_KEY: input.key }, true);
+  const config = await generation(directory, input, { listen: backend ? new URL(backend).host : "127.0.0.1:0", origin: backend || undefined, web_dir: `${directory}/web` });
+  const child = spawn([`${directory}/server`, "--config", config], { ...process.env, SNAP_MASTER_KEY: input.key }, true);
   let address = "";
   void (async () => {
     let output = "";
@@ -120,8 +117,8 @@ try {
       name: "testy-bindings",
       enforce: "pre",
       resolveId(id) {
-        if (id.endsWith("/.snap/web/bindings/testy_wasm.js"))
-          return `${current}/bindings/testy_wasm.js`;
+        if (id === "@snap/wasm")
+          return `${current}/web/bindings/testy_wasm.js`;
       },
       transformIndexHtml(html) {
         return html.replace('<link rel="stylesheet" href="/app.css" />', "")
@@ -132,7 +129,7 @@ try {
           if (req.url?.split("?")[0] !== "/bindings/testy_wasm_bg.wasm") return next();
           res.setHeader("Content-Type", "application/wasm");
           res.setHeader("Cache-Control", "no-store");
-          res.end(Buffer.from(await Bun.file(`${current}/bindings/testy_wasm_bg.wasm`).arrayBuffer()));
+          res.end(Buffer.from(await Bun.file(`${current}/web/bindings/testy_wasm_bg.wasm`).arrayBuffer()));
         });
       },
     }],

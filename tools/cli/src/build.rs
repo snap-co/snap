@@ -14,8 +14,8 @@ pub struct Args {
     /// Build client assets for development tooling, without packaging a server.
     #[arg(long)]
     pub web_only: bool,
-    /// Internal development generation directory; normal builds use dist/<environment>.
-    #[arg(long, requires = "web_only")]
+    /// Internal development output; without --web-only, builds a complete generation.
+    #[arg(long)]
     pub output: Option<PathBuf>,
 }
 
@@ -30,21 +30,22 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
     );
     let project = Project::discover(args.project)?;
     let production = args.environment != "development";
+    let mode = if production {
+        snap_config::Mode::Production
+    } else {
+        snap_config::Mode::Development
+    };
     ensure!(
-        !production || !args.web_only,
-        "Web-only builds are development-only"
+        !production || (!args.web_only && args.output.is_none()),
+        "Custom outputs are development-only"
     );
     let deployment = project.root.join(".deployment").join(&args.environment);
     let source = deployment.join("config.toml");
-    if !args.web_only {
+    if !args.web_only && args.output.is_none() {
         let config = snap_config::Config::<toml::Table>::read(&source)?;
+        config.validate_package_data(&project.root.join("dist").join(&args.environment))?;
         ensure!(
-            config.host.mode
-                == if production {
-                    snap_config::Mode::Production
-                } else {
-                    snap_config::Mode::Development
-                },
+            config.host.mode == mode,
             "Environment and host.mode disagree"
         );
     }
@@ -105,6 +106,7 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
     runner.run(&mut command, false).await?;
     let profile = if production { "release" } else { "debug" };
     wasm_bindgen_cli_support::Bindgen::new()
+        .typescript(true)
         .input_path(
             target
                 .join("wasm32-unknown-unknown")
@@ -127,6 +129,7 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
                     "development"
                 })
                 .arg(if args.web_only { "web" } else { "package" })
+                .arg(library)
                 .env_remove("SNAP_MASTER_KEY")
                 .env(
                     "NODE_ENV",
@@ -196,24 +199,41 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
         .context("Cargo did not produce the server executable")?;
     let packaged_server = stage.path().join("server");
     std::fs::copy(executable, &packaged_server)?;
-    // Application-owned schema validation is executed without opening a database,
-    // listener, or decrypting secrets. Runtime keys are not needed to build.
-    runner
-        .run(
-            Command::new(&packaged_server)
-                .arg("--check-config")
-                .arg("--config")
-                .arg(&source)
-                .env_remove("SNAP_MASTER_KEY"),
-            false,
-        )
-        .await?;
+    if let Some(output) = args.output {
+        ensure!(
+            std::env::current_dir()?.join(&output) != project.root,
+            "Output must not be the application root"
+        );
+        std::fs::create_dir_all(&output)?;
+        copy_tree(stage.path(), &output)?;
+        println!("Development generation: {}", output.display());
+        return Ok(());
+    }
     copy_file(&source, &stage.path().join("config.toml"))?;
     let secrets = deployment.join("secrets.enc");
     if secrets.try_exists()? {
         copy_file(&secrets, &stage.path().join("secrets.enc"))?;
     }
     let output = dist.join(&args.environment);
+    let packaged_config =
+        snap_config::Config::<toml::Table>::read(&stage.path().join("config.toml"))?;
+    ensure!(
+        packaged_config.host.mode == mode,
+        "Environment and host.mode disagree"
+    );
+    packaged_config.validate_package_data(&output)?;
+    // Check the actual staged schema and bag, not possibly changing source inputs.
+    // This never opens a database, listener, or decrypts secrets.
+    runner
+        .run(
+            Command::new(&packaged_server)
+                .arg("--check-config")
+                .arg("--config")
+                .arg(stage.path().join("config.toml"))
+                .env_remove("SNAP_MASTER_KEY"),
+            false,
+        )
+        .await?;
     // Publish only a completed package. Keep the preceding one on build failure.
     let previous = dist.join(format!(".previous-{}", args.environment));
     ensure!(

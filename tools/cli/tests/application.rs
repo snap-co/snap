@@ -38,6 +38,38 @@ fn build_selects_the_named_environment_without_development_fallback() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&traversal.stderr).contains("Invalid environment"));
+    let package = root.path().join("dist/development");
+    fs::create_dir_all(package.join("data")).unwrap();
+    fs::write(package.join("previous"), "retained").unwrap();
+    let alias = root.path().join("storage-alias");
+    std::os::unix::fs::symlink(package.join("data"), &alias).unwrap();
+    fs::create_dir_all(root.path().join(".deployment/production")).unwrap();
+    for (environment, data) in [
+        ("development", "data".to_owned()),
+        (
+            "production",
+            package.join("data").to_string_lossy().into_owned(),
+        ),
+        ("production", alias.to_string_lossy().into_owned()),
+    ] {
+        fs::write(root.path().join(".deployment").join(environment).join("config.toml"), format!("version=1\n[host]\nmode='{environment}'\nlisten='127.0.0.1:0'\norigin='https://fixture.example.test'\ndata_dir='{data}'\n[app]\n")).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_snap"))
+            .current_dir(root.path())
+            .args(["build", environment])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("Persistent data must be outside dist"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(package.join("previous")).unwrap(),
+            "retained"
+        );
+    }
 }
 
 #[test]
@@ -78,7 +110,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     .unwrap();
     let input = root.path().join(".deployment/development");
     fs::create_dir_all(&input).unwrap();
-    fs::write(input.join("config.toml"), "version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='data'\n[app.oauth]\nissuer='http://127.0.0.1:3846'\nclient_id='chatty'\nclient_secret_ref='oauth.client_secret'\n").unwrap();
+    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='{}'\n[app.oauth]\nissuer='http://127.0.0.1:3846'\nclient_id='chatty'\nclient_secret_ref='oauth.client_secret'\n", root.path().join("data").display())).unwrap();
     let identity = age::x25519::Identity::generate();
     let secret = "packaging-test-client-credential-at-least-32-bytes";
     fs::write(
@@ -209,7 +241,7 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
     fs::write(root.path().join("snap.toml"), "version=1\napplication='testy'\n[build]\nserver='local'\nbinary='testy-web'\nfeatures=['web']\n").unwrap();
     let input = root.path().join(".deployment/production");
     fs::create_dir_all(&input).unwrap();
-    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='production'\nlisten='0.0.0.0:0'\norigin='https://testy.example.test'\ndata_dir='{}'\n[app]\n", root.path().join("data").display())).unwrap();
+    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='production'\nlisten='0.0.0.0:0'\norigin='https://testy.example.test:443/'\ndata_dir='{}'\n[app]\n", root.path().join("data").display())).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_snap"))
         .current_dir(root.path())
         .args(["build", "production"])
@@ -224,6 +256,7 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
     let package = root.path().join("dist/production");
     assert!(!package.join("web/app.js.map").exists());
     assert!(package.join("web/app.js").is_file());
+    assert!(package.join("web/bindings/testy_wasm.d.ts").is_file());
     assert!(
         Command::new(package.join("server"))
             .arg("--migrate")
@@ -261,6 +294,22 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
         .expect("server readiness")
         .parse()
         .unwrap();
+    for (origin, status) in [
+        ("https://testy.example.test", "101"),
+        ("https://foreign.example.test", "403"),
+    ] {
+        let mut stream = TcpStream::connect(("127.0.0.1", address.port())).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        write!(stream, "GET /transport HTTP/1.1\r\nHost: testy.example.test\r\nOrigin: {origin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).unwrap();
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{response}"
+        );
+    }
     for path in ["/__dev", "/__dev/ws"] {
         let mut stream = TcpStream::connect(("127.0.0.1", address.port())).unwrap();
         stream

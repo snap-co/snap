@@ -1,7 +1,7 @@
 import {
   development_control,
   development_observation,
-} from "../.snap/web/bindings/testy_wasm.js";
+} from "@snap/wasm";
 
 export type Host = {
   manual: boolean;

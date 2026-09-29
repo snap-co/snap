@@ -8,6 +8,7 @@
     "strict": true,
     "noEmit": true,
     "types": ["bun", "react", "react-dom"],
+    "paths": { "@snap/wasm": ["./apps/testy/dist/development/web/bindings/testy_wasm"] },
     "skipLibCheck": true
   },
   "include": ["apps/testy/web/**/*.ts", "apps/testy/web/**/*.tsx", "apps/testy/tests/**/*.ts"]

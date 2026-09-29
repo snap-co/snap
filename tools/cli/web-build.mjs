@@ -2,16 +2,15 @@
 import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { basename } from "node:path";
 
-const [app, output, mode, kind] = process.argv.slice(2);
+const [app, output, mode, kind, library] = process.argv.slice(2);
 const production = mode === "production";
 const options = { target: "browser", sourcemap: production ? "none" : "linked", minify: production,
   naming: { entry: "[name].[ext]", chunk: "chunks/[name]-[hash].[ext]", asset: "assets/[name]-[hash].[ext]" },
   define: { "process.env.NODE_ENV": JSON.stringify(mode) },
   plugins: [{ name: "snap-generated-bindings", setup(build) {
-    build.onResolve({ filter: /\/\.snap\/web\/bindings\/[^/]+\.js$/ }, ({ path }) =>
-      ({ path: join(output, "bindings", basename(path)) }));
+    build.onResolve({ filter: /^@snap\/wasm$/ }, () =>
+      ({ path: join(output, "bindings", `${library}.js`) }));
   } }] };
 async function build(entrypoints, outdir, extra = {}) {
   const result = await Bun.build({ ...options, ...extra, entrypoints, outdir });

@@ -60,6 +60,9 @@ the executable. `server --config PATH` selects a different file. Unknown fields,
 unsupported versions and unsafe host modes fail startup. Relative paths resolve
 against the config directory, never the working directory. `host.database` is a
 filename within `host.data_dir`; `host.web_dir` defaults to adjacent `web/`.
+Persistent data must stay outside the replaceable `dist/` tree. The build checks
+paths as they will resolve from the final package, including existing symlink aliases,
+and refuses unsafe storage before publishing or replacing any package.
 Portable modules receive typed inputs, not loaders, files or environment access.
 
 `server --check-config` validates shared and app-owned schemas and requires a bag
@@ -156,3 +159,8 @@ supply the same typed inputs through bindings without using this filesystem layo
 Root tooling can use `snap build --project apps/chatty`. Normal app-local use needs
 no paths. Development/test tooling uses the framework's `--web-only` build with a
 generation output directory, not app-specific build scripts.
+`snap build --output DIRECTORY` builds a complete private development generation
+through the same native/Wasm/client pipeline. The supervisor writes its explicit
+runtime config and bag afterward. `--web-only` limits this tooling output to web
+assets. Wasm declarations accompany JS bindings; static imports use `@snap/wasm`
+with the app's TypeScript path mapped to its generated development bindings.

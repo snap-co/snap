@@ -68,6 +68,9 @@ impl<T: DeserializeOwned> Config<T> {
             .context("Config directory missing")?
             .to_owned();
         config.host.validate()?;
+        if let Some(origin) = &config.host.origin {
+            config.host.origin = Some(url::Url::parse(origin)?.origin().ascii_serialization());
+        }
         ensure!(
             config.host.mode != Mode::Production || config.dev.is_none(),
             "Production forbids development configuration"
@@ -82,6 +85,21 @@ impl<T: DeserializeOwned> Config<T> {
     }
     pub fn assets(&self) -> PathBuf {
         self.path(&self.host.web_dir)
+    }
+    /// Packaging relocates relative paths. Reject storage under the replaceable
+    /// dist tree, including paths routed there through existing symlinks.
+    pub fn validate_package_data(&self, package: &Path) -> Result<()> {
+        let dist = resolved_path(package.parent().context("Missing output directory")?)?;
+        for path in [
+            package.join(&self.host.data_dir),
+            package.join(&self.host.data_dir).join(&self.host.database),
+        ] {
+            ensure!(
+                !resolved_path(&path)?.starts_with(&dist),
+                "Persistent data must be outside dist"
+            );
+        }
+        Ok(())
     }
     pub fn require_bag(&self, required: bool) -> Result<()> {
         if required {
@@ -114,6 +132,32 @@ impl<T: DeserializeOwned> Config<T> {
             .transpose()?;
         self.secrets(identity.as_ref())
     }
+}
+fn resolved_path(path: &Path) -> Result<PathBuf> {
+    use std::path::Component;
+    let absolute = std::env::current_dir()?.join(path);
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::CurDir => {}
+            component => {
+                resolved.push(component.as_os_str());
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        resolved = resolved
+                            .canonicalize()
+                            .context("Cannot resolve storage path")?
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error).context("Cannot inspect storage path"),
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 impl Host {
     pub fn validate(&self) -> Result<()> {

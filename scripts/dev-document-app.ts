@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
@@ -47,21 +47,16 @@ async function shutdown(code: number) {
 process.on("SIGINT", () => void shutdown(130)); process.on("SIGTERM", () => void shutdown(143));
 async function build() {
   const directory = `${session}/${++serial}`; await mkdir(directory);
-  await run([process.env.SNAP_CLI!, "build", "--project", `apps/${app}`, "--web-only", "--output", directory]);
-  await run(["mise", "exec", "--", "cargo", "build", "-p", `${app}-native`]);
-  await copyFile(`target/debug/${app}`, `${directory}/${app}`); return directory;
+  await run([process.env.SNAP_CLI!, "build", "--project", `apps/${app}`, "--output", directory]);
+  return directory;
 }
 async function launch(directory: string) {
-  if (await Bun.file(`${root}/apps/${app}/native/bridge.ts`).exists()) {
-    input.config.app.tools ??= {};
-    input.config.app.tools.bridge ??= `${root}/apps/${app}/native/bridge.ts`;
-  }
   const config = await generation(directory, input, {
     listen: backend ? new URL(backend).host : "127.0.0.1:0", origin: publicURL.origin,
-    dev_origins: origins, web_dir: directory,
+    dev_origins: origins, web_dir: `${directory}/web`,
     dev_client_origins: app === "authy" ? clientOrigins(hosts, input.config.app.clients, input.config.app.app_domain) : {},
   });
-  const child = spawn([`${directory}/${app}`, "--config", config], { ...process.env, SNAP_MASTER_KEY: input.key }, true);
+  const child = spawn([`${directory}/server`, "--config", config], { ...process.env, SNAP_MASTER_KEY: input.key }, true);
   let address = "";
   void (async () => { let output = ""; for await (const chunk of child.stdout as ReadableStream<Uint8Array>) {
     const text = new TextDecoder().decode(chunk); process.stdout.write(text); output = (output + text).slice(-4096);
@@ -90,7 +85,7 @@ try {
         if (path !== `/bindings/${app}_wasm.js` && path !== `/bindings/${app}_wasm_bg.wasm`) return next();
         if (!current) { res.statusCode = 503; res.end(); return; }
         res.setHeader("Content-Type", path.endsWith(".wasm") ? "application/wasm" : "text/javascript");
-        res.setHeader("Cache-Control", "no-store"); res.end(Buffer.from(await Bun.file(`${current}${path}`).arrayBuffer()));
+        res.setHeader("Cache-Control", "no-store"); res.end(Buffer.from(await Bun.file(`${current}/web${path}`).arrayBuffer()));
       }); },
     }],
     server: { host: listenURL.hostname.replace(/[\[\]]/g, ""), port: Number(listenURL.port || 80), strictPort: true,
