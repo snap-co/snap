@@ -1,4 +1,4 @@
-// Authy browser client: HTTP session + WebSocket IO + Rust Document sync.
+// Authy browser client: Identity SDK + connected Transport + Rust Document sync.
 //
 // JS owns actual network IO, reconnect timers and forms. Rust (AuthyClient
 // from /bindings/authy_wasm.js) owns profile mutation behavior, optimistic
@@ -6,10 +6,10 @@
 // wire::Wire and authy::registry(). There is no JS duplicate of mutation or
 // reconciliation logic.
 //
-// Host contract: POST /api/signup and POST /api/login with
-// {email,password}; logout and account summaries use guarded WebSocket invocations.
-// GET /api/session returns
-// {account:null|{identity,email,profile,authenticated_at}};
+// Identity.acquire/enroll set the HttpOnly cookie over Transport's HTTP carrier.
+// Identity.fetch restores account knowledge before Transport.connect opens a
+// WebSocket. The browser platform injects the client ID; application code does
+// not own credential endpoints or bearer material.
 // authy.sessions returns {sessions:[{id,expires,current}]} and
 // authy.credentials returns
 // {credentials:[{label,kind:'password',removable:false}]}. The HttpOnly
@@ -17,10 +17,12 @@
 // carries standard snap_transport Command/Response frames; the browser sends
 // Connect {bearer:"", client_id} and the host fills the bearer from the
 // upgrade cookie. Cross-tab revocation arrives as a Document Reset followed
-// by socket close; the browser then re-fetches /api/session and becomes
+// by socket close; the browser then calls Identity.fetch and becomes
 // anonymous when revoked instead of reconnecting with empty authority.
 
 import { Invocations } from "../../platforms/document/client";
+import { Identity } from "../../platforms/identity/client";
+import { Transport } from "../../platforms/transport/browser";
 
 export interface Account {
   identity: string;
@@ -156,16 +158,6 @@ async function loadWasm(): Promise<WasmAuthyModule> {
   return imported;
 }
 
-async function readSession(): Promise<Account | null> {
-  const response = await fetch("/api/session", {
-    credentials: "same-origin",
-    headers: { accept: "application/json" },
-  });
-  if (!response.ok) throw new Error(`Session check failed (${response.status})`);
-  const value = (await response.json()) as { account: Account | null };
-  return value.account;
-}
-
 export interface AuthyClient {
   getSnapshot(): AuthySnapshot;
   subscribe(listener: () => void): () => void;
@@ -182,12 +174,9 @@ export interface AuthyClient {
 
 export async function startAuthy(): Promise<AuthyClient> {
   const listeners = new Set<() => void>();
-  // Stable within the tab across reconnects; the server keys the logical
-  // connection by (identity, client_id).
-  const clientId =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `browser-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+  const transport = new Transport();
+  const identity = new Identity<Account>(transport);
+  const readSession = () => identity.fetch();
 
   let snapshot: AuthySnapshot = {
     phase: "loading",
@@ -360,18 +349,12 @@ export async function startAuthy(): Promise<AuthyClient> {
     if (closed || !snapshot.account || !wasm) return;
     clearSocket();
     set({ connection: "connecting" });
-    const url = `${location.origin.replace(/^http/, "ws")}/transport`;
-    const next = new WebSocket(url);
+    const binding = wasm;
+    const next = transport.connect(clientId => binding.connect_command(clientId));
     socket = next;
     next.onopen = () => {
       if (socket !== next || closed) return;
       backoff = 250;
-      try {
-        sendFrame(wasm!.connect_command(clientId));
-      } catch (e) {
-        set({ error: e instanceof Error ? e.message : String(e) });
-        scheduleReconnect();
-      }
     };
     next.onmessage = (event) => {
       if (socket !== next || closed) return;
@@ -476,22 +459,13 @@ export async function startAuthy(): Promise<AuthyClient> {
     if (next) location.assign(next);
   };
 
-  const postCredentials = async (path: "/api/signup" | "/api/login", email: string, password: string) => {
+  const acquire = async (enroll: boolean, email: string, password: string) => {
     if (authBusy) throw new Error("Another sign-in action is still pending.");
     authBusy = true;
     const epoch = ++accountEpoch;
     try {
-    const response = await fetch(path, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    const value = (await response.json().catch(() => null)) as { account?: Account } | null;
+    const value = await (enroll ? identity.enroll({ email, password }) : identity.acquire({ email, password }));
     if (closed || epoch !== accountEpoch) return;
-    if (!response.ok || !value?.account) {
-      throw new Error(response.status === 409 ? "That email is already registered; sign in instead." : `Sign-in failed (${response.status})`);
-    }
     await afterAuth(value.account);
     } finally { authBusy = false; }
   };
@@ -516,11 +490,11 @@ export async function startAuthy(): Promise<AuthyClient> {
     },
     async signup(email: string, password: string) {
       set({ error: null });
-      await postCredentials("/api/signup", email, password);
+      await acquire(true, email, password);
     },
     async login(email: string, password: string) {
       set({ error: null });
-      await postCredentials("/api/login", email, password);
+      await acquire(false, email, password);
     },
     async logout(scope: LogoutScope = "current") {
       if (authBusy) throw new Error("Another sign-in action is still pending.");

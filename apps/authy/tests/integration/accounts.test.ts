@@ -32,18 +32,31 @@ test("WebSocket account operations preserve credential, cookie and session autho
     method: "POST", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify(value),
   });
   try {
-    expect((await post("/api/signup", body, "", "https://other.invalid")).status).toBe(403);
-    expect((await post("/api/signup", { ...body, password: "short" })).status).toBe(400);
-    const created = await post("/api/signup", body);
+    for (const path of ["/api/signup", "/api/login", "/api/session"]) {
+      expect((await post(path, body)).status).toBe(404);
+      expect((await request(path)).status).toBe(404);
+    }
+    const upgrade = (cookie = "") => fetch(`${server.base}/transport`, { headers: { cookie, origin: server.base, connection: "upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" } });
+    expect((await upgrade()).status).toBe(401);
+    expect((await post("/identity/enroll", body, "", "https://other.invalid")).status).toBe(403);
+    expect((await post("/identity/enroll", { ...body, password: "short" })).status).toBe(400);
+    const created = await post("/identity/enroll", body);
     expect(created.status).toBe(200);
     const first = created.headers.get("set-cookie")!.split(";")[0];
-    const account = (await created.json()).account;
+    const completion = await created.json();
+    const account = completion.Completed.outcome.Ok.account;
+    expect(completion.Completed.outcome.Ok.bearer).toBeUndefined();
+    expect(completion.Completed.id).toBe(1);
     expect(account.email).toBe("account@example.test");
-    expect((await post("/api/signup", body)).status).toBe(409);
-    expect((await post("/api/login", { ...body, password: "incorrect password" })).status).toBe(401);
-    const loggedIn = await post("/api/login", body);
+    expect((await post("/identity/enroll", body)).status).toBe(409);
+    const invalid = await post("/identity/acquire", { ...body, password: "incorrect password" });
+    expect(invalid.status).toBe(401);
+    expect(invalid.headers.get("set-cookie")).toBeNull();
+    const loggedIn = await post("/identity/acquire", body);
     const second = loggedIn.headers.get("set-cookie")!.split(";")[0];
-    expect((await loggedIn.json()).account.identity).toBe(account.identity);
+    expect((await loggedIn.json()).Completed.outcome.Ok.account.identity).toBe(account.identity);
+    await expect(invoke(server.base, first, "identity.acquire", body)).rejects.toThrow("UnknownOperation");
+    expect((await post("/authy/logout", { scope: "all" }, first)).status).not.toBe(200);
     const sessions = (await invoke(server.base, first, "authy.sessions", null)).sessions;
     expect(sessions).toHaveLength(2);
     expect(sessions.filter((s: { current: boolean }) => s.current)).toHaveLength(1);
@@ -51,11 +64,12 @@ test("WebSocket account operations preserve credential, cookie and session autho
     expect(credentials).toEqual([{ label: "account@example.test", kind: "password", removable: false }]);
     expect((await post("/api/logout", { scope: "all" }, first)).status).not.toBe(200);
     await invoke(server.base, first, "authy.logout", { scope: "others" });
-    expect((await (await request("/api/session", second)).json()).account).toBeNull();
+    expect((await (await request("/identity/fetch", second)).json()).Completed.outcome.Ok).toBeNull();
+    expect((await upgrade(second)).status).toBe(401);
     await server.restart();
-    expect((await (await request("/api/session", first)).json()).account.identity).toBe(account.identity);
+    expect((await (await request("/identity/fetch", first)).json()).Completed.outcome.Ok.identity).toBe(account.identity);
     await invoke(server.base, first, "authy.logout", { scope: "current" });
-    expect((await (await request("/api/session", first)).json()).account).toBeNull();
+    expect((await (await request("/identity/fetch", first)).json()).Completed.outcome.Ok).toBeNull();
   } finally { await server.close(); }
 }, 30000);
 
@@ -64,7 +78,7 @@ test("canonical HTTPS origin selects secure host cookie and survives restart", a
   try {
     const discovery = await (await fetch(`${server.base}/.well-known/openid-configuration`)).json();
     expect(discovery.issuer).toBe("https://authy.example");
-    const created = await fetch(`${server.base}/api/signup`, { method: "POST",
+    const created = await fetch(`${server.base}/identity/enroll`, { method: "POST",
       headers: { origin: "https://authy.example", "content-type": "application/json" },
       body: JSON.stringify({ email: "secure@example.test", password: "secure fixture password" }),
     });
@@ -75,7 +89,7 @@ test("canonical HTTPS origin selects secure host cookie and survives restart", a
     expect(header).toContain("; HttpOnly; SameSite=Lax;");
     const cookie = header.split(";")[0];
     await server.restart();
-    const session = await (await fetch(`${server.base}/api/session`, { headers: { cookie } })).json();
-    expect(session.account.email).toBe("secure@example.test");
+    const session = await (await fetch(`${server.base}/identity/fetch`, { headers: { cookie } })).json();
+    expect(session.Completed.outcome.Ok.email).toBe("secure@example.test");
   } finally { await server.close(); }
 }, 30000);

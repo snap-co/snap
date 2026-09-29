@@ -177,7 +177,7 @@ def invoke(operation, value=None):
 
 try:
     control("send", peer=peer, command={"Request": {"bearer": None,
-        "invocation": {"id": 1, "operation": "identity.login", "input": {
+         "invocation": {"id": 1, "operation": "identity.acquire", "input": {
             "email": os.environ["TESTY_EMAIL"], "password": os.environ["TESTY_PASSWORD"]}}}})
     replies = control("drain", peer=peer)["responses"]
     bearer = replies[-1]["Events"][0]["Completed"]["outcome"]["Ok"]["bearer"]

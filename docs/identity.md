@@ -7,15 +7,44 @@ to their respective consumers.
 
 ## Operations and transactions
 
+### Browser bootstrap
+
+1. `Identity.acquire({ email, password })` submits `identity.acquire` over HTTP
+   at `/identity/acquire`. The shared Transport dispatcher validates, admits and
+   executes the operation. After durable completion, the platform sets the
+   HttpOnly cookie and removes bearer material from the public completion.
+   `Identity.enroll` uses `/identity/enroll` for explicit account creation.
+2. `Transport.connect()` opens the authenticated WebSocket. The browser platform
+   owns and injects a stable client ID for that runtime. The server validates the
+   session cookie before upgrading and injects its bearer into Connect.
+3. Connection-required operations run on that connection. Credential acquisition
+   is HTTP-only and cannot be invoked over the connected carrier.
+
+On reload, `Identity.fetch()` uses `/identity/fetch` to resolve the cookie before
+connecting. Anonymous or expired sessions do not open WebSockets. HTTP and
+WebSocket are carriers for Transport, not separate application dispatch paths.
+Applications register operations and compose enrollment hooks; they do not add
+REST login/signup handlers. OAuth/OIDC protocol endpoints keep their standard
+protocol-specific HTTP handling.
+
+The Authy implementation uses `platforms/identity/client.ts`,
+`platforms/transport/browser.ts` and the shared host in `platforms/document`.
+HTTP completions use the same correlated `Event::Completed` outcome as connected
+operations. Credential submissions are never automatically retried. The host
+removes their temporary peer, inputs and results after the HTTP exchange.
+
+### Portable operation names
+
 | Request | Input | Result |
 | --- | --- | --- |
 | `identity.enroll` | `email`, `password` | New bearer and session summary |
-| `identity.login` | `email`, `password` | New bearer and session summary |
-| `identity.current` | null, authenticated bearer | Identity ID and absolute expiry |
+| `identity.acquire` | `email`, `password` | New bearer and session summary |
+| `identity.fetch` | null, authenticated bearer | Identity ID and absolute expiry |
 | `identity.logout` | null, authenticated bearer | null after revocation commits |
 
-These are transport `Request` operations, not connected `Invoke` operations.
-Enroll/login take no existing bearer. Each login creates an independent session.
+These are transport `Request` operations. Browser acquisition/fetch use HTTP,
+not a pre-authentication WebSocket. Enroll/acquire take no existing bearer.
+Each acquisition creates an independent session.
 Logout affects only the supplied session. Disconnect leaves the session valid.
 
 Testy's prepared Identity requests share the application FIFO with calculator work.

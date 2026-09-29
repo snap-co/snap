@@ -2,12 +2,12 @@
 //! a slow socket never holds Store's mutation gate.
 use crate::Host;
 use axum::{
-    Router,
+    Json, Router,
     extract::{
         State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -27,6 +27,163 @@ pub struct Shared<B: Backend> {
 }
 
 pub type ReadCookie = Arc<dyn Fn(&HeaderMap) -> Option<String> + Send + Sync>;
+
+pub type WriteCookie = Arc<dyn Fn(Option<&str>) -> String + Send + Sync>;
+
+/// Public HTTP projection of a registered pre-connection operation. The path is
+/// derived from its operation name. Cookie issuance is a carrier concern, never
+/// a second authentication handler. Only committed outcomes reach this adapter.
+pub struct HttpOperation {
+    pub name: &'static str,
+    pub method: Method,
+    pub session: SessionProjection,
+}
+
+#[derive(Clone, Copy)]
+pub enum SessionProjection {
+    Issue,
+    Fetch,
+}
+
+pub fn http_router<B: Backend + Send + 'static>(
+    shared: Arc<Shared<B>>,
+    operations: Vec<HttpOperation>,
+    write_cookie: WriteCookie,
+) -> Router {
+    let mut router = Router::new();
+    for operation in operations {
+        let path = format!("/{}", operation.name.replace('.', "/"));
+        let shared = shared.clone();
+        let write_cookie = write_cookie.clone();
+        let method = operation.method.clone();
+        let handler = move |headers: HeaderMap, body: axum::body::Bytes| {
+            let shared = shared.clone();
+            let write_cookie = write_cookie.clone();
+            let method = method.clone();
+            async move {
+                let id = headers
+                    .get("x-snap-operation-id")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|id| *id > 0)
+                    .unwrap_or(1);
+                let mut outcome = if method == Method::POST
+                    && headers.get("origin").and_then(|v| v.to_str().ok()) != Some(&shared.origin)
+                {
+                    Err(snap_transport::Error::Application(
+                        serde_json::json!({"code":"Forbidden"}),
+                    ))
+                } else {
+                    let input = if method == Method::GET {
+                        if body.is_empty() {
+                            Ok(serde_json::Value::Null)
+                        } else {
+                            Err(snap_transport::Error::InvalidInput)
+                        }
+                    } else if headers
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.split(';').next())
+                        != Some("application/json")
+                    {
+                        Err(snap_transport::Error::InvalidInput)
+                    } else {
+                        serde_json::from_slice(&body)
+                            .map_err(|_| snap_transport::Error::InvalidInput)
+                    };
+                    match input {
+                        Err(error) => Err(error),
+                        Ok(input) => {
+                            let bearer = match operation.session {
+                                SessionProjection::Issue => None,
+                                SessionProjection::Fetch => {
+                                    shared.cookie.as_ref().and_then(|read| read(&headers))
+                                }
+                            };
+                            let shared = shared.clone();
+                            tokio::task::spawn_blocking(move || {
+                                shared.host.lock().unwrap().http_request(
+                                    snap_transport::Invocation {
+                                        id,
+                                        operation: operation.name.into(),
+                                        input,
+                                    },
+                                    bearer,
+                                )
+                            })
+                            .await
+                            .expect("HTTP transport dispatcher panicked")
+                        }
+                    }
+                };
+                let mut cookie = None;
+                match operation.session {
+                    SessionProjection::Issue => {
+                        if let Ok(value) = &mut outcome {
+                            let bearer = value
+                                .as_object_mut()
+                                .and_then(|value| value.remove("bearer"));
+                            if let Some(bearer) = bearer.as_ref().and_then(|value| value.as_str()) {
+                                cookie = Some(write_cookie(Some(bearer)));
+                            } else {
+                                outcome = Err(snap_transport::Error::Protocol);
+                            }
+                        }
+                    }
+                    SessionProjection::Fetch => {
+                        if matches!(outcome, Err(snap_transport::Error::InvalidBearer)) {
+                            outcome = Ok(serde_json::Value::Null);
+                        }
+                        if outcome.as_ref().is_ok_and(|value| value.is_null()) {
+                            cookie = Some(write_cookie(None));
+                        }
+                    }
+                }
+                let status = match &outcome {
+                    Ok(_) => StatusCode::OK,
+                    Err(snap_transport::Error::InvalidInput) => StatusCode::BAD_REQUEST,
+                    Err(
+                        snap_transport::Error::InvalidBearer
+                        | snap_transport::Error::IdentityRequired,
+                    ) => StatusCode::UNAUTHORIZED,
+                    Err(snap_transport::Error::Application(value))
+                        if value["code"] == "Forbidden" =>
+                    {
+                        StatusCode::FORBIDDEN
+                    }
+                    Err(snap_transport::Error::UnknownOperation) => StatusCode::NOT_FOUND,
+                    Err(snap_transport::Error::Application(value))
+                        if value["code"] == "Conflict" =>
+                    {
+                        StatusCode::CONFLICT
+                    }
+                    Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+                };
+                let mut response = (
+                    status,
+                    [("cache-control", "no-store")],
+                    Json(snap_transport::Event::Completed { id, outcome }),
+                )
+                    .into_response();
+                if let Some(cookie) = cookie {
+                    response
+                        .headers_mut()
+                        .insert("set-cookie", cookie.parse().expect("session cookie"));
+                }
+                response
+            }
+        };
+        router = router.route(
+            &path,
+            if operation.method == Method::GET {
+                get(handler)
+            } else {
+                axum::routing::post(handler)
+            },
+        );
+    }
+    router
+}
 
 impl<B: Backend> Shared<B> {
     pub fn new(host: Host<B>, origin: String) -> Arc<Self> {
@@ -76,8 +233,16 @@ async fn upgrade<B: Backend + Send + 'static>(
         return StatusCode::FORBIDDEN.into_response();
     }
     let opening = shared.clone();
+    let bearer = shared.cookie.as_ref().and_then(|read| read(&headers));
+    if shared.cookie.is_some() && bearer.is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let credential = bearer.clone();
     let opened = tokio::task::spawn_blocking(move || {
         let mut host = opening.host.lock().unwrap();
+        if let Some(bearer) = credential {
+            host.authorize_upgrade(&bearer)?;
+        }
         host.open()
             .and_then(|peer| Ok((peer, host.output(peer)?, host.carrier_control(peer)?)))
     })
@@ -85,11 +250,13 @@ async fn upgrade<B: Backend + Send + 'static>(
     .expect("document carrier opening panicked");
     let (peer, output, control) = match opened {
         Ok(value) => value,
+        Err(snap_transport::Error::InvalidBearer | snap_transport::Error::IdentityRequired) => {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let failed = shared.clone();
     let failed_control = control.clone();
-    let bearer = shared.cookie.as_ref().and_then(|read| read(&headers));
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_failed_upgrade(move |_| failed_control.detach(failed.now()))
@@ -114,13 +281,13 @@ async fn connection<B: Backend + Send + 'static>(
             message = stream.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let Ok(mut command) = serde_json::from_str(&text) else { break; };
+                    if shared.cookie.is_some() && matches!(command, snap_transport::Command::Request { .. }) { break; }
                     if matches!(command, snap_transport::Command::Close | snap_transport::Command::Disconnect) {
                         if matches!(command, snap_transport::Command::Close) { control.close(shared.now()); }
                         else { control.detach(shared.now()); }
                         break;
                     }
                     if let snap_transport::Command::Connect { bearer, .. } = &mut command
-                        && bearer.is_empty()
                         && let Some(cookie) = &cookie_bearer {
                         *bearer = cookie.clone();
                     }

@@ -4,6 +4,66 @@ use snap_identity::{Crypto, Identity};
 use snap_store::Error;
 
 pub fn register(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> {
+    for name in ["identity.acquire", "identity.enroll", "identity.fetch"] {
+        host = host.with_http_request(
+            Request {
+                name: name.into(),
+                identity_required: false,
+                input: if name == "identity.fetch" {
+                    |v| v.is_null()
+                } else {
+                    |v| {
+                        v.as_object().is_some_and(|o| {
+                            o.len() == 2 && v["email"].is_string() && v["password"].is_string()
+                        })
+                    }
+                },
+                output: if name == "identity.fetch" {
+                    |v| v.is_null() || serde_json::from_value::<authy::Account>(v.clone()).is_ok()
+                } else {
+                    |v| {
+                        v["bearer"].is_string()
+                            && serde_json::from_value::<authy::Account>(v["account"].clone())
+                                .is_ok()
+                    }
+                },
+                progress: |_| false,
+                guard: |_, _, _, _| Ok(()),
+                handler: Box::new(move |tx, invocation, actor, bearer| {
+                    if name == "identity.fetch" {
+                        return if actor.is_some() {
+                            Ok(json!(authy::current(
+                                tx,
+                                &snap_crypto::Native,
+                                bearer.ok_or(Error::NotFound)?,
+                                crate::now()
+                            )?))
+                        } else {
+                            Ok(serde_json::Value::Null)
+                        };
+                    }
+                    let operation = snap_identity::operation::Operation::parse(invocation, None)
+                        .map_err(|_| Error::Invalid)?
+                        .ok_or(Error::Invalid)?;
+                    let issued = operation.execute_with_enrollment(
+                        &Identity::default(),
+                        tx,
+                        &mut snap_crypto::Native,
+                        crate::now(),
+                        authy::initialize_account,
+                    )?;
+                    let bearer = issued["bearer"].as_str().ok_or(Error::Invalid)?;
+                    let account = authy::current(tx, &snap_crypto::Native, bearer, crate::now())?;
+                    Ok(json!({"account":account,"bearer":bearer}))
+                }),
+            },
+            if name == "identity.enroll" {
+                &[snap_document::server::TABLES[0]]
+            } else {
+                &[]
+            },
+        );
+    }
     for name in ["authy.sessions", "authy.credentials", "authy.logout"] {
         host = host.with_request(Request {
             name: name.into(),

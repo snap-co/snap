@@ -1,15 +1,22 @@
 import { test, expect } from "@playwright/test";
 
 test("account, optimistic Document profile, reload, logout and login", async ({ page, context, baseURL }) => {
+  const events: string[] = [];
+  page.on("response", response => {
+    if (response.url().endsWith("/identity/enroll") && response.ok()) events.push("identity");
+  });
+  page.on("websocket", socket => { if (socket.url().endsWith("/transport")) events.push("connect"); });
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   const email = `profile-${Date.now()}@example.test`;
   await page.goto("/");
   await page.getByRole("button", { name: "New here? Create account", exact: true }).click();
+  expect(events).toEqual([]);
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill("a test password for Authy");
   await page.getByRole("button", { name: "Create account", exact: true }).click();
   await expect(page.getByLabel("Name", { exact: true })).toBeVisible();
+  expect(events.slice(0, 2)).toEqual(["identity", "connect"]);
   const cookies = await context.cookies();
   const session = cookies.find(cookie => cookie.name === "authy_session")!;
   expect(session.httpOnly).toBe(true);
@@ -49,6 +56,7 @@ test("OAuth returns through password login and explicit consent; forced login as
   await page.getByRole("button", { name: "Create account", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Authorize application" })).toBeVisible();
   await expect(page.getByText(/Chatty is requesting access/)).toBeVisible();
+  await expect(page.getByText(email, { exact: true })).toBeVisible();
   await expect(page.getByText("See your email address", { exact: true })).toBeVisible();
   const consentResponse = page.waitForResponse(response => response.url().endsWith("/oauth/authorize") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Allow", exact: true }).click();
@@ -73,10 +81,50 @@ test("OAuth returns through password login and explicit consent; forced login as
   await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
 });
 
+test("sign-in explains failures, prevents repeat submissions and reveals passwords", async ({ page }) => {
+  const sockets: string[] = [];
+  page.on("websocket", socket => sockets.push(socket.url()));
+  await page.goto("/");
+  await page.getByLabel("Email", { exact: true }).fill("reader@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("incorrect password");
+  await page.getByRole("button", { name: "Show password", exact: true }).click();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "Hide password", exact: true }).click();
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  let requests = 0;
+  await page.route("**/identity/acquire", async route => {
+    requests++;
+    await pending;
+    await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ Completed: { id: Number(route.request().headers()["x-snap-operation-id"]), outcome: { Err: "InvalidBearer" } } }) });
+  });
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  try {
+    await expect(page.getByRole("button", { name: "Signing in…", exact: true })).toBeDisabled();
+    await expect(page.getByLabel("Email", { exact: true })).toHaveAttribute("readonly", "");
+    await page.getByLabel("Password", { exact: true }).press("Enter");
+    await expect(page.getByRole("status")).toHaveText("Checking your sign-in details…");
+  } finally { release(); }
+  await expect(page.getByRole("alert")).toHaveText("The email or password is incorrect. Check both and try again.");
+  expect(requests).toBe(1);
+  expect(sockets).toEqual([]);
+  await expect(page.getByLabel("Password", { exact: true })).toHaveValue("incorrect password");
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  await page.screenshot({ path: "/tmp/opencode/authy-signin-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "New here? Create account", exact: true }).click();
+  await expect(page.getByText(/Use a unique password/)).toBeVisible();
+  await page.getByLabel("Password", { exact: true }).fill("short");
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Choose a longer password");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: "/tmp/opencode/authy-signup-mobile.png", fullPage: true });
+});
+
 test("auth protocol pages share sign-in styling and work without JavaScript", async ({ browser, baseURL }) => {
   const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   try {
-    const enrolled = await context.request.post(`${baseURL}/api/signup`, { headers: { origin: baseURL! }, data: { email: `static-auth-${Date.now()}@example.test`, password: "static auth fixture password" } });
+    const enrolled = await context.request.post(`${baseURL}/identity/enroll`, { headers: { origin: baseURL! }, data: { email: `static-auth-${Date.now()}@example.test`, password: "static auth fixture password" } });
     expect(enrolled.ok()).toBe(true);
     const page = await context.newPage();
     const parameters = new URLSearchParams({ client_id: "chatty", redirect_uri: `${process.env.AUTHY_TEST_RP}/auth/callback`, response_type: "code", scope: "openid profile email", state: "static-state", nonce: "static-nonce", prompt: "consent", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" });

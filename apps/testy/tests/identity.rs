@@ -124,7 +124,7 @@ fn protected_identity_requests_validate_authority_before_ack() {
         bearer: Some("invalid".into()),
         invocation: Invocation {
             id: 1,
-            operation: "identity.current".into(),
+            operation: "identity.fetch".into(),
             input: json!(null),
         },
     }))
@@ -148,7 +148,7 @@ fn identity_inputs_on_wrong_command_kind_never_enter_execution_diagnostics() {
     assert_eq!(
         block_on(channel.exchange(Command::Invoke(Invocation {
             id: 1,
-            operation: "identity.login".into(),
+            operation: "identity.acquire".into(),
             input: json!({"email": "a@b", "password": "never-log-this"}),
         })))
         .unwrap(),

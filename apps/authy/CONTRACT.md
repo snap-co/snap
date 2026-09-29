@@ -11,13 +11,20 @@ Access ownership. Email normalization and password policy belong to
 [Identity](../../docs/identity.md). Password change/reset, passkeys and email
 verification are not implemented. `email_verified` is false.
 
-The browser uses these same-origin HTTP routes:
+The browser uses the Identity SDK over Transport's HTTP carrier before connecting.
+See [Identity bootstrap](../../docs/identity.md#browser-bootstrap) for the shared
+contract. Authy registers these operations in the shared dispatcher:
 
 | Route | Purpose |
 | --- | --- |
-| `POST /api/signup` | Create an account and first session |
-| `POST /api/login` | Create an independent session |
-| `GET /api/session` | Current account or null |
+| `POST /identity/enroll` | `identity.enroll`, atomic account and first session |
+| `POST /identity/acquire` | `identity.acquire`, independent session |
+| `GET /identity/fetch` | `identity.fetch`, current account or null |
+
+Responses are correlated Transport completion events. The HTTP platform sets
+the cookie from committed issuance and removes the bearer from the response.
+Enrollment composes Authy's private profile through Identity's transactional
+enrollment hook. The former application-specific auth endpoints are removed.
 
 Connected account operations use WebSocket invocations: `authy.sessions` and
 `authy.credentials` take null and return session summaries and credential labels;
@@ -37,8 +44,10 @@ ACK-paced submission, revision guards, reconciliation and replication over
 uses its projected revision; conflicting concurrent edits reject and reconcile.
 HTTP account APIs are not a second profile-write path.
 
-The WebSocket host reads the signed cookie when a browser Connect carries an
-empty bearer. It validates session authority before ACK under the shared gate.
+The WebSocket host requires a valid signed session cookie before upgrade and
+injects that credential into Connect. The browser platform supplies the client
+ID. Identity acquisition is unavailable on the WebSocket carrier. Connected
+operations validate session authority before ACK under the shared gate.
 Accepted authority survives through completion; session changes serialize behind it.
 Revocation clears the visible profile and stops authenticated delivery. Ordinary
 reconnect recovers a surviving logical connection. Expired connections clear
@@ -52,7 +61,7 @@ Sign-in, signup, consent, logout confirmation and browser protocol errors share
 `web/auth-ui.tsx` and the tokens in `web/style.css`. The web build renders the
 script-free protocol views into `auth-pages.json`; the native host loads that
 artifact and fills escaped request data. Change the shared components to update
-both render paths. Consent shows the registered application origin and explains
+both render paths. Consent shows the signed-in email, registered application origin and explains
 each permission. JSON protocol errors remain JSON for non-browser clients.
 
 | Endpoint | Behavior |

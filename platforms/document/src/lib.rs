@@ -158,6 +158,7 @@ pub struct Host<B: Backend> {
     transport: Server<StoreAuthority<B>>,
     authenticate: Authenticate,
     requests: BTreeMap<String, Request>,
+    http_requests: BTreeMap<String, &'static [&'static str]>,
     peers: BTreeMap<u64, Peer>,
     lifetimes: BTreeSet<u64>,
     queue: VecDeque<Work>,
@@ -193,6 +194,7 @@ impl<B: Backend> Host<B> {
             transport: Server::new(authority, config).with_live_authority(),
             authenticate,
             requests: BTreeMap::new(),
+            http_requests: BTreeMap::new(),
             peers: BTreeMap::new(),
             lifetimes: BTreeSet::new(),
             queue: VecDeque::new(),
@@ -215,6 +217,78 @@ impl<B: Backend> Host<B> {
             "duplicate operation"
         );
         self
+    }
+
+    /// A pre-connection operation projected over HTTP, never over a WebSocket.
+    /// It uses the same validation, admission, FIFO and durable completion as
+    /// connected operations. The HTTP carrier owns cookie projection.
+    pub fn with_http_request(mut self, request: Request, tables: &'static [&'static str]) -> Self {
+        self.http_requests.insert(request.name.clone(), tables);
+        self.with_request(request)
+    }
+
+    pub fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error> {
+        self.store
+            .lock()
+            .unwrap()
+            .inspect("transport.upgrade", |tx| {
+                (self.authenticate)(tx, bearer).map(|_| ())
+            })
+            .map_err(storage_error)
+    }
+
+    /// One HTTP exchange; the caller holds the execution mutex on a blocking
+    /// thread. Credentials/results live only for this exchange and are removed
+    /// from peer and retry storage before returning. No automatic retry.
+    pub fn http_request(
+        &mut self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> snap_transport::Outcome {
+        if !self.http_requests.contains_key(&invocation.operation) {
+            return Err(Error::UnknownOperation);
+        }
+        let request = &self.requests[&invocation.operation];
+        if !(request.input)(&invocation.input) {
+            return Err(Error::InvalidInput);
+        }
+        if self.queue.len() >= 1024 {
+            return Err(Error::Capacity);
+        }
+        let peer = self.open()?;
+        let output = self.output(peer)?;
+        let id = invocation.id;
+        let result = (|| {
+            self.enqueue(Work {
+                peer,
+                connection: None,
+                wire_id: id,
+                bearer,
+                actor: None,
+                operation: Operation::Request(invocation),
+            })?;
+            loop {
+                while let Some(response) = output.pop_front() {
+                    if let Response::Events(events) = response {
+                        for event in events {
+                            if let Event::Completed {
+                                id: completed,
+                                outcome,
+                            } = event
+                                && completed == id
+                            {
+                                return outcome;
+                            }
+                        }
+                    }
+                }
+                self.step();
+            }
+        })();
+        self.peers.remove(&peer);
+        self.calls
+            .retain(|(connection, _), _| *connection != (peer | (1 << 63)));
+        result
     }
 
     pub fn with_controller(mut self, kind: &str, controller: Controller<B>) -> Self {
@@ -474,6 +548,11 @@ impl<B: Backend> Host<B> {
         if !self.peers.contains_key(&peer_id) {
             return Err(Error::StaleConnection);
         }
+        if let Command::Invoke(invocation) | Command::Request { invocation, .. } = &command
+            && self.http_requests.contains_key(&invocation.operation)
+        {
+            return Err(Error::UnknownOperation);
+        }
         let response = match command {
             Command::Connect { bearer, client_id } => {
                 if self.peers[&peer_id].attachment.is_some() {
@@ -678,6 +757,26 @@ impl<B: Backend> Host<B> {
             return;
         }
         while let Some(mut work) = self.queue.pop_front() {
+            // Explicit host residency declaration for pre-connection operations,
+            // loaded once at their FIFO turn, before read-only admission. This is
+            // not an implicit StoreMiss retry or a second mutation path.
+            if let Operation::Request(invocation) = &work.operation
+                && let Some(tables) = self.http_requests.get(&invocation.operation)
+            {
+                let loaded = tables
+                    .iter()
+                    .try_for_each(|table| self.store.lock().unwrap().load(table));
+                if let Err(error) = loaded {
+                    self.respond(
+                        &work,
+                        Event::Completed {
+                            id: work.wire_id,
+                            outcome: Err(storage_error(error)),
+                        },
+                    );
+                    continue;
+                }
+            }
             let prepared = self
                 .store
                 .lock()
@@ -803,7 +902,19 @@ impl<B: Backend> Host<B> {
                         changes = value.changes;
                         value.value
                     })
-                    .map_err(storage_error)
+                    .map_err(|error| {
+                        if self.http_requests.contains_key(&invocation.operation) {
+                            match error {
+                                snap_store::Error::Invalid => Error::InvalidInput,
+                                snap_store::Error::Constraint => {
+                                    Error::Application(json!({"code":"Conflict"}))
+                                }
+                                other => storage_error(other),
+                            }
+                        } else {
+                            storage_error(error)
+                        }
+                    })
             }
             Operation::Document(_) => {
                 let connection = work.connection.expect("connected document operation");

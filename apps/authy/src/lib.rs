@@ -167,6 +167,17 @@ pub fn enroll(
     now: i64,
 ) -> Result<snap_identity::Issued, StoreError> {
     let issued = snap_identity::Identity::default().enroll(tx, crypto, email, password, now)?;
+    initialize_account(tx, &issued, email)?;
+    Ok(issued)
+}
+
+/// Enrollment hook for Identity's operation dispatcher. This shares the
+/// transaction that issued the credential and session; failure rolls all back.
+pub fn initialize_account(
+    tx: &mut Transaction<'_>,
+    issued: &snap_identity::Issued,
+    email: &str,
+) -> Result<(), StoreError> {
     let profile = profile_id(&issued.session.identity).ok_or(StoreError::Invalid)?;
     let normalized = email.trim().to_ascii_lowercase();
     let local = normalized.split('@').next().unwrap_or("");
@@ -210,7 +221,7 @@ pub fn enroll(
     row.insert("profile".into(), Value::Text(profile));
     row.insert("email".into(), Value::Text(normalized));
     tx.insert(ACCOUNTS, row)?;
-    Ok(issued)
+    Ok(())
 }
 
 /// Resolve the bearer to its session and return the account view. The private

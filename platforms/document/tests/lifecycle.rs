@@ -11,6 +11,61 @@ use std::sync::Arc;
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
 
 #[test]
+fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
+    let mut host = fixture().with_http_request(
+        snap_document_local::Request {
+            name: "fixture.fetch".into(),
+            identity_required: false,
+            input: |value| value.is_null(),
+            output: |value| value.is_i64(),
+            progress: |_| false,
+            guard: |_, _, _, _| Ok(()),
+            handler: Box::new(|tx, _, _, _| {
+                Ok(Document::new(registry(), access())
+                    .read(tx, ID, Some("alice"))?
+                    .value)
+            }),
+        },
+        &[snap_document::server::TABLES[0]],
+    );
+    let (peer, _) = connect(&mut host, "alice", "http-fifo", 0);
+    submit(&mut host, peer, 1, intent(1, 7));
+    let invocation = Invocation {
+        id: 1,
+        operation: "fixture.fetch".into(),
+        input: json!(null),
+    };
+    assert_eq!(
+        host.submit(peer, Command::Invoke(invocation.clone()), 0),
+        Err(snap_transport::Error::UnknownOperation)
+    );
+    assert_eq!(
+        host.submit(
+            peer,
+            Command::Request {
+                bearer: None,
+                invocation: invocation.clone()
+            },
+            0
+        ),
+        Err(snap_transport::Error::UnknownOperation)
+    );
+    // The prior mutation is accepted but not executed. HTTP must enter its FIFO,
+    // then read the committed result. Repeated calls also prove peers are freed.
+    for _ in 0..140 {
+        assert_eq!(host.http_request(invocation.clone(), None), Ok(json!(7)));
+    }
+    let invalid = Invocation {
+        input: json!({"unexpected":true}),
+        ..invocation
+    };
+    assert_eq!(
+        host.http_request(invalid, None),
+        Err(snap_transport::Error::InvalidInput)
+    );
+}
+
+#[test]
 fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values() {
     const DEP: &str = "018f3c4b-6d2a-7000-8000-000000000002";
     for cleanup in [false, true] {

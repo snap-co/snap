@@ -76,6 +76,14 @@ have native hosts; their superseded Workers compositions have been removed.
 
 ## Transport and connection lifetime
 
+Browser bootstrap follows [Identity](docs/identity.md#browser-bootstrap): acquire
+the session over Transport's HTTP carrier, set the HttpOnly cookie, then connect.
+The browser platform owns client IDs. HTTP operation projections and connected
+messages share operation validation and serialized dispatch. Authy composes
+enrollment through Identity's transaction hook; its HTTP host does not implement
+an independent credential API. Cookie-based WebSocket carriers reject anonymous
+or invalid sessions before upgrade.
+
 One configured authority exchanges opaque bearers for identity strings or explicit
 errors. No session ID or lease enters transport. Non-connection requests resolve
 each bearer. Hosts may select live authority validation, as Testy does: transport

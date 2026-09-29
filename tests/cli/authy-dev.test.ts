@@ -55,8 +55,8 @@ test("Authy dev retains failed builds and sessions across native/Wasm replacemen
     await until(async () => await page.getByLabel("Name", { exact: true }).inputValue() === "Survives rebuild");
     await page.evaluate(() => { (window as any).__authyDev = "same"; });
     const ui = `${fixture}/apps/authy/web/app.tsx`;
-    await writeFile(ui, (await readFile(ui,"utf8")).replace("Snap / Authy", "Snap / Authy reloaded"));
-    await page.getByText("Snap / Authy reloaded", { exact: true }).waitFor();
+    await writeFile(ui, (await readFile(ui,"utf8")).replace("Manage your profile and active sessions.", "Manage your profile and active sessions after reload."));
+    await page.getByText("Manage your profile and active sessions after reload.", { exact: true }).waitFor();
     expect(await page.evaluate(() => (window as any).__authyDev)).toBe("same");
     child.kill("SIGTERM"); expect(await child.exited).toBe(143);
     await until(async () => { try { await fetch(url); return false; } catch { return true; } });

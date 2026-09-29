@@ -8,13 +8,12 @@
 //!
 //! Wire protocol (served by the coordinator-owned host):
 //!
-//! * HTTP `POST /api/signup`, `POST /api/login` with `{email,password}` and
-//!   `GET /api/session` returns
-//!   `{account:null|{identity,email,profile,authenticated_at}}`. The
-//!   `HttpOnly` same-origin cookie is the auth; no bearer is exposed to JS.
+//! * Identity's SDK acquires a session through Transport's HTTP carrier before
+//!   opening a WebSocket. The platform projects committed issuance into an
+//!   HttpOnly cookie; no bearer is exposed to JS. See `docs/identity.md`.
 //! * Socket `/transport` carries standard `snap_transport` `Command`/`Response`
-//!   JSON text frames. The browser sends `Connect {bearer:"", client_id}`; the
-//!   host fills the bearer from the upgrade cookie.
+//!   JSON text frames. The browser platform injects the client ID into Connect;
+//!   the host validates the cookie before upgrade and injects its bearer.
 //!
 //! Non-obvious guarantees beside this interface:
 //!

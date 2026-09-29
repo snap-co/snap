@@ -14,7 +14,14 @@ impl Pages {
             std::path::Path::new(assets).join("auth-pages.json"),
         )?)?)
     }
-    pub fn consent(&self, client: &str, origin: &str, scope: &str, request: &str) -> String {
+    pub fn consent(
+        &self,
+        client: &str,
+        origin: &str,
+        email: &str,
+        scope: &str,
+        request: &str,
+    ) -> String {
         let permissions: String = scope
             .split_whitespace()
             .map(|scope| {
@@ -45,6 +52,7 @@ impl Pages {
             &[
                 ("client", Slot::Text(client)),
                 ("origin", Slot::Text(origin)),
+                ("email", Slot::Text(email)),
                 ("request", Slot::Text(request)),
                 ("permissions", Slot::Markup(&permissions)),
             ],

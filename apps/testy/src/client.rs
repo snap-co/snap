@@ -50,7 +50,7 @@ impl<C: Channel> Client<C> {
                 if enroll {
                     "identity.enroll"
                 } else {
-                    "identity.login"
+                    "identity.acquire"
                 },
                 json!({"email": email, "password": password}),
             )

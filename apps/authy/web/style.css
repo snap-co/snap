@@ -19,6 +19,11 @@ form { gap: 22px; margin-top: 28px; }
 .auth-field { display: grid; gap: var(--space-1); }
 .auth-field label { font-size: .9375rem; font-weight: 600; }
 .signin-form { gap: var(--space-3); }
+.password-control { display: flex; gap: var(--space-1); }
+.password-control input { flex: 1; }
+.password-control button { flex: 0 0 auto; min-width: 72px; }
+.submission-status { color: var(--muted); font-size: .875rem; }
+.submission-status:empty { margin: 0; }
 .signin-form .actions { display: grid; justify-content: stretch; gap: var(--space-1); }
 .mode-switch { border-color: transparent; font-weight: 500; }
 input, textarea, button, .button { font: inherit; border-radius: 7px; padding: 11px 14px; }
@@ -45,7 +50,7 @@ li small { display: block; }
 [role=alert] { color: var(--danger); padding: 12px; background: var(--danger-surface); border-radius: 6px; overflow-wrap: anywhere; }
 .application-identity { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-2); border-block: 1px solid var(--border); padding-block: var(--space-2); margin: var(--space-3) 0; }
 .application-identity dt { color: var(--muted); }
-.application-identity dd { margin: 0; }
+.application-identity dd { margin: 0; overflow-wrap: anywhere; }
 .application-origin { display: block; margin-top: 4px; font-size: .875rem; color: var(--muted); overflow-wrap: anywhere; }
 .permissions { margin: 0 0 var(--space-2); }
 .permission { gap: 12px; flex-wrap: nowrap; align-items: flex-start; justify-content: flex-start; border-bottom: 1px solid var(--border); }

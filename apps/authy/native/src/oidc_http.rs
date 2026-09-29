@@ -227,11 +227,14 @@ fn browser(
         Err(error) => Err(error),
     }
 }
-fn consent_page(app: &App, handle: String) -> Response {
+fn consent_page(app: &App, headers: &HeaderMap, handle: String) -> Response {
     let details = app.run("oauth.consent_details", |tx| {
-        oidc::consent_details(tx, &CryptoHost(&app.keys), &handle)
+        let session = browser(app, tx, headers)?.ok_or(Error::NotFound)?;
+        let email = authy::profile_info(tx, &session.subject)?.email;
+        Ok(oidc::consent_details(tx, &CryptoHost(&app.keys), &handle)?
+            .map(|(client, scope)| (client, scope, email)))
     });
-    let (client, scope) = match details {
+    let (client, scope, email) = match details {
         Ok(Some(details)) => details,
         Ok(None) => return problem(StatusCode::BAD_REQUEST, "invalid_grant"),
         Err(error) => return store_error(error),
@@ -252,7 +255,7 @@ fn consent_page(app: &App, handle: String) -> Response {
     page(
         app,
         "Authorize application",
-        app.pages.consent(name, &origin, &scope, &handle),
+        app.pages.consent(name, &origin, &email, &scope, &handle),
     )
 }
 fn hint(app: &App, raw: &str) -> Result<Value, HttpError> {
@@ -330,7 +333,7 @@ async fn authorize(
         )
     });
     match result {
-        Ok(oidc::AuthorizeOutcome::ShowConsent { handle }) => consent_page(&app, handle),
+        Ok(oidc::AuthorizeOutcome::ShowConsent { handle }) => consent_page(&app, &headers, handle),
         Ok(oidc::AuthorizeOutcome::RequireLogin { handle, reauth }) => {
             let resume = format!(
                 "/oauth/resume?{}",
@@ -381,7 +384,7 @@ async fn resume(
             now(),
         )
     }) {
-        Ok(oidc::ResumeOutcome::ShowConsent { handle }) => consent_page(&app, handle),
+        Ok(oidc::ResumeOutcome::ShowConsent { handle }) => consent_page(&app, &headers, handle),
         Ok(_) => problem(StatusCode::BAD_REQUEST, "login_required"),
         Err(error) => store_error(error),
     }

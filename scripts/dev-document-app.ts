@@ -75,7 +75,7 @@ try {
     }],
     server: { host: publicURL.hostname.replace(/[\[\]]/g, ""), port: Number(publicURL.port || 80), strictPort: true,
       fs: { allow: [resolve(`apps/${app}/web`), session, resolve("node_modules")] },
-      proxy: { "^/(api|auth|oauth|\\.well-known|transport)(/|$)": { target, ws: true, changeOrigin: false,
+      proxy: { "^/(api|identity|auth|oauth|\\.well-known|transport)(/|$)": { target, ws: true, changeOrigin: false,
         bypass(request) { if (request.headers.host !== publicURL.host || (request.headers.origin && request.headers.origin !== publicURL.origin)) return false; } } },
       watch: { ignored: ["**/target/**", "**/.snap/**", "**/.git/**"] } },
   });

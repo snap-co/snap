@@ -30,7 +30,7 @@ export function Permission({ title, description }: { title: string; description:
 // ordinary HTML forms, so consent and logout work with scripts disabled.
 export function ConsentPage() {
   return <AuthShell><AuthHeading title="Authorize application"><strong>{"{{client}}"}</strong> is requesting access to your Authy account.</AuthHeading>
-    <dl className="application-identity"><dt>Continue to</dt><dd><strong>{"{{client}}"}</strong><span className="application-origin">{"{{origin}}"}</span></dd></dl>
+    <dl className="application-identity"><dt>Signed in as</dt><dd>{"{{email}}"}</dd><dt>Continue to</dt><dd><strong>{"{{client}}"}</strong><span className="application-origin">{"{{origin}}"}</span></dd></dl>
     <h2>This application will be able to</h2><ul className="permissions">{"{{permissions}}"}</ul>
     <p className="muted consent-note">Your password is never shared with the application.</p>
     <form method="post" action="/oauth/authorize"><input type="hidden" name="request" value="{{request}}"/><AuthActions><AuthButton name="decision" value="allow">Allow</AuthButton><AuthButton secondary name="decision" value="deny">Deny</AuthButton></AuthActions></form>

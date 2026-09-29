@@ -78,7 +78,7 @@ impl Operation {
         }
         let input = &invocation.input;
         Ok(Some(match key {
-            "identity.enroll" | "identity.login" => {
+            "identity.enroll" | "identity.acquire" => {
                 if bearer.is_some() {
                     return Err(Error::InvalidInput);
                 }
@@ -106,12 +106,12 @@ impl Operation {
                     }
                 }
             }
-            "identity.current" | "identity.logout" => {
+            "identity.fetch" | "identity.logout" => {
                 if !input.is_null() {
                     return Err(Error::InvalidInput);
                 }
                 let bearer = bearer.ok_or(Error::IdentityRequired)?;
-                if key == "identity.current" {
+                if key == "identity.fetch" {
                     Self::Current {
                         bearer: bearer.into(),
                     }
@@ -127,8 +127,8 @@ impl Operation {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Enroll { .. } => "identity.enroll",
-            Self::Login { .. } => "identity.login",
-            Self::Current { .. } => "identity.current",
+            Self::Login { .. } => "identity.acquire",
+            Self::Current { .. } => "identity.fetch",
             Self::Logout { .. } => "identity.logout",
         }
     }
@@ -139,9 +139,28 @@ impl Operation {
         crypto: &mut impl Crypto,
         now: i64,
     ) -> Result<Value, snap_store::Error> {
+        self.execute_with_enrollment(identity, tx, crypto, now, |_, _, _| Ok(()))
+    }
+
+    /// Compose application enrollment records with Identity's credential and
+    /// first session in the same transaction, without a second credential path.
+    pub fn execute_with_enrollment(
+        self,
+        identity: &Identity,
+        tx: &mut Transaction<'_>,
+        crypto: &mut impl Crypto,
+        now: i64,
+        enrolled: impl FnOnce(
+            &mut Transaction<'_>,
+            &crate::Issued,
+            &str,
+        ) -> Result<(), snap_store::Error>,
+    ) -> Result<Value, snap_store::Error> {
         let issued = match self {
             Self::Enroll { email, password } => {
-                identity.enroll(tx, crypto, &email, &password, now)?
+                let issued = identity.enroll(tx, crypto, &email, &password, now)?;
+                enrolled(tx, &issued, &email)?;
+                issued
             }
             Self::Login { email, password } => {
                 identity.login(tx, crypto, &email, &password, now)?

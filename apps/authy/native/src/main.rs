@@ -5,12 +5,11 @@ mod pages;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
+    extract::DefaultBodyLimit,
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
-use serde::Deserialize;
 use serde_json::json;
 use snap_document_local::{
     Host,
@@ -56,13 +55,6 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Credentials {
-    email: String,
-    password: String,
-}
-
 pub fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
     (status, [("cache-control", "no-store")], Json(value)).into_response()
 }
@@ -80,78 +72,6 @@ pub fn store_error(error: Error) -> Response {
     json_response(status, json!({"error":code}))
 }
 
-fn session_response(app: &App, account: serde_json::Value, bearer: Option<&str>) -> Response {
-    let mut response = json_response(StatusCode::OK, json!({"account":account}));
-    response.headers_mut().insert(
-        "set-cookie",
-        app.keys.cookie(bearer).parse().expect("cookie"),
-    );
-    response
-}
-
-async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let Some(bearer) = app.bearer(&headers) else {
-        return session_response(&app, serde_json::Value::Null, None);
-    };
-    match app.run("authy.current", |tx| {
-        authy::current(tx, &snap_crypto::Native, &bearer, now())
-    }) {
-        Ok(account) => json_response(StatusCode::OK, json!({"account":account})),
-        Err(Error::NotFound) => session_response(&app, serde_json::Value::Null, None),
-        Err(error) => store_error(error),
-    }
-}
-
-async fn signup(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(credentials): Json<Credentials>,
-) -> Response {
-    authenticate(app, headers, credentials, true)
-}
-async fn login(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(credentials): Json<Credentials>,
-) -> Response {
-    authenticate(app, headers, credentials, false)
-}
-fn authenticate(
-    app: Arc<App>,
-    headers: HeaderMap,
-    credentials: Credentials,
-    enroll: bool,
-) -> Response {
-    if !app.same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let result = app.run("authy.authenticate", |tx| {
-        let mut crypto = snap_crypto::Native;
-        let issued = if enroll {
-            authy::enroll(
-                tx,
-                &mut crypto,
-                &credentials.email,
-                &credentials.password,
-                now(),
-            )?
-        } else {
-            Identity::default().login(
-                tx,
-                &mut crypto,
-                &credentials.email,
-                &credentials.password,
-                now(),
-            )?
-        };
-        let account = authy::current(tx, &crypto, &issued.bearer, now())?;
-        Ok((issued, account))
-    });
-    match result {
-        Ok((issued, account)) => session_response(&app, json!(account), Some(&issued.bearer)),
-        Err(error) => store_error(error),
-    }
-}
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<_> = [
         snap_identity::MIGRATION,
@@ -252,13 +172,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         issuer,
         pages: pages::Pages::load(&assets)?,
     });
+    let identity_routes = snap_document_local::web::http_router(
+        documents.clone(),
+        vec![
+            snap_document_local::web::HttpOperation {
+                name: "identity.acquire",
+                method: Method::POST,
+                session: snap_document_local::web::SessionProjection::Issue,
+            },
+            snap_document_local::web::HttpOperation {
+                name: "identity.enroll",
+                method: Method::POST,
+                session: snap_document_local::web::SessionProjection::Issue,
+            },
+            snap_document_local::web::HttpOperation {
+                name: "identity.fetch",
+                method: Method::GET,
+                session: snap_document_local::web::SessionProjection::Fetch,
+            },
+        ],
+        {
+            let keys = app.keys.clone();
+            Arc::new(move |bearer| keys.cookie(bearer))
+        },
+    );
     let router = Router::new()
         .route("/health", get(|| async { "OK" }))
-        .route("/api/session", get(session))
-        .route("/api/signup", post(signup))
-        .route("/api/login", post(login))
+        .route(
+            "/api/{*path}",
+            axum::routing::any(|| async { StatusCode::NOT_FOUND }),
+        )
         .merge(oidc_http::routes(app.clone()))
         .with_state(app)
+        .merge(identity_routes)
         .merge(snap_document_local::web::router(documents.clone()))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(

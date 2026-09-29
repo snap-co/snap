@@ -1,23 +1,47 @@
-import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { startAuthy, type AuthyClient } from "../client";
 import "./style.css";
 import { AuthShell, AuthHeading, AuthActions, AuthButton, AuthField } from "./auth-ui";
 
-function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
+function accountError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/connecting|Disconnected/i.test(message)) return "Authy is reconnecting. Wait for the connection, then try again.";
+  if (/Session check failed/i.test(message)) return "We couldn't check your session. Check your connection and reload the page.";
+  if (/Session expired|InvalidBearer|Account session ended/i.test(message)) return "Your session has ended. Sign in again to continue.";
+  if (/Edit rejected|Profile out of sync|Profile is still loading|Sign in before saving/i.test(message)) return message;
+  return "We couldn't complete that action. Check your connection and try again. If it keeps happening, reload the page.";
+}
+
+function AuthForm({ client }: { client: AuthyClient }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const [visible, setVisible] = useState(false);
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (submitting.current) return;
     setError(null);
-    const work =
-      mode === "signup" ? client.signup(email, password) : client.login(email, password);
-    void work
-      .then(() => setPassword(""))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    const bytes = new TextEncoder().encode(password).length;
+    if (mode === "signup" && (bytes < 8 || bytes > 1024)) {
+      setError(bytes < 8 ? "Choose a longer password: use at least 8 bytes." : "Your password is too long. Use no more than 1,024 bytes.");
+      return;
+    }
+    submitting.current = true;
+    setBusy(true);
+    try {
+      await (mode === "signup" ? client.signup(email, password) : client.login(email, password));
+      setPassword("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "We couldn't sign you in. Check your connection and try again.");
+    } finally {
+      submitting.current = false;
+      setBusy(false);
+    }
   };
 
   return (
@@ -30,23 +54,30 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
           name="email"
           type="email"
           autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          readOnly={busy}
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
         </AuthField>
         <AuthField label="Password" id="password">
+        <div className="password-control">
         <input
           id="password"
           name="password"
-          type="password"
+          type={visible ? "text" : "password"}
           autoComplete={mode === "signup" ? "new-password" : "current-password"}
-          minLength={mode === "signup" ? 8 : undefined}
-          maxLength={1024}
+          aria-describedby={mode === "signup" ? "password-hint" : undefined}
+          readOnly={busy}
           required
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
+        <AuthButton type="button" secondary aria-controls="password" aria-label={visible ? "Hide password" : "Show password"} onClick={() => setVisible(!visible)}>{visible ? "Hide" : "Show"}</AuthButton>
+        </div>
+        {mode === "signup" && <small id="password-hint">Use a unique password, 8–1,024 bytes. A typical letter or number uses one byte.</small>}
         </AuthField>
         <AuthActions>
           <AuthButton type="submit" disabled={busy}>
@@ -61,12 +92,14 @@ function AuthForm({ client, busy }: { client: AuthyClient; busy: boolean }) {
               setMode(mode === "signup" ? "signin" : "signup");
               setError(null);
               setPassword("");
+              setVisible(false);
             }}
           >
             {mode === "signup" ? "Have an account? Sign in" : "New here? Create account"}
           </AuthButton>
         </AuthActions>
       </form>
+      <p className="submission-status" role="status">{busy ? (mode === "signup" ? "Creating your account…" : "Checking your sign-in details…") : ""}</p>
       {error && <p role="alert">{error}</p>}
     </>
   );
@@ -160,7 +193,7 @@ function Sessions({ client }: { client: AuthyClient }) {
 
   useEffect(() => {
     if (snapshot.account && snapshot.sessions === null) {
-      void client.refreshSessions().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      void client.refreshSessions().catch((e) => setError(accountError(e)));
     }
   }, [client, snapshot.account, snapshot.sessions]);
 
@@ -170,7 +203,7 @@ function Sessions({ client }: { client: AuthyClient }) {
     try {
       await work();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(accountError(e));
     } finally {
       setBusy(false);
     }
@@ -239,7 +272,7 @@ export function View({ client }: { client: AuthyClient }) {
     try {
       await work();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(accountError(e));
     } finally {
       setBusy(false);
     }
@@ -247,10 +280,10 @@ export function View({ client }: { client: AuthyClient }) {
 
   const connectionLabel =
     snapshot.connection === "connected"
-      ? "Connected"
+      ? "Account connected"
       : snapshot.connection === "connecting"
         ? "Connecting…"
-        : "Disconnected";
+         : "Reconnecting…";
 
   return (
     <AuthShell status={snapshot.account && <span className="connection" data-testid="connection">
@@ -259,7 +292,7 @@ export function View({ client }: { client: AuthyClient }) {
       {snapshot.phase === "loading" ? (
         <AuthHeading title="Checking your session…" />
       ) : snapshot.phase === "anonymous" || !snapshot.account ? (
-        <AuthForm client={client} busy={busy} />
+        <AuthForm client={client} />
       ) : (
         <>
           <AuthHeading title="You're signed in">Manage your profile and active sessions.</AuthHeading>
@@ -281,7 +314,7 @@ export function View({ client }: { client: AuthyClient }) {
         </>
       )}
       {(actionError ?? snapshot.error) && (
-        <p role="alert">{actionError ?? snapshot.error}</p>
+        <p role="alert">{actionError ?? accountError(snapshot.error)}</p>
       )}
     </AuthShell>
   );
@@ -314,7 +347,8 @@ function App() {
     return (
       <AuthShell>
         <AuthHeading title="Authy is unavailable" />
-        <p role="alert">{failed}</p>
+         <p role="alert">Authy couldn't load. Check your connection and reload the page.</p>
+         <AuthButton onClick={() => location.reload()}>Reload Authy</AuthButton>
       </AuthShell>
     );
   }
