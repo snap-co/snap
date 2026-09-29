@@ -9,8 +9,8 @@ OpenCode forms are also supported by the browser.
 Factorio is the tracker for this conversation. Save through the shell tool:
 
 ```sh
-bun "$FACTORIO_CLI" intake-read
-bun "$FACTORIO_CLI" intake-save - <<'JSON'
+factory intake-read
+factory intake-save - <<'JSON'
 {
   "revision": 0,
   "route": "grill",
@@ -22,7 +22,7 @@ JSON
 
 The host expands these examples into absolute commands with `--credentials`
 pointing at a private, host-managed account credential file, and `--intake` selecting
-this intake. The CLI uses guarded WebSocket operations with workspace Access. Use
+this intake. The native CLI uses guarded TCP operations with workspace Access. Use
 those exact commands even when shell environment variables disappear. Do not read
 or print the credential file, copy it into the repository, or include it in messages.
 The CLI reads it internally. Reconnect from Factorio if its OAuth session expires.

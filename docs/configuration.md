@@ -20,7 +20,7 @@ dist/production/
   secrets.enc       # when secrets are required
   web/
   client.js         # when client.ts exists
-  cli.js            # when cli.ts exists
+  factory           # Factorio's native CLI, selected by build.cli
   bridge.js         # when native/bridge.ts exists
 ```
 
@@ -29,7 +29,9 @@ assembly. Apps supply `native/Cargo.toml`, `wasm/Cargo.toml`, `web/app.tsx` and
 `web/index.html`. A conventional `web/server.tsx` may export an async default
 function returning a filename-to-content map for server-rendered assets.
 `[build]` in `snap.toml` accepts target selection only: `server`, `binary` and
-`features`. It does not accept commands. Testy's existing host selects `server =
+`features`, plus optional `cli` naming a binary in `cli/Cargo.toml`. The native CLI
+is built for the same profile and packaged beside the server. TypeScript CLI
+bundles are not produced. It does not accept commands. Testy's existing host selects `server =
 "local"`, `binary = "testy-web"` and `features = ["web"]`.
 
 Packaging copies only produced artifacts, the selected config and encrypted
@@ -129,6 +131,12 @@ Factorio adds `[app.repository]` with its existing typed repository settings, an
 optional `[app.tools]` for `bun`, `opencode`, `model` and `bridge`. The bridge defaults
 to packaged `bridge.js`; an explicit path resolves against config.toml. Set its
 installation-specific repository/resource paths before starting it.
+Its optional `[app.tcp]` selects `listen = "127.0.0.1:1248"` and
+`retention_ms = 1800000` by default. Only loopback listeners are accepted; port
+zero selects an available port for fixtures. TCP is separate from `host.listen`
+and the frontend proxy. Port 1248 is IANA-registered to Hermes, so override it if
+that software is also running. `FACTORIO_ADDR` or `factory --addr` selects the
+native client endpoint. HTTP reverse proxies do not protect this TCP listener.
 
 Old `.snap/chatty.env` and env-var configurations are not implicitly imported. Copy
 credentials into the private authoring files, seal each bag, and preserve existing

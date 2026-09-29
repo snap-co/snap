@@ -11,6 +11,7 @@ use snap_oidc::relying_party as rp;
 use snap_store::{Error, Transaction};
 
 pub const WORKSPACE: &str = "faca0000-0000-4000-8000-000000000001";
+pub mod client;
 pub mod documents;
 pub mod intake;
 const OWNER: &str = "factorio-service";

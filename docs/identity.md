@@ -20,7 +20,8 @@ Authy's cookie-authenticated browser flow follows this sequence:
    owns and injects a stable client ID for that runtime. The server validates the
    session cookie before upgrading and injects its bearer into Connect.
 3. Connection-required operations run on that connection. Credential acquisition
-   is HTTP-only and cannot be invoked over the connected carrier.
+   cannot be invoked over the connected carrier. Authy projects it over HTTP;
+   native hosts may select a sensitive pre-connection TCP exchange.
 
 On reload, `Identity.fetch()` uses `/identity/fetch` to resolve the cookie before
 connecting. Authy's anonymous or expired sessions do not open WebSockets. HTTP and
@@ -37,6 +38,29 @@ removes their temporary peer, inputs and results after the HTTP exchange.
 Authy selects the cookie-required carrier. Mixed browser/agent hosts retain
 explicit agent-bearer authentication through their configured authority; see
 [Transport composition](../ARCHITECTURE.md#transport-and-connection-lifetime).
+
+The Document host's `with_preconnection_request` registration separates sensitive
+issuance policy from cookie projection. Its one-shot exchange shares the FIFO but
+removes temporary peers, credential inputs and results before returning. Native
+TCP can execute such a Request on a fresh stream without cookie handling. There
+is no automatic replay, including when a committed issuance response is lost.
+
+Factorio native login retains Authy as the identity authority. `factory login`
+starts a five-minute approval request over TCP and prints a browser confirmation
+link and request code. A signed-in browser must submit an explicit same-origin,
+CSRF-protected confirmation. The URL carries only a public random challenge.
+A separate random proof remains in the CLI process; only its digest is stored.
+The CLI polls TCP for approval and consumes the approved request exactly once to
+receive a credential. A lost issuance response requires a new login, not retry.
+`factory login --token` alternatively delegates an existing ordinary agent token.
+
+CLI bearers have 256 random bits; only digests enter `factorio.cli`. They expire
+within 30 minutes, bounded by the parent OAuth session and access-token expiry.
+Every guarded operation also validates that parent session. Browser logout,
+upstream expiry or local CLI logout revokes authority. CLI credentials cannot
+approve candidates, issue agent tokens, delegate new CLI credentials or refresh
+OAuth. Browser sign-in remains the only refresh authority. Native login uses no
+password flow or upstream token exchange of its own.
 
 The React kit resolves this SDK through `platforms/browser/runtime.ts` before
 publishing protected routes. Acquisition calls `runtime.replace(account)` only

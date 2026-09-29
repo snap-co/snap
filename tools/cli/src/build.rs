@@ -199,6 +199,43 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
         .context("Cargo did not produce the server executable")?;
     let packaged_server = stage.path().join("server");
     std::fs::copy(executable, &packaged_server)?;
+    if let Some(binary) = settings.and_then(|s| s.cli.as_deref()) {
+        ensure!(
+            !binary.is_empty()
+                && !matches!(binary, "server" | "web")
+                && binary
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "build.cli must be a binary name"
+        );
+        let (manifest, metadata) =
+            cargo::metadata(&project, runner, Path::new("cli/Cargo.toml")).await?;
+        let package = cargo::selected_package(&metadata, &manifest)?;
+        let name = package["name"]
+            .as_str()
+            .context("Missing CLI package name")?;
+        let mut command = Command::new("cargo");
+        command
+            .current_dir(&project.root)
+            .env_remove("SNAP_MASTER_KEY")
+            .args(["build", "--locked", "--manifest-path"])
+            .arg(manifest)
+            .args(["-p", name, "--bin", binary, "--message-format=json"]);
+        if production {
+            command.arg("--release");
+        }
+        let output = runner.run(&mut command, true).await?;
+        let executable = String::from_utf8(output)?
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find_map(|v| {
+                (v["target"]["name"] == binary)
+                    .then(|| v["executable"].as_str().map(PathBuf::from))
+                    .flatten()
+            })
+            .context("Cargo did not produce the CLI executable")?;
+        std::fs::copy(executable, stage.path().join(binary))?;
+    }
     if let Some(output) = args.output {
         ensure!(
             std::env::current_dir()?.join(&output) != project.root,

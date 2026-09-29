@@ -11,7 +11,8 @@ independent consumer or enforceable dependency/portability rule requires it.
 ## Package ownership
 
 - `crates/transport` owns verified connection context, client correlation,
-  envelopes and resumable logical connections.
+  envelopes, the portable binary v1 codec and resumable logical connections.
+- `platforms/transport` owns binary native TCP IO without application dispatch.
 - `crates/execution` owns the application interface, admission, private attempts,
   serialized host execution and in-memory commit. `src/program.rs` defines the
   application interface; `src/executor.rs` implements the host state machine.
@@ -32,7 +33,7 @@ independent consumer or enforceable dependency/portability rule requires it.
 - `crates/document` owns whole-document definitions, deterministic mutations,
   guarded Store writes, receipts, intent replication and the optimistic client SDK.
 - `platforms/document` composes Document, Store and transport with a globally
-  serialized FIFO and a local WebSocket carrier. Testy's ephemeral Executor host
+  serialized FIFO and local WebSocket/TCP carriers. Testy's ephemeral Executor host
   remains its separate application-selected composition.
 - `platforms/browser` owns browser session startup, Wasm initialization, connection
   recovery and disposal. It has no React or router dependency. Applications supply
@@ -69,7 +70,8 @@ independent consumer or enforceable dependency/portability rule requires it.
   per reconciliation pass under the shared gate, publishes observations and resumes
   committed desires at startup. Failures stop until explicitly cleared. Integration
   journals the exact planned commit before moving mainline. Cookie-authenticated human approval is separate from agent-token
-  commands. CLI and browser share the TypeScript carrier; Rust owns domain rules.
+   commands. The native Rust `factory` CLI uses binary TCP; the browser retains
+   Wasm and WebSocket. Both submit the same guarded Rust operations.
   Conversational intake uses the existing OpenCode V2 service through its official
   client. OpenCode owns execution and history; Factorio validates revision-guarded
   draft writes through ordinary workspace Access over WebSocket. The authenticated
@@ -171,7 +173,7 @@ transport
 client must replace an interrupted native stream. Dropping a memory client future
 after submission discards observation interest, not host-owned work.
 
-The native adapter uses bounded length-prefixed JSON over TCP. The web development
+Testy's exchange-style native adapter uses bounded length-prefixed JSON over TCP. The web development
 host carries the same commands and observations as JSON text over WebSocket. Both
 permit one outstanding exchange-style command per physical connection in Testy.
 The Document host receives pipelined invocations but admits only one at a time.
@@ -183,6 +185,33 @@ format inspection records/trace without passing integers through JavaScript numb
 Workers and native TLS termination are subsequent work. Native production hosts
 can bind external interfaces behind a TLS proxy with an explicitly pinned HTTPS
 public origin; forwarding headers do not choose configuration.
+
+Factorio's binary TCP adapter shares the Document host, authority, FIFO, output
+handles and detached lifetimes with WebSocket. Its 12-byte header is `SNAP`, version
+1, kind 1 for CONNECT or 2 for MESSAGE, two reserved zero bytes, and a big-endian
+u32 payload length. One CBOR value follows. CONNECT carries bearer/client ID and
+replies with Attached including resumed/retention_ms, or Failed. MESSAGE carries
+the existing Transport envelopes. Limits are 4 KiB for CONNECT and 64 KiB for
+MESSAGE, with a 32-level decoding limit and five-second partial-frame/write
+deadlines. Unknown versions/kinds/flags, truncation and trailing CBOR close the
+physical stream. At most 128 physical TCP peers may wait, and pre-authentication
+reads expire after 30 seconds. Binary TCP currently binds loopback only. Remote
+operators must use a protected tunnel; there is no native TLS implementation.
+
+The native client sends and receives independently, including any number of
+ACK/progress events and Document notifications. It never retries after IO failure.
+`factory` keeps a private file-locked client ID and durably reserves invocation
+IDs before sending, so later processes can resume without result-cache collisions.
+EOF detaches; explicit Close retires. Factorio selects 30-minute detached retention
+independently of credential expiry. `factory retry` resubmits only its exact saved
+interrupted invocation and only when the host confirms that lifetime resumed.
+An expired lifetime or host restart must not replay uncertain work.
+
+Sensitive pre-connection operations use an exchange policy separate from HTTP
+cookie projection. HTTP and native TCP share validation, transaction gating and
+temporary input/result cleanup. TCP acquisition uses a fresh Request stream,
+returns its committed completion, then closes. It never enters a retained logical
+connection. Ordinary registered Request/Invoke operations remain generic.
 
 ## Application interface and global gate
 

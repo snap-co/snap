@@ -2,6 +2,323 @@ use crate::effects;
 use factorio::{Candidate, Config, Phase, Session};
 use std::path::Path;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real native CLI processes"]
+async fn native_cli_login_intake_tools_and_authority_without_shell_environment() {
+    use serde_json::json;
+    use snap_document_local::{Host, web::Shared};
+    use snap_oidc::relying_party as rp;
+    let (temp, config, _) = fixture().await;
+    let mut store = snap_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
+    for table in snap_access::TABLES
+        .iter()
+        .chain(snap_document::server::TABLES.iter())
+        .chain(rp::TABLES.iter())
+        .chain(["factorio.agents", "factorio.cli", "factorio.cli_login"].iter())
+    {
+        store.load(table).unwrap();
+    }
+    let owner = rp::owner("http://issuer", "subject");
+    let session = rp::Session {
+        id: rp::digest("browser"),
+        owner: owner.clone(),
+        subject: "subject".into(),
+        issuer: "http://issuer".into(),
+        csrf: "csrf".into(),
+        nonce: "nonce".into(),
+        profile: json!({}),
+        tokens: rp::Tokens {
+            access: "access".into(),
+            refresh: "refresh".into(),
+            id_token: "id".into(),
+            access_expires: crate::now() + 3600,
+            auth_time: None,
+        },
+        expires: crate::now() + 3600,
+        refreshing: false,
+        version: 1,
+    };
+    store
+        .run("seed", |tx| {
+            tx.insert(
+                "oidc_rp.sessions",
+                [
+                    ("id".into(), session.id.clone().into()),
+                    (
+                        "data".into(),
+                        serde_json::to_string(&session).unwrap().into(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
+            tx.insert(
+                "factorio.agents",
+                [
+                    ("id".into(), rp::digest("agent").into()),
+                    ("session".into(), session.id.clone().into()),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let host = Host::new(
+        store,
+        factorio::documents::document(),
+        std::sync::Arc::new(|tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner)),
+        Default::default(),
+        "cli-test".into(),
+    );
+    let host = crate::operations::register(host, config, "http://localhost".into());
+    let shared = Shared::new(host, "http://localhost".into());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let tcp = tokio::spawn(snap_document_local::tcp::serve(listener, shared.clone()));
+    let dispatch = tokio::spawn(snap_document_local::web::dispatch(shared.clone()));
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("factory");
+    assert!(binary.is_file(), "Build factory-cli before this gate");
+    let credentials = temp.path().join("credentials.json");
+    async fn call(
+        binary: &Path,
+        credentials: &Path,
+        args: &[&str],
+        input: Option<serde_json::Value>,
+    ) -> (bool, serde_json::Value, String) {
+        use tokio::io::AsyncWriteExt;
+        let mut child = tokio::process::Command::new(binary)
+            .env_clear()
+            .arg("--credentials")
+            .arg(credentials)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        if let Some(input) = input {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.to_string().as_bytes())
+                .await
+                .unwrap();
+        } else {
+            drop(child.stdin.take());
+        }
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+        (
+            result.status.success(),
+            serde_json::from_slice(&result.stdout).unwrap_or(serde_json::Value::Null),
+            String::from_utf8_lossy(&result.stderr).into(),
+        )
+    }
+    let (ok, login, error) = call(
+        &binary,
+        &credentials,
+        &["login", "--addr", &addr, "--token", "agent"],
+        None,
+    )
+    .await;
+    assert!(ok, "{error}");
+    assert_eq!(login["owner"], owner);
+    assert!(login.get("bearer").is_none());
+    assert!(login["expires"].as_i64().unwrap() <= crate::now() + 1800);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&credentials)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
+    let (ok, _, error) = call(&binary, &credentials, &["onboard"], None).await;
+    assert!(ok, "{error}");
+    let (ok, item, error) = call(
+        &binary,
+        &credentials,
+        &["intake", "--no-open", "--", "a local task"],
+        None,
+    )
+    .await;
+    assert!(ok, "{error}");
+    let id = item["id"].as_str().unwrap();
+    let (ok, read, error) = call(
+        &binary,
+        &credentials,
+        &["intake-read", "--intake", id],
+        None,
+    )
+    .await;
+    assert!(ok, "{error}");
+    assert_eq!(read["intake"]["revision"], 0);
+    let drafts = json!({"revision":0,"route":"grill","rationale":"needs scope","tickets":[]});
+    let mut watcher = tokio::process::Command::new(&binary)
+        .env_clear()
+        .arg("--credentials")
+        .arg(&credentials)
+        .arg("watch")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    use tokio::io::AsyncBufReadExt;
+    let mut observations = tokio::io::BufReader::new(watcher.stdout.take().unwrap()).lines();
+    let initial = tokio::time::timeout(std::time::Duration::from_secs(5), observations.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(initial.contains("a local task"));
+    let (ok, saved, error) = call(
+        &binary,
+        &credentials,
+        &["intake-save", "-", "--intake", id],
+        Some(drafts.clone()),
+    )
+    .await;
+    assert!(ok, "{error}");
+    assert_eq!(saved["revision"], 1);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let update = observations.next_line().await.unwrap().unwrap();
+            if update.contains("needs scope") {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    watcher.kill().await.unwrap();
+    let _ = watcher.wait().await;
+    let (ok, _, _) = call(
+        &binary,
+        &credentials,
+        &["intake-save", "-", "--intake", id],
+        Some(drafts),
+    )
+    .await;
+    assert!(!ok, "Stale revision must reject");
+    // Lose only the completion via a real TCP proxy, after delivering ACK. The
+    // Host still owns the accepted draft write; a new process must recover its
+    // exact invocation rather than allocating a fresh ID and applying it twice.
+    let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap().to_string();
+    let upstream_addr = addr.clone();
+    let proxy = tokio::spawn(async move {
+        let mut first = true;
+        let mut peers = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = proxy_listener.accept() => {
+                    let (mut down,_) = accepted.unwrap();
+                    let mut up = tokio::net::TcpStream::connect(&upstream_addr).await.unwrap();
+                    let lose = first; first = false;
+                    peers.spawn(async move {
+                        if !lose {let _=tokio::io::copy_bidirectional(&mut down,&mut up).await;return;}
+                        let (mut down_read,mut down_write)=down.into_split();
+                        let (mut up_read,mut up_write)=up.into_split();
+                        let forwarding=tokio::spawn(async move {let _=tokio::io::copy(&mut down_read,&mut up_write).await;});
+                        loop {
+                            let (response,retention)=snap_transport_native::read_response(&mut up_read).await.unwrap();
+                            let accepted=matches!(&response,snap_transport::Response::Events(events) if events.iter().any(|e|matches!(e,snap_transport::Event::Accepted {..})));
+                            snap_transport_native::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.unwrap_or_default()).await.unwrap();
+                            if accepted {forwarding.abort();let _=forwarding.await;break;}
+                        }
+                    });
+                },
+                Some(_) = peers.join_next(), if !peers.is_empty() => {},
+            }
+        }
+    });
+    let (ok,_,_) = call(&binary,&credentials,&["--addr",&proxy_addr,"intake-save","-","--intake",id],Some(json!({"revision":1,"route":"triage","rationale":"accepted but response lost","tickets":[]}))).await;
+    assert!(!ok, "The interrupted client must report an unknown outcome");
+    let (ok, recovered, error) = call(&binary, &credentials, &["retry"], None).await;
+    assert!(ok, "{error}");
+    assert_eq!(recovered["revision"], 2);
+    let (ok, read, error) = call(
+        &binary,
+        &credentials,
+        &["intake-read", "--intake", id],
+        None,
+    )
+    .await;
+    assert!(ok, "{error}");
+    assert_eq!(read["intake"]["revision"], 2);
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
+    assert!(config["next_id"].as_u64().unwrap() > 5);
+    let client_id = config["client_id"].as_str().unwrap();
+    let mut reattach = snap_transport_native::Client::open(addr.parse().unwrap())
+        .await
+        .unwrap();
+    reattach
+        .send(&snap_transport::Command::Connect {
+            bearer: config["bearer"].as_str().unwrap().into(),
+            client_id: client_id.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        reattach.receive().await.unwrap().0,
+        snap_transport::Response::Attached { resumed: true }
+    );
+    reattach
+        .send(&snap_transport::Command::Close)
+        .await
+        .unwrap();
+    let _ = reattach.receive().await;
+    drop(reattach);
+    let mut fenced = config;
+    fenced["pending"] = json!({"id":fenced["next_id"],"operation":"factorio.intake-drafts","input":{"workspace":fenced["workspace"],"id":id,"drafts":{"revision":2,"route":"triage","rationale":"must never replay on new lifetime","tickets":[]}}});
+    fenced["next_id"] = json!(fenced["next_id"].as_u64().unwrap() + 1);
+    std::fs::write(&credentials, serde_json::to_vec(&fenced).unwrap()).unwrap();
+    for _ in 0..2 {
+        let (ok, _, error) = call(&binary, &credentials, &["retry"], None).await;
+        assert!(!ok && error.contains("Logical lifetime ended"), "{error}");
+    }
+    // Explicit login is the only way to abandon the unknown result here.
+    let (ok, _, error) = call(&binary, &credentials, &["login", "--token", "agent"], None).await;
+    assert!(ok, "{error}");
+    let (ok, read, error) = call(
+        &binary,
+        &credentials,
+        &["intake-read", "--intake", id],
+        None,
+    )
+    .await;
+    assert!(ok, "{error}");
+    assert_eq!(read["intake"]["revision"], 2);
+    let (ok, _, error) = call(&binary, &credentials, &["logout"], None).await;
+    assert!(ok, "{error}");
+    let (ok, _, _) = call(&binary, &credentials, &["status"], None).await;
+    assert!(!ok);
+    tcp.abort();
+    dispatch.abort();
+    proxy.abort();
+    let _ = proxy.await;
+    let _ = tcp.await;
+    let _ = dispatch.await;
+}
+
 #[tokio::test]
 #[ignore = "hook crash helper"]
 async fn hook_child() {

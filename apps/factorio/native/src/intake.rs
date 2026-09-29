@@ -78,14 +78,11 @@ fn owned(
 fn cli_path() -> Result<PathBuf, String> {
     let packaged = std::env::current_exe()
         .map_err(|e| e.to_string())?
-        .with_file_name("cli.js");
+        .with_file_name("factory");
     Ok(if packaged.is_file() {
         packaged
     } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("cli.ts")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/factory")
     })
 }
 fn credentials(w: &Workspace, owner: &str) -> PathBuf {
@@ -128,7 +125,7 @@ async fn configure(
             .open(&temporary)
             .map_err(|e| e.to_string())?;
         file.write_all(
-            json!({"origin":app.oauth.config.origin,"token":token,"workspace":workspace})
+            json!({"addr":app.tcp.to_string(),"token":token,"workspace":workspace,"client_id":random(),"next_id":1})
                 .to_string()
                 .as_bytes(),
         )
@@ -164,20 +161,13 @@ async fn configure(
     }
     Ok(())
 }
-fn instructions(app: &App, item: &Intake, w: &Workspace, owner: &str) -> Result<String, String> {
-    let bun = &app.tools.bun;
-    let executable = if bun.contains('/') {
-        PathBuf::from(bun)
-    } else {
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .map(|p| p.join(bun))
-            .find(|p| p.is_file())
-            .ok_or("Bun executable not found")?
-    }
-    .canonicalize()
-    .map_err(|e| e.to_string())?;
+fn instructions(_app: &App, item: &Intake, w: &Workspace, owner: &str) -> Result<String, String> {
     let quote = |p: &std::path::Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
-    let command = format!("{} {}", quote(&executable), quote(&cli_path()?));
+    let command = quote(
+        &cli_path()?
+            .canonicalize()
+            .map_err(|_| "Build factory-cli before starting intake")?,
+    );
     let args = format!(
         "--credentials {} --intake {}",
         quote(&credentials(w, owner)),
@@ -185,11 +175,11 @@ fn instructions(app: &App, item: &Intake, w: &Workspace, owner: &str) -> Result<
     );
     let guide = include_str!("../../INTAKE.md")
         .replace(
-            "bun \"$FACTORIO_CLI\" intake-read",
+            "factory intake-read",
             &format!("{command} intake-read {args}"),
         )
         .replace(
-            "bun \"$FACTORIO_CLI\" intake-save -",
+            "factory intake-save -",
             &format!("{command} intake-save - {args}"),
         );
     Ok(format!(

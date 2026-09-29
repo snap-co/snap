@@ -9,6 +9,7 @@ snap-document.workspace = true
 snap-access.workspace = true
 snap-store.workspace = true
 snap-transport = { path = "../../crates/transport" }
+snap-transport-native = { path = "../transport" }
 serde_json.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }

@@ -1,6 +1,7 @@
 //! Store-backed, globally serialized document host. Network adapters only submit
 //! commands and drain observations; acceptance and execution are separate steps.
 mod controller;
+pub mod tcp;
 pub mod web;
 pub use controller::{Controller, ControllerContext};
 
@@ -170,6 +171,7 @@ pub struct Host<B: Backend> {
     pinned: BTreeSet<String>,
     next_peer: u64,
     boot: String,
+    retention_ms: u64,
 }
 
 impl<B: Backend> Host<B> {
@@ -206,6 +208,7 @@ impl<B: Backend> Host<B> {
             pinned: BTreeSet::new(),
             next_peer: 0,
             boot,
+            retention_ms: config.reconnect_ms,
         }
     }
 
@@ -225,6 +228,32 @@ impl<B: Backend> Host<B> {
     pub fn with_http_request(mut self, request: Request, tables: &'static [&'static str]) -> Self {
         self.http_requests.insert(request.name.clone(), tables);
         self.with_request(request)
+    }
+
+    /// Sensitive acquisition runs as one connectionless exchange. It cannot be
+    /// invoked on a retained attachment, and its inputs/results are removed after
+    /// completion. HTTP cookie projection is separate from this dispatch policy.
+    pub fn with_preconnection_request(
+        self,
+        request: Request,
+        tables: &'static [&'static str],
+    ) -> Self {
+        self.with_http_request(request, tables)
+    }
+
+    pub fn is_preconnection_request(&self, name: &str) -> bool {
+        self.http_requests.contains_key(name)
+    }
+    pub fn retention_ms(&self) -> u64 {
+        self.retention_ms
+    }
+
+    pub fn preconnection_request(
+        &mut self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> snap_transport::Outcome {
+        self.http_request(invocation, bearer)
     }
 
     pub fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error> {

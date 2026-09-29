@@ -127,6 +127,15 @@ and a real Authy OAuth CLI/browser journey in disposable repositories. The journ
 uses an explicit OpenCode V2 contract fixture. Candidate approval is a fixture-only
 browser action. Live V2 service compatibility requires an installed V2 CLI.
 
+Binary v1 vectors and exact integer/bound checks live in Transport's fast tests.
+`cargo test -p snap-document-local --test tcp -- --ignored` exercises real sockets,
+fragmented/coalesced handshake frames, streamed ACK/completion and detached replay.
+Factorio's native suite builds `factory-cli` before its real cross-process journey,
+which checks TCP acquisition, private credentials, operation sequencing, stdin intake
+tools, revision rejection, reattachment and logout with no shell environment.
+The Authy/browser journey also approves a native login, denies cross-origin
+confirmation, drives native Git workflow commands and verifies browser compatibility.
+
 The CLI discovers the nearest `snap.toml`. The checkout `bin/snap` wrapper preserves
 the caller's directory, so app-local commands work. `[check].rust` selects fast packages,
 defaulting to the application's `Cargo.toml`; `[check].commands` adds source checks.

@@ -159,8 +159,25 @@ In the browser, describe new work to start an OpenCode-backed intake conversatio
 The agent explores the repository and saves ticket drafts through Factorio's scoped
 tool endpoint. Review the drafts and mark implementation leaves ready. The CLI
 equivalent, `bin/factory intake -- <description>`, opens the same conversation in
-OpenCode's own terminal UI. Intake requires Bun and an authenticated OpenCode V2
-service with a configured model; packaged builds include its client adapter.
+OpenCode's own terminal UI. The native Rust CLI needs no Bun, Node, JS or Wasm
+runtime. The server's browser OpenCode proxy still uses Bun and its official client.
+Packaged Factorio builds include `factory` beside `server`.
+
+After explicitly applying Factorio's migrations and starting its host:
+
+```sh
+./bin/factory login          # approve the printed link in a signed-in browser
+./bin/factory status
+./bin/factory intake --no-open -- describe the work
+./bin/factory watch          # stream Document snapshots until Ctrl-C
+```
+
+TCP defaults to `127.0.0.1:1248`, configurable with `[app.tcp].listen` on the server
+and `FACTORIO_ADDR` or `--addr` on the client. Saved credentials and connection
+identity live under `$XDG_CONFIG_HOME/factory` or `~/.config/factory`; an explicit
+`--credentials` file carries its own endpoint. Login lasts up to 30 minutes, bounded
+by the parent OAuth lease. Approval still happens in the browser. Use an SSH tunnel
+for remote access, since native TCP is loopback-only plaintext.
 
 ## Resident Store
 

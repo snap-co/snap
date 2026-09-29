@@ -1,0 +1,147 @@
+//! Socket ownership tests, not repeats of Host's controlled-clock lifecycle suite.
+use snap_document_local::{Host, Request, web::Shared};
+use snap_transport::{Command, Event, Invocation, Response, binary, json};
+use snap_transport_native::Client;
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+
+#[tokio::test]
+#[ignore = "real TCP adapter"]
+async fn adjacent_handshake_streamed_observations_and_detached_replay() {
+    let migrations = [
+        snap_access::MIGRATION,
+        snap_document::server::MIGRATION,
+        snap_document::server::LIFECYCLE_MIGRATION,
+    ]
+    .map(|s| toml::from_str(s).unwrap());
+    let mut store = snap_sqlite::Sqlite::memory(&migrations).unwrap();
+    for table in snap_access::TABLES
+        .iter()
+        .chain(snap_document::server::TABLES.iter())
+    {
+        store.load(table).unwrap();
+    }
+    let document = snap_document::server::Document::new(
+        snap_document::Registry::new(vec![]).unwrap(),
+        snap_access::Access::new(vec![snap_access::KindDefinition::kind("document").unwrap()])
+            .unwrap(),
+    );
+    let executions = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let count = executions.clone();
+    let host = Host::new(
+        store,
+        document,
+        Arc::new(|_, b| {
+            if b == "token" {
+                Ok("actor".into())
+            } else {
+                Err(snap_store::Error::NotFound)
+            }
+        }),
+        Default::default(),
+        "boot".into(),
+    )
+    .with_request(Request {
+        name: "probe".into(),
+        identity_required: true,
+        input: |v| v.is_null(),
+        output: |v| v.is_u64(),
+        progress: |_| false,
+        guard: |_, _, _, _| Ok(()),
+        handler: Box::new(move |_, _, _, _| {
+            Ok(json!(
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+            ))
+        }),
+    });
+    let shared = Shared::new(host, "http://localhost".into());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(snap_document_local::tcp::serve(listener, shared.clone()));
+    let dispatch = tokio::spawn(snap_document_local::web::dispatch(shared.clone()));
+    let make = || {
+        Command::Invoke(Invocation {
+            id: 1,
+            operation: "probe".into(),
+            input: serde_json::Value::Null,
+        })
+    };
+    let connect = Command::Connect {
+        bearer: "token".into(),
+        client_id: "stable".into(),
+    };
+    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut bytes = binary::command(&connect).unwrap();
+    bytes.extend(binary::command(&make()).unwrap());
+    // Fragment the first header, then combine its remainder with MESSAGE.
+    socket.write_all(&bytes[..3]).await.unwrap();
+    socket.write_all(&bytes[3..]).await.unwrap();
+    let (reply, retention) = snap_transport_native::read_response(&mut socket)
+        .await
+        .unwrap();
+    assert_eq!(reply, Response::Attached { resumed: false });
+    assert_eq!(retention, Some(300000));
+    async fn completion(socket: &mut tokio::net::TcpStream) {
+        let mut accepted = false;
+        loop {
+            let (reply, _) = snap_transport_native::read_response(socket).await.unwrap();
+            if let Response::Events(events) = reply {
+                for event in events {
+                    match event {
+                        Event::Accepted { id: 1 } => accepted = true,
+                        Event::Completed { id: 1, outcome } => {
+                            assert!(accepted);
+                            assert_eq!(outcome.unwrap(), json!(1));
+                            return;
+                        }
+                        _ => panic!("Unexpected event"),
+                    }
+                }
+            }
+        }
+    }
+    completion(&mut socket).await;
+    drop(socket);
+    // Host controls provide synchronization rather than sleeps after socket EOF.
+    let mut resumed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let mut c = Client::open(addr).await.unwrap();
+            c.send(&connect).await.unwrap();
+            match c.receive().await.unwrap().0 {
+                Response::Attached { resumed: true } => break c,
+                Response::Failed(snap_transport::Error::Occupied) => tokio::task::yield_now().await,
+                other => panic!("{other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    resumed.send(&make()).await.unwrap();
+    loop {
+        let (response, _) = resumed.receive().await.unwrap();
+        if let Response::Events(events) = response
+            && events
+                .iter()
+                .any(|e| matches!(e,Event::Completed {outcome:Ok(v),..} if v==&json!(1)))
+        {
+            break;
+        }
+    }
+    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let mut invalid = Client::open(addr).await.unwrap();
+    invalid
+        .send(&Command::Connect {
+            bearer: "bad".into(),
+            client_id: "bad".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        invalid.receive().await.unwrap().0,
+        Response::Failed(snap_transport::Error::InvalidBearer)
+    );
+    serving.abort();
+    dispatch.abort();
+    let _ = serving.await;
+    let _ = dispatch.await;
+}

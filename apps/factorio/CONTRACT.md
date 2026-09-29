@@ -31,7 +31,7 @@ Factorio's origin; `[app.oauth].issuer` pins Authy. Preserve these credentials a
 Authy's database when resetting Factorio.
 
 ```sh
-mise exec -- cargo build -p factorio-native
+mise exec -- cargo build -p factorio-native -p factory-cli
 target/debug/factorio --config apps/factorio/.deployment/development/config.toml --migrate
 ./bin/snap dev apps/factorio
 ```
@@ -40,7 +40,7 @@ Startup verifies migrations and leaves an empty database empty. After sign-in,
 choose the repository and create the first workspace. The next screen asks what
 you want to work on. `[host]` configures native IO and optional `[dev].listen`
 selects the frontend listener. Packaged builds
-include the executable, web bindings and OpenCode bridge.
+include the server, native `factory` executable, web bindings and OpenCode bridge.
 
 With `[dev].listen = "0.0.0.0:3852"`, `snap dev` accepts this machine's discovered
 LAN/Tailscale addresses and Tailscale names. Run Authy in dev mode for matching
@@ -75,19 +75,60 @@ and sort last by ID; their original creation dates are not fabricated.
 Workspace, Ticket, Session and Intake are separate Documents. Workspace indexes
 link children, whose Access is inherited from the workspace. Loading includes all
 authorized active Documents. The Rust Document client owns browser reconciliation;
-the browser and CLI share invocation ACK, same-ID retry and reconnect recovery.
+the browser and native CLI share guarded operations and retained logical state.
+The CLI allocates invocation IDs in a private locked file across process launches.
 Browser reattachment refreshes the OAuth access lease through session bootstrap.
 An ended login or terminal transport failure settles outstanding calls rather than
 leaving the UI waiting. Deleted ticket/intake IDs may be reused, but receive fresh
 Document identities and intake conversations; retained receipts stay on old identities.
 
-Live application operations run over `/transport` WebSocket. `factorio.command`
+Browser operations run over `/transport` WebSocket; native `factory` uses the
+binary TCP carrier on configurable loopback port 1248. `factorio.command`
 composes ticket/session changes in one Store transaction; intake creation, draft
 batches, readiness, deletion and onboarding use their own guarded operations.
 No HTTP workspace, command, approval, token or intake-tool write endpoint remains.
 `GET /api/session` and OAuth routes bootstrap identity. Agent tokens are normal
 account credentials tied to the issuing OAuth session; agents cannot issue tokens
 or approve candidates. `factory help` documents the CLI and credential-file flags.
+
+## Native CLI
+
+`factory login` prints an approval link and request code. Sign in with Authy if
+needed, reopen that link, compare its code with the terminal and allow CLI access.
+The CLI acquires its credential over TCP and writes a private file under
+`$XDG_CONFIG_HOME/factory` or `~/.config/factory`. `--credentials PATH` selects an
+explicit file and permits subsequent calls without shell environment variables.
+`factory login --token TOKEN` can instead exchange an existing agent token.
+Never put tokens in shared shell history; `FACTORIO_TOKEN` can supply them instead.
+Legacy host-managed agent files remain supported for browser intake tools.
+
+The CLI supports repositories/workspaces/onboarding, status, ticket edits/deletion,
+start/scope expansion/publication/acceptance/recovery/cleanup/abandonment, intake
+creation/read/draft-save/readiness/deletion, and `invoke OPERATION JSON` for any
+registered operation. `watch` streams the real Document SDK's replicated view as
+JSON lines. Command execution uses no Bun, Node, JS, HTTP or Wasm runtime. Human
+candidate approval remains browser-only; `accept` requires that prior approval.
+
+`factory intake -- <description>` can prepare and open a real OpenCode CLI session.
+`--no-open` performs only Factorio operations. Direct CLI intake uses OpenCode's
+own API/terminal executable, not Factorio's browser relay, and its locally configured
+model. Browser intake continues to use the server's explicit model selection.
+
+`[app.tcp]` defaults to `listen = "127.0.0.1:1248"` and
+`retention_ms = 1800000`. `FACTORIO_ADDR` or `--addr` overrides the client endpoint;
+`FACTORIO_ORIGIN` is no longer a native transport selector. EOF detaches without
+releasing residency. Later processes reuse the saved client ID; logical expiry or
+host restart creates a fresh lifetime. An interrupted invocation is saved before
+sending. `factory retry` recovers only that exact invocation on a confirmed retained
+lifetime, never after expiry/restart. Login explicitly abandons unresolved recovery
+state without undoing server commits. No mutation or credential exchange is
+automatically replayed after IO failure.
+
+CLI credentials expire within 30 minutes and never outlive the parent OAuth lease.
+They cannot refresh OAuth; run login again after expiry. Logout revokes the current
+CLI credential, not the browser session. Native TCP rejects non-loopback endpoints;
+use an SSH tunnel when the server is remote. Port 1248 is also used by Hermes and
+is configurable to avoid conflicts.
 
 ## Intake and tickets
 

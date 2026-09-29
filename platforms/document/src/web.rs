@@ -221,7 +221,7 @@ impl<B: Backend> Shared<B> {
         })
     }
 
-    fn now(&self) -> u64 {
+    pub(crate) fn now(&self) -> u64 {
         self.clock.elapsed().as_millis() as u64
     }
 }

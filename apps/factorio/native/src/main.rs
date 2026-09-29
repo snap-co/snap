@@ -2,6 +2,7 @@ mod config;
 mod controller;
 mod effects;
 mod intake;
+mod login;
 mod operations;
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ use tower_http::services::{ServeDir, ServeFile};
 struct App {
     oauth: Arc<OAuth>,
     tools: config::Tools,
+    tcp: std::net::SocketAddr,
 }
 impl App {
     async fn actor(
@@ -67,6 +69,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_oauth_local::MIGRATION,
         include_str!("../migrations/0003_factorio_agents.toml"),
         include_str!("../migrations/0004_factorio_intake.toml"),
+        include_str!("../migrations/0005_factorio_cli.toml"),
     ]
     .into_iter()
     .map(|s| toml::from_str(s).unwrap())
@@ -159,6 +162,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     effects::head(&config).await?;
     let listener = tokio::net::TcpListener::bind(startup.host.listen).await?;
     let address = listener.local_addr()?;
+    let tcp_listener = tokio::net::TcpListener::bind(startup.app.tcp.listen).await?;
+    let tcp_address = tcp_listener.local_addr()?;
     let origin = snap_oauth_local::origin(&startup.host.public_origin(address))?;
     let mut store = snap_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
@@ -166,6 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .chain(snap_document::server::TABLES.iter())
         .chain(rp::TABLES.iter())
         .chain(["factorio.agents"].iter())
+        .chain(["factorio.cli"].iter())
+        .chain(["factorio.cli_login"].iter())
     {
         store.load(table)?;
     }
@@ -174,10 +181,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store,
         graph::document(),
         Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
-        snap_transport::server::Config::default(),
+        snap_transport::server::Config {
+            reconnect_ms: startup.app.tcp.retention_ms,
+            ..Default::default()
+        },
         random(),
     );
-    let host = operations::register(host, config);
+    let host = operations::register(host, config, origin.clone());
     let mut host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
     tokio::task::block_in_place(|| host.recover_controllers())?;
     let documents = Shared::with_cookie(host, origin.clone(), cookies.reader());
@@ -192,9 +202,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Arc::new(App {
         oauth: oauth.clone(),
         tools,
+        tcp: tcp_address,
     });
     let assets = startup.assets().to_string_lossy().into_owned();
     let router = Router::new()
+        .route("/auth/cli/{code}", get(login::page).post(login::approve))
         .route("/health", get(|| async { "OK" }))
         .route("/api/session", get(session))
         // OpenCode calls stay outside the gate: its agents can call back over WS.
@@ -214,6 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Factorio http://{address}");
-    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
+    println!("Factorio tcp://{tcp_address}");
+    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_local::tcp::serve(tcp_listener,documents.clone())=>result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
     Ok(())
 }

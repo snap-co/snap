@@ -7,6 +7,17 @@ use snap_store::{Error, Transaction};
 
 pub fn session(tx: &mut Transaction<'_>, bearer: &str) -> Result<(rp::Session, bool), Error> {
     let digest = rp::digest(bearer);
+    if let Some(row) = tx.get("factorio.cli", &[digest.clone().into()])? {
+        let (Some(snap_store::Value::Text(id)), Some(snap_store::Value::Integer(expires))) =
+            (row.get("session"), row.get("expires"))
+        else {
+            return Err(Error::Invalid);
+        };
+        if *expires <= crate::now() {
+            return Err(Error::NotFound);
+        }
+        return Ok((rp::lease(tx, id, crate::now())?, false));
+    }
     if let Some(row) = tx.get("factorio.agents", &[digest.clone().into()])? {
         let Some(snap_store::Value::Text(id)) = row.get("session") else {
             return Err(Error::Invalid);
@@ -85,9 +96,86 @@ fn command_guard(
 pub fn register(
     mut host: Host<snap_sqlite::Sqlite>,
     config: factorio::Config,
+    origin: String,
 ) -> Host<snap_sqlite::Sqlite> {
+    for name in ["factorio.login-start", "factorio.login-finish"] {
+        let origin = origin.clone();
+        host = host.with_preconnection_request(Request {
+            name: name.into(), identity_required: false,
+            input: |v| v.is_object(), output: |v| v.is_object() || v.is_null(), progress: |_| false,
+            guard: |_,_,_,_|Ok(()),
+            handler: Box::new(move |tx, call, _, _| {
+                if name == "factorio.login-start" {
+                    let rows = tx.find("factorio.cli_login", "primary", &[])?;
+                    let mut active = 0;
+                    for row in rows {
+                        if let (Some(snap_store::Value::Text(id)),Some(snap_store::Value::Integer(expires))) = (row.get("id"),row.get("expires")) {
+                            if *expires <= crate::now() { tx.delete("factorio.cli_login", &[id.clone().into()])?; } else {active += 1;}
+                        }
+                    }
+                    if active >= 128 { return Err(Error::Unavailable); }
+                    let code = crate::random(); let proof = crate::random(); let expires = crate::now()+300;
+                    tx.insert("factorio.cli_login",[("id".into(),code.clone().into()),("proof".into(),rp::digest(&proof).into()),("session".into(),"".into()),("expires".into(),expires.into())].into_iter().collect())?;
+                    Ok(json!({"code":code,"proof":proof,"expires":expires,"url":format!("{origin}/auth/cli/{code}")}))
+                } else {
+                    let input = &call.input;
+                    let code = text(input,"code")?;
+                    let row = tx.get("factorio.cli_login", &[code.into()])?.ok_or(Error::NotFound)?;
+                    let (Some(snap_store::Value::Text(proof)),Some(snap_store::Value::Text(session)),Some(snap_store::Value::Integer(expires))) = (row.get("proof"),row.get("session"),row.get("expires")) else {return Err(Error::Invalid);};
+                    if *expires <= crate::now() || !rp::same_secret(proof,&rp::digest(text(input,"proof")?)) {return Err(Error::NotFound);}
+                    if session.is_empty() { return Ok(Value::Null); }
+                    let s = rp::lease(tx,session,crate::now())?;
+                    let token = crate::random(); let expires = (crate::now()+1800).min(s.expires).min(s.tokens.access_expires);
+                    tx.insert("factorio.cli",[("id".into(),rp::digest(&token).into()),("session".into(),session.clone().into()),("expires".into(),expires.into())].into_iter().collect())?;
+                    tx.delete("factorio.cli_login", &[code.into()])?;
+                    Ok(json!({"bearer":token,"expires":expires,"owner":s.owner}))
+                }
+            }),
+        }, &["factorio.cli_login", "factorio.cli", "oidc_rp.sessions"]);
+    }
+    host = host.with_preconnection_request(
+        Request {
+            name: "factorio.login".into(),
+            identity_required: true,
+            input: |v| v.is_null(),
+            output: |v| v["bearer"].is_string() && v["expires"].is_i64() && v["owner"].is_string(),
+            progress: |_| false,
+            guard: |tx, _, _, bearer| {
+                // Only an ordinary agent token may delegate CLI authority. A CLI
+                // credential cannot extend itself or borrow browser refresh rights.
+                let digest = rp::digest(bearer.ok_or(Error::NotFound)?);
+                tx.get("factorio.agents", &[digest.into()])?
+                    .ok_or(Error::NotFound)?;
+                Ok(())
+            },
+            handler: Box::new(|tx, _, _, bearer| {
+                let (s, human) = session(tx, bearer.ok_or(Error::NotFound)?)?;
+                if human {
+                    return Err(Error::NotFound);
+                }
+                let token = crate::random();
+                let expires = (crate::now() + 1800)
+                    .min(s.expires)
+                    .min(s.tokens.access_expires);
+                tx.insert(
+                    "factorio.cli",
+                    [
+                        ("id".into(), rp::digest(&token).into()),
+                        ("session".into(), s.id.into()),
+                        ("expires".into(), expires.into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                )?;
+                Ok(json!({"bearer":token,"expires":expires,"owner":s.owner}))
+            }),
+        },
+        &["factorio.agents", "factorio.cli", "oidc_rp.sessions"],
+    );
     for name in [
         "factorio.repositories",
+        "factorio.identity",
+        "factorio.logout",
         "factorio.onboard",
         "factorio.workspaces",
         "factorio.workspace",
@@ -104,6 +192,8 @@ pub fn register(
             name: name.into(), identity_required: true,
             input: |v| v.is_object() && v.to_string().len() <= 60000,
             output: match name {
+                "factorio.identity" => |v| v["owner"].is_string(),
+                "factorio.logout" => |v| v.is_null(),
                 "factorio.repositories" | "factorio.workspaces" => |v| v.is_array(),
                 "factorio.command" | "factorio.intake-delete" => |v| v.is_null(),
                 "factorio.onboard" => |v| v.as_object().is_some_and(|o| o.len()==1) && v["id"].is_string(),
@@ -113,7 +203,7 @@ pub fn register(
                 _ => |v| serde_json::from_value::<factorio::intake::Intake>(v.clone()).is_ok(),
             }, progress: |_| false,
             guard: match name {
-                "factorio.repositories" | "factorio.workspaces" | "factorio.onboard" => |_, actor, _, _| actor.map(|_| ()).ok_or(Error::NotFound),
+                "factorio.repositories" | "factorio.workspaces" | "factorio.onboard" | "factorio.identity" | "factorio.logout" => |_, actor, _, _| actor.map(|_| ()).ok_or(Error::NotFound),
                 "factorio.agent-token" => human,
                 "factorio.command" => command_guard,
                 _ => owner,
@@ -123,6 +213,14 @@ pub fn register(
                 let v = &invocation.input;
                 let workspace = || text(v, "workspace");
                 Ok(match name {
+                    "factorio.identity" => json!({"owner":actor,"human":session(tx,bearer.ok_or(Error::NotFound)?)?.1}),
+                    "factorio.logout" => {
+                        let id = rp::digest(bearer.ok_or(Error::NotFound)?);
+                        if tx.get("factorio.cli", &[id.clone().into()])?.is_some() { tx.delete("factorio.cli", &[id.into()])?; }
+                        else if tx.get("factorio.agents", &[id.clone().into()])?.is_some() { tx.delete("factorio.agents", &[id.into()])?; }
+                        else { return Err(Error::NotFound); }
+                        Value::Null
+                    },
                     "factorio.repositories" => json!([{ "id":"configured", "path":config.repository, "modules":config.modules }]),
                     "factorio.onboard" => {
                         if text(v, "repository")? != "configured" { return Err(Error::Invalid); }

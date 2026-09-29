@@ -33,6 +33,8 @@ pub struct Build {
     pub binary: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    /// Optional application-owned native command executable, packaged beside server.
+    pub cli: Option<String>,
 }
 fn native() -> String {
     "native".into()
