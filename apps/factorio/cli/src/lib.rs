@@ -19,7 +19,7 @@ use std::{
     about = "Factorio client and server. Human candidate approval remains in the browser."
 )]
 struct Args {
-    /// TLS endpoint as host:port. Defaults to 127.0.0.1:1024 for a new login.
+    /// TLS endpoint as host:port. A new login uses checkout defaults, then 127.0.0.1:1024.
     #[arg(long, global = true, env = "FACTORIO_ADDR")]
     addr: Option<String>,
     /// PEM CA bundle instead of standard public roots. Saved with credentials.
@@ -176,9 +176,13 @@ impl DevelopmentEndpoint {
         }
         #[derive(serde::Deserialize)]
         struct Tcp {
+            #[serde(default = "listen")]
             listen: std::net::SocketAddr,
             ca_file: Option<PathBuf>,
             server_name: Option<String>,
+        }
+        fn listen() -> std::net::SocketAddr {
+            std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1024))
         }
         let Some(path) = snap_config::application_development_config("factorio")? else {
             return Ok(None);

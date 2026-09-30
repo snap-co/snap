@@ -225,3 +225,47 @@ fn development_server_reads_a_private_key_but_production_requires_an_explicit_ke
             .contains("PEM file contains no certificates")
     );
 }
+
+#[test]
+fn fresh_checkout_login_uses_the_server_default_when_tcp_listen_is_omitted() {
+    let root = tempfile::tempdir().unwrap();
+    let application = root.path().join("apps/factorio");
+    let profile = application.join(".snap/development");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(
+        application.join("snap.toml"),
+        "version=1\napplication='factorio'\n",
+    )
+    .unwrap();
+    let text = configuration(root.path()).replace(
+        "listen='127.0.0.1:0'\ncert_file='missing.pem'",
+        "ca_file='ca.pem'\ncert_file='missing.pem'",
+    );
+    fs::write(profile.join("config.toml"), text).unwrap();
+    fs::write(profile.join("secrets.enc"), []).unwrap();
+    // Reach local trust validation without connecting to the default port, which
+    // may belong to an operator's real installation.
+    fs::write(profile.join("ca.pem"), "not a certificate").unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_factorio"))
+            .env_clear()
+            .current_dir(root.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let check = invoke(&["serve", "--check-config"]);
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let credentials = root.path().join("credentials.json");
+    let login = invoke(&["login", "--credentials", credentials.to_str().unwrap()]);
+    assert!(!login.status.success());
+    let error = String::from_utf8(login.stderr).unwrap();
+    assert!(
+        error.contains("PEM file contains no certificates"),
+        "{error}"
+    );
+}
