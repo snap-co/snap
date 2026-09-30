@@ -160,6 +160,8 @@ users independently select `--server-name` and `--ca-file`, or
 `FACTORIO_SERVER_NAME` and `FACTORIO_CA_FILE`. A private CA bundle replaces the
 standard public roots. These settings persist with the private credentials;
 pending recovery cannot switch endpoint, CA path or verification name.
+Login saves proposed connection settings only after successful credential issuance
+and retirement of local pending recovery; failed login preserves the old settings.
 
 Serving validates TLS material before binding either listener; `--check-config`
 validates schema only, and migration does not load certificates. Deployment

@@ -267,16 +267,11 @@ async fn run(mut args: Args) -> Result<()> {
             "Cannot change endpoint while an invocation has an unknown outcome. Retry at its original endpoint, or login to start a fresh lifetime"
         );
     }
-    if let Some(workspace) = args.workspace {
-        credentials.value.workspace = workspace;
-    }
     let tls =
         snap_transport_native::tls::ClientTls::new(ca_file.as_deref(), server_name.as_deref())?;
-    credentials.value.addr = Some(addr.clone());
-    credentials.value.ca_file = ca_file;
-    credentials.value.server_name = server_name;
-    credentials.save()?;
     if login {
+        // Proposed login settings remain local until issuance succeeds. A failed
+        // login must leave the original pending invocation and its trust intact.
         async fn exchange(
             addr: &str,
             tls: &snap_transport_native::tls::ClientTls,
@@ -329,6 +324,12 @@ async fn run(mut args: Args) -> Result<()> {
             .as_str()
             .context("Missing credential")?
             .into();
+        credentials.value.addr = Some(addr);
+        credentials.value.ca_file = ca_file;
+        credentials.value.server_name = server_name;
+        if let Some(workspace) = args.workspace {
+            credentials.value.workspace = workspace;
+        }
         credentials.value.expires = issued["expires"].as_i64();
         credentials.value.client_id = uuid::Uuid::new_v4().to_string();
         credentials.value.next_id = 1;
@@ -340,6 +341,13 @@ async fn run(mut args: Args) -> Result<()> {
             &json!({"logged_in":true,"owner":issued["owner"],"expires":issued["expires"],"credentials":path,"note":"CLI credentials cannot approve candidates or refresh OAuth. Run login again after expiry."}),
         );
     }
+    credentials.value.addr = Some(addr.clone());
+    credentials.value.ca_file = ca_file;
+    credentials.value.server_name = server_name;
+    if let Some(workspace) = args.workspace {
+        credentials.value.workspace = workspace;
+    }
+    credentials.save()?;
     let credentials = if matches!(args.command, Mode::Watch) {
         credentials.isolated()
     } else {

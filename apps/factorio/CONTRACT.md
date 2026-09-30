@@ -128,8 +128,9 @@ releasing residency. Later processes reuse the saved client ID; logical expiry o
 host restart creates a fresh lifetime. An interrupted invocation is saved before
 sending. `factory retry` recovers only that exact invocation on a confirmed retained
 lifetime with its original opaque identifier, never after expiry/restart or an
-unobserved replacement handshake. Login explicitly abandons unresolved recovery
-state without undoing server commits. No mutation or credential exchange is
+unobserved replacement handshake. Successful login explicitly abandons unresolved
+recovery state without undoing server commits; failed login preserves the old
+endpoint, trust settings and pending invocation. No mutation or credential exchange is
 automatically replayed after IO failure.
 
 CLI credentials expire within 30 minutes and never outlive the parent OAuth lease.

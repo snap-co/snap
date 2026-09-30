@@ -359,6 +359,42 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     });
     let (ok,_,_) = call(&binary,&credentials,&["--addr",&proxy_addr,"intake-save","-","--intake",id],Some(json!({"revision":1,"route":"triage","rationale":"accepted but response lost","tickets":[]}))).await;
     assert!(!ok, "The interrupted client must report an unknown outcome");
+    // A rejected login must not replace the original recovery endpoint, trust,
+    // or identity. Prove it at the saved-state and subsequent retry boundaries.
+    let before_login: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
+    assert!(before_login["pending"].is_object());
+    let alternate_ca = temp.path().join("alternate-ca.pem");
+    std::fs::copy(temp.path().join("ca.pem"), &alternate_ca).unwrap();
+    let (ok, _, error) = call(
+        &binary,
+        &credentials,
+        &[
+            "login",
+            "--token",
+            "agent",
+            "--addr",
+            &addr,
+            "--ca-file",
+            alternate_ca.to_str().unwrap(),
+            "--server-name",
+            "wrong.example",
+            "--workspace",
+            "must-not-save",
+        ],
+        None,
+    )
+    .await;
+    assert!(
+        !ok && error.contains("certificate not valid for name"),
+        "{error}"
+    );
+    let after_login: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
+    assert_eq!(
+        after_login, before_login,
+        "Failed login must preserve pending recovery state"
+    );
     let (ok, recovered, error) = call(&binary, &credentials, &["retry"], None).await;
     assert!(ok, "{error}");
     assert_eq!(recovered["revision"], 2);
