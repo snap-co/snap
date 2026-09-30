@@ -242,7 +242,7 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
 
 #[test]
 fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
-    let mut host = fixture().with_http_request(Request {
+    let mut host = fixture().with_preconnection_request(Request {
         name: "fixture.fetch".into(),
         identity_required: false,
         input: |value| value.is_null(),
@@ -281,14 +281,17 @@ fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
     // The prior mutation is accepted but not executed. HTTP must enter its FIFO,
     // then read the committed result. Repeated calls also prove peers are freed.
     for _ in 0..140 {
-        assert_eq!(host.http_request(invocation.clone(), None), Ok(json!(7)));
+        assert_eq!(
+            host.preconnection_request(invocation.clone(), None),
+            Ok(json!(7))
+        );
     }
     let invalid = Invocation {
         input: json!({"unexpected":true}),
         ..invocation
     };
     assert_eq!(
-        host.http_request(invalid, None),
+        host.preconnection_request(invalid, None),
         Err(snap_transport::Error::InvalidInput)
     );
 }

@@ -1,8 +1,8 @@
 //! Native event-loop adapter. The executable owns Tokio and its LocalSet. This
 //! baseline uses length-delimited JSON over TCP; deployments supply secure IO.
-use crate::{Observation, Peer, Platform, Submission};
 use snap_transport::execution;
 use snap_transport::execution::{Call, Program};
+use snap_transport::execution::{Observation, Peer, Runtime, Submission};
 use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
 use std::{cell::RefCell, io, rc::Rc, time::Instant};
 use tokio::{
@@ -41,10 +41,10 @@ async fn write(stream: &mut TcpStream, response: &[u8]) -> io::Result<()> {
 /// Runs until the application requests shutdown. Detached residents are swept on
 /// a timer even if no further traffic arrives. Shutdown drops all resident state.
 /// This fixture's read resolver must return immediate inputs without blocking.
-/// Use Platform's submit/step/supply interface to build an async dependency host.
+/// Use Transport Runtime's submit/step/supply interface to build an async dependency host.
 pub async fn serve<P: Program + 'static, R: Authority + 'static>(
     listener: TcpListener,
-    platform: Platform<P, R>,
+    platform: Runtime<P, R>,
     mut shutdown: watch::Receiver<bool>,
     reads: impl Fn(&Call, &str) -> execution::Outcome + 'static,
 ) -> io::Result<()> {
@@ -88,7 +88,7 @@ type Reads = Rc<dyn Fn(&Call, &str) -> execution::Outcome>;
 
 struct Physical<P: Program, R: Authority> {
     peer: Peer,
-    platform: Rc<RefCell<Platform<P, R>>>,
+    platform: Rc<RefCell<Runtime<P, R>>>,
     clock: Instant,
 }
 impl<P: Program, R: Authority> Drop for Physical<P, R> {
@@ -100,7 +100,7 @@ impl<P: Program, R: Authority> Drop for Physical<P, R> {
 }
 async fn serve_peer<P: Program, R: Authority>(
     mut stream: TcpStream,
-    platform: Rc<RefCell<Platform<P, R>>>,
+    platform: Rc<RefCell<Runtime<P, R>>>,
     clock: Instant,
     reads: Reads,
 ) -> io::Result<()> {

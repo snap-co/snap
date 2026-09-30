@@ -5,6 +5,8 @@ use alloc::format;
 use snap_store::Transaction;
 use workspaces::{INTAKE_KIND, load, next_id, root, save};
 
+pub(crate) mod operations;
+
 pub fn definition() -> snap_document::Definition {
     snap_document::Definition {
         kind: workspaces::INTAKE_KIND.into(),

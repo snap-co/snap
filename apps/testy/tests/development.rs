@@ -1,16 +1,15 @@
-use snap_platform_local::{
-    Platform,
-    development::{Control, Development},
-};
+use snap_platform_local::development::{Control, Development};
 use snap_transport::{
-    Command, Event, Invocation, Response, json,
+    Command, Event, Invocation, Response,
+    execution::Runtime,
+    json,
     server::{Config, Server},
 };
 
 #[test]
 fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
     let mut host = Development::new(
-        Platform::new(
+        Runtime::new(
             Server::new(testy::TestAuthority, Config::default()),
             snap_transport::execution::Executor::new(testy::App::default(), 16).unwrap(),
         ),

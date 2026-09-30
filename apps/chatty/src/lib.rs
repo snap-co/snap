@@ -1,6 +1,8 @@
 //! Conversation Documents. Clients append messages; Chatty does no model or tool IO.
 #![no_std]
 extern crate alloc;
+
+pub mod operations;
 use alloc::{string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

@@ -96,6 +96,46 @@ fn store_loaded() -> (Store, Fake) {
     (store, Fake::default())
 }
 
+fn dispatch_account(
+    store: &mut Store,
+    operation: &str,
+    input: serde_json::Value,
+) -> snap_transport::Outcome {
+    use snap_transport::operation::{Context, Runtime};
+    let app = authy::operations::declarations(Fake::default);
+    let mut runtime = Runtime::default();
+    for definition in app.preconnection.into_iter().chain(app.requests) {
+        runtime.register(definition).unwrap();
+    }
+    let selection = runtime.definitions().resolve(operation)?;
+    runtime.enqueue(
+        (),
+        snap_transport::Invocation {
+            id: 1,
+            operation: operation.into(),
+            input,
+        },
+        selection,
+    )?;
+    let (work, call, selection) = runtime.acquire().unwrap();
+    if let Err((_, error)) = runtime.accept(
+        store,
+        work,
+        call,
+        selection,
+        Context {
+            inputs: [("clock".into(), json!(1_000))].into_iter().collect(),
+            ..Context::default()
+        },
+    ) {
+        runtime.reject();
+        return Err(error);
+    }
+    let outcome = runtime.execute(store).unwrap().outcome;
+    runtime.finish();
+    outcome
+}
+
 fn enroll(
     store: &mut Store,
     crypto: &mut Fake,
@@ -130,14 +170,20 @@ fn edit_intent(id: u64, document: &str, name: &str, bio: &str, revision: u64) ->
 
 #[test]
 fn enroll_creates_session_profile_grant_and_metadata_atomically() {
-    let (mut store, mut crypto) = store_loaded();
-    let issued = enroll(
+    let (mut store, crypto) = store_loaded();
+    let result = dispatch_account(
         &mut store,
-        &mut crypto,
-        " Alice@Example.com ",
-        "password1",
-        1_000,
-    );
+        "identity.enroll",
+        json!({"email":" Alice@Example.com ", "password":"password1"}),
+    )
+    .unwrap();
+    let bearer = result["bearer"].as_str().unwrap().to_owned();
+    let session = store
+        .inspect("persisted session", |tx| {
+            Identity::default().resolve(tx, &crypto, &bearer, 1_000)
+        })
+        .unwrap();
+    let issued = snap_identity::Issued { bearer, session };
     assert_eq!(issued.bearer.len(), 64);
     assert_eq!(issued.session.identity.len(), 64);
     assert_eq!(issued.session.expires, 1_000 + SESSION_LIFETIME_SECONDS);
@@ -160,6 +206,7 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
     assert_eq!(account.email, "alice@example.com");
     assert_eq!(account.profile, profile);
     assert_eq!(account.authenticated_at, 1_000);
+    assert_eq!(result["account"], json!(account));
 
     // Initial profile value preserves the email local part with empty bio.
     let snapshot = store

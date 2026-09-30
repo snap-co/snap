@@ -1,5 +1,5 @@
-use crate::{Observation, Peer, Platform, Submission};
 use snap_transport::execution;
+use snap_transport::execution::{Observation, Peer, Runtime, Submission};
 use snap_transport::execution::{Program, Ticket};
 use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
 use std::{
@@ -15,7 +15,7 @@ struct Mailbox {
     waker: Option<Waker>,
 }
 struct Host<P: Program, R: Authority> {
-    platform: Platform<P, R>,
+    platform: Runtime<P, R>,
     now: u64,
     trace: Vec<Event>,
     mailboxes: BTreeMap<Ticket, Mailbox>,
@@ -63,7 +63,7 @@ pub struct Memory<P: Program, R: Authority> {
     host: Rc<RefCell<Host<P, R>>>,
 }
 impl<P: Program, R: Authority> Memory<P, R> {
-    pub fn new(platform: Platform<P, R>) -> Self {
+    pub fn new(platform: Runtime<P, R>) -> Self {
         Self {
             host: Rc::new(RefCell::new(Host {
                 platform,
@@ -88,7 +88,7 @@ impl<P: Program, R: Authority> Memory<P, R> {
         host.drive();
     }
     pub fn residents(&self) -> usize {
-        self.host.borrow().platform.transport.resident_count()
+        self.host.borrow().platform.residents()
     }
     pub fn trace(&self) -> Vec<Event> {
         self.host.borrow().trace.clone()

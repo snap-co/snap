@@ -3068,7 +3068,6 @@ dependencies = [
  "snap-document",
  "snap-document-local",
  "snap-identity",
- "snap-platform-local",
  "snap-sqlite",
  "snap-store",
  "snap-transport",

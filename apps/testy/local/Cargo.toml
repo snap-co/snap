@@ -26,11 +26,6 @@ web = ["snap-platform-local/web", "dep:tokio", "identity", "dep:snap-config", "d
 store = ["testy/store", "dep:snap-store", "dep:snap-sqlite", "dep:toml"]
 identity = ["store", "dep:snap-identity", "dep:snap-crypto"]
 
-[[bin]]
-name = "testy-store-demo"
-path = "src/store_demo.rs"
-required-features = ["store"]
-
 [[test]]
 name = "store"
 path = "../tests/store.rs"
@@ -45,10 +40,6 @@ required-features = ["web"]
 name = "testy-memory-demo"
 path = "src/memory.rs"
 required-features = ["memory"]
-
-[[bin]]
-name = "testy-execution-demo"
-path = "src/execution.rs"
 
 [[bin]]
 name = "testy-server-native"

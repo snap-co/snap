@@ -5,6 +5,7 @@
 //! future, callback, or mutable reference survives an entry-point return.
 mod executor;
 mod program;
+mod runtime;
 
 pub use crate::{Value, json};
 pub use executor::{
@@ -14,3 +15,4 @@ pub use program::{
     Admission, Attempt, Call, Error, Inputs, Operation, Outcome, Program, Stop, Validator, View,
     WorkingSet,
 };
+pub use runtime::{Observation, Peer, Runtime, Submission};

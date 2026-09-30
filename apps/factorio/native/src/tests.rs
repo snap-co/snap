@@ -24,7 +24,7 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
         let owner = session.owner.clone();
         store
             .run("seed intake", |tx| {
-                graph::create_intake(tx, ROOT, &owner, "request", "A bounded change")?;
+                factorio::intake::create(tx, ROOT, &owner, "request", "A bounded change")?;
                 Ok(())
             })
             .unwrap();
@@ -414,7 +414,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
             .into_iter()
             .collect(),
         )?;
-        graph::create_intake(
+        factorio::intake::create(
             tx,
             ROOT,
             &session.owner,

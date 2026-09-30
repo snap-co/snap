@@ -1,10 +1,10 @@
 //! Development execution controls shared by HTTP tools and the browser panel.
 //! Manual mode stops host stepping, not submissions. A step is one executor
 //! observation, never a source-line breakpoint. Snapshots require an idle gate.
-use crate::{Observation, Peer, Platform, Submission};
 use serde::Deserialize;
 use snap_transport::execution;
 use snap_transport::execution::{Call, JobView, Program, Snapshot, Ticket};
+use snap_transport::execution::{Observation, Peer, Runtime, Submission};
 use snap_transport::{Command, Event, Response, Value, json, server::Authority};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -50,7 +50,7 @@ struct Connection {
     responses: VecDeque<Response>,
 }
 pub struct Development<P: Program, R: Authority> {
-    platform: Platform<P, R>,
+    platform: Runtime<P, R>,
     peers: BTreeMap<u64, Connection>,
     owners: BTreeMap<Ticket, u64>,
     sequence: u64,
@@ -65,7 +65,7 @@ pub struct Development<P: Program, R: Authority> {
 }
 impl<P: Program, R: Authority> Development<P, R> {
     pub fn new(
-        platform: Platform<P, R>,
+        platform: Runtime<P, R>,
         reads: fn(&Call, &str) -> execution::Outcome,
         programs: fn(&str) -> Option<P>,
     ) -> Self {
@@ -165,7 +165,7 @@ impl<P: Program, R: Authority> Development<P, R> {
     }
     /// Whether inspection may have changed. Idle sweeps need no report encoding.
     pub fn tick(&mut self, now: u64) -> bool {
-        let expired = self.platform.tick_retired(now);
+        let expired = self.platform.tick(now);
         let before = self.trace_sequence;
         self.pump();
         expired || before != self.trace_sequence

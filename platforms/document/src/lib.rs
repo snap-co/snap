@@ -7,13 +7,15 @@ pub use controller::{Controller, ControllerContext};
 
 use snap_document::{Completion, Manifest, ServerMessage, Snapshot, server::Document};
 use snap_store::{Backend, Store, Transaction};
-use snap_transport::operation::{Context, Definition, Runtime, Selection};
+use snap_transport::operation::{Context, Definition, Runtime, Selection, storage_error};
 use snap_transport::server::{Attachment, Authority, Config, ConnectionId, Server};
 use snap_transport::{Command, Error, Event, Invocation, Response, Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-/// Runs inside the SAME Store transaction as each protected document operation.
+/// Runs against resident Store state for identification and admission, never
+/// external IO. Accepted work retains the actor instead of rerunning this callback
+/// during handler execution. Later visibility observations use current authority.
 pub type Authenticate =
     Arc<dyn Fn(&mut Transaction<'_>, &str) -> Result<String, snap_store::Error> + Send + Sync>;
 type Input = Box<dyn FnMut(&str) -> Result<Value, Error> + Send>;
@@ -127,7 +129,7 @@ pub struct Host<B: Backend> {
     authenticate: Authenticate,
     requests: Runtime<Work>,
     input: Input,
-    http_requests: BTreeSet<Selection>,
+    preconnection_requests: BTreeSet<Selection>,
     peers: BTreeMap<u64, Peer>,
     lifetimes: BTreeSet<u64>,
     controllers: BTreeMap<String, Controller<B>>,
@@ -192,7 +194,7 @@ impl<B: Backend> Host<B> {
             authenticate,
             requests,
             input: Box::new(|_| Err(Error::Unavailable)),
-            http_requests: BTreeSet::new(),
+            preconnection_requests: BTreeSet::new(),
             peers: BTreeMap::new(),
             lifetimes: BTreeSet::new(),
             controllers: BTreeMap::new(),
@@ -227,29 +229,23 @@ impl<B: Backend> Host<B> {
         self
     }
 
-    /// A pre-connection operation projected over HTTP, never over a WebSocket.
-    /// It uses the same validation, admission, FIFO and durable completion as
-    /// connected operations. The HTTP carrier owns cookie projection.
-    pub fn with_http_request(mut self, request: Definition) -> Self {
-        let name = request.name.clone();
-        self = self.with_request(request);
-        self.http_requests
-            .insert(self.requests.definitions().resolve(&name).unwrap());
-        self
-    }
-
     /// Sensitive acquisition runs as one connectionless exchange. It cannot be
     /// invoked on a retained attachment, and its inputs/results are removed after
-    /// completion. HTTP cookie projection is separate from this dispatch policy.
-    pub fn with_preconnection_request(self, request: Definition) -> Self {
-        self.with_http_request(request)
+    /// completion. Carriers own projection, including HTTP cookies. Validation,
+    /// admission, FIFO and durable completion are shared with connected operations.
+    pub fn with_preconnection_request(mut self, request: Definition) -> Self {
+        let name = request.name.clone();
+        self = self.with_request(request);
+        self.preconnection_requests
+            .insert(self.requests.definitions().resolve(&name).unwrap());
+        self
     }
 
     pub fn is_preconnection_request(&self, name: &str) -> bool {
         self.requests
             .definitions()
             .resolve(name)
-            .is_ok_and(|selection| self.http_requests.contains(&selection))
+            .is_ok_and(|selection| self.preconnection_requests.contains(&selection))
     }
     pub fn retention_ms(&self) -> u64 {
         self.retention_ms
@@ -265,14 +261,6 @@ impl<B: Backend> Host<B> {
         Ok(self.lifetime(attachment.connection().0))
     }
 
-    pub fn preconnection_request(
-        &mut self,
-        invocation: Invocation,
-        bearer: Option<String>,
-    ) -> snap_transport::Outcome {
-        self.http_request(invocation, bearer)
-    }
-
     pub fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error> {
         self.store
             .lock()
@@ -283,16 +271,16 @@ impl<B: Backend> Host<B> {
             .map_err(storage_error)
     }
 
-    /// One HTTP exchange; the caller holds the execution mutex on a blocking
+    /// One connectionless exchange; the caller holds the execution mutex on a blocking
     /// thread. Credentials/results live only for this exchange and are removed
     /// from peer and retry storage before returning. No automatic retry.
-    pub fn http_request(
+    pub fn preconnection_request(
         &mut self,
         invocation: Invocation,
         bearer: Option<String>,
     ) -> snap_transport::Outcome {
         let selection = self.requests.definitions().resolve(&invocation.operation)?;
-        if !self.http_requests.contains(&selection) {
+        if !self.preconnection_requests.contains(&selection) {
             return Err(Error::UnknownOperation);
         }
         let request = self.requests.definitions().get(selection);
@@ -617,7 +605,7 @@ impl<B: Backend> Host<B> {
                 .ok(),
             _ => None,
         };
-        if selection.is_some_and(|selection| self.http_requests.contains(&selection)) {
+        if selection.is_some_and(|selection| self.preconnection_requests.contains(&selection)) {
             return Err(Error::UnknownOperation);
         }
         let response = match command {
@@ -958,7 +946,7 @@ impl<B: Backend> Host<B> {
         )
         .unwrap_or(None);
         let changes = completed.changes;
-        let outcome = if self.http_requests.contains(&work.selection)
+        let outcome = if self.preconnection_requests.contains(&work.selection)
             && let Some(error) = completed.storage_failure
         {
             Err(match error {
@@ -1231,8 +1219,4 @@ fn notification(message: ServerMessage) -> Response {
         operation: "document".into(),
         input: serde_json::to_value(message).unwrap(),
     }
-}
-
-pub fn storage_error(error: snap_store::Error) -> Error {
-    snap_transport::operation::storage_error(error)
 }

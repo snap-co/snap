@@ -4,13 +4,13 @@ use snap_oidc::relying_party as rp;
 use snap_store::{Error, Transaction};
 
 pub fn session_id(tx: &mut Transaction<'_>, bearer: &str) -> Result<(String, bool), Error> {
-    factorio::operations::session_id(tx, bearer, crate::now())
+    factorio::login::session_id(tx, bearer, crate::now())
 }
 pub fn session(tx: &mut Transaction<'_>, bearer: &str) -> Result<(rp::Session, bool), Error> {
-    factorio::operations::session(tx, bearer, crate::now())
+    factorio::login::session(tx, bearer, crate::now())
 }
 pub fn retained(tx: &mut Transaction<'_>, bearer: &str) -> Result<String, Error> {
-    factorio::operations::retained(tx, bearer, crate::now())
+    factorio::login::retained(tx, bearer, crate::now())
 }
 pub fn register(
     mut host: Host<snap_sqlite::Sqlite>,

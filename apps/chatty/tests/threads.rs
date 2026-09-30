@@ -51,6 +51,9 @@ fn messages_use_guarded_document_mutations_and_keep_verified_sender() {
     {
         runtime.register(definition).unwrap();
     }
+    for definition in chatty::operations::declarations() {
+        runtime.register(definition).unwrap();
+    }
     let selection = runtime.definitions().resolve("document.mutate").unwrap();
     runtime
         .enqueue(
@@ -85,12 +88,38 @@ fn messages_use_guarded_document_mutations_and_keep_verified_sender() {
         matches!(result, Err(((), snap_transport::Error::Application(value))) if value == json!(snap_document::Error::Denied))
     );
     runtime.reject();
-    for _ in 0..2 {
-        store
-            .run("send", |tx| {
-                chatty::mutate(tx, "alice", ID, "send", args.clone())
-            })
+    for id in 2..4 {
+        let selection = runtime.definitions().resolve("chatty.send").unwrap();
+        runtime
+            .enqueue(
+                (),
+                snap_transport::Invocation {
+                    id,
+                    operation: "chatty.send".into(),
+                    input: json!({"thread_id":ID,"request_id":"message-1","message":"Hello"}),
+                },
+                selection,
+            )
             .unwrap();
+        let (work, call, selection) = runtime.acquire().unwrap();
+        runtime
+            .accept(
+                &mut store,
+                work,
+                call,
+                selection,
+                Context {
+                    actor: Some("alice".into()),
+                    inputs: [("clock".into(), json!(2))].into_iter().collect(),
+                    ..Context::default()
+                },
+            )
+            .unwrap_or_else(|_| panic!("authorized send rejected"));
+        assert_eq!(
+            runtime.execute(&mut store).unwrap().outcome,
+            Ok(json!({"saved":true}))
+        );
+        runtime.finish();
     }
     let doc = store
         .inspect("read", |tx| chatty::document().read(tx, ID, Some("alice")))
@@ -98,6 +127,7 @@ fn messages_use_guarded_document_mutations_and_keep_verified_sender() {
     let c: chatty::Conversation = serde_json::from_value(doc.value).unwrap();
     assert_eq!(c.turns.len(), 1);
     assert_eq!(c.turns[0].sender, "alice");
+    assert_eq!(c.turns[0].created, 2);
     assert_eq!(c.turns[0].status, "complete");
     assert!(c.active_turn.is_empty());
     assert!(

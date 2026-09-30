@@ -21,8 +21,8 @@
 //!   must not use this derivation; the stable rejection still applies.
 //! * Profile documents use app kind `"authy-profile"` version `"1"` with value
 //!   `{name, bio}`. The `edit` mutation takes args `{name, bio, revision}`
-//!   and requires the `Owner` role plus an app-specific guard that rechecks
-//!   pre-change `Owner` authority for the verified actor AND requires
+//!   and requires the `Owner` role plus an app-specific guard that checks
+//!   the verified actor's captured pre-change `Owner` role AND requires
 //!   `args.revision` to equal the current snapshot revision. Name is trimmed
 //!   `1..=100` chars, bio (trimmed) is `<=2000` chars; `revision` must be a
 //!   storage-safe `1..=i64::MAX` integer. The pure apply validates the shape
@@ -56,6 +56,8 @@
 //!   for claims in the same transaction as issuer state changes.
 #![no_std]
 extern crate alloc;
+
+pub mod operations;
 
 use alloc::{
     format,
@@ -353,9 +355,9 @@ fn apply_edit(
     Ok(serde_json::json!({"name": name, "bio": bio}))
 }
 
-/// Pre-change ownership + freshness recheck: the verified actor must hold
-/// effective `Owner` on the profile AND `args.revision` must equal the current
-/// snapshot revision. Runs against pre-change Access state alongside the
+/// Captured pre-change ownership + freshness check: dispatch supplies the
+/// verified actor's effective `Owner` role, and `args.revision` must equal the
+/// current snapshot revision. Runs against pre-change Access state alongside the
 /// mutation's `Owner` minimum, so staged grants in the same change cannot
 /// authorize themselves. Stale concurrent edits report `Denied` without a
 /// document write, while Document itself keeps its latest-state policy.

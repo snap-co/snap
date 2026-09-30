@@ -28,8 +28,9 @@
 //!   rejections can record a failed completion without partial document writes.
 //!   Access decisions belong exclusively to `DocumentAccessGuard` at admission.
 //! * Receipt reads return persisted results without reevaluating authority.
-//!   Dispatch recovery policy and the captured manifest extent suppress results
-//!   outside current visibility to `Ok(None)`, without losing the committed fact.
+//!   Dispatch recovery policy and the captured manifest extent suppress successful
+//!   snapshot payloads outside current visibility to `Ok(None)`, without losing the
+//!   committed fact. Persisted rejection outcomes remain unchanged.
 //! * `manifest` reconciles the supplied accepted extent: missing/stale
 //!   snapshots, validated unchanged holdings, and recovered pending completions.
 //!   Deleted/archived Documents are retained for cleanup but excluded from loading.

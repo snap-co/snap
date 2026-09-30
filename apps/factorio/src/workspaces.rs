@@ -9,6 +9,8 @@ use snap_access::{
 use snap_document::{Definition, Registry, Snapshot};
 use snap_store::Transaction;
 
+pub(crate) mod operations;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -392,8 +394,6 @@ pub(crate) fn save(
 pub fn require_owner(tx: &mut Transaction<'_>, workspace: &str, actor: &str) -> Result<(), Error> {
     snap_document::DocumentAccessGuard::require(tx, workspace, Some(actor), Role::Owner)
 }
-
-pub use intake::{create as create_intake, delete as delete_intake, drafts, ready};
 
 pub(crate) fn next_id(
     workspace: &str,

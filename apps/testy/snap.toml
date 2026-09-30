@@ -47,7 +47,7 @@ commands = [
 
 [test.native]
 commands = [
-  ["cargo", "test", "-p", "testy-local", "--features", "native", "--test", "native"],
+  ["cargo", "test", "-p", "testy-local", "--features", "native", "--test", "native", "--test", "startup", "--", "--include-ignored"],
   ["cargo", "test", "-p", "snap-crypto", "--test", "native", "--", "--ignored"],
 ]
 

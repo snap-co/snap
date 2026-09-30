@@ -1,10 +1,9 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
-use serde_json::{Value, json};
+use serde_json::json;
 use snap_document_local::{Host, web::Shared};
 use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
 use snap_oidc::relying_party as rp;
 use snap_store::Error;
-use snap_transport::operation::{Definition as Request, Guard};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -18,52 +17,13 @@ async fn session(State(oauth): State<Arc<OAuth>>, headers: HeaderMap) -> Respons
     }
 }
 
-fn field<'a>(input: &'a Value, name: &str) -> Result<&'a str, Error> {
-    input[name].as_str().ok_or(Error::Invalid)
-}
-
 fn operations(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> {
-    host = host.with_request(Request {
-        name: "chatty.create".into(),
-        identity_required: true,
-        input: |v| serde_json::from_value::<chatty::Create>(v.clone()).is_ok(),
-        output: Value::is_object,
-        progress: |_| false,
-        error: |_| true,
-        guards: vec![],
-        inputs: &[],
-        tables: &[],
-        handler: snap_transport::operation::Handler::new(|tx, invocation, owner, _, _| {
-            let input = serde_json::from_value::<chatty::Create>(invocation.input.clone())
-                .map_err(|_| Error::Invalid)?;
-            chatty::create(tx, owner.ok_or(Error::Invalid)?, &input)?;
-            Ok(json!({"id": input.id}))
-        }),
+    host = host.with_inputs(|key| match key {
+        "clock" => Ok(json!(now())),
+        _ => Err(snap_transport::Error::Unavailable),
     });
-    for name in ["chatty.send", "chatty.rename", "chatty.delete"] {
-        host = host.with_request(Request {
-            name: name.into(), identity_required: true, input: |v| v["thread_id"].is_string(), output: Value::is_object, progress: |_| false,
-            tables: &[],
-            inputs: &[], error: |_| true, guards: vec![Guard::policy(|tx, actor, input, _| {
-                let snapshot = chatty::document().read(tx, field(input, "thread_id")?, actor)?;
-                let resource = snap_access::Resource::new("document", &snapshot.id).map_err(|_| Error::Invalid)?;
-                if !snap_access::allows(snap_document::access::vocabulary().role(tx, &resource, actor, false)?, snap_access::Role::Owner) { return Err(Error::Invalid); }
-                Ok(())
-            })],
-            handler: snap_transport::operation::Handler::new(move |tx, invocation, owner, _, _| {
-                let owner = owner.ok_or(Error::Invalid)?;
-                let input = &invocation.input;
-                let id = field(input, "thread_id")?;
-                let mutation = match name { "chatty.send" => "send", "chatty.rename" => "rename", _ => "document.delete" };
-                let args = match name {
-                    "chatty.send" => json!({"id":field(input,"request_id")?,"message":field(input,"message")?,"created":now()}),
-                    "chatty.rename" => json!({"title":field(input,"title")?}),
-                    _ => Value::Null,
-                };
-                chatty::mutate(tx, owner, id, mutation, args)?;
-                Ok(json!({"saved":true}))
-            }),
-        });
+    for definition in chatty::operations::declarations() {
+        host = host.with_request(definition);
     }
     host
 }

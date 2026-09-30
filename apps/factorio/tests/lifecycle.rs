@@ -66,7 +66,7 @@ fn intake_readiness_promotes_only_single_module_leaves_and_fences_late_drafts() 
     use factorio::intake::{Drafts, Route};
     let mut db = fixture();
     db.run("create-intake", |tx| {
-        graph::create_intake(tx, ROOT, "alice", "idea", "Improve navigation")
+        factorio::intake::create(tx, ROOT, "alice", "idea", "Improve navigation")
     })
     .unwrap();
     let mut parent = ticket("idea-parent", &[]);
@@ -79,7 +79,7 @@ fn intake_readiness_promotes_only_single_module_leaves_and_fences_late_drafts() 
     multi.id = "idea-zmulti".into();
     multi.modules = vec!["a".into(), "b".into()];
     db.run("good-batch", |tx| {
-        graph::drafts(
+        factorio::intake::drafts(
             tx,
             ROOT,
             "alice",
@@ -95,7 +95,7 @@ fn intake_readiness_promotes_only_single_module_leaves_and_fences_late_drafts() 
     })
     .unwrap();
     assert!(
-        db.run("multi-module leaf", |tx| graph::ready(
+        db.run("multi-module leaf", |tx| factorio::intake::ready(
             tx, ROOT, "alice", "idea", 1
         ))
         .is_err()
@@ -105,14 +105,16 @@ fn intake_readiness_promotes_only_single_module_leaves_and_fences_late_drafts() 
     assert_eq!(w.intakes["idea"].revision, 1);
     multi.modules = vec!["b".into()];
     command(&mut db, Command::Ticket { ticket: multi }, false).unwrap();
-    db.run("ready", |tx| graph::ready(tx, ROOT, "alice", "idea", 2))
-        .unwrap();
+    db.run("ready", |tx| {
+        factorio::intake::ready(tx, ROOT, "alice", "idea", 2)
+    })
+    .unwrap();
     let w = view(&mut db);
     assert_eq!(w.tickets["idea-parent"].status, Status::Draft);
     assert_eq!(w.tickets["idea-child"].status, Status::Ready);
     assert_eq!(w.tickets["idea-zmulti"].status, Status::Ready);
     assert!(
-        db.run("late-agent", |tx| graph::drafts(
+        db.run("late-agent", |tx| factorio::intake::drafts(
             tx,
             ROOT,
             "alice",
@@ -152,11 +154,11 @@ fn intake_readiness_preserves_settled_leaves_and_accepts_later_drafts() {
         t
     };
     db.run("create", |tx| {
-        graph::create_intake(tx, ROOT, "alice", "mixed", "Several small changes")
+        factorio::intake::create(tx, ROOT, "alice", "mixed", "Several small changes")
     })
     .unwrap();
     db.run("drafts", |tx| {
-        graph::drafts(
+        factorio::intake::drafts(
             tx,
             ROOT,
             "alice",
@@ -178,7 +180,7 @@ fn intake_readiness_preserves_settled_leaves_and_accepts_later_drafts() {
     cancelled.status = Status::Cancelled;
     command(&mut db, Command::Ticket { ticket: cancelled }, false).unwrap();
     db.run("ready-rest", |tx| {
-        graph::ready(tx, ROOT, "alice", "mixed", 3)
+        factorio::intake::ready(tx, ROOT, "alice", "mixed", 3)
     })
     .unwrap();
     let w = view(&mut db);
@@ -186,7 +188,7 @@ fn intake_readiness_preserves_settled_leaves_and_accepts_later_drafts() {
     assert_eq!(w.tickets["mixed-two"].status, Status::Cancelled);
     assert_eq!(w.tickets["mixed-three"].status, Status::Ready);
     db.run("later-draft", |tx| {
-        graph::drafts(
+        factorio::intake::drafts(
             tx,
             ROOT,
             "alice",
@@ -202,21 +204,21 @@ fn intake_readiness_preserves_settled_leaves_and_accepts_later_drafts() {
     })
     .unwrap();
     db.run("ready-new", |tx| {
-        graph::ready(tx, ROOT, "alice", "mixed", 5)
+        factorio::intake::ready(tx, ROOT, "alice", "mixed", 5)
     })
     .unwrap();
     let w = view(&mut db);
     assert_eq!(w.tickets["mixed-four"].status, Status::Ready);
     assert_eq!(w.tickets["mixed-two"].status, Status::Cancelled);
     db.run("delete-intake", |tx| {
-        graph::delete_intake(tx, ROOT, "alice", "mixed")
+        factorio::intake::delete(tx, ROOT, "alice", "mixed")
     })
     .unwrap();
     let w = view(&mut db);
     assert!(!w.intakes.contains_key("mixed"));
     assert_eq!(w.tickets["mixed-four"].status, Status::Ready);
     assert!(
-        db.run("retired-intake-tool", |tx| graph::drafts(
+        db.run("retired-intake-tool", |tx| factorio::intake::drafts(
             tx,
             ROOT,
             "alice",

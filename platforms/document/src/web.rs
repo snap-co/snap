@@ -103,7 +103,7 @@ pub fn http_router<B: Backend + Send + 'static>(
                             };
                             let shared = shared.clone();
                             tokio::task::spawn_blocking(move || {
-                                shared.host.lock().unwrap().http_request(
+                                shared.host.lock().unwrap().preconnection_request(
                                     snap_transport::Invocation {
                                         id,
                                         operation: operation.name.into(),

@@ -6,7 +6,7 @@ use snap_transport::{
 };
 
 fn platform() -> Memory<testy::App, testy::TestAuthority> {
-    Memory::new(snap_platform_local::Platform::new(
+    Memory::new(snap_transport::execution::Runtime::new(
         Server::new(
             testy::TestAuthority,
             Config {

@@ -359,7 +359,7 @@ fn replacements_get_fresh_document_and_conversation_incarnations() {
                     ticket: ticket("one"),
                 },
             )?;
-            graph::create_intake(tx, ROOT, "alice", "request", "Original")
+            factorio::intake::create(tx, ROOT, "alice", "request", "Original")
         })
         .unwrap()
         .value;
@@ -375,7 +375,7 @@ fn replacements_get_fresh_document_and_conversation_incarnations() {
                 0,
                 Command::DeleteTicket { id: "one".into() },
             )?;
-            graph::delete_intake(tx, ROOT, "alice", "request")
+            factorio::intake::delete(tx, ROOT, "alice", "request")
         })
         .unwrap();
     assert!(
@@ -401,7 +401,7 @@ fn replacements_get_fresh_document_and_conversation_incarnations() {
                     ticket: replacement,
                 },
             )?;
-            graph::create_intake(tx, ROOT, "alice", "request", "Replacement")
+            factorio::intake::create(tx, ROOT, "alice", "request", "Replacement")
         })
         .unwrap()
         .value;
@@ -498,7 +498,7 @@ fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     store
         .run("intake", |tx| {
             graph::onboard(tx, ROOT, "alice", config())?;
-            graph::create_intake(tx, ROOT, "alice", "request", "Build the app")
+            factorio::intake::create(tx, ROOT, "alice", "request", "Build the app")
         })
         .unwrap();
     let mut first = ticket("request-first");
@@ -514,12 +514,12 @@ fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     };
     store
         .run("draft batch", |tx| {
-            graph::drafts(tx, ROOT, "alice", "request", batch.clone(), 400)
+            factorio::intake::drafts(tx, ROOT, "alice", "request", batch.clone(), 400)
         })
         .unwrap();
     assert!(
         store
-            .run("stale batch", |tx| graph::drafts(
+            .run("stale batch", |tx| factorio::intake::drafts(
                 tx, ROOT, "alice", "request", batch, 500
             ))
             .is_err()
@@ -557,7 +557,7 @@ fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     };
     assert!(
         store
-            .run("invalid batch", |tx| graph::drafts(
+            .run("invalid batch", |tx| factorio::intake::drafts(
                 tx, ROOT, "alice", "request", rejected, 600
             ))
             .is_err()

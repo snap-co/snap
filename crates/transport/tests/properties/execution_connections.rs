@@ -1,16 +1,15 @@
-#[path = "../../../../crates/transport/tests/properties/execution_fixture.rs"]
+#[path = "execution_fixture.rs"]
 mod fixture;
 
 use fixture::{Ledger, state};
 use hegel::{TestCase, generators as gs};
-use snap_platform_local::{Observation, Peer, Platform, Submission};
-use snap_transport::execution::{Executor, Scope, Ticket};
+use snap_transport::execution::{Executor, Observation, Peer, Runtime, Scope, Submission, Ticket};
 use snap_transport::{
     Command, Error, Event, Invocation, Response, json,
     server::{Config, Server},
 };
 
-type Host = Platform<Ledger, fn(&str) -> Option<String>>;
+type Host = Runtime<Ledger, fn(&str) -> Option<String>>;
 
 fn ready(host: &mut Host, peer: &mut Peer, command: Command, now: u64) -> Response {
     match host.submit(peer, command, now) {
@@ -58,7 +57,7 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
     } else {
         retention.saturating_sub(1)
     };
-    let mut host = Platform::new(
+    let mut host = Runtime::new(
         Server::new(
             (|token: &str| (token == "valid").then(|| "alice".into()))
                 as fn(&str) -> Option<String>,
@@ -248,7 +247,7 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
 
 #[hegel::test]
 fn request_local_calls_never_create_connection_scopes(tc: TestCase) {
-    let mut host = Platform::new(
+    let mut host = Runtime::new(
         Server::new(
             (|_: &str| Some("alice".into())) as fn(&str) -> Option<String>,
             Config {

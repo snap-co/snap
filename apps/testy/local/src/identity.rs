@@ -43,7 +43,7 @@ impl<B: Backend + Send + 'static, C: Crypto + Send + 'static> Sessions<B, C> {
         &self,
         invocation: &Invocation,
         bearer: Option<&str>,
-    ) -> Option<snap_platform_local::PreparedRequest> {
+    ) -> Option<snap_transport::execution::PreparedRequest> {
         let operation = match Operation::parse(invocation, bearer) {
             Ok(Some(operation)) => operation,
             Ok(None) => return None,
@@ -106,9 +106,9 @@ impl<B: Backend, C: Crypto> Authority for Sessions<B, C> {
 }
 pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
     sessions: Sessions<B, C>,
-) -> snap_platform_local::Platform<testy::App, Sessions<B, C>> {
+) -> snap_transport::execution::Runtime<testy::App, Sessions<B, C>> {
     let requests = sessions.clone();
-    snap_platform_local::Platform::new(
+    snap_transport::execution::Runtime::new(
         Server::new(
             sessions,
             Config {

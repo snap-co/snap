@@ -8,6 +8,7 @@ use snap_store::Error;
 
 pub mod client;
 pub mod intake;
+pub mod login;
 pub mod operations;
 pub mod sessions;
 pub mod tickets;

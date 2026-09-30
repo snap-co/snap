@@ -17,8 +17,9 @@ pub struct Wire {
 }
 
 impl Wire {
-    /// Allocate a generic application invocation on the same connection. Its
-    /// operation channel is owned by the carrier SDK, not the optimistic journal.
+    /// Allocate an application invocation without adding it to the Document
+    /// journal. The carrier SDK must route its observations separately from
+    /// `receive`; only `submit` tracks Document completions here.
     pub fn invoke(&mut self, operation: &str, input: serde_json::Value) -> Result<Command, Error> {
         self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
         Ok(Command::Invoke(Invocation {
