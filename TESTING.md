@@ -128,10 +128,14 @@ uses an explicit OpenCode V2 contract fixture. Candidate approval is a fixture-o
 browser action. Live V2 service compatibility requires an installed V2 CLI.
 
 Binary v1 vectors and exact integer/bound checks live in Transport's fast tests.
+`cargo test -p snap-transport-native --test tls -- --ignored` checks real rustls
+streams, private/public trust, DNS/IP verification, wrong names, expired certificates,
+plaintext rejection and a stalled-handshake deadline. Disposable PKI is unrelated
+to operator certificates. Browser fixtures generate a private CA with OpenSSL.
 `cargo test -p snap-document-local --test tcp -- --ignored` exercises real sockets,
 fragmented/coalesced handshake frames, streamed ACK/completion and detached replay.
 Factorio's native suite builds `factory-cli` before its real cross-process journey,
-which checks TCP acquisition, private credentials, operation sequencing, stdin intake
+which checks TLS TCP acquisition, saved CA settings, private credentials, operation sequencing, stdin intake
 tools, revision rejection, reattachment and logout with no shell environment.
 The Authy/browser journey also approves a native login, denies cross-origin
 confirmation, drives native Git workflow commands and verifies browser compatibility.

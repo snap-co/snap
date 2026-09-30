@@ -163,21 +163,39 @@ OpenCode's own terminal UI. The native Rust CLI needs no Bun, Node, JS or Wasm
 runtime. The server's browser OpenCode proxy still uses Bun and its official client.
 Packaged Factorio builds include `factory` beside `server`.
 
+Provision the TCP certificate before starting Factorio. For local trials with
+`mkcert` installed, generate a development certificate and copy its public CA:
+
+```sh
+mkdir -p apps/factorio/.deployment/development/tls
+mkcert -cert-file apps/factorio/.deployment/development/tls/server.pem -key-file apps/factorio/.deployment/development/tls/server-key.pem localhost 127.0.0.1 ::1
+cp "$(mkcert -CAROOT)/rootCA.pem" apps/factorio/.deployment/development/tls/ca.pem
+chmod 600 apps/factorio/.deployment/development/tls/server-key.pem
+```
+
+The development config names these files. No system trust installation is needed
+for `factory`; it explicitly trusts this CA. Do not copy mkcert's root private key.
 After explicitly applying Factorio's migrations and starting its host:
 
 ```sh
-./bin/factory login          # approve the printed link in a signed-in browser
+./bin/factory login --ca-file apps/factorio/.deployment/development/tls/ca.pem
+                            # approve the printed link in a signed-in browser
 ./bin/factory status
 ./bin/factory intake --no-open -- describe the work
 ./bin/factory watch          # stream Document snapshots until Ctrl-C
 ```
 
-TCP defaults to `127.0.0.1:1248`, configurable with `[app.tcp].listen` on the server
-and `FACTORIO_ADDR` or `--addr` on the client. Saved credentials and connection
+TLS TCP defaults to `127.0.0.1:1248`, configurable with `[app.tcp].listen` on the server
+and `FACTORIO_ADDR` or `--addr` on the client, including `host.example:1248`.
+Server certificate/key files are required; there is no plaintext TCP mode. Public
+certificates use standard roots. Private CAs use `FACTORIO_CA_FILE` or `--ca-file`;
+tunnels can use `FACTORIO_SERVER_NAME` or `--server-name` for the certificate name.
+Saved credentials and connection
 identity live under `$XDG_CONFIG_HOME/factory` or `~/.config/factory`; an explicit
 `--credentials` file carries its own endpoint. Login lasts up to 30 minutes, bounded
-by the parent OAuth lease. Approval still happens in the browser. Use an SSH tunnel
-for remote access, since native TCP is loopback-only plaintext.
+by the parent OAuth lease. Approval still happens in the browser. The endpoint,
+absolute CA path and optional verification name are saved for subsequent commands.
+Both client and server must be upgraded together from the old plaintext carrier.
 
 ## Resident Store
 

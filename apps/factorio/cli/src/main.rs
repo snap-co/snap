@@ -10,18 +10,23 @@ use factorio::Command;
 use serde_json::{Value, json};
 use std::{
     io::Read,
-    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
 #[derive(Parser)]
 #[command(
     name = "factory",
-    about = "Factorio over native binary TCP. Human candidate approval remains in the browser."
+    about = "Factorio over TLS binary TCP. Human candidate approval remains in the browser."
 )]
 struct Args {
     #[arg(long, global = true, env = "FACTORIO_ADDR")]
-    addr: Option<SocketAddr>,
+    addr: Option<String>,
+    /// PEM CA bundle instead of standard public roots. Saved with credentials.
+    #[arg(long, global = true, env = "FACTORIO_CA_FILE")]
+    ca_file: Option<PathBuf>,
+    /// Verify this certificate name instead of the endpoint host, for tunnels.
+    #[arg(long, global = true, env = "FACTORIO_SERVER_NAME")]
+    server_name: Option<String>,
     #[arg(long, global = true)]
     credentials: Option<PathBuf>,
     #[arg(long, global = true, env = "FACTORIO_TOKEN", hide_env_values = true)]
@@ -221,16 +226,14 @@ async fn open_intake(
 
 async fn run(mut args: Args) -> Result<()> {
     args.token = args.token.filter(|token| !token.is_empty());
-    let default_addr = args
-        .addr
-        .unwrap_or_else(|| "127.0.0.1:1248".parse().unwrap());
+    let default_addr = args.addr.clone().unwrap_or_else(|| "127.0.0.1:1248".into());
     let login = matches!(args.command, Mode::Login);
     // Explicit files carry their own endpoint. Environment tokens use a private
     // per-token state file to keep counters stable across independent processes.
     let path = match args.credentials.clone() {
         Some(path) => path,
         None => credentials::default_path(
-            &default_addr.to_string(),
+            &default_addr,
             if login { None } else { args.token.as_deref() },
         )?,
     };
@@ -244,36 +247,44 @@ async fn run(mut args: Args) -> Result<()> {
     let mut credentials = Locked::open(&path, seed)?;
     let addr = args
         .addr
-        .or(credentials
-            .value
-            .addr
-            .as_deref()
-            .map(str::parse)
-            .transpose()?)
+        .or(credentials.value.addr.clone())
         .unwrap_or(default_addr);
+    let ca_file = args
+        .ca_file
+        .map(std::fs::canonicalize)
+        .transpose()?
+        .or(credentials.value.ca_file.clone());
+    let server_name = args.server_name.or(credentials.value.server_name.clone());
     if !login && credentials.value.pending.is_some() {
         ensure!(
             credentials
                 .value
                 .addr
                 .as_deref()
-                .is_none_or(|old| old == addr.to_string()),
+                .is_none_or(|old| old == addr)
+                && credentials.value.ca_file == ca_file
+                && credentials.value.server_name == server_name,
             "Cannot change endpoint while an invocation has an unknown outcome. Retry at its original endpoint, or login to start a fresh lifetime"
         );
     }
     if let Some(workspace) = args.workspace {
         credentials.value.workspace = workspace;
     }
-    credentials.value.addr = Some(addr.to_string());
+    let tls =
+        snap_transport_native::tls::ClientTls::new(ca_file.as_deref(), server_name.as_deref())?;
+    credentials.value.addr = Some(addr.clone());
+    credentials.value.ca_file = ca_file;
+    credentials.value.server_name = server_name;
     credentials.save()?;
     if login {
         async fn exchange(
-            addr: SocketAddr,
+            addr: &str,
+            tls: &snap_transport_native::tls::ClientTls,
             operation: &str,
             input: Value,
             bearer: Option<String>,
         ) -> Result<Value> {
-            let mut tcp = snap_transport_native::Client::open(addr).await?;
+            let mut tcp = snap_transport_native::Client::open(addr, tls).await?;
             tcp.send(&snap_transport::Command::Request {
                 bearer,
                 invocation: snap_transport::Invocation {
@@ -286,9 +297,9 @@ async fn run(mut args: Args) -> Result<()> {
             client::outcome(&mut tcp, 1).await
         }
         let issued = if let Some(token) = args.token {
-            exchange(addr, "factorio.login", Value::Null, Some(token)).await?
+            exchange(&addr, &tls, "factorio.login", Value::Null, Some(token)).await?
         } else {
-            let start = exchange(addr, "factorio.login-start", json!({}), None).await?;
+            let start = exchange(&addr, &tls, "factorio.login-start", json!({}), None).await?;
             eprintln!(
                 "Open {}\nRequest code: {}\nApprove only this request. Waiting for browser approval...",
                 start["url"].as_str().context("Missing login URL")?,
@@ -301,7 +312,8 @@ async fn run(mut args: Args) -> Result<()> {
                     "Login approval expired. Run factory login again"
                 );
                 let issued = exchange(
-                    addr,
+                    &addr,
+                    &tls,
                     "factorio.login-finish",
                     json!({"code":start["code"],"proof":start["proof"]}),
                     None,
@@ -333,7 +345,7 @@ async fn run(mut args: Args) -> Result<()> {
     } else {
         credentials
     };
-    let mut client = Client::connect(addr, credentials).await?;
+    let mut client = Client::connect(&addr, &tls, credentials).await?;
     let result = match args.command {
         Mode::Login => unreachable!(),
         Mode::Retry => client.retry().await?,

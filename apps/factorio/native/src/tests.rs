@@ -1,6 +1,8 @@
 use crate::effects;
 use factorio::{Candidate, Config, Phase, Session};
 use std::path::Path;
+#[path = "../../../../platforms/transport/tests/support/mod.rs"]
+mod tls_support;
 
 #[test]
 fn accepted_identity_uses_captured_authority_while_new_admissions_reject() {
@@ -158,7 +160,12 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let shared = Shared::new(host, "http://localhost".into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let tcp = tokio::spawn(snap_document_local::tcp::serve(listener, shared.clone()));
+    let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
+    let tcp = tokio::spawn(snap_document_local::tcp::serve(
+        listener,
+        shared.clone(),
+        server_tls.clone(),
+    ));
     let dispatch = tokio::spawn(snap_document_local::web::dispatch(shared.clone()));
     let binary = std::env::current_exe()
         .unwrap()
@@ -212,7 +219,15 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let (ok, login, error) = call(
         &binary,
         &credentials,
-        &["login", "--addr", &addr, "--token", "agent"],
+        &[
+            "login",
+            "--addr",
+            &addr,
+            "--ca-file",
+            temp.path().join("ca.pem").to_str().unwrap(),
+            "--token",
+            "agent",
+        ],
         None,
     )
     .await;
@@ -306,29 +321,35 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let upstream_addr = addr.clone();
     let drop_handshake = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let proxy_drop_handshake = drop_handshake.clone();
+    let proxy_server_tls = server_tls.clone();
+    let proxy_client_tls = client_tls.clone();
     let proxy = tokio::spawn(async move {
         let mut first = true;
         let mut peers = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 accepted = proxy_listener.accept() => {
-                    let (mut down,_) = accepted.unwrap();
-                    let mut up = tokio::net::TcpStream::connect(&upstream_addr).await.unwrap();
+                    let (down,_) = accepted.unwrap();
+                    let proxy_server_tls = proxy_server_tls.clone();
+                    let proxy_client_tls = proxy_client_tls.clone();
+                    let upstream_addr = upstream_addr.clone();
                     let lose = first; first = false;
                     let lose_handshake=proxy_drop_handshake.swap(false,std::sync::atomic::Ordering::SeqCst);
                     peers.spawn(async move {
+                        let mut down = proxy_server_tls.accept(down).await.unwrap();
+                        let mut up = proxy_client_tls.connect(&upstream_addr).await.unwrap();
                         if !lose && !lose_handshake {let _=tokio::io::copy_bidirectional(&mut down,&mut up).await;return;}
-                        let (mut down_read,mut down_write)=down.into_split();
-                        let (mut up_read,mut up_write)=up.into_split();
+                        let (mut down_read,mut down_write)=tokio::io::split(down);
+                        let (mut up_read,mut up_write)=tokio::io::split(up);
                         let forwarding=tokio::spawn(async move {let _=tokio::io::copy(&mut down_read,&mut up_write).await;});
                         loop {
                             let (response,retention)=snap_transport_native::read_response(&mut up_read).await.unwrap();
                             if lose_handshake && matches!(response,snap_transport::Response::Attached {..}) {
-                                forwarding.abort();let _=forwarding.await;break;
+                                 forwarding.abort();let _=forwarding.await;let _=tokio::io::AsyncWriteExt::shutdown(&mut down_write).await;break;
                             }
                             let accepted=matches!(&response,snap_transport::Response::Events(events) if events.iter().any(|e|matches!(e,snap_transport::Event::Accepted {..})));
                             snap_transport_native::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.as_ref()).await.unwrap();
-                            if accepted {forwarding.abort();let _=forwarding.await;break;}
+                             if accepted {forwarding.abort();let _=forwarding.await;let _=tokio::io::AsyncWriteExt::shutdown(&mut down_write).await;break;}
                         }
                     });
                 },
@@ -354,7 +375,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
         serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
     assert!(config["next_id"].as_u64().unwrap() > 5);
     let client_id = config["client_id"].as_str().unwrap();
-    let mut reattach = snap_transport_native::Client::open(addr.parse().unwrap())
+    let mut reattach = snap_transport_native::Client::open(&addr, &client_tls)
         .await
         .unwrap();
     reattach

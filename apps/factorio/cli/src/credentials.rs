@@ -32,6 +32,10 @@ pub struct Credentials {
     #[serde(default)]
     pub addr: Option<String>,
     #[serde(default)]
+    pub ca_file: Option<PathBuf>,
+    #[serde(default)]
+    pub server_name: Option<String>,
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub expires: Option<i64>,
@@ -91,6 +95,8 @@ impl Locked {
                 client_id: client_id(),
                 next_id: 1,
                 addr: None,
+                ca_file: None,
+                server_name: None,
                 workspace: String::new(),
                 expires: None,
                 pending: None,

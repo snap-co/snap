@@ -12,7 +12,8 @@ independent consumer or enforceable dependency/portability rule requires it.
 
 - `crates/transport` owns verified connection context, client correlation,
   envelopes, the portable binary v1 codec and resumable logical connections.
-- `platforms/transport` owns binary native TCP IO without application dispatch.
+- `platforms/transport` owns binary native TCP/TLS IO without application dispatch.
+  Tokio and rustls use the same SNAP protocol on Linux, macOS and Windows.
 - `crates/execution` owns the application interface, admission, private attempts,
   serialized host execution and in-memory commit. `src/program.rs` defines the
   application interface; `src/executor.rs` implements the host state machine.
@@ -182,7 +183,7 @@ bounded to 64 KiB. Browser IO retains frame text until Rust decodes it, preservi
 64-bit integers. Rust SDK results cross the UI binding as decimal strings.
 Development controls also use the Rust binding to validate supplied JSON text and
 format inspection records/trace without passing integers through JavaScript numbers.
-Workers and native TLS termination are subsequent work. Native production hosts
+Workers and native HTTP TLS termination are subsequent work. Native production hosts
 can bind external interfaces behind a TLS proxy with an explicitly pinned HTTPS
 public origin; forwarding headers do not choose configuration.
 
@@ -196,8 +197,19 @@ the existing Transport envelopes. Limits are 4 KiB for CONNECT and 64 KiB for
 MESSAGE/SEGMENT, with a 32-level decoding limit and five-second partial-frame/write
 deadlines. Unknown versions/kinds/flags, truncation and trailing CBOR close the
 physical stream. At most 128 physical TCP peers may wait, and pre-authentication
-reads expire after 30 seconds. Binary TCP currently binds loopback only. Remote
-operators must use a protected tunnel; there is no native TLS implementation.
+reads expire after 30 seconds. The binary listener is TLS-only, including loopback.
+Native rustls terminates TLS before allocating a Host peer or reading SNAP. TLS
+handshakes have a ten-second deadline and consume the same 128-peer limit. Explicit
+certificate-chain/key files are loaded before either Factorio listener binds.
+Certificate rotation requires a restart; no TLS early data or client-certificate
+authentication is enabled. Bearers retain application authorization.
+
+Clients verify certificate chains and the endpoint DNS name or IP before sending
+any SNAP bytes. Standard public roots are the default; an explicit PEM CA bundle
+replaces that trust set. A separate server-name override supports tunnels without
+disabling verification. Addresses support DNS names and bracketed IPv6. Neither
+side negotiates a plaintext upgrade or falls back to plaintext. TLS does not alter
+SNAP/CBOR, retained state, unknown outcomes or exact-retry fences.
 
 Larger logical messages use consecutive, non-interleaved SEGMENT frames. Each
 payload begins with a big-endian u32 total byte length and u32 offset, followed by

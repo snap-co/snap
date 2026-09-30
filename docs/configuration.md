@@ -131,12 +131,42 @@ Factorio adds `[app.repository]` with its existing typed repository settings, an
 optional `[app.tools]` for `bun`, `opencode`, `model` and `bridge`. The bridge defaults
 to packaged `bridge.js`; an explicit path resolves against config.toml. Set its
 installation-specific repository/resource paths before starting it.
-Its optional `[app.tcp]` selects `listen = "127.0.0.1:1248"` and
-`retention_ms = 1800000` by default. Only loopback listeners are accepted; port
-zero selects an available port for fixtures. TCP is separate from `host.listen`
+Its `[app.tcp]` selects `listen = "127.0.0.1:1248"` and
+`retention_ms = 1800000` by default, but requires `cert_file` and `key_file` paths
+for a PEM server chain and matching private key. Paths resolve against config.toml.
+The listener is TLS-only and may bind remote interfaces; port zero selects an
+available port for fixtures. TCP is separate from `host.listen`
 and the frontend proxy. Port 1248 is IANA-registered to Hermes, so override it if
 that software is also running. `FACTORIO_ADDR` or `factory --addr` selects the
-native client endpoint. HTTP reverse proxies do not protect this TCP listener.
+native client endpoint as `hostname:port`, `IPv4:port` or `[IPv6]:port`. HTTP reverse
+proxies do not protect this TCP listener. TLS verifies chains and names before SNAP
+credentials are sent, with no plaintext fallback.
+
+```toml
+[app.tcp]
+listen = "0.0.0.0:1248"
+cert_file = "/etc/factorio/tls/fullchain.pem"
+key_file = "/etc/factorio/tls/key.pem"
+# For server-generated local intake credential files, when needed:
+server_name = "factory.example.com"
+# ca_file = "/etc/factorio/tls/private-ca.pem"
+```
+
+The optional `server_name` and `ca_file` settings configure the host's local intake
+tools, not client-certificate authentication. Wildcard listeners use loopback for
+these tools. A public certificate needs `server_name` when its DNS name differs
+from that local address. Private deployments also set `ca_file`. External CLI
+users independently select `--server-name` and `--ca-file`, or
+`FACTORIO_SERVER_NAME` and `FACTORIO_CA_FILE`. A private CA bundle replaces the
+standard public roots. These settings persist with the private credentials;
+pending recovery cannot switch endpoint, CA path or verification name.
+
+Serving validates TLS material before binding either listener; `--check-config`
+validates schema only, and migration does not load certificates. Deployment
+packages do not copy TLS files or private keys. Provision those files separately
+at the configured paths and restrict private-key access to the host account.
+Restart the host after certificate renewal. The development template references
+its authoring-directory TLS files from both dev and packaged checkout launches.
 
 Old `.snap/chatty.env` and env-var configurations are not implicitly imported. Copy
 credentials into the private authoring files, seal each bag, and preserve existing

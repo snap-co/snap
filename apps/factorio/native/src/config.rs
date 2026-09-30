@@ -13,12 +13,20 @@ pub struct Settings {
 pub struct Tcp {
     pub listen: std::net::SocketAddr,
     pub retention_ms: u64,
+    pub cert_file: std::path::PathBuf,
+    pub key_file: std::path::PathBuf,
+    pub ca_file: Option<std::path::PathBuf>,
+    pub server_name: Option<String>,
 }
 impl Default for Tcp {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:1248".parse().unwrap(),
             retention_ms: 1_800_000,
+            cert_file: Default::default(),
+            key_file: Default::default(),
+            ca_file: None,
+            server_name: None,
         }
     }
 }
@@ -43,8 +51,11 @@ impl Default for Tools {
 impl Settings {
     pub fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.oauth.validate()?;
-        if !self.tcp.listen.ip().is_loopback() || self.tcp.retention_ms == 0 {
-            return Err("TCP requires loopback and positive retention_ms; use an SSH tunnel for remote access".into());
+        if self.tcp.retention_ms == 0
+            || self.tcp.cert_file.as_os_str().is_empty()
+            || self.tcp.key_file.as_os_str().is_empty()
+        {
+            return Err("TCP requires cert_file, key_file and positive retention_ms".into());
         }
         if self.tools.bun.is_empty()
             || self.tools.opencode.is_empty()

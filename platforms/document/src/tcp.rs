@@ -5,17 +5,13 @@ use snap_store::Backend;
 use snap_transport::{Command, Event, Response};
 use snap_transport_native as io;
 use std::{sync::Arc, time::Duration};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 pub async fn serve<B: Backend + Send + 'static>(
     listener: TcpListener,
     shared: Arc<Shared<B>>,
+    tls: io::tls::ServerTls,
 ) -> std::io::Result<()> {
-    if !listener.local_addr()?.ip().is_loopback() {
-        return Err(std::io::Error::other(
-            "Binary TCP requires loopback; terminate remote access through an SSH tunnel",
-        ));
-    }
     let permits = Arc::new(tokio::sync::Semaphore::new(128));
     let mut peers = tokio::task::JoinSet::new();
     loop {
@@ -24,7 +20,11 @@ pub async fn serve<B: Backend + Send + 'static>(
                 let (socket, _) = accepted?;
                 let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
                 let shared = shared.clone();
-                peers.spawn(async move { let _permit = permit; let _ = connection(socket, shared).await; });
+                let tls = tls.clone();
+                peers.spawn(async move {
+                    let _permit = permit;
+                    if let Ok(socket) = tls.accept(socket).await { let _ = connection(socket, shared).await; }
+                });
             },
             Some(_) = peers.join_next(), if !peers.is_empty() => {},
         }
@@ -42,10 +42,9 @@ impl<B: Backend> Drop for Detach<B> {
 }
 
 async fn connection<B: Backend + Send + 'static>(
-    socket: TcpStream,
+    socket: io::tls::ServerStream,
     shared: Arc<Shared<B>>,
 ) -> std::io::Result<()> {
-    socket.set_nodelay(true)?;
     let opening = shared.clone();
     let (peer, output, control, retention, _detach) = tokio::task::spawn_blocking(move || {
         let mut host = opening.host.lock().unwrap();
@@ -64,7 +63,7 @@ async fn connection<B: Backend + Send + 'static>(
     .await
     .map_err(std::io::Error::other)?
     .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
-    let (mut reader, mut writer) = socket.into_split();
+    let (mut reader, mut writer) = tokio::io::split(socket);
     let mut pending = std::collections::VecDeque::new();
     let mut pending_bytes = 0usize;
     let mut flush = tokio::time::interval(Duration::from_millis(2));

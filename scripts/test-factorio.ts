@@ -46,6 +46,10 @@ async function start() {
 const opencodeFixture = openCodeFixture();
 const control = Bun.serve({hostname:"127.0.0.1",port:0, idleTimeout: 0, async fetch(request) { const fixture=await opencodeFixture(request);if(fixture)return fixture;const path=new URL(request.url).pathname;if(path==="/build-state")return Response.json({failed:logs.includes("Rebuild failed; previous generation retained"),generations:(logs.match(/generation ready/g)??[]).length});if(path!=="/restart")return new Response("missing",{status:404});await stop();await start();return new Response("restarted"); }});
 try {
+  // Disposable private CA, unrelated to operator trust or certificates.
+  await run(["openssl","req","-x509","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-nodes","-days","2","-subj","/CN=Factorio fixture CA","-keyout",`${directory}/ca-key.pem`,"-out",`${directory}/ca.pem`,"-addext","basicConstraints=critical,CA:TRUE"]);
+  await run(["openssl","req","-new","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-nodes","-subj","/CN=localhost","-keyout",`${directory}/server-key.pem`,"-out",`${directory}/server.csr`,"-addext","subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1","-addext","extendedKeyUsage=serverAuth","-addext","basicConstraints=critical,CA:FALSE"]);
+  await run(["openssl","x509","-req","-in",`${directory}/server.csr`,"-CA",`${directory}/ca.pem`,"-CAkey",`${directory}/ca-key.pem`,"-CAcreateserial","-days","2","-copy_extensions","copy","-out",`${directory}/server.pem`]);
   await mkdir(`${repository}/crates/a`,{recursive:true});await mkdir(`${repository}/crates/b`,{recursive:true});await mkdir(`${directory}/bin`);
   await Bun.write(`${repository}/crates/a/file`,"base a");await Bun.write(`${repository}/crates/b/file`,"base b");
   await run(["git","init","-b","main"],process.env,repository);await run(["git","add","."],process.env,repository);await run(["git","-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","-m","fixture baseline"],process.env,repository);
@@ -71,8 +75,8 @@ await fs.writeFile(file,JSON.stringify(sessions));
   const repositoryConfig = {repository,mainline:"main",modules:{a:"crates/a",b:"crates/b"},resources,first_port:firstPort,setup:["/bin/sh",`${directory}/setup.sh`],teardown:[]};
   authy=await host(base,{FACTORIO_ORIGIN:base,FACTORIO_CLIENT_SECRET:secret});
   setup = await deployment(directory, { host: { mode: "development", listen: new URL(base).host, origin: base, data_dir: directory, database: "factorio.sqlite", web_dir: `${root}/apps/factorio/dist/development/web` },
-    app: { tcp: { listen: tcp }, repository: repositoryConfig, oauth: { issuer: authy.base, client_id: "factorio", client_secret_ref: "oauth.client_secret" }, tools: { bun: process.execPath, opencode: `${directory}/bin/opencode`, bridge: `${root}/apps/factorio/tests/opencode-bridge.ts` } } }, { oauth: { client_secret: secret } });
+    app: { tcp: { listen: tcp, cert_file: "../../server.pem", key_file: "../../server-key.pem", ca_file: "../../ca.pem" }, repository: repositoryConfig, oauth: { issuer: authy.base, client_id: "factorio", client_secret_ref: "oauth.client_secret" }, tools: { bun: process.execPath, opencode: `${directory}/bin/opencode`, bridge: `${root}/apps/factorio/tests/opencode-bridge.ts` } } }, { oauth: { client_secret: secret } });
   await run([`${root}/target/debug/factorio`,"--migrate", "--config", setup.path],setup.env);await start();
-  await run(["bunx","playwright","test","--config","apps/factorio/tests/playwright.config.ts"],{...process.env,FACTORIO_TEST_URL:base,FACTORIO_ADDR:tcp,FACTORIO_FIXTURE:directory,FACTORIO_FIXTURE_URL:`http://127.0.0.1:${control.port}`,FACTORIO_FIXTURE_DIR:directory});
+  await run(["bunx","playwright","test","--config","apps/factorio/tests/playwright.config.ts"],{...process.env,FACTORIO_TEST_URL:base,FACTORIO_ADDR:tcp,FACTORIO_CA_FILE:`${directory}/ca.pem`,FACTORIO_SERVER_NAME:"localhost",FACTORIO_FIXTURE:directory,FACTORIO_FIXTURE_URL:`http://127.0.0.1:${control.port}`,FACTORIO_FIXTURE_DIR:directory});
 } catch (error) { console.error(logs); throw error; }
 finally {await stop();await authy?.close();control.stop(true);await rm(directory,{recursive:true,force:true});}

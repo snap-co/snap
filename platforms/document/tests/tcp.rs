@@ -4,6 +4,8 @@ use snap_transport::{Command, Event, Invocation, Response, binary, json};
 use snap_transport_native::Client;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+#[path = "../../transport/tests/support/mod.rs"]
+mod tls_support;
 
 #[tokio::test]
 #[ignore = "real TCP adapter"]
@@ -55,9 +57,16 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         }),
     });
     let shared = Shared::new(host, "http://localhost".into());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(snap_document_local::tcp::serve(listener, shared.clone()));
+    // TLS permits a wildcard listener; peers still verify the concrete address.
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], listener.local_addr().unwrap().port()));
+    let temp = tempfile::tempdir().unwrap();
+    let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
+    let serving = tokio::spawn(snap_document_local::tcp::serve(
+        listener,
+        shared.clone(),
+        server_tls,
+    ));
     let dispatch = tokio::spawn(snap_document_local::web::dispatch(shared.clone()));
     let make = || {
         Command::Invoke(Invocation {
@@ -70,12 +79,13 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         bearer: "token".into(),
         client_id: "stable".into(),
     };
-    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut socket = client_tls.connect(&addr.to_string()).await.unwrap();
     let mut bytes = binary::command(&connect).unwrap();
     bytes.extend(binary::command(&make()).unwrap());
     // Fragment the first header, then combine its remainder with MESSAGE.
     socket.write_all(&bytes[..3]).await.unwrap();
     socket.write_all(&bytes[3..]).await.unwrap();
+    socket.flush().await.unwrap();
     let (reply, retention) = snap_transport_native::read_response(&mut socket)
         .await
         .unwrap();
@@ -83,7 +93,7 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     let attachment = retention.unwrap();
     assert_eq!(attachment.retention_ms, 300000);
     assert!(!attachment.lifetime.is_empty());
-    async fn completion(socket: &mut tokio::net::TcpStream) {
+    async fn completion(socket: &mut snap_transport_native::tls::ClientStream) {
         let mut accepted = false;
         loop {
             let (reply, _) = snap_transport_native::read_response(socket).await.unwrap();
@@ -107,7 +117,7 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     // Host controls provide synchronization rather than sleeps after socket EOF.
     let mut resumed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let mut c = Client::open(addr).await.unwrap();
+            let mut c = Client::open(&addr.to_string(), &client_tls).await.unwrap();
             c.send(&connect).await.unwrap();
             let (reply, info) = c.receive().await.unwrap();
             match reply {
@@ -134,7 +144,7 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         }
     }
     assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let mut invalid = Client::open(addr).await.unwrap();
+    let mut invalid = Client::open(&addr.to_string(), &client_tls).await.unwrap();
     invalid
         .send(&Command::Connect {
             bearer: "bad".into(),

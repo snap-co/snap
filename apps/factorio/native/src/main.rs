@@ -26,6 +26,8 @@ struct App {
     oauth: Arc<OAuth>,
     tools: config::Tools,
     tcp: std::net::SocketAddr,
+    tcp_ca_file: Option<PathBuf>,
+    tcp_server_name: Option<String>,
 }
 impl App {
     async fn actor(
@@ -96,6 +98,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let secrets = startup.load_secrets()?;
+    // Check-config is schema-only for deployment packaging. Serving loads and
+    // validates mounted TLS material before either listener can bind.
+    let tcp_tls = snap_transport_native::tls::ServerTls::new(
+        &startup.path(&startup.app.tcp.cert_file),
+        &startup.path(&startup.app.tcp.key_file),
+    )?;
+    let tcp_ca_file = startup
+        .app
+        .tcp
+        .ca_file
+        .as_deref()
+        .map(|path| startup.path(path));
+    let tcp_ca_file = tcp_ca_file.map(std::fs::canonicalize).transpose()?;
+    snap_transport_native::tls::ClientTls::new(
+        tcp_ca_file.as_deref(),
+        startup.app.tcp.server_name.as_deref(),
+    )?;
     let oauth_config = startup.app.oauth.resolve(
         startup.host.public_origin(startup.host.listen),
         &secrets,
@@ -202,7 +221,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Arc::new(App {
         oauth: oauth.clone(),
         tools,
-        tcp: tcp_address,
+        tcp: std::net::SocketAddr::new(
+            if tcp_address.ip().is_unspecified() {
+                if tcp_address.is_ipv4() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    std::net::Ipv6Addr::LOCALHOST.into()
+                }
+            } else {
+                tcp_address.ip()
+            },
+            tcp_address.port(),
+        ),
+        tcp_ca_file,
+        tcp_server_name: startup.app.tcp.server_name.clone(),
     });
     let assets = startup.assets().to_string_lossy().into_owned();
     let router = Router::new()
@@ -226,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Factorio http://{address}");
-    println!("Factorio tcp://{tcp_address}");
-    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_local::tcp::serve(tcp_listener,documents.clone())=>result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
+    println!("Factorio tls://{tcp_address}");
+    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_local::tcp::serve(tcp_listener,documents.clone(),tcp_tls)=>result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
     Ok(())
 }

@@ -11,7 +11,7 @@ cli = "factory"
 commands = [["cargo", "test", "-p", "factorio"]]
 
 [test.native]
-commands = [["cargo", "build", "-p", "factory-cli"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"], ["bun", "test", "tests/client.test.ts"]]
+commands = [["cargo", "build", "-p", "factory-cli"], ["cargo", "test", "-p", "snap-transport-native", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"], ["bun", "test", "tests/client.test.ts"]]
 
 [test.browser]
 commands = [["bun", "../../scripts/test-factorio.ts"]]

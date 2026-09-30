@@ -125,7 +125,7 @@ async fn configure(
             .open(&temporary)
             .map_err(|e| e.to_string())?;
         file.write_all(
-            json!({"addr":app.tcp.to_string(),"token":token,"workspace":workspace,"client_id":random(),"next_id":1})
+            json!({"addr":app.tcp.to_string(),"ca_file":app.tcp_ca_file,"server_name":app.tcp_server_name,"token":token,"workspace":workspace,"client_id":random(),"next_id":1})
                 .to_string()
                 .as_bytes(),
         )

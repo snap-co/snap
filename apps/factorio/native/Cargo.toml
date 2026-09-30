@@ -20,6 +20,7 @@ snap-access.workspace = true
 snap-oidc.workspace = true
 snap-store.workspace = true
 snap-transport = { path = "../../../crates/transport" }
+snap-transport-native = { path = "../../../platforms/transport" }
 serde_json.workspace = true
 serde.workspace = true
 axum = "0.8"
@@ -32,7 +33,7 @@ nix = { version = "0.30", features = ["signal", "process"] }
 
 [dev-dependencies]
 tempfile = "3"
-snap-transport-native = { path = "../../../platforms/transport" }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [lints]
 workspace = true

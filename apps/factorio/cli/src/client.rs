@@ -2,7 +2,7 @@ use crate::credentials::Locked;
 use anyhow::{Result, bail, ensure};
 use snap_transport::{Command, Event, Invocation, Response, Value};
 use snap_transport_native::Client as Tcp;
-use std::{net::SocketAddr, time::Duration};
+use std::time::Duration;
 
 pub struct Client {
     pub tcp: Tcp,
@@ -22,10 +22,14 @@ impl std::fmt::Display for OperationError {
 }
 impl std::error::Error for OperationError {}
 impl Client {
-    pub async fn connect(addr: SocketAddr, mut credentials: Locked) -> Result<Self> {
+    pub async fn connect(
+        addr: &str,
+        tls: &snap_transport_native::tls::ClientTls,
+        mut credentials: Locked,
+    ) -> Result<Self> {
         let start = std::time::Instant::now();
         loop {
-            let mut tcp = Tcp::open(addr).await?;
+            let mut tcp = Tcp::open(addr, tls).await?;
             tcp.send(&Command::Connect {
                 bearer: credentials.value.bearer.clone(),
                 client_id: credentials.value.client_id.clone(),

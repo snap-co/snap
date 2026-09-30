@@ -116,6 +116,13 @@ model. Browser intake continues to use the server's explicit model selection.
 
 `[app.tcp]` defaults to `listen = "127.0.0.1:1248"` and
 `retention_ms = 1800000`. `FACTORIO_ADDR` or `--addr` overrides the client endpoint;
+DNS names and bracketed IPv6 are supported. The listener is TLS-only and requires
+PEM `cert_file` and `key_file`. Clients verify the chain and endpoint name before
+sending credentials. `--ca-file` selects a private CA bundle instead of public
+roots; `--server-name` sets the verification name for tunnels. Their environment
+equivalents are `FACTORIO_CA_FILE` and `FACTORIO_SERVER_NAME`. Trust settings are
+saved with credentials and cannot change during pending recovery. Server-side
+`ca_file` and `server_name` configure generated local intake tool credentials.
 `FACTORIO_ORIGIN` is no longer a native transport selector. EOF detaches without
 releasing residency. Later processes reuse the saved client ID; logical expiry or
 host restart creates a fresh lifetime. An interrupted invocation is saved before
@@ -127,8 +134,8 @@ automatically replayed after IO failure.
 
 CLI credentials expire within 30 minutes and never outlive the parent OAuth lease.
 They cannot refresh OAuth; run login again after expiry. Logout revokes the current
-CLI credential, not the browser session. Native TCP rejects non-loopback endpoints;
-use an SSH tunnel when the server is remote. Port 1248 is also used by Hermes and
+CLI credential, not the browser session. Native TCP supports remote TLS endpoints
+without plaintext fallback. Port 1248 is also used by Hermes and
 is configurable to avoid conflicts.
 Logical TCP results and Document updates can span bounded 64 KiB physical frames,
 up to 16 MiB per logical message. Upgrade client and server together.

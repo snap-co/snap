@@ -2,10 +2,8 @@
 //! here. Failed reads/writes have unknown operation outcomes and are never retried.
 use snap_transport::{Command, Response, binary};
 use std::{io, time::Duration};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
-};
+pub mod tls;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 fn protocol(error: snap_transport::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"))
@@ -91,7 +89,11 @@ pub async fn read_payload<R: AsyncRead + Unpin>(
     .await?
 }
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &[u8]) -> io::Result<()> {
-    tokio::time::timeout(Duration::from_secs(5), writer.write_all(frame)).await??;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        writer.write_all(frame).await?;
+        writer.flush().await
+    })
+    .await??;
     Ok(())
 }
 pub async fn write_command<W: AsyncWrite + Unpin>(
@@ -114,20 +116,11 @@ pub async fn write_response<W: AsyncWrite + Unpin>(
 }
 
 pub struct Client {
-    stream: TcpStream,
+    stream: tls::ClientStream,
 }
 impl Client {
-    pub async fn open(addr: std::net::SocketAddr) -> io::Result<Self> {
-        // Plaintext credentials are only safe on a protected local channel.
-        if !addr.ip().is_loopback() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Plaintext TCP requires loopback; use an SSH tunnel for remote hosts",
-            ));
-        }
-        let stream =
-            tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addr)).await??;
-        stream.set_nodelay(true)?;
+    pub async fn open(addr: &str, tls: &tls::ClientTls) -> io::Result<Self> {
+        let stream = tls.connect(addr).await?;
         Ok(Self { stream })
     }
     pub async fn send(&mut self, command: &Command) -> io::Result<()> {

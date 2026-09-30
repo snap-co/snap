@@ -42,7 +42,7 @@ explicit agent-bearer authentication through their configured authority; see
 The Document host's `with_preconnection_request` registration separates sensitive
 issuance policy from cookie projection. Its one-shot exchange shares the FIFO but
 removes temporary peers, credential inputs and results before returning. Native
-TCP can execute such a Request on a fresh stream without cookie handling. There
+TLS TCP can execute such a Request on a fresh stream without cookie handling. There
 is no automatic replay, including when a committed issuance response is lost.
 
 Factorio native login retains Authy as the identity authority. `factory login`
@@ -53,6 +53,9 @@ A separate random proof remains in the CLI process; only its digest is stored.
 The CLI polls TCP for approval and consumes the approved request exactly once to
 receive a credential. A lost issuance response requires a new login, not retry.
 `factory login --token` alternatively delegates an existing ordinary agent token.
+Both flows verify the TLS server certificate and name before sending requests or
+bearers. TLS trust and address settings remain native IO configuration; they do
+not replace Authy's authority or grant permissions.
 
 CLI bearers have 256 random bits; only digests enter `factorio.cli`. They expire
 within 30 minutes, bounded by the parent OAuth session and access-token expiry.

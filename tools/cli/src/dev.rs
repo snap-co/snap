@@ -122,6 +122,22 @@ impl Installation {
         {
             *bridge = config.path(value).to_string_lossy().into_owned().into();
         }
+        // TLS files must still resolve against the installation config after
+        // the supervisor writes a generation into its disposable directory.
+        if let Some(tcp) = document
+            .get_mut("app")
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|app| app.get_mut("tcp"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            for field in ["cert_file", "key_file", "ca_file"] {
+                if let Some(path) = tcp.get_mut(field)
+                    && let Some(value) = path.as_str()
+                {
+                    *path = config.path(value).to_string_lossy().into_owned().into();
+                }
+            }
+        }
         let clients = client_origins(&config.app, &hosts)?;
         host_table(&mut document)?
             .insert("dev_client_origins".into(), toml::Value::try_from(clients)?);
