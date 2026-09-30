@@ -60,7 +60,6 @@ export function WorkspacePage({ client, initialRepositories }: { client: Factori
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
   const [editing, setEditing] = useState(false);
-  const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [keyboard, setKeyboard] = useState(false);
@@ -131,10 +130,9 @@ export function WorkspacePage({ client, initialRepositories }: { client: Factori
   return <div className={`app-shell${keyboard ? " keyboard-open" : ""}`}>
     <header className="app-header"><div className="app-brand"><span className="brand-name">Factorio</span><div className="workspace-name">{workspace ? <><strong>{workspace.config.repository.split("/").filter(Boolean).at(-1)}</strong><span>{workspace.config.mainline}</span></> : <span className="muted">Track work from idea to review.</span>}</div></div>
       {workspace && <ShellNavigation section={section} destinations={destinations}/>}
-      <details className="account-menu"><summary aria-label="Account"><Icon name="account"/><span>Account</span></summary><div className="account-popover"><button disabled={busy} onClick={() => void run(async () => setToken((await client.agentToken()).token))}>Create agent token</button><button disabled={busy} onClick={() => void run(async () => location.assign((await client.logout()).redirect))}>Sign out</button></div></details>
+      <details className="account-menu"><summary aria-label="Account"><Icon name="account"/><span>Account</span></summary><div className="account-popover"><button disabled={busy} onClick={() => void run(async () => location.assign((await client.logout()).redirect))}>Sign out</button></div></details>
     </header>
     {(error || connectionError) && <div className="shell-notice"><p role="alert">{error || connectionError}</p></div>}
-    {token && <div className="token-panel"><label>Agent token. Copy once, then dismiss.<input aria-label="Agent token" type="password" readOnly value={token}/></label><button onClick={() => setToken("")}>Dismiss token</button></div>}
     {!workspace ? <main className="setup-content">{initialRepositories.length ? <section className="onboarding"><h1>Create your first workspace</h1><p>Choose an existing repository on this server. Then describe your first piece of work.</p><form onSubmit={event => { event.preventDefault(); void run(async () => { setWorkspace(await client.onboard(repository)); if (section !== "intakes" && location.pathname === pathname) void navigate({ to: "/intakes" }); }); }}><label>Repository<select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)}>{initialRepositories.map(repo => <option key={repo.id} value={repo.id}>{repo.path}</option>)}</select></label><p className="muted">You will own this workspace and its tickets, intakes and sessions.</p><button className="primary" disabled={busy || !repository}>Create workspace</button></form></section> : <div className="workspace-loading" role="status"><div className="loading-line"/><div className="loading-line"/><span>Loading workspace…</span></div>}</main>
       : <>
         <div className={`workspace-layout${listSection ? " has-list" : ""}`}>
