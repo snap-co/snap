@@ -585,6 +585,11 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                 serial += 1;
                 let candidate = session.path().join(serial.to_string());
                 let prepared = async {
+                    // Do not pair a rebuilt executable with the previous command mode.
+                    // This supervisor retains its startup arguments for launch and rollback.
+                    let selected = Project::discover(Some(project.root.clone()))?;
+                    ensure!(selected.config.build.as_ref().map_or(&[][..], |s| s.server_args.as_slice()) == server_args,
+                        "Server arguments changed; restart snap dev to apply them");
                     if let Some((directory, _)) = current.as_ref().filter(|_| !pending.build) {
                         // Configuration-only changes do not recompile application code.
                         build::copy_tree(directory, &candidate)?;

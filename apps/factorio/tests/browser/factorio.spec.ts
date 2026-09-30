@@ -237,6 +237,15 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
     const generations=(await state()).generations;await writeFile(source,original);
     await expect.poll(async()=>(await state()).generations,{timeout:60000}).toBeGreaterThan(generations);
     await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
+    const manifest=`${root}/apps/factorio/snap.toml`, settings=await readFile(manifest,"utf8");
+    const beforeArguments=(await state()).generations;
+    await writeFile(manifest,settings.replace('server_args = ["serve"]','server_args = ["serve", "--check-config"]'));
+    try {
+      await expect.poll(async()=>(await state()).restartRequired,{timeout:15000}).toBe(true);
+      expect((await state()).generations).toBe(beforeArguments);
+      await page.reload();await expect(failedCard.getByText("active",{exact:true})).toBeVisible();
+    } finally { await writeFile(manifest,settings); }
+    await expect.poll(async()=>(await state()).generations,{timeout:60000}).toBeGreaterThan(beforeArguments);
     const ui=`${root}/apps/factorio/web/pages/workspace.tsx`;await writeFile(ui,(await readFile(ui,"utf8")).replace("Factorio</span>","Updated Factorio development UI.</span>"));
     await expect(page.getByText("Updated Factorio development UI.")).toBeVisible();
   }

@@ -34,6 +34,7 @@ pub struct Build {
     #[serde(default)]
     pub features: Vec<String>,
     /// Arguments selecting server mode when the executable also provides client commands.
+    /// Changing these requires restarting the watched development supervisor.
     #[serde(default)]
     pub server_args: Vec<String>,
     /// Optional application-owned native command executable, packaged beside server.
