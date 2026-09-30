@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-mise exec -- cargo build --quiet --locked --manifest-path "$root/Cargo.toml" -p factory-cli
-exec "${CARGO_TARGET_DIR:-$root/target}/debug/factory" "$@"

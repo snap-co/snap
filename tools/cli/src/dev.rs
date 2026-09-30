@@ -361,12 +361,14 @@ impl Adapter {
 
 async fn launch(
     directory: &Path,
+    server_args: &[String],
     installation: &Installation,
     backend: SocketAddr,
     runner: &Runner,
 ) -> Result<OwnedProcess> {
     let mut command = Command::new(directory.join("server"));
     command
+        .args(server_args)
         .arg("--config")
         .arg(directory.join("config.toml"))
         .stdin(Stdio::null())
@@ -478,6 +480,11 @@ fn changes(event: notify::Event, configuration: &Path, adapter: &Path) -> Change
 }
 
 pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBuf>) -> Result<()> {
+    let server_args = project
+        .config
+        .build
+        .as_ref()
+        .map_or(&[][..], |s| s.server_args.as_slice());
     let configuration =
         configuration.unwrap_or_else(|| project.root.join(".deployment/development/config.toml"));
     let configuration = configuration
@@ -585,7 +592,7 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                         build::run(build::Args { environment: "development".into(), project: Some(project.root.clone()), web_only: false, output: Some(candidate.clone()) }, runner).await?;
                     }
                     installation.write_generation(&candidate, backend)?;
-                    runner.run(Command::new(candidate.join("server")).arg("--check-config").arg("--config").arg(candidate.join("config.toml")).env_remove("SNAP_MASTER_KEY"), false).await?;
+                    runner.run(Command::new(candidate.join("server")).args(server_args).arg("--check-config").arg("--config").arg(candidate.join("config.toml")).env_remove("SNAP_MASTER_KEY"), false).await?;
                     Ok::<_, anyhow::Error>(())
                 }.await;
                 if let Err(error) = prepared {
@@ -601,12 +608,12 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                 if newer.any() { pending.add(newer); continue; }
                 if let Some(process) = &mut running { process.stop().await?; }
                 running = None;
-                match launch(&candidate, &installation, backend, runner).await {
+                match launch(&candidate, server_args, &installation, backend, runner).await {
                     Ok(process) => running = Some(process),
                     Err(error) => {
                         runner.check()?;
                         if let Some((directory, previous)) = &current {
-                            running = Some(launch(directory, previous, backend, runner).await?);
+                            running = Some(launch(directory, server_args, previous, backend, runner).await?);
                             installation = previous.clone();
                             eprintln!("Restart failed; previous generation retained: {error:#}");
                             pending = Changes::default();
@@ -638,7 +645,7 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                         adapter = None;
                         if let Some(process) = &mut running { process.stop().await?; }
                         running = None;
-                        running = Some(launch(directory, previous, backend, runner).await?);
+                        running = Some(launch(directory, server_args, previous, backend, runner).await?);
                         adapter = Some(Adapter::start(&frontend, directory, previous, &code, runner).await?);
                         installation = previous.clone();
                         eprintln!("Frontend replacement failed; previous generation retained: {error:#}");

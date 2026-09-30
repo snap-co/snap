@@ -90,8 +90,19 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     migrations
 }
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let options = snap_config::Options::parse()?;
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
+}
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(options) = factorio_cli::dispatch().await? {
+        serve(options).await?;
+    }
+    Ok(())
+}
+async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::Error>> {
     let startup = snap_config::Config::<config::Settings>::read(&options.config)?;
     startup.app.validate()?;
     if options.action == snap_config::Action::Check {

@@ -70,7 +70,7 @@ pub async fn page(
     }
     let s = match app.oauth.session(&headers).await {
         Ok(s) => s,
-        Err(_) => return page_response("<h1>Sign in to connect factory</h1><p>Sign in with Authy, then reopen the link printed by factory login. This request expires after five minutes.</p><a href=\"/auth/login\">Sign in with Authy</a>".into()),
+        Err(_) => return page_response("<h1>Sign in to connect Factorio CLI</h1><p>Sign in with Authy, then reopen the link printed by factorio login. This request expires after five minutes.</p><a href=\"/auth/login\">Sign in with Authy</a>".into()),
     };
     match app.oauth.run("cli.login.inspect", |tx| {
         let row = tx
@@ -93,7 +93,7 @@ pub async fn page(
         return failure(Error::Invalid);
     }
     page_response(format!(
-        "<h1>Connect factory</h1><p>Only continue if you started factory login yourself. Compare this request code with your terminal.</p><code>{code}</code><p>The CLI can read and change your workspaces, tickets and sessions. It cannot approve candidates. Access lasts up to 30 days with automatic renewal of short-lived access tokens, and ends if your sign-in expires or is revoked.</p><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Allow CLI access</button></form><a href=\"/\">Cancel and return to Factorio</a>",
+        "<h1>Connect Factorio CLI</h1><p>Only continue if you started factorio login yourself. Compare this request code with your terminal.</p><code>{code}</code><p>The CLI can read and change your workspaces, tickets and sessions. It cannot approve candidates. Access lasts up to 30 days with automatic renewal of short-lived access tokens, and ends if your sign-in expires or is revoked.</p><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Allow CLI access</button></form><a href=\"/\">Cancel and return to Factorio</a>",
         s.csrf
     ))
 }

@@ -5,13 +5,14 @@ application = "factorio"
 rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml", "cli/Cargo.toml"]
 
 [build]
-cli = "factory"
+cli = "factorio"
+server_args = ["serve"]
 
 [test.memory]
 commands = [["cargo", "test", "-p", "factorio"]]
 
 [test.native]
-commands = [["cargo", "build", "-p", "factory-cli"], ["cargo", "test", "-p", "snap-transport-native", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
+commands = [["cargo", "build", "-p", "factorio-native"], ["cargo", "test", "-p", "snap-transport-native", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
 
 [test.browser]
 commands = [["bun", "../../scripts/test-factorio.ts"]]

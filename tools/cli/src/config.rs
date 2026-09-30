@@ -33,6 +33,9 @@ pub struct Build {
     pub binary: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    /// Arguments selecting server mode when the executable also provides client commands.
+    #[serde(default)]
+    pub server_args: Vec<String>,
     /// Optional application-owned native command executable, packaged beside server.
     pub cli: Option<String>,
 }

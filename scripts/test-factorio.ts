@@ -18,7 +18,7 @@ if (process.argv.includes("--dev") && !process.env.FACTORIO_SOURCE_ROOT) {
   process.exit(process.exitCode??0);
 }
 async function run(argv: string[], env = process.env, cwd = root) { const p = Bun.spawn(argv, { env, cwd, stdout: "inherit", stderr: "inherit" }); if (await p.exited !== 0) throw new Error(`Failed: ${argv.join(" ")}`); }
-await run(["mise", "exec", "--", "cargo", "build", "-p", "snap-cli", "-p", "authy-native", "-p", "factorio-native", "-p", "factory-cli"]);
+await run(["mise", "exec", "--", "cargo", "build", "-p", "snap-cli", "-p", "authy-native", "-p", "factorio-native"]);
 await run([`${root}/target/debug/snap`, "build", "--project", "apps/authy", "--web-only", "--output", `${root}/apps/authy/dist/development/web`]);
 await run([`${root}/target/debug/snap`, "build", "--project", "apps/factorio", "--web-only", "--output", `${root}/apps/factorio/dist/development/web`]);
 await run(["bunx", "tsc", "-p", "apps/factorio/web/tsconfig.json"]);
@@ -37,7 +37,7 @@ const repository = `${directory}/repo`, resources = `${directory}/resources`;
 async function stop() { if (child?.exitCode === null) { child.kill("SIGTERM"); await child.exited; } }
 async function start() {
   logs = "";
-  child = Bun.spawn(process.env.FACTORIO_TEST_DEV ? [`${root}/target/debug/snap`,"dev",`${root}/apps/factorio`, "--config", setup.path] : [`${root}/target/debug/factorio`, "--config", setup.path], { cwd: root, env: { ...setup.env, PATH: `${directory}/bin:${process.env.PATH}`, FACTORIO_FIXTURE_API: `http://127.0.0.1:${control.port}`, FACTORIO_FIXTURE: directory }, stdout: "pipe", stderr: "pipe" });
+  child = Bun.spawn(process.env.FACTORIO_TEST_DEV ? [`${root}/target/debug/snap`,"dev",`${root}/apps/factorio`, "--config", setup.path] : [`${root}/target/debug/factorio`, "serve", "--config", setup.path], { cwd: root, env: { ...setup.env, PATH: `${directory}/bin:${process.env.PATH}`, FACTORIO_FIXTURE_API: `http://127.0.0.1:${control.port}`, FACTORIO_FIXTURE: directory }, stdout: "pipe", stderr: "pipe" });
   const running = child;
   for (const stream of [child.stdout, child.stderr]) void (async()=>{for await (const b of stream as ReadableStream<Uint8Array>) logs += new TextDecoder().decode(b);})();
   const until = Date.now()+60000;
@@ -77,7 +77,7 @@ await fs.writeFile(file,JSON.stringify(sessions));
   authy=await host(base,{FACTORIO_ORIGIN:base,FACTORIO_CLIENT_SECRET:secret});
   setup = await deployment(directory, { host: { mode: "development", listen: new URL(base).host, origin: base, data_dir: directory, database: "factorio.sqlite", web_dir: `${root}/apps/factorio/dist/development/web` },
     app: { tcp: { listen: tcp, cert_file: "../../server.pem", key_file: "../../server-key.pem", ca_file: "../../ca.pem" }, repository: repositoryConfig, oauth: { issuer: authy.base, client_id: "factorio", client_secret_ref: "oauth.client_secret" }, tools: { bun: process.execPath, opencode: `${directory}/bin/opencode`, bridge: `${root}/apps/factorio/tests/opencode-bridge.ts` } } }, { oauth: { client_secret: secret } });
-  await run([`${root}/target/debug/factorio`,"--migrate", "--config", setup.path],setup.env);await start();
+  await run([`${root}/target/debug/factorio`,"serve", "--migrate", "--config", setup.path],setup.env);await start();
   await run(["bunx","playwright","test","--config","apps/factorio/tests/playwright.config.ts"],{...process.env,FACTORIO_TEST_URL:base,FACTORIO_ADDR:tcp,FACTORIO_CA_FILE:`${directory}/ca.pem`,FACTORIO_SERVER_NAME:"localhost",FACTORIO_FIXTURE:directory,FACTORIO_FIXTURE_URL:`http://127.0.0.1:${control.port}`,FACTORIO_FIXTURE_DIR:directory});
 } catch (error) { console.error(logs); throw error; }
 finally {await stop();await authy?.close();control.stop(true);await rm(directory,{recursive:true,force:true});}

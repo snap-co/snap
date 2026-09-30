@@ -1,5 +1,5 @@
-//! Native Factorio CLI. Ordinary commands detach TCP, never retire the saved
-//! logical lifetime. OpenCode's terminal UI remains a separate executable.
+//! Client commands and server-option parsing for the native Factorio executable.
+//! Ordinary commands detach TCP, never retire the saved logical lifetime.
 mod client;
 mod credentials;
 use anyhow::{Context, Result, bail, ensure};
@@ -15,8 +15,8 @@ use std::{
 
 #[derive(Parser)]
 #[command(
-    name = "factory",
-    about = "Factorio over TLS binary TCP. Human candidate approval remains in the browser."
+    name = "factorio",
+    about = "Factorio client and server. Human candidate approval remains in the browser."
 )]
 struct Args {
     /// TLS endpoint as host:port. Defaults to 127.0.0.1:1024 for a new login.
@@ -39,6 +39,18 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Mode {
+    /// Run the HTTP/browser and verified TLS TCP server.
+    Serve {
+        /// Installation config. Defaults to config.toml beside the executable.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Validate configuration without decrypting secrets or starting listeners.
+        #[arg(long, conflicts_with = "migrate")]
+        check_config: bool,
+        /// Apply database migrations without starting listeners.
+        #[arg(long)]
+        migrate: bool,
+    },
     /// Save login for up to 30 days via browser approval or an agent token.
     Login,
     /// Revoke this CLI credential and retire its logical connection.
@@ -305,7 +317,7 @@ async fn run(mut args: Args) -> Result<()> {
             loop {
                 ensure!(
                     began.elapsed() < std::time::Duration::from_secs(300),
-                    "Login approval expired. Run factory login again"
+                    "Login approval expired. Run factorio login again"
                 );
                 let issued = exchange(
                     &addr,
@@ -356,7 +368,7 @@ async fn run(mut args: Args) -> Result<()> {
     };
     let mut client = Client::connect(&addr, &tls, credentials).await?;
     let result = match args.command {
-        Mode::Login => unreachable!(),
+        Mode::Login | Mode::Serve { .. } => unreachable!(),
         Mode::Retry => client.retry().await?,
         Mode::Logout => {
             let value = client.invoke("factorio.logout", json!({})).await?;
@@ -447,7 +459,7 @@ async fn run(mut args: Args) -> Result<()> {
                 );
                 serde_json::from_value(client.invoke("factorio.intake-create",json!({"workspace":workspace_id,"id":id,"description":description.join(" ")})).await?)?
             };
-            eprintln!("Intake {id}. Resume with factory intake --resume {id}");
+            eprintln!("Intake {id}. Resume with factorio intake --resume {id}");
             if no_open {
                 serde_json::to_value(item)?
             } else {
@@ -568,10 +580,27 @@ async fn run(mut args: Args) -> Result<()> {
     };
     print(&result)
 }
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run(Args::parse()).await {
-        eprintln!("{error:#}");
-        std::process::exit(1);
+/// Execute a client command, or return server startup options to the host.
+/// Server dispatch happens before any client credential file or connection is opened.
+pub async fn dispatch() -> Result<Option<snap_config::Options>> {
+    let args = Args::parse();
+    if let Mode::Serve {
+        config,
+        check_config,
+        migrate,
+    } = args.command
+    {
+        return Ok(Some(snap_config::Options {
+            config: config.unwrap_or(std::env::current_exe()?.with_file_name("config.toml")),
+            action: if check_config {
+                snap_config::Action::Check
+            } else if migrate {
+                snap_config::Action::Migrate
+            } else {
+                snap_config::Action::Serve
+            },
+        }));
     }
+    run(args).await?;
+    Ok(None)
 }

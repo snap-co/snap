@@ -858,8 +858,8 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
         .unwrap()
         .parent()
         .unwrap()
-        .join("factory");
-    assert!(binary.is_file(), "Build factory-cli before this gate");
+        .join("factorio");
+    assert!(binary.is_file(), "Build factorio-native before this gate");
     let credentials = temp.path().join("credentials.json");
     async fn call(
         binary: &Path,

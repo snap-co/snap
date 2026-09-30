@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 
 const exec = promisify(execFile);
 const base = process.env.FACTORIO_TEST_URL!, directory = process.env.FACTORIO_FIXTURE_DIR!;
-const binary = resolve(import.meta.dirname, "../../../../target/debug/factory");
+const binary = resolve(import.meta.dirname, "../../../../target/debug/factorio");
 const env = { ...process.env, FACTORIO_TOKEN: "" };
 async function cli(path: string, ...args: string[]) {
   const result = await exec(binary, ["--credentials", path, ...args], { env, timeout: 70000 });

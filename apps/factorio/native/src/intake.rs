@@ -76,14 +76,7 @@ fn owned(
     })
 }
 fn cli_path() -> Result<PathBuf, String> {
-    let packaged = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name("factory");
-    Ok(if packaged.is_file() {
-        packaged
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/factory")
-    })
+    std::env::current_exe().map_err(|e| e.to_string())
 }
 fn credentials(w: &Workspace, owner: &str) -> PathBuf {
     PathBuf::from(&w.config.resources)
@@ -166,7 +159,7 @@ fn instructions(_app: &App, item: &Intake, w: &Workspace, owner: &str) -> Result
     let command = quote(
         &cli_path()?
             .canonicalize()
-            .map_err(|_| "Build factory-cli before starting intake")?,
+            .map_err(|_| "Factorio executable is unavailable")?,
     );
     let args = format!(
         "--credentials {} --intake {}",

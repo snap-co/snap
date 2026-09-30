@@ -4,7 +4,7 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 cargo_cmd=(cargo)
 if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
-packages=(-p snap-config -p snap-cli -p snap-execution -p snap-transport -p snap-store -p snap-access -p snap-document -p snap-document-local -p snap-oauth-local -p snap-model-local -p snap-http -p snap-identity -p snap-oidc -p snap-crypto -p snap-sqlite -p snap-platform-local -p testy -p testy-local -p authy -p authy-native -p authy-wasm -p chatty -p chatty-native -p chatty-wasm -p factorio -p factorio-native -p factorio-wasm)
+packages=(-p snap-config -p snap-cli -p snap-execution -p snap-transport -p snap-store -p snap-access -p snap-document -p snap-document-local -p snap-oauth-local -p snap-model-local -p snap-http -p snap-identity -p snap-oidc -p snap-crypto -p snap-sqlite -p snap-platform-local -p testy -p testy-local -p authy -p authy-native -p authy-wasm -p chatty -p chatty-native -p chatty-wasm -p factorio -p factorio-cli -p factorio-native -p factorio-wasm)
 "${cargo_cmd[@]}" fmt "${packages[@]}" -- --check
 "${cargo_cmd[@]}" clippy "${packages[@]}" --all-targets -- -D warnings
 "${cargo_cmd[@]}" test "${packages[@]}"

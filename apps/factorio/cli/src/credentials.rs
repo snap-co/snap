@@ -65,7 +65,7 @@ impl Locked {
         }
         let mut file = options
             .open(path)
-            .with_context(|| format!("Cannot open {}. Run factory login first", path.display()))?;
+            .with_context(|| format!("Cannot open {}. Run factorio login first", path.display()))?;
         file.lock()?;
         #[cfg(unix)]
         {
@@ -148,6 +148,8 @@ impl Locked {
     }
 }
 pub fn default_path(addr: &str, token: Option<&str>) -> Result<PathBuf> {
+    // Keep the existing directory and endpoint digest across the factory -> factorio
+    // executable rename so login, counters and uncertain outcomes survive upgrades.
     let root = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))

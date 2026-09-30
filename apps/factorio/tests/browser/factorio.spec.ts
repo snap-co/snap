@@ -157,14 +157,14 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
   await page.getByRole("button",{name:"Create agent token",exact:true}).click();const token=await page.getByLabel("Agent token",{exact:true}).inputValue();expect(token.length).toBeGreaterThan(32);await page.getByRole("button",{name:"Dismiss token"}).click();
   await page.getByLabel("Account",{exact:true}).click();
   const pairedCredentials=`${dir}/paired-cli.json`;
-  const pairing=spawn(`${root}/target/debug/factory`,["login","--credentials",pairedCredentials],{env:{...process.env,FACTORIO_TOKEN:""}});
+  const pairing=spawn(`${root}/target/debug/factorio`,["login","--credentials",pairedCredentials],{env:{...process.env,FACTORIO_TOKEN:""}});
   let pairingLog="",pairingOutput="";
   pairing.stderr.on("data",data=>pairingLog+=data.toString());pairing.stdout.on("data",data=>pairingOutput+=data.toString());
   const pairingExit=new Promise<number|null>((resolve,reject)=>{pairing.once("exit",resolve);pairing.once("error",reject);});
   try {
     await expect.poll(()=>pairingLog.includes("Waiting for browser approval"),{timeout:10000}).toBe(true);
     const pairingURL=pairingLog.match(/Open (http[^\s]+)/)![1]!;
-    await page.goto(pairingURL);await expect(page.getByRole("heading",{name:"Connect factory",exact:true})).toBeVisible();
+    await page.goto(pairingURL);await expect(page.getByRole("heading",{name:"Connect Factorio CLI",exact:true})).toBeVisible();
     const code=new URL(pairingURL).pathname.split("/").at(-1)!;await expect(page.locator("code")).toHaveText(code);
     const csrf=await page.locator('input[name="csrf"]').inputValue();
     expect((await page.request.post(pairingURL,{headers:{origin:"http://foreign.invalid"},form:{csrf}})).ok()).toBe(false);
@@ -172,10 +172,10 @@ test("fixture-only human acceptance, CLI/UI records, exclusions and restart reco
     await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:"/tmp/opencode/factory-login-mobile.png",fullPage:true});
     await page.getByRole("button",{name:"Allow CLI access"}).click();await expect(page.getByRole("heading",{name:"CLI access approved"})).toBeVisible();
     expect(await pairingExit).toBe(0);const granted=JSON.parse(pairingOutput);expect(granted.logged_in).toBe(true);expect(granted.bearer).toBeUndefined();
-    const {stdout}=await exec(`${root}/target/debug/factory`,["status","--credentials",pairedCredentials],{env:{...process.env,FACTORIO_TOKEN:""}});expect(JSON.parse(stdout).config.repository).toBe(`${dir}/repo`);
+    const {stdout}=await exec(`${root}/target/debug/factorio`,["status","--credentials",pairedCredentials],{env:{...process.env,FACTORIO_TOKEN:""}});expect(JSON.parse(stdout).config.repository).toBe(`${dir}/repo`);
   } finally { if(pairing.exitCode===null){pairing.kill();await pairingExit;} }
   await page.goto(`${base}/tickets`);
-  async function cli(args:string[]){const {stdout}=await exec(`${root}/target/debug/factory`,args,{cwd:root,timeout:15000,env:{...process.env,FACTORIO_OPENCODE:`${dir}/bin/opencode`,FACTORIO_TOKEN:token,XDG_CONFIG_HOME:`${dir}/cli-config`}});return JSON.parse(stdout);}
+  async function cli(args:string[]){const {stdout}=await exec(`${root}/target/debug/factorio`,args,{cwd:root,timeout:15000,env:{...process.env,FACTORIO_OPENCODE:`${dir}/bin/opencode`,FACTORIO_TOKEN:token,XDG_CONFIG_HOME:`${dir}/cli-config`}});return JSON.parse(stdout);}
   const intake=(Object.values((await cli(["status"])).intakes) as {id:string;conversation:string}[])[0]!;
   expect((await cli(["intake","--resume",intake.id])).resumed).toBe(intake.conversation);
   const readIntake=()=>invoke(page,"factorio.intake-read",{workspace,id:intake.id},token);

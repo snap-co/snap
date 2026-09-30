@@ -845,12 +845,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "factorio-cli"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "factorio",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "snap-config",
+ "snap-document",
+ "snap-transport",
+ "snap-transport-native",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "factorio-native"
 version = "0.0.0"
 dependencies = [
  "async-stream",
  "axum",
  "factorio",
+ "factorio-cli",
  "nix",
  "rcgen",
  "serde",
@@ -894,25 +915,6 @@ dependencies = [
  "snap-document",
  "snap-transport",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "factory-cli"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "factorio",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "snap-document",
- "snap-transport",
- "snap-transport-native",
- "tempfile",
- "tokio",
- "uuid",
 ]
 
 [[package]]

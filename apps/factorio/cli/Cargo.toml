@@ -1,14 +1,11 @@
 [package]
-name = "factory-cli"
+name = "factorio-cli"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "factory"
-path = "src/main.rs"
-
 [dependencies]
+snap-config.workspace = true
 factorio = { path = ".." }
 snap-document.workspace = true
 snap-transport = { path = "../../../crates/transport" }

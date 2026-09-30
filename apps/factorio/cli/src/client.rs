@@ -69,14 +69,14 @@ impl Client {
                     drop(tcp);
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                _ => bail!("Attachment rejected: {reply:?}. Run factory login again"),
+                _ => bail!("Attachment rejected: {reply:?}. Run factorio login again"),
             }
         }
     }
     pub async fn invoke(&mut self, name: &str, input: Value) -> Result<Value> {
         ensure!(
             self.credentials.value.pending.is_none(),
-            "An earlier invocation has an unknown outcome. Run factory retry, or factory login to start a new lifetime without replay"
+            "An earlier invocation has an unknown outcome. Run factorio retry, or factorio login to start a new lifetime without replay"
         );
         let id = self.credentials.reserve()?;
         let invocation = Invocation {
@@ -120,7 +120,7 @@ impl Client {
             )?;
             ensure!(
                 list.len() == 1,
-                "Select --workspace <id>, or run factory onboard to create your first workspace"
+                "Select --workspace <id>, or run factorio onboard to create your first workspace"
             );
             self.credentials.value.workspace = list[0].id.clone();
             self.credentials.save()?;
