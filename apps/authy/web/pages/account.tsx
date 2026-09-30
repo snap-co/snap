@@ -61,13 +61,12 @@ function ProfileEditor({ client }: { client: AuthyClient }) {
             maxLength={2000}
             onChange={(e) => setBio(e.target.value)}
           />
-          <p className="muted">
-            {snapshot.pending > 0 ? "Projected revision " : "Saved revision "}{server.revision}
-            {snapshot.pending > 0 ? ` · ${snapshot.pending} save(s) in flight` : ""}
+          <p className="muted" role="status">
+            {snapshot.saving ? "Saving revision " : "Saved revision "}{server.revision}
           </p>
           <div className="actions">
             <button type="submit" disabled={snapshot.saving || snapshot.connection !== "connected"}>
-              {snapshot.saving ? "Saving…" : "Save profile"}
+              Save profile
             </button>
             <button
               type="button"
@@ -88,7 +87,6 @@ function ProfileEditor({ client }: { client: AuthyClient }) {
             : "Connect to load your profile."}
         </p>
       )}
-      {snapshot.saving && <p role="status">Saving your profile…</p>}
     </section>
   );
 }
