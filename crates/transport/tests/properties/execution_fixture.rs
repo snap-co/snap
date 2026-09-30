@@ -1,6 +1,6 @@
 //! A tiny application owned by execution tests. Every attempt mutates both its
 //! balance and history before asking for reads. It retains no invocation state.
-use snap_execution::*;
+use snap_transport::execution::*;
 
 pub struct Ledger {
     pub factor: i64,

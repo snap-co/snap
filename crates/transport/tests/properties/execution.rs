@@ -1,8 +1,9 @@
+#[path = "execution_fixture.rs"]
 mod fixture;
 
 use fixture::{Ledger, call, state};
 use hegel::{TestCase, generators as gs};
-use snap_execution::*;
+use snap_transport::execution::*;
 use std::collections::BTreeMap;
 
 fn assert_records(host: &Executor<Ledger>, histories: &[Vec<i64>; 3]) {

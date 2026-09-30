@@ -12,7 +12,7 @@ fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
     let mut host = Development::new(
         Platform::new(
             Server::new(testy::TestAuthority, Config::default()),
-            snap_execution::Executor::new(testy::App::default(), 16).unwrap(),
+            snap_transport::execution::Executor::new(testy::App::default(), 16).unwrap(),
         ),
         |_, _| Ok(json!(1000)),
         |name| match name {

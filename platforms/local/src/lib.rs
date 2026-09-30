@@ -1,5 +1,4 @@
-//! Application-owned local platform. Transport and execution are selected here;
-//! neither portable capability depends on the other. Hosts own all IO and state.
+//! Physical local adapters for portable Transport execution. Hosts own IO.
 #[cfg(feature = "web")]
 pub mod development;
 pub mod memory;
@@ -8,7 +7,8 @@ pub mod native;
 #[cfg(feature = "web")]
 pub mod web;
 
-use snap_execution::{Call, Executor, Program, Scope, Ticket};
+use snap_transport::execution;
+use snap_transport::execution::{Call, Executor, Program, Scope, Ticket};
 use snap_transport::{
     Command, Error, Event, Response,
     server::{Attachment, Authority, ConnectionId, Dispatch, Server},
@@ -245,7 +245,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
         self.transport.tick(0);
         self.retire();
         Some(match self.execution.step()? {
-            snap_execution::Event::Reserved(ticket) => {
+            execution::Event::Reserved(ticket) => {
                 let (invocation, bearer) =
                     self.queued_requests.remove(&ticket).expect("owned request");
                 let prepared = (self.requests.as_mut().expect("configured requests").prepare)(
@@ -275,7 +275,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
                     private: true,
                 }
             }
-            snap_execution::Event::Accepted(ticket) => {
+            execution::Event::Accepted(ticket) => {
                 if let Some(connection) = self.connections.get(&ticket) {
                     self.transport
                         .retain(*connection)
@@ -290,8 +290,8 @@ impl<P: Program, R: Authority> Platform<P, R> {
                     private: false,
                 }
             }
-            snap_execution::Event::Need { ticket, key } => Observation::Need { ticket, key },
-            snap_execution::Event::Completed { ticket, outcome } => {
+            execution::Event::Need { ticket, key } => Observation::Need { ticket, key },
+            execution::Event::Completed { ticket, outcome } => {
                 let id = self.invocations.remove(&ticket).expect("owned invocation");
                 let accepted = self.accepted.remove(&ticket);
                 if let Some(connection) = self.connections.remove(&ticket)
@@ -317,8 +317,8 @@ impl<P: Program, R: Authority> Platform<P, R> {
         &mut self,
         ticket: Ticket,
         key: &str,
-        result: snap_execution::Outcome,
-    ) -> Result<(), snap_execution::Error> {
+        result: execution::Outcome,
+    ) -> Result<(), execution::Error> {
         self.execution.supply(ticket, key, result)
     }
     pub fn pending_call(&self, ticket: Ticket) -> Option<&Call> {
@@ -327,22 +327,19 @@ impl<P: Program, R: Authority> Platform<P, R> {
     pub fn pause(&mut self) {
         self.execution.pause();
     }
-    pub fn inspect(&self) -> snap_execution::Inspection<'_> {
+    pub fn inspect(&self) -> execution::Inspection<'_> {
         self.execution.inspect()
     }
-    pub fn snapshot(&self) -> Result<snap_execution::Snapshot, snap_execution::Error> {
+    pub fn snapshot(&self) -> Result<execution::Snapshot, execution::Error> {
         self.execution.snapshot()
     }
-    pub fn restore(
-        &mut self,
-        snapshot: &snap_execution::Snapshot,
-    ) -> Result<(), snap_execution::Error> {
+    pub fn restore(&mut self, snapshot: &execution::Snapshot) -> Result<(), execution::Error> {
         self.execution.restore(snapshot)
     }
     pub fn resume(&mut self) {
         self.execution.resume();
     }
-    pub fn replace(&mut self, program: P) -> Result<(), snap_execution::Error> {
+    pub fn replace(&mut self, program: P) -> Result<(), execution::Error> {
         self.execution.replace(program)
     }
     pub fn lost(&mut self, peer: &mut Peer, now: u64) {
@@ -352,17 +349,15 @@ impl<P: Program, R: Authority> Platform<P, R> {
         self.retire();
     }
 }
-pub fn transport_error(error: snap_execution::Error) -> Error {
+pub fn transport_error(error: execution::Error) -> Error {
     match error {
-        snap_execution::Error::UnknownOperation => Error::UnknownOperation,
-        snap_execution::Error::IdentityRequired => Error::IdentityRequired,
-        snap_execution::Error::InvalidInput => Error::InvalidInput,
-        snap_execution::Error::InvalidOutput | snap_execution::Error::InvalidState => {
-            Error::InvalidOutput
-        }
-        snap_execution::Error::Unavailable => Error::Unavailable,
-        snap_execution::Error::Protocol => Error::Protocol,
-        snap_execution::Error::Capacity => Error::Capacity,
-        snap_execution::Error::Application(value) => Error::Application(value),
+        execution::Error::UnknownOperation => Error::UnknownOperation,
+        execution::Error::IdentityRequired => Error::IdentityRequired,
+        execution::Error::InvalidInput => Error::InvalidInput,
+        execution::Error::InvalidOutput | execution::Error::InvalidState => Error::InvalidOutput,
+        execution::Error::Unavailable => Error::Unavailable,
+        execution::Error::Protocol => Error::Protocol,
+        execution::Error::Capacity => Error::Capacity,
+        execution::Error::Application(value) => Error::Application(value),
     }
 }

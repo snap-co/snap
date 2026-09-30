@@ -1,6 +1,7 @@
-use crate::{Admission, Attempt, Call, Error, Inputs, Outcome, Program, Value, View, WorkingSet};
+use super::{Admission, Attempt, Call, Error, Inputs, Outcome, Program, Value, View, WorkingSet};
+use crate::dispatch::Queue;
 use alloc::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     string::String,
     vec::Vec,
 };
@@ -70,6 +71,7 @@ struct Job {
     accepted: bool,
     waiting: Option<String>,
     failure: Option<Error>,
+    definition: Option<usize>,
 }
 enum Queued {
     Run(Job),
@@ -85,7 +87,7 @@ pub struct Executor<P: Program> {
     program: P,
     states: BTreeMap<Scope, Value>,
     closing: BTreeSet<Scope>,
-    queue: VecDeque<Queued>,
+    queue: Queue<Queued>,
     active: Option<Job>,
     reserved: Option<Ticket>,
     sequence: u64,
@@ -108,7 +110,7 @@ impl<P: Program> Executor<P> {
             program,
             states: BTreeMap::new(),
             closing: BTreeSet::new(),
-            queue: VecDeque::new(),
+            queue: Queue::default(),
             active: None,
             reserved: None,
             sequence: 0,
@@ -171,7 +173,7 @@ impl<P: Program> Executor<P> {
         if let Some(job) = &mut self.active {
             fail(job);
         }
-        for entry in &mut self.queue {
+        for entry in self.queue.iter_mut() {
             if let Queued::Run(job) = entry {
                 fail(job);
             }
@@ -220,6 +222,11 @@ impl<P: Program> Executor<P> {
         self.queue.push_back(Queued::Run(Job {
             ticket,
             scope,
+            definition: self
+                .program
+                .operations()
+                .iter()
+                .position(|op| op.key == call.operation),
             call,
             inputs: BTreeMap::new(),
             accepted: false,
@@ -252,6 +259,7 @@ impl<P: Program> Executor<P> {
             return Err(Error::Protocol);
         }
         self.reserved = None;
+        self.queue.finish();
         Ok(())
     }
     /// Resolves exactly the outstanding read. Failure ends the operation without
@@ -300,11 +308,12 @@ impl<P: Program> Executor<P> {
             });
         }
         while self.active.is_none() {
-            match self.queue.pop_front()? {
+            match self.queue.acquire()? {
                 Queued::Run(job) => self.active = Some(job),
                 Queued::Release(scope) => {
                     self.states.remove(&scope);
                     self.closing.remove(&scope);
+                    self.queue.finish();
                 }
                 Queued::Reserved(ticket) => {
                     self.reserved = Some(ticket);
@@ -320,14 +329,10 @@ impl<P: Program> Executor<P> {
         if let Some(error) = &job.failure {
             return Some(self.complete(Err(self.checked_error(error.clone()))));
         }
-        let Some(op) = self
-            .program
-            .operations()
-            .iter()
-            .find(|op| op.key == job.call.operation)
-        else {
+        let Some(definition) = job.definition else {
             return Some(self.complete(Err(Error::UnknownOperation)));
         };
+        let op = &self.program.operations()[definition];
         let state = job
             .scope
             .map(|scope| &self.states[&scope])
@@ -388,12 +393,7 @@ impl<P: Program> Executor<P> {
     fn checked_error(&self, error: Error) -> Error {
         if let Error::Application(value) = &error {
             let job = self.active.as_ref().unwrap();
-            let op = self
-                .program
-                .operations()
-                .iter()
-                .find(|op| op.key == job.call.operation)
-                .unwrap();
+            let op = &self.program.operations()[job.definition.expect("selected operation")];
             if !(op.error)(value) {
                 return Error::InvalidOutput;
             }
@@ -417,6 +417,7 @@ impl<P: Program> Executor<P> {
         }
     }
     fn complete(&mut self, outcome: Outcome) -> Event {
+        self.queue.finish();
         Event::Completed {
             ticket: self.active.take().unwrap().ticket,
             outcome,
@@ -431,7 +432,7 @@ impl<P: Program> Executor<P> {
         self.paused = false;
     }
     pub fn idle(&self) -> bool {
-        self.active.is_none() && self.reserved.is_none() && self.queue.is_empty()
+        self.queue.idle()
     }
     /// Code-only replacement at a drained gate. A rejected replacement preserves
     /// the old program and all state. The version is an application compatibility

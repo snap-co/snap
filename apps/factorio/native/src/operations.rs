@@ -1,9 +1,10 @@
 //! Guarded application operations. Handlers stage data only; controllers own IO.
 use factorio::{Command, documents as graph};
 use serde_json::{Value, json};
-use snap_document_local::{Host, Request};
+use snap_document_local::Host;
 use snap_oidc::relying_party as rp;
 use snap_store::{Error, Transaction};
+use snap_transport::operation::Definition as Request;
 
 /// Local login credentials last independently of short-lived upstream access
 /// tokens, but never extend the backing OAuth session or its refresh grant.
@@ -118,7 +119,7 @@ pub fn register(
         host = host.with_preconnection_request(Request {
             name: name.into(), identity_required: false,
             input: |v| v.is_object(), output: |v| v.is_object() || v.is_null(), progress: |_| false,
-            guard: |_,_,_,_|Ok(()),
+            guards: &[], tables: &["factorio.cli_login", "factorio.cli", "oidc_rp.sessions"],
             handler: Box::new(move |tx, call, _, _| {
                 if name == "factorio.login-start" {
                     let rows = tx.find("factorio.cli_login", "primary", &[])?;
@@ -146,45 +147,43 @@ pub fn register(
                     Ok(json!({"bearer":token,"expires":expires,"owner":s.owner}))
                 }
             }),
-        }, &["factorio.cli_login", "factorio.cli", "oidc_rp.sessions"]);
+        });
     }
-    host = host.with_preconnection_request(
-        Request {
-            name: "factorio.login".into(),
-            identity_required: true,
-            input: |v| v.is_null(),
-            output: |v| v["bearer"].is_string() && v["expires"].is_i64() && v["owner"].is_string(),
-            progress: |_| false,
-            guard: |tx, _, _, bearer| {
-                // Only an ordinary agent token may delegate CLI authority. A CLI
-                // credential cannot delegate or extend its backing OAuth grant.
-                let digest = rp::digest(bearer.ok_or(Error::NotFound)?);
-                tx.get("factorio.agents", &[digest.into()])?
-                    .ok_or(Error::NotFound)?;
-                Ok(())
-            },
-            handler: Box::new(|tx, _, _, bearer| {
-                let (s, human) = session(tx, bearer.ok_or(Error::NotFound)?)?;
-                if human {
-                    return Err(Error::NotFound);
-                }
-                let token = crate::random();
-                let expires = (crate::now() + CLI_LOGIN_SECONDS).min(s.expires);
-                tx.insert(
-                    "factorio.cli",
-                    [
-                        ("id".into(), rp::digest(&token).into()),
-                        ("session".into(), s.id.into()),
-                        ("expires".into(), expires.into()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                )?;
-                Ok(json!({"bearer":token,"expires":expires,"owner":s.owner}))
-            }),
-        },
-        &["factorio.agents", "factorio.cli", "oidc_rp.sessions"],
-    );
+    host = host.with_preconnection_request(Request {
+        name: "factorio.login".into(),
+        identity_required: true,
+        input: |v| v.is_null(),
+        output: |v| v["bearer"].is_string() && v["expires"].is_i64() && v["owner"].is_string(),
+        progress: |_| false,
+        tables: &["factorio.agents", "factorio.cli", "oidc_rp.sessions"],
+        guards: &[|tx, _, _, bearer| {
+            // Only an ordinary agent token may delegate CLI authority. A CLI
+            // credential cannot delegate or extend its backing OAuth grant.
+            let digest = rp::digest(bearer.ok_or(Error::NotFound)?);
+            tx.get("factorio.agents", &[digest.into()])?
+                .ok_or(Error::NotFound)?;
+            Ok(())
+        }],
+        handler: Box::new(|tx, _, _, bearer| {
+            let (s, human) = session(tx, bearer.ok_or(Error::NotFound)?)?;
+            if human {
+                return Err(Error::NotFound);
+            }
+            let token = crate::random();
+            let expires = (crate::now() + CLI_LOGIN_SECONDS).min(s.expires);
+            tx.insert(
+                "factorio.cli",
+                [
+                    ("id".into(), rp::digest(&token).into()),
+                    ("session".into(), s.id.into()),
+                    ("expires".into(), expires.into()),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
+            Ok(json!({"bearer":token,"expires":expires,"owner":s.owner}))
+        }),
+    });
     for name in [
         "factorio.repositories",
         "factorio.identity",
@@ -215,11 +214,12 @@ pub fn register(
                 "factorio.intake-read" => |v| serde_json::from_value::<factorio::intake::Intake>(v["intake"].clone()).is_ok() && v["tickets"].is_object() && v["modules"].is_object(),
                 _ => |v| serde_json::from_value::<factorio::intake::Intake>(v.clone()).is_ok(),
             }, progress: |_| false,
-            guard: match name {
-                "factorio.repositories" | "factorio.workspaces" | "factorio.onboard" | "factorio.identity" | "factorio.logout" => |_, actor, _, _| actor.map(|_| ()).ok_or(Error::NotFound),
-                "factorio.agent-token" => human,
-                "factorio.command" => command_guard,
-                _ => owner,
+            tables: &[],
+            guards: match name {
+                "factorio.repositories" | "factorio.workspaces" | "factorio.onboard" | "factorio.identity" | "factorio.logout" => &[],
+                "factorio.agent-token" => &[human],
+                "factorio.command" => &[command_guard],
+                _ => &[owner],
             },
             handler: Box::new(move |tx, invocation, actor, bearer| {
                 let actor = actor.ok_or(Error::NotFound)?;

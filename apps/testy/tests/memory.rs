@@ -14,7 +14,7 @@ fn platform() -> Memory<testy::App, testy::TestAuthority> {
                 capacity: 8,
             },
         ),
-        snap_execution::Executor::new(testy::App::default(), 16).unwrap(),
+        snap_transport::execution::Executor::new(testy::App::default(), 16).unwrap(),
     ))
 }
 fn fixture_client<C: Channel>(channel: C) -> testy::Client<C> {
@@ -181,7 +181,7 @@ fn sdk_waits_behind_the_application_gate_and_retries_without_duplicate_history()
     ));
     assert_eq!(
         platform.replace(testy::App::default()),
-        Err(snap_execution::Error::Unavailable)
+        Err(snap_transport::execution::Error::Unavailable)
     );
     platform.supply(ticket, &key, Ok(json!(100))).unwrap();
     assert_eq!(block_on(pending).unwrap(), 52);

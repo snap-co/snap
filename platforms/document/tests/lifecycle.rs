@@ -5,29 +5,161 @@ use snap_document::{
     Definition, Intent, Manifest, Mutation, Registry, ServerMessage, Snapshot, server::Document,
 };
 use snap_document_local::Host;
+use snap_transport::operation::Definition as Request;
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
 use std::sync::Arc;
 
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
 
+thread_local! {
+    static ADMISSION: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[test]
+fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution() {
+    for rejected in [None, Some(0), Some(1), Some(2)] {
+        ADMISSION.with(|trace| trace.borrow_mut().clear());
+        let mut host = fixture().with_request(Request {
+            name: "fixture.guarded".into(),
+            identity_required: true,
+            input: |v| v.is_object(),
+            output: |v| v.is_i64(),
+            progress: |_| false,
+            guards: &[
+                |_, _, v, _| guard_visit(0, v),
+                |_, _, v, _| guard_visit(1, v),
+                |_, _, v, _| guard_visit(2, v),
+            ],
+            tables: &[],
+            handler: Box::new(|tx, _, _, _| {
+                let doc = Document::new(registry(), access());
+                let before = doc.retained(tx, ID)?;
+                doc.observe(tx, ID, json!(before.value.as_i64().unwrap() + 1))?;
+                Ok(json!(1))
+            }),
+        });
+        let (peer, _) = connect(&mut host, "alice", "guards", 0);
+        host.submit(
+            peer,
+            Command::Invoke(Invocation {
+                id: 1,
+                operation: "fixture.guarded".into(),
+                input: json!({"reject": rejected}),
+            }),
+            0,
+        )
+        .unwrap();
+        let admission = host.drain(peer).unwrap();
+        if let Some(index) = rejected {
+            assert!(matches!(admission.as_slice(), [Response::Events(events)]
+                if matches!(events.as_slice(), [Event::Completed { outcome: Err(_), .. }])));
+            assert!(!host.step());
+            assert_eq!(
+                ADMISSION.with(|trace| trace.borrow().clone()),
+                (0..=index).collect::<Vec<_>>()
+            );
+        } else {
+            assert_eq!(
+                admission,
+                vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+            );
+            assert!(host.step());
+            assert!(host.drain(peer).unwrap().iter().any(|response|
+                matches!(response, Response::Events(events)
+                    if matches!(events.as_slice(), [Event::Completed { outcome: Ok(value), .. }] if value == &json!(1)))));
+            assert_eq!(
+                ADMISSION.with(|trace| trace.borrow().clone()),
+                vec![0, 1, 2]
+            );
+        }
+        let committed = host
+            .transact("inspect counter", |tx| {
+                Document::new(registry(), access()).retained(tx, ID)
+            })
+            .unwrap();
+        assert_eq!(committed.value, json!(i64::from(rejected.is_none())));
+    }
+}
+
+fn guard_visit(index: usize, input: &serde_json::Value) -> Result<(), snap_store::Error> {
+    ADMISSION.with(|trace| trace.borrow_mut().push(index));
+    if input["reject"].as_u64() == Some(index as u64) {
+        Err(snap_store::Error::Invalid)
+    } else {
+        Ok(())
+    }
+}
+
+#[test]
+fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
+    let mut host = fixture().with_request(Request {
+        name: "fixture.invalid-output".into(),
+        identity_required: true,
+        input: |v| v.is_null(),
+        output: |v| v.is_i64(),
+        progress: |_| false,
+        guards: &[],
+        tables: &[],
+        handler: Box::new(|tx, _, _, _| {
+            Document::new(registry(), access()).observe(tx, ID, json!(99))?;
+            Ok(json!("not the declared output"))
+        }),
+    });
+    let (peer, _) = connect(&mut host, "alice", "invalid-output", 0);
+    host.submit(
+        peer,
+        Command::Invoke(Invocation {
+            id: 1,
+            operation: "fixture.invalid-output".into(),
+            input: json!(null),
+        }),
+        0,
+    )
+    .unwrap();
+    submit(&mut host, peer, 2, intent(1, 1));
+    assert_eq!(
+        host.drain(peer).unwrap(),
+        vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+    );
+    assert!(host.step());
+    let terminal: Vec<_> = host
+        .drain(peer)
+        .unwrap()
+        .into_iter()
+        .filter(|response| matches!(response, Response::Events(_)))
+        .collect();
+    assert_eq!(
+        terminal,
+        vec![Response::Events(vec![Event::Completed {
+            id: 1,
+            outcome: Err(snap_transport::Error::InvalidOutput),
+        }])]
+    );
+    assert!(host.step());
+    let committed = host
+        .transact("inspect rollback", |tx| {
+            Document::new(registry(), access()).retained(tx, ID)
+        })
+        .unwrap();
+    assert_eq!(committed.value, json!(1));
+}
+
 #[test]
 fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
-    let mut host = fixture().with_http_request(
-        snap_document_local::Request {
-            name: "fixture.fetch".into(),
-            identity_required: false,
-            input: |value| value.is_null(),
-            output: |value| value.is_i64(),
-            progress: |_| false,
-            guard: |_, _, _, _| Ok(()),
-            handler: Box::new(|tx, _, _, _| {
-                Ok(Document::new(registry(), access())
-                    .read(tx, ID, Some("alice"))?
-                    .value)
-            }),
-        },
-        &[snap_document::server::TABLES[0]],
-    );
+    let mut host = fixture().with_http_request(Request {
+        name: "fixture.fetch".into(),
+        identity_required: false,
+        input: |value| value.is_null(),
+        output: |value| value.is_i64(),
+        progress: |_| false,
+        guards: &[],
+        tables: &[snap_document::server::TABLES[0]],
+        handler: Box::new(|tx, _, _, _| {
+            Ok(Document::new(registry(), access())
+                .read(tx, ID, Some("alice"))?
+                .value)
+        }),
+    });
     let (peer, _) = connect(&mut host, "alice", "http-fifo", 0);
     submit(&mut host, peer, 1, intent(1, 7));
     let invocation = Invocation {

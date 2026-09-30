@@ -12,41 +12,16 @@ use snap_document::{
 use snap_store::{Backend, Store, Transaction};
 use snap_transport::server::{Attachment, Authority, Config, ConnectionId, Server};
 use snap_transport::{Command, Error, Event, Invocation, Response, Value, json};
+use snap_transport::{
+    dispatch::Queue,
+    operation::{Definition, Registry as Operations, Selection},
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Runs inside the SAME Store transaction as each protected document operation.
 pub type Authenticate =
     Arc<dyn Fn(&mut Transaction<'_>, &str) -> Result<String, snap_store::Error> + Send + Sync>;
-/// App-owned handlers compose module calls in the supplied transaction. The
-/// identity is captured at admission, never supplied by the wire caller.
-/// The last argument is its private credential, for session-scoped operations.
-/// Do not log or return it, or reauthorize accepted work against it.
-pub type Handler = Box<
-    dyn FnMut(
-            &mut Transaction<'_>,
-            &Invocation,
-            Option<&str>,
-            Option<&str>,
-        ) -> Result<Value, snap_store::Error>
-        + Send,
->;
-
-/// The credential is private host context, used only for session-specific policy.
-pub type Guard =
-    fn(&mut Transaction<'_>, Option<&str>, &Value, Option<&str>) -> Result<(), snap_store::Error>;
-pub type Validator = fn(&Value) -> bool;
-
-pub struct Request {
-    pub name: String,
-    pub identity_required: bool,
-    pub input: Validator,
-    pub output: Validator,
-    pub progress: Validator,
-    pub guard: Guard,
-    pub handler: Handler,
-}
-
 struct StoreAuthority<B> {
     store: Arc<Mutex<Store<B>>>,
     authenticate: Authenticate,
@@ -135,7 +110,7 @@ impl Output {
 #[derive(Clone, PartialEq)]
 enum Operation {
     Document(ClientMessage),
-    Request(Invocation),
+    Request(Invocation, Selection),
 }
 
 struct Call {
@@ -166,11 +141,11 @@ pub struct Host<B: Backend> {
     document: Document,
     transport: Server<StoreAuthority<B>>,
     authenticate: Authenticate,
-    requests: BTreeMap<String, Request>,
-    http_requests: BTreeMap<String, &'static [&'static str]>,
+    requests: Operations,
+    http_requests: BTreeSet<Selection>,
     peers: BTreeMap<u64, Peer>,
     lifetimes: BTreeSet<u64>,
-    queue: VecDeque<Work>,
+    queue: Queue<Work>,
     active: Option<(Work, Prepared)>,
     controllers: BTreeMap<String, Controller<B>>,
     reconcile: BTreeMap<String, Snapshot>,
@@ -227,11 +202,11 @@ impl<B: Backend> Host<B> {
             document,
             transport: Server::new(authority, config).with_live_authority(),
             authenticate,
-            requests: BTreeMap::new(),
-            http_requests: BTreeMap::new(),
+            requests: Operations::default(),
+            http_requests: BTreeSet::new(),
             peers: BTreeMap::new(),
             lifetimes: BTreeSet::new(),
-            queue: VecDeque::new(),
+            queue: Queue::default(),
             active: None,
             controllers: BTreeMap::new(),
             reconcile: BTreeMap::new(),
@@ -244,37 +219,46 @@ impl<B: Backend> Host<B> {
         }
     }
 
-    pub fn with_request(mut self, request: Request) -> Self {
+    pub fn with_request(mut self, request: Definition) -> Self {
         assert!(
-            self.requests
-                .insert(request.name.clone(), request)
-                .is_none(),
-            "duplicate operation"
+            self.peers.is_empty() && self.queue.idle(),
+            "assemble operations before accepting traffic"
         );
+        assert!(
+            !matches!(
+                request.name.as_str(),
+                "document.mutate" | "document.manifest"
+            ),
+            "reserved document operation"
+        );
+        self.requests
+            .register(request)
+            .expect("valid, unique operation name");
         self
     }
 
     /// A pre-connection operation projected over HTTP, never over a WebSocket.
     /// It uses the same validation, admission, FIFO and durable completion as
     /// connected operations. The HTTP carrier owns cookie projection.
-    pub fn with_http_request(mut self, request: Request, tables: &'static [&'static str]) -> Self {
-        self.http_requests.insert(request.name.clone(), tables);
-        self.with_request(request)
+    pub fn with_http_request(mut self, request: Definition) -> Self {
+        let name = request.name.clone();
+        self = self.with_request(request);
+        self.http_requests
+            .insert(self.requests.resolve(&name).unwrap());
+        self
     }
 
     /// Sensitive acquisition runs as one connectionless exchange. It cannot be
     /// invoked on a retained attachment, and its inputs/results are removed after
     /// completion. HTTP cookie projection is separate from this dispatch policy.
-    pub fn with_preconnection_request(
-        self,
-        request: Request,
-        tables: &'static [&'static str],
-    ) -> Self {
-        self.with_http_request(request, tables)
+    pub fn with_preconnection_request(self, request: Definition) -> Self {
+        self.with_http_request(request)
     }
 
     pub fn is_preconnection_request(&self, name: &str) -> bool {
-        self.http_requests.contains_key(name)
+        self.requests
+            .resolve(name)
+            .is_ok_and(|selection| self.http_requests.contains(&selection))
     }
     pub fn retention_ms(&self) -> u64 {
         self.retention_ms
@@ -316,10 +300,11 @@ impl<B: Backend> Host<B> {
         invocation: Invocation,
         bearer: Option<String>,
     ) -> snap_transport::Outcome {
-        if !self.http_requests.contains_key(&invocation.operation) {
+        let selection = self.requests.resolve(&invocation.operation)?;
+        if !self.http_requests.contains(&selection) {
             return Err(Error::UnknownOperation);
         }
-        let request = &self.requests[&invocation.operation];
+        let request = self.requests.get(selection);
         if !(request.input)(&invocation.input) {
             return Err(Error::InvalidInput);
         }
@@ -336,7 +321,7 @@ impl<B: Backend> Host<B> {
                 wire_id: id,
                 bearer,
                 actor: None,
-                operation: Operation::Request(invocation),
+                operation: Operation::Request(invocation, selection),
             })?;
             loop {
                 while let Some(response) = output.pop_front() {
@@ -619,9 +604,13 @@ impl<B: Backend> Host<B> {
         if !self.peers.contains_key(&peer_id) {
             return Err(Error::StaleConnection);
         }
-        if let Command::Invoke(invocation) | Command::Request { invocation, .. } = &command
-            && self.http_requests.contains_key(&invocation.operation)
-        {
+        let selection = match &command {
+            Command::Invoke(invocation) | Command::Request { invocation, .. } => {
+                self.requests.resolve(&invocation.operation).ok()
+            }
+            _ => None,
+        };
+        if selection.is_some_and(|selection| self.http_requests.contains(&selection)) {
             return Err(Error::UnknownOperation);
         }
         let response = match command {
@@ -682,12 +671,13 @@ impl<B: Backend> Host<B> {
                         serde_json::from_value(invocation.input)
                             .map_err(|_| Error::InvalidInput)?,
                     )),
-                    name => {
-                        let request = self.requests.get(name).ok_or(Error::UnknownOperation)?;
+                    _ => {
+                        let selection = selection.ok_or(Error::UnknownOperation)?;
+                        let request = self.requests.get(selection);
                         if !(request.input)(&invocation.input) {
                             return Err(Error::InvalidInput);
                         }
-                        Operation::Request(invocation.clone())
+                        Operation::Request(invocation.clone(), selection)
                     }
                 };
                 let id = invocation.id;
@@ -706,10 +696,8 @@ impl<B: Backend> Host<B> {
                 if self.queue.len() >= 1024 {
                     return Err(Error::Capacity);
                 }
-                let request = self
-                    .requests
-                    .get(&invocation.operation)
-                    .ok_or(Error::UnknownOperation)?;
+                let selection = selection.ok_or(Error::UnknownOperation)?;
+                let request = self.requests.get(selection);
                 if !(request.input)(&invocation.input) {
                     return Err(Error::InvalidInput);
                 }
@@ -720,7 +708,7 @@ impl<B: Backend> Host<B> {
                     wire_id: id,
                     bearer,
                     actor: None,
-                    operation: Operation::Request(invocation),
+                    operation: Operation::Request(invocation, selection),
                 })?;
                 self.admit_next();
                 return Ok(());
@@ -824,16 +812,15 @@ impl<B: Backend> Host<B> {
 
     fn admit_next(&mut self) {
         self.apply_carrier_controls();
-        if self.active.is_some() {
+        if self.queue.busy() {
             return;
         }
-        while let Some(mut work) = self.queue.pop_front() {
-            // Explicit host residency declaration for pre-connection operations,
-            // loaded once at their FIFO turn, before read-only admission. This is
+        while let Some(mut work) = self.queue.acquire() {
+            // The portable definition declares residency for every application
+            // operation, loaded at its FIFO turn before read-only admission. This is
             // not an implicit StoreMiss retry or a second mutation path.
-            if let Operation::Request(invocation) = &work.operation
-                && let Some(tables) = self.http_requests.get(&invocation.operation)
-            {
+            if let Operation::Request(_, selection) = &work.operation {
+                let tables = self.requests.get(*selection).tables;
                 let loaded = tables
                     .iter()
                     .try_for_each(|table| self.store.lock().unwrap().load(table));
@@ -845,6 +832,7 @@ impl<B: Backend> Host<B> {
                             outcome: Err(storage_error(error)),
                         },
                     );
+                    self.queue.finish();
                     continue;
                 }
             }
@@ -886,12 +874,12 @@ impl<B: Backend> Host<B> {
                         Operation::Document(ClientMessage::Manifest(manifest)) => {
                             Ok(Ok(Prepared::Manifest(manifest.clone())))
                         }
-                        Operation::Request(invocation) => {
-                            let request = &self.requests[&invocation.operation];
+                        Operation::Request(invocation, selection) => {
+                            let request = self.requests.get(*selection);
                             if request.identity_required && actor.is_none() {
                                 return Ok(Err(Error::IdentityRequired));
                             }
-                            (request.guard)(
+                            request.admit(
                                 tx,
                                 actor.as_deref(),
                                 &invocation.input,
@@ -915,6 +903,7 @@ impl<B: Backend> Host<B> {
                                 outcome: Err(error),
                             },
                         );
+                        self.queue.finish();
                         continue;
                     }
                     self.respond(&work, Event::Accepted { id: work.wire_id });
@@ -928,13 +917,16 @@ impl<B: Backend> Host<B> {
                     self.active = Some((work, prepared));
                     return;
                 }
-                Err(error) => self.respond(
-                    &work,
-                    Event::Completed {
-                        id: work.wire_id,
-                        outcome: Err(error),
-                    },
-                ),
+                Err(error) => {
+                    self.respond(
+                        &work,
+                        Event::Completed {
+                            id: work.wire_id,
+                            outcome: Err(error),
+                        },
+                    );
+                    self.queue.finish();
+                }
             }
         }
     }
@@ -949,22 +941,22 @@ impl<B: Backend> Host<B> {
         let mut replication = None;
         let mut changes = Vec::new();
         let outcome = match &work.operation {
-            Operation::Request(invocation) => {
-                let request = self
-                    .requests
-                    .get_mut(&invocation.operation)
-                    .expect("queued configured request");
+            Operation::Request(invocation, selection) => {
+                let output = self.requests.get(*selection).output;
+                let handler = self.requests.handler(*selection);
+                let mut invalid_output = false;
                 self.store
                     .lock()
                     .unwrap()
                     .run("application.request", |tx| {
-                        let value = (request.handler)(
+                        let value = handler(
                             tx,
                             invocation,
                             work.actor.as_deref(),
                             work.bearer.as_deref(),
                         )?;
-                        if !(request.output)(&value) {
+                        if !output(&value) {
+                            invalid_output = true;
                             return Err(snap_store::Error::Invalid);
                         }
                         Ok(value)
@@ -974,7 +966,10 @@ impl<B: Backend> Host<B> {
                         value.value
                     })
                     .map_err(|error| {
-                        if self.http_requests.contains_key(&invocation.operation) {
+                        if invalid_output {
+                            return Error::InvalidOutput;
+                        }
+                        if self.http_requests.contains(selection) {
                             match error {
                                 snap_store::Error::Invalid => Error::InvalidInput,
                                 snap_store::Error::Constraint => {
@@ -1075,6 +1070,7 @@ impl<B: Backend> Host<B> {
                 outcome,
             },
         );
+        self.queue.finish();
         true
     }
 

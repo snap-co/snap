@@ -1,5 +1,5 @@
 use crate::{Calculator, Entry, start_output};
-use snap_execution::{
+use snap_transport::execution::{
     Admission, Attempt, Call, Error, Operation, Program, Stop, Value, View, WorkingSet, json,
 };
 

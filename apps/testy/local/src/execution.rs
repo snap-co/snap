@@ -1,5 +1,5 @@
 //! Run with: cargo run -p testy-local --bin testy-execution-demo
-use snap_execution::{Call, Event, Executor, Scope, Value, json};
+use snap_transport::execution::{Call, Event, Executor, Scope, Value, json};
 
 fn call(operation: &str, input: Value) -> Call {
     Call {

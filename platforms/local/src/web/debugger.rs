@@ -14,7 +14,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use snap_execution::Program;
+use snap_transport::execution::Program;
 use snap_transport::{Value, json, server::Authority};
 use std::time::Duration;
 

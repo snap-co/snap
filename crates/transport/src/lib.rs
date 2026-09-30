@@ -5,6 +5,9 @@ extern crate alloc;
 
 pub mod binary;
 pub mod client;
+pub mod dispatch;
+pub mod execution;
+pub mod operation;
 pub mod server;
 
 use alloc::{string::String, vec::Vec};

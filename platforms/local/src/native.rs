@@ -1,7 +1,8 @@
 //! Native event-loop adapter. The executable owns Tokio and its LocalSet. This
 //! baseline uses length-delimited JSON over TCP; deployments supply secure IO.
 use crate::{Observation, Peer, Platform, Submission};
-use snap_execution::{Call, Program};
+use snap_transport::execution;
+use snap_transport::execution::{Call, Program};
 use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
 use std::{cell::RefCell, io, rc::Rc, time::Instant};
 use tokio::{
@@ -45,7 +46,7 @@ pub async fn serve<P: Program + 'static, R: Authority + 'static>(
     listener: TcpListener,
     platform: Platform<P, R>,
     mut shutdown: watch::Receiver<bool>,
-    reads: impl Fn(&Call, &str) -> snap_execution::Outcome + 'static,
+    reads: impl Fn(&Call, &str) -> execution::Outcome + 'static,
 ) -> io::Result<()> {
     let platform = Rc::new(RefCell::new(platform));
     let reads: Reads = Rc::new(reads);
@@ -83,7 +84,7 @@ pub async fn serve<P: Program + 'static, R: Authority + 'static>(
     result
 }
 
-type Reads = Rc<dyn Fn(&Call, &str) -> snap_execution::Outcome>;
+type Reads = Rc<dyn Fn(&Call, &str) -> execution::Outcome>;
 
 struct Physical<P: Program, R: Authority> {
     peer: Peer,

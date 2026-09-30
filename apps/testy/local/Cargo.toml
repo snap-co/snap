@@ -7,7 +7,6 @@ publish.workspace = true
 [dependencies]
 snap-config = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-snap-execution = { path = "../../../crates/execution" }
 testy = { path = ".." }
 snap-transport = { path = "../../../crates/transport" }
 snap-platform-local = { path = "../../../platforms/local" }

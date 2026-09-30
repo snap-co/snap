@@ -13,7 +13,7 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-use snap_execution::Program;
+use snap_transport::execution::Program;
 use snap_transport::{json, server::Authority};
 use std::{
     sync::{Arc, Mutex},

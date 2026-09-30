@@ -1,5 +1,6 @@
 use crate::{Observation, Peer, Platform, Submission};
-use snap_execution::{Program, Ticket};
+use snap_transport::execution;
+use snap_transport::execution::{Program, Ticket};
 use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
 use std::{
     cell::RefCell,
@@ -99,8 +100,8 @@ impl<P: Program, R: Authority> Memory<P, R> {
         &self,
         ticket: Ticket,
         key: &str,
-        result: snap_execution::Outcome,
-    ) -> Result<(), snap_execution::Error> {
+        result: execution::Outcome,
+    ) -> Result<(), execution::Error> {
         let mut host = self.host.borrow_mut();
         host.platform.supply(ticket, key, result)?;
         host.waiting = None;
@@ -109,7 +110,7 @@ impl<P: Program, R: Authority> Memory<P, R> {
     }
     /// Host administration only. Replacement is allowed at a drained execution
     /// gate; no transport attachment or calculator data is reconstructed.
-    pub fn replace(&self, program: P) -> Result<(), snap_execution::Error> {
+    pub fn replace(&self, program: P) -> Result<(), execution::Error> {
         let mut host = self.host.borrow_mut();
         host.platform.pause();
         let result = host.platform.replace(program);

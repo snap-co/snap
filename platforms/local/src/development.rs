@@ -3,7 +3,8 @@
 //! observation, never a source-line breakpoint. Snapshots require an idle gate.
 use crate::{Observation, Peer, Platform, Submission};
 use serde::Deserialize;
-use snap_execution::{Call, JobView, Program, Snapshot, Ticket};
+use snap_transport::execution;
+use snap_transport::execution::{Call, JobView, Program, Snapshot, Ticket};
 use snap_transport::{Command, Event, Response, Value, json, server::Authority};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -58,14 +59,14 @@ pub struct Development<P: Program, R: Authority> {
     trace: VecDeque<Value>,
     trace_sequence: u64,
     snapshot: Option<Snapshot>,
-    reads: fn(&Call, &str) -> snap_execution::Outcome,
+    reads: fn(&Call, &str) -> execution::Outcome,
     programs: fn(&str) -> Option<P>,
     program: String,
 }
 impl<P: Program, R: Authority> Development<P, R> {
     pub fn new(
         platform: Platform<P, R>,
-        reads: fn(&Call, &str) -> snap_execution::Outcome,
+        reads: fn(&Call, &str) -> execution::Outcome,
         programs: fn(&str) -> Option<P>,
     ) -> Self {
         Self {
@@ -227,7 +228,7 @@ impl<P: Program, R: Authority> Development<P, R> {
             }
         }
     }
-    fn supply(&mut self, id: u64, key: &str, value: snap_execution::Outcome) -> Result<(), String> {
+    fn supply(&mut self, id: u64, key: &str, value: execution::Outcome) -> Result<(), String> {
         let ticket = self
             .platform
             .inspect()
@@ -242,7 +243,7 @@ impl<P: Program, R: Authority> Development<P, R> {
         self.pump();
         Ok(())
     }
-    fn record_input(&mut self, id: u64, key: &str, value: &snap_execution::Outcome) {
+    fn record_input(&mut self, id: u64, key: &str, value: &execution::Outcome) {
         let outcome = match value {
             Ok(value) => json!({"Ok": value}),
             Err(error) => json!({"Err": format!("{error:?}")}),
@@ -266,7 +267,7 @@ impl<P: Program, R: Authority> Development<P, R> {
             }
             Control::Supply { ticket, key, value } => self.supply(ticket, &key, Ok(value))?,
             Control::Fail { ticket, key } => {
-                self.supply(ticket, &key, Err(snap_execution::Error::Unavailable))?
+                self.supply(ticket, &key, Err(execution::Error::Unavailable))?
             }
             Control::Snapshot => {
                 self.snapshot = Some(

@@ -10,7 +10,6 @@ native = ["dep:tokio", "dep:serde_json"]
 web = ["dep:tokio", "dep:serde_json", "dep:serde", "dep:axum", "dep:tower-http", "dep:futures-util"]
 
 [dependencies]
-snap-execution = { path = "../../crates/execution" }
 snap-transport = { path = "../../crates/transport" }
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"], optional = true }
 serde_json = { workspace = true, optional = true }

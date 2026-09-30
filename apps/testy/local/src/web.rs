@@ -29,7 +29,7 @@ async fn main() -> std::io::Result<()> {
             if key == testy::CEILING {
                 Ok(json!(1000))
             } else {
-                Err(snap_execution::Error::Unavailable)
+                Err(snap_transport::execution::Error::Unavailable)
             }
         },
         |name| match name {

@@ -117,7 +117,7 @@ pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
             },
         )
         .with_live_authority(),
-        snap_execution::Executor::new(testy::App::default(), 128).unwrap(),
+        snap_transport::execution::Executor::new(testy::App::default(), 128).unwrap(),
     )
     .with_requests(
         |name| name.starts_with("identity."),

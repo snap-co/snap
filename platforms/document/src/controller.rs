@@ -97,8 +97,8 @@ impl<B: Backend> ControllerContext<'_, B> {
 
     pub fn progress(&mut self, value: Value) -> Result<(), Error> {
         if let Some(work) = self.work {
-            if let crate::Operation::Request(invocation) = &work.operation
-                && !(self.host.requests[&invocation.operation].progress)(&value)
+            if let crate::Operation::Request(_, selection) = &work.operation
+                && !(self.host.requests.get(*selection).progress)(&value)
             {
                 return Err(Error::Invalid);
             }

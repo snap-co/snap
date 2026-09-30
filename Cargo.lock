@@ -3063,7 +3063,6 @@ dependencies = [
  "snap-access",
  "snap-document",
  "snap-document-local",
- "snap-execution",
  "snap-identity",
  "snap-platform-local",
  "snap-sqlite",
@@ -3116,13 +3115,6 @@ dependencies = [
  "tokio-tungstenite",
  "toml 0.9.12+spec-1.1.0",
  "tower-http",
-]
-
-[[package]]
-name = "snap-execution"
-version = "0.0.0"
-dependencies = [
- "serde_json",
 ]
 
 [[package]]
@@ -3195,7 +3187,6 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "snap-execution",
  "snap-transport",
  "tokio",
  "tower-http",
@@ -3224,6 +3215,7 @@ dependencies = [
  "ciborium",
  "serde",
  "serde_json",
+ "snap-store",
 ]
 
 [[package]]
@@ -3373,7 +3365,6 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
- "snap-execution",
  "snap-store",
  "snap-transport",
 ]
@@ -3386,7 +3377,6 @@ dependencies = [
  "serde",
  "snap-config",
  "snap-crypto",
- "snap-execution",
  "snap-identity",
  "snap-platform-local",
  "snap-sqlite",
@@ -3404,7 +3394,6 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "hegeltest",
- "snap-execution",
  "snap-identity",
  "snap-platform-local",
  "snap-sqlite",

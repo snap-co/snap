@@ -1,10 +1,10 @@
-#[path = "../../../../crates/execution/tests/properties/fixture.rs"]
+#[path = "../../../../crates/transport/tests/properties/execution_fixture.rs"]
 mod fixture;
 
 use fixture::{Ledger, state};
 use hegel::{TestCase, generators as gs};
-use snap_execution::{Executor, Scope, Ticket};
 use snap_platform_local::{Observation, Peer, Platform, Submission};
+use snap_transport::execution::{Executor, Scope, Ticket};
 use snap_transport::{
     Command, Error, Event, Invocation, Response, json,
     server::{Config, Server},
@@ -206,7 +206,7 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
             *ticket,
             "input-0",
             if fail {
-                Err(snap_execution::Error::Unavailable)
+                Err(snap_transport::execution::Error::Unavailable)
             } else {
                 Ok(json!(9))
             },

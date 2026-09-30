@@ -1,4 +1,4 @@
-use crate::Value;
+use super::Value;
 use alloc::{collections::BTreeMap, string::String};
 
 #[derive(Clone, Debug, PartialEq)]

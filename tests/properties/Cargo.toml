@@ -10,7 +10,6 @@ autotests = false
 [dev-dependencies]
 hegeltest = { version = "=0.47.4", features = ["static-engine"] }
 snap-transport = { path = "../../crates/transport" }
-snap-execution = { path = "../../crates/execution" }
 snap-platform-local = { path = "../../platforms/local" }
 snap-store = { path = "../../crates/store" }
 snap-sqlite = { path = "../../platforms/sqlite" }
@@ -31,7 +30,7 @@ path = "../../crates/transport/tests/properties/client.rs"
 
 [[test]]
 name = "execution-properties"
-path = "../../crates/execution/tests/properties/execution.rs"
+path = "../../crates/transport/tests/properties/execution.rs"
 
 [[test]]
 name = "platform-properties"

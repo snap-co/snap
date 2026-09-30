@@ -1,5 +1,6 @@
 //! Socket ownership tests, not repeats of Host's controlled-clock lifecycle suite.
-use snap_document_local::{Host, Request, web::Shared};
+use snap_document_local::{Host, web::Shared};
+use snap_transport::operation::Definition as Request;
 use snap_transport::{Command, Event, Invocation, Response, binary, json};
 use snap_transport_native::Client;
 use std::sync::Arc;
@@ -44,12 +45,13 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         "boot".into(),
     )
     .with_request(Request {
-        name: "probe".into(),
+        name: "fixture.probe".into(),
         identity_required: true,
         input: |v| v.is_null(),
         output: |v| v.is_u64(),
         progress: |_| false,
-        guard: |_, _, _, _| Ok(()),
+        guards: &[],
+        tables: &[],
         handler: Box::new(move |_, _, _, _| {
             Ok(json!(
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
@@ -71,7 +73,7 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     let make = || {
         Command::Invoke(Invocation {
             id: 1,
-            operation: "probe".into(),
+            operation: "fixture.probe".into(),
             input: serde_json::Value::Null,
         })
     };

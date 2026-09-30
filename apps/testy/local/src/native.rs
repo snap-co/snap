@@ -25,9 +25,9 @@ fn main() -> std::io::Result<()> {
                 receiver,
                 |_, key| {
                     if key == testy::CEILING {
-                        Ok(snap_execution::json!(1000))
+                        Ok(snap_transport::json!(1000))
                     } else {
-                        Err(snap_execution::Error::Unavailable)
+                        Err(snap_transport::execution::Error::Unavailable)
                     }
                 },
             )

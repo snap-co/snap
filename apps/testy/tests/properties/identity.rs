@@ -48,7 +48,7 @@ fn accepted_work_drains_before_queued_logout_across_expiry_and_dependency_failur
             ticket,
             &key,
             if fail {
-                Err(snap_execution::Error::Unavailable)
+                Err(snap_transport::execution::Error::Unavailable)
             } else {
                 Ok(snap_transport::json!(1000))
             },

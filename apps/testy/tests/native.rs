@@ -26,7 +26,7 @@ fn authenticated_sdk_over_real_tcp_discards_connection_state() {
                 listener,
                 platform(sessions),
                 receiver,
-                |_, _| Ok(snap_execution::json!(100)),
+                |_, _| Ok(snap_transport::json!(100)),
             ));
             let mut first = testy::Client::new(native::Connection::open(address).await.unwrap());
             let token = first.authenticate(true, "a@b", "password1").await.unwrap();
