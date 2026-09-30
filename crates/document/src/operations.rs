@@ -79,7 +79,9 @@ fn admission(document: Arc<Document>, mutation: bool) -> Guard {
             if let Some(mut completion) = document.recover(tx, lifetime, actor, &intent)? {
                 // A new recovery observation uses current visibility, unlike the
                 // terminal result of an already accepted original invocation.
-                if !policy.extent(tx, actor)?.contains(&intent.document) {
+                if let Ok(Some(_)) = &completion.result
+                    && !policy.extent(tx, actor)?.contains(&intent.document)
+                {
                     completion.result = Ok(None);
                 }
                 Prepared::Replay(completion)

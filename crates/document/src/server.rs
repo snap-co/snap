@@ -394,12 +394,12 @@ impl Document {
     }
 
     /// Execute one named mutation on one document inside the caller's
-    /// transaction.
-    ///
-    /// See the module guarantees for receipt binding, pre-change
-    /// authorization, latest-state serialization, suppression and error
-    /// mapping. The returned `replication` (when `Some`) is for fan-out to
-    /// other holders after `Committed`; the originator keeps `completion`.
+    /// transaction, assuming authority was already accepted by dispatch.
+    /// Receipts return their stored result without filtering visibility; new
+    /// recovery observations must use dispatch policy. See the module guarantees
+    /// for receipt binding, latest-state serialization and error mapping. The
+    /// returned `replication` (when `Some`) is for fan-out to other holders after
+    /// `Committed`; the originator keeps `completion`.
     pub fn mutate(
         &self,
         tx: &mut Transaction<'_>,

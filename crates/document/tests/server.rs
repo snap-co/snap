@@ -667,7 +667,7 @@ fn receipts_dedup_exact_intents_and_reject_conflicts() {
 }
 
 #[test]
-fn revoked_access_suppresses_recovery_payloads() {
+fn revoked_access_suppresses_successful_recovery_payloads_but_preserves_rejections() {
     let doc = document();
     let mut store = store_loaded();
     let id = uuid(50);
@@ -680,6 +680,25 @@ fn revoked_access_suppresses_recovery_payloads() {
         .unwrap()
         .value;
     assert!(committed.completion.result.is_ok());
+
+    // A deterministic rejection is durably recorded too. Visibility loss must
+    // not recategorize it as a committed write with a forbidden payload.
+    let mut rejected_intent = intent(8, &id, "add", 0);
+    rejected_intent.args = json!("invalid amount");
+    let rejected = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.mutate",
+        json!(rejected_intent),
+    )
+    .unwrap();
+    let snap_document::ServerMessage::Completed(rejection) =
+        serde_json::from_value(rejected).unwrap()
+    else {
+        panic!("rejected completion")
+    };
+    assert_eq!(rejection.result, Err(snap_document::Error::Invalid));
 
     // Revoke bob entirely.
     store
@@ -711,25 +730,43 @@ fn revoked_access_suppresses_recovery_payloads() {
     assert_eq!(completion.id, 7);
     assert!(matches!(completion.result, Ok(None)));
 
+    let replayed = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.mutate",
+        json!(rejected_intent),
+    )
+    .unwrap();
+    let snap_document::ServerMessage::Completed(replayed_rejection) =
+        serde_json::from_value(replayed).unwrap()
+    else {
+        panic!("rejected replay")
+    };
+    assert_eq!(replayed_rejection, rejection);
+
     // Manifest recovery for the same pending intent is suppressed the same way,
     // while the document itself is absent from bob's replacement.
-    let recovered = store
-        .run("manifest", |tx| {
-            doc.access_guard().manifest(
-                tx,
-                LIFETIME,
-                "bob",
-                &Manifest {
-                    holdings: vec![],
-                    pending: vec![intent(7, &id, "add", 5)],
-                },
-            )
-        })
-        .unwrap()
-        .value;
+    let recovered = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.manifest",
+        json!(Manifest {
+            holdings: vec![],
+            pending: vec![intent(7, &id, "add", 5), rejected_intent],
+        }),
+    )
+    .unwrap();
+    let snap_document::ServerMessage::Manifest(recovered) =
+        serde_json::from_value(recovered).unwrap()
+    else {
+        panic!("recovery manifest")
+    };
     assert!(recovered.documents.is_empty());
-    assert_eq!(recovered.completed.len(), 1);
+    assert_eq!(recovered.completed.len(), 2);
     assert!(matches!(recovered.completed[0].result, Ok(None)));
+    assert_eq!(recovered.completed[1], rejection);
 
     // Alice still sees the committed value.
     let kept = store
