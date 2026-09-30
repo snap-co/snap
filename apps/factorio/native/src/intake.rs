@@ -166,7 +166,7 @@ fn instructions(_app: &App, item: &Intake, w: &Workspace, owner: &str) -> Result
         quote(&credentials(w, owner)),
         item.id
     );
-    let guide = include_str!("../../INTAKE.md")
+    let guide = include_str!("../../prompts/intake.md")
         .replace(
             "factory intake-read",
             &format!("{command} intake-read {args}"),

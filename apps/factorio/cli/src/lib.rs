@@ -253,7 +253,7 @@ async fn open_intake(
     );
     let executable = std::env::current_exe()?;
     let credentials = std::fs::canonicalize(path)?;
-    let guide = include_str!("../../INTAKE.md")
+    let guide = include_str!("../../prompts/intake.md")
         .replace(
             "factory intake-read",
             &format!(

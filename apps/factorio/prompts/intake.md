@@ -1,4 +1,4 @@
-# Factorio intake
+# Factorio intake prompt
 
 Use a real OpenCode conversation to turn the user's description into buildable
 tickets. Explore the repository before asking questions that code can answer.
