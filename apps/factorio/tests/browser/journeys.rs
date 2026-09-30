@@ -944,6 +944,7 @@ async fn cli(setup: &FactorioSetup, token: &str, args: &[&str]) -> Result<Value>
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("XDG_CONFIG_HOME", setup.dir.join("cli-config"))
         .env("TMPDIR", std::env::var("TMPDIR").unwrap_or_default())
         .env(
             "FACTORIO_OPENCODE",
@@ -1434,6 +1435,10 @@ async fn journey_tickets_cli(
     ui.goto(&format!("{}/tickets", setup.base)).await?;
     // CLI/Git/claims lifecycle through the real production CLI.
     let status = cli(setup, &token, &["status"]).await?;
+    ensure!(
+        setup.dir.join("cli-config/factory").is_dir(),
+        "CLI recovery state escaped the disposable fixture config directory"
+    );
     let intake = status
         .get("intakes")
         .and_then(Value::as_object)
