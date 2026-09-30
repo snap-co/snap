@@ -219,6 +219,13 @@ fn interrupt_check_cleans_its_listener_descendant() {
         .map(|value| value.parse().unwrap())
         .collect();
     guard.descendant = Some(Pid::from_raw(values[1] as i32));
+    // Prove that ordinary graceful termination cannot satisfy the port assertion.
+    kill(guard.descendant.unwrap(), Signal::SIGTERM).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, values[0] as u16)).is_ok(),
+        "Listener did not survive graceful termination"
+    );
     kill(Pid::from_raw(guard.child.id() as i32), Signal::SIGTERM).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {

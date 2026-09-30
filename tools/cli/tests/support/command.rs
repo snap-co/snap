@@ -49,11 +49,7 @@ pub fn run() {
             }
         }
         "listen" => {
-            // A descendant that ignores graceful shutdown must still be retired.
-            use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
-            let mut blocked = SigSet::empty();
-            blocked.add(Signal::SIGTERM);
-            pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&blocked), None).unwrap();
+            // Every thread inherits the blocked SIGTERM mask from before exec.
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             fs::write(
                 "ready.pending",
@@ -70,6 +66,13 @@ pub fn run() {
             }
         }
         "descendant" => {
+            // Block before exec, not inside the listener's libtest worker: its
+            // main thread must also resist graceful termination. The parent
+            // helper's existing main thread remains normally terminable.
+            use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
+            let mut blocked = SigSet::empty();
+            blocked.add(Signal::SIGTERM);
+            pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&blocked), None).unwrap();
             let mut child = Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",

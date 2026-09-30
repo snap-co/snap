@@ -453,9 +453,12 @@ async fn issuer_consent_pkce_signed_claims_restart_refresh_replay_revocation_and
     let (mut cookie, account) = host
         .login(true, "oidc@example.test", "OIDC fixture password")
         .await;
-    let mut tampered = cookie.clone();
-    let last = tampered.pop().unwrap();
-    tampered.push(if last == 'A' { 'B' } else { 'A' });
+    // Keep the bearer and base64 encoding valid: rejection must exercise the
+    // signature check rather than malformed padding in the final character.
+    let (bearer, signature) = cookie.rsplit_once('.').unwrap();
+    let mut signature = URL_SAFE_NO_PAD.decode(signature).unwrap();
+    signature[0] ^= 1;
+    let tampered = format!("{bearer}.{}", URL_SAFE_NO_PAD.encode(signature));
     for cookie in [tampered, format!("{cookie}; {cookie}")] {
         assert!(
             value(
