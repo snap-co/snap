@@ -364,9 +364,15 @@ impl OAuth {
     /// rechecked in the application's own transaction immediately before its write.
     pub async fn session(&self, headers: &HeaderMap) -> Result<rp::Session, Error> {
         let bearer = self.cookies.read(headers, false).ok_or(Error::NotFound)?;
+        self.session_id(&rp::digest(&bearer)).await
+    }
+    /// Refresh a private session selected by a verified application credential.
+    /// Browser and native callers share refresh serialization and durable fencing;
+    /// upstream refresh tokens never leave this host. Uncertain IO is not replayed.
+    pub async fn session_id(&self, id: &str) -> Result<rp::Session, Error> {
         let _refresh = self.refresh.lock().await;
         let previous = self.run("oauth.refresh.begin", |tx| {
-            rp::begin_refresh(tx, &bearer, now())
+            rp::begin_refresh_id(tx, id, now())
         })?;
         if let Some(previous) = previous {
             let result = async {
@@ -388,11 +394,11 @@ impl OAuth {
             }
             .await;
             if result.is_err() {
-                let _ = self.run("oauth.refresh.failed", |tx| rp::revoke(tx, &bearer));
+                let _ = self.run("oauth.refresh.failed", |tx| rp::revoke_id(tx, id));
             }
             result
         } else {
-            self.run("oauth.session", |tx| rp::resolve(tx, &bearer, now()))
+            self.run("oauth.session", |tx| rp::resolve_id(tx, id, now()))
         }
     }
     pub fn csrf(&self, headers: &HeaderMap, session: &rp::Session) -> Result<(), Error> {

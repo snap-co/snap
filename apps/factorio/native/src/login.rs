@@ -3,6 +3,45 @@
 use super::*;
 use axum::{Form, extract::Path, response::Html};
 
+/// Refresh native authority before admission, and during idle/long-running
+/// attachments. Selection never accepts an expired local credential. The shared
+/// dispatcher still revalidates authority when admitting each protected operation.
+pub async fn prepare(oauth: &OAuth, command: snap_transport::Command) -> Result<(), Error> {
+    let id = oauth.run("cli.refresh.select", |tx| match command {
+        snap_transport::Command::Connect { bearer, .. }
+        | snap_transport::Command::Request {
+            bearer: Some(bearer),
+            ..
+        } => operations::session_id(tx, &bearer).map(|(id, _)| Some(id)),
+        snap_transport::Command::Request { invocation, .. }
+            if invocation.operation == "factorio.login-finish" =>
+        {
+            let code = invocation.input["code"].as_str().ok_or(Error::Invalid)?;
+            let proof = invocation.input["proof"].as_str().ok_or(Error::Invalid)?;
+            let row = tx
+                .get("factorio.cli_login", &[code.into()])?
+                .ok_or(Error::NotFound)?;
+            let (
+                Some(snap_store::Value::Text(saved)),
+                Some(snap_store::Value::Integer(expires)),
+                Some(snap_store::Value::Text(id)),
+            ) = (row.get("proof"), row.get("expires"), row.get("session"))
+            else {
+                return Err(Error::Invalid);
+            };
+            if *expires <= now() || !rp::same_secret(saved, &rp::digest(proof)) {
+                return Err(Error::NotFound);
+            }
+            Ok((!id.is_empty()).then(|| id.clone()))
+        }
+        _ => Ok(None),
+    })?;
+    if let Some(id) = id {
+        oauth.session_id(&id).await?;
+    }
+    Ok(())
+}
+
 fn safe(code: &str) -> bool {
     code.len() == 43
         && code
@@ -50,7 +89,7 @@ pub async fn page(
         return failure(Error::Invalid);
     }
     page_response(format!(
-        "<h1>Connect factory</h1><p>Only continue if you started factory login yourself. Compare this request code with your terminal.</p><code>{code}</code><p>The CLI can read and change your workspaces, tickets and sessions. It cannot approve candidates. Access lasts up to 30 minutes and ends if your sign-in expires.</p><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Allow CLI access</button></form><a href=\"/\">Cancel and return to Factorio</a>",
+        "<h1>Connect factory</h1><p>Only continue if you started factory login yourself. Compare this request code with your terminal.</p><code>{code}</code><p>The CLI can read and change your workspaces, tickets and sessions. It cannot approve candidates. Access lasts up to 30 days with automatic renewal of short-lived access tokens, and ends if your sign-in expires or is revoked.</p><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Allow CLI access</button></form><a href=\"/\">Cancel and return to Factorio</a>",
         s.csrf
     ))
 }

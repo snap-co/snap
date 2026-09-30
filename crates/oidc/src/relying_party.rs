@@ -218,8 +218,17 @@ pub fn begin_refresh(
     bearer: &str,
     now: i64,
 ) -> Result<Option<Session>, Error> {
-    let id = digest(bearer);
-    let mut session: Session = read(tx, SESSIONS, &id)?.ok_or(Error::NotFound)?;
+    begin_refresh_id(tx, &digest(bearer), now)
+}
+
+/// Native hosts can refresh a session selected by an application credential.
+/// The host must validate that credential before resolving this private ID.
+pub fn begin_refresh_id(
+    tx: &mut Transaction<'_>,
+    id: &str,
+    now: i64,
+) -> Result<Option<Session>, Error> {
+    let mut session: Session = read(tx, SESSIONS, id)?.ok_or(Error::NotFound)?;
     if session.expires <= now || session.refreshing {
         return Err(Error::NotFound);
     }
@@ -227,7 +236,7 @@ pub fn begin_refresh(
         return Ok(None);
     }
     session.refreshing = true;
-    write(tx, SESSIONS, &id, &session, false)?;
+    write(tx, SESSIONS, id, &session, false)?;
     Ok(Some(session))
 }
 
@@ -253,7 +262,11 @@ pub fn finish_refresh(
 }
 
 pub fn revoke(tx: &mut Transaction<'_>, bearer: &str) -> Result<(), Error> {
-    tx.delete(SESSIONS, &[digest(bearer).into()])?;
+    revoke_id(tx, &digest(bearer))
+}
+
+pub fn revoke_id(tx: &mut Transaction<'_>, id: &str) -> Result<(), Error> {
+    tx.delete(SESSIONS, &[id.into()])?;
     Ok(())
 }
 /// Local logout may revoke an expired upstream grant or an uncertain refresh.

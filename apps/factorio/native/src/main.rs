@@ -41,6 +41,10 @@ impl App {
                 .map_err(|_| Error::Invalid)?
                 .strip_prefix("Bearer ")
                 .ok_or(Error::Invalid)?;
+            let id = self.oauth.run("factorio.agent.select", |tx| {
+                operations::session_id(tx, bearer).map(|(id, _)| id)
+            })?;
+            self.oauth.session_id(&id).await?;
             return self
                 .oauth
                 .run("factorio.agent", |tx| operations::session(tx, bearer));
@@ -259,6 +263,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     println!("Factorio http://{address}");
     println!("Factorio tls://{tcp_address}");
-    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_local::tcp::serve(tcp_listener,documents.clone(),tcp_tls)=>result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
+    let prepare: snap_document_local::tcp::Prepare = Arc::new(move |command| {
+        let oauth = oauth.clone();
+        Box::pin(async move {
+            login::prepare(&oauth, command)
+                .await
+                .map_err(|error| match error {
+                    Error::Unavailable => snap_transport::Error::Unavailable,
+                    _ => snap_transport::Error::InvalidBearer,
+                })
+        })
+    });
+    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_local::tcp::serve_prepared(tcp_listener,documents.clone(),tcp_tls,prepare)=>result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
     Ok(())
 }

@@ -36,7 +36,7 @@ impl Client {
             })
             .await?;
             let (reply, info) =
-                tokio::time::timeout(Duration::from_secs(10), tcp.receive()).await??;
+                tokio::time::timeout(Duration::from_secs(65), tcp.receive()).await??;
             match reply {
                 Response::Attached { resumed } => {
                     let info =

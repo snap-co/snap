@@ -256,7 +256,7 @@ fn authority_session(bearer: &str) -> snap_oidc::relying_party::Session {
             access_expires: crate::now() + 3600,
             auth_time: None,
         },
-        expires: crate::now() + 3600,
+        expires: crate::now() + 30 * 24 * 60 * 60,
         refreshing: false,
         version: 1,
     }
@@ -391,7 +391,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     assert!(ok, "{error}");
     assert_eq!(login["owner"], owner);
     assert!(login.get("bearer").is_none());
-    assert!(login["expires"].as_i64().unwrap() <= crate::now() + 1800);
+    assert_eq!(login["expires"].as_i64(), Some(session.expires));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

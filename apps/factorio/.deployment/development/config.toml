@@ -10,7 +10,7 @@ issuer = "http://127.0.0.1:3846"
 client_id = "factorio"
 client_secret_ref = "oauth.client_secret"
 [app.tcp]
-listen = "127.0.0.1:1248"
+listen = "127.0.0.1:1024"
 # These paths also resolve from dist/development/config.toml in this checkout.
 cert_file = "../../.deployment/development/tls/server.pem"
 key_file = "../../.deployment/development/tls/server-key.pem"

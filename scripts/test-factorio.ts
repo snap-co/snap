@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { host } from "../apps/authy/tests/support/upgraded-host";
 import { openCodeFixture } from "../apps/factorio/tests/opencode-fixture";
 import { deployment } from "../tests/support/deployment";
+import { cliAuthorityFixture } from "../apps/factorio/tests/oauth-fixture";
 const root = resolve(process.env.FACTORIO_SOURCE_ROOT ?? resolve(import.meta.dir, "..")); process.chdir(root);
 if (process.argv.includes("--dev") && !process.env.FACTORIO_SOURCE_ROOT) {
   const copy = await mkdtemp(resolve(process.env.TMPDIR ?? "/tmp/opencode", "factorio-dev-source-"));
@@ -44,7 +45,7 @@ async function start() {
   throw new Error(`Factorio startup failed: ${logs}`);
 }
 const opencodeFixture = openCodeFixture();
-const control = Bun.serve({hostname:"127.0.0.1",port:0, idleTimeout: 0, async fetch(request) { const fixture=await opencodeFixture(request);if(fixture)return fixture;const path=new URL(request.url).pathname;if(path==="/build-state")return Response.json({failed:logs.includes("Rebuild failed; previous generation retained"),generations:(logs.match(/generation ready/g)??[]).length});if(path!=="/restart")return new Response("missing",{status:404});await stop();await start();return new Response("restarted"); }});
+const control = Bun.serve({hostname:"127.0.0.1",port:0, idleTimeout: 0, async fetch(request) { const fixture=await opencodeFixture(request);if(fixture)return fixture;if(authy){const authority=await cliAuthorityFixture(request,directory,authy,stop,start);if(authority)return authority;}const path=new URL(request.url).pathname;if(path==="/build-state")return Response.json({failed:logs.includes("Rebuild failed; previous generation retained"),generations:(logs.match(/generation ready/g)??[]).length});if(path!=="/restart")return new Response("missing",{status:404});await stop();await start();return new Response("restarted"); }});
 try {
   // Disposable private CA, unrelated to operator trust or certificates.
   await run(["openssl","req","-x509","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-nodes","-days","2","-subj","/CN=Factorio fixture CA","-keyout",`${directory}/ca-key.pem`,"-out",`${directory}/ca.pem`,"-addext","basicConstraints=critical,CA:TRUE"]);

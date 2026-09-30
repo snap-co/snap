@@ -12,6 +12,7 @@ pub struct Settings {
 #[serde(default, deny_unknown_fields)]
 pub struct Tcp {
     pub listen: std::net::SocketAddr,
+    /// Detached logical lifetime retention, independent of login credential expiry.
     pub retention_ms: u64,
     pub cert_file: std::path::PathBuf,
     pub key_file: std::path::PathBuf,
@@ -21,7 +22,7 @@ pub struct Tcp {
 impl Default for Tcp {
     fn default() -> Self {
         Self {
-            listen: "127.0.0.1:1248".parse().unwrap(),
+            listen: "127.0.0.1:1024".parse().unwrap(),
             retention_ms: 1_800_000,
             cert_file: Default::default(),
             key_file: Default::default(),

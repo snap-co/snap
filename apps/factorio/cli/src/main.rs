@@ -19,6 +19,7 @@ use std::{
     about = "Factorio over TLS binary TCP. Human candidate approval remains in the browser."
 )]
 struct Args {
+    /// TLS endpoint as host:port. Defaults to 127.0.0.1:1024 for a new login.
     #[arg(long, global = true, env = "FACTORIO_ADDR")]
     addr: Option<String>,
     /// PEM CA bundle instead of standard public roots. Saved with credentials.
@@ -38,7 +39,7 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Mode {
-    /// Approve access in the browser, or exchange an agent token over TCP.
+    /// Save login for up to 30 days via browser approval or an agent token.
     Login,
     /// Revoke this CLI credential and retire its logical connection.
     Logout,
@@ -226,7 +227,7 @@ async fn open_intake(
 
 async fn run(mut args: Args) -> Result<()> {
     args.token = args.token.filter(|token| !token.is_empty());
-    let default_addr = args.addr.clone().unwrap_or_else(|| "127.0.0.1:1248".into());
+    let default_addr = args.addr.clone().unwrap_or_else(|| "127.0.0.1:1024".into());
     let login = matches!(args.command, Mode::Login);
     // Explicit files carry their own endpoint. Environment tokens use a private
     // per-token state file to keep counters stable across independent processes.
@@ -338,7 +339,7 @@ async fn run(mut args: Args) -> Result<()> {
         credentials.value.lifetime = None;
         credentials.save()?;
         return print(
-            &json!({"logged_in":true,"owner":issued["owner"],"expires":issued["expires"],"credentials":path,"note":"CLI credentials cannot approve candidates or refresh OAuth. Run login again after expiry."}),
+            &json!({"logged_in":true,"owner":issued["owner"],"expires":issued["expires"],"credentials":path,"note":"Login lasts up to 30 days, bounded by your Authy session. Factorio refreshes OAuth automatically. CLI credentials cannot approve candidates. Run login again after expiry or revocation."}),
         );
     }
     credentials.value.addr = Some(addr.clone());

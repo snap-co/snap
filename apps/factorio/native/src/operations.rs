@@ -5,7 +5,11 @@ use snap_document_local::{Host, Request};
 use snap_oidc::relying_party as rp;
 use snap_store::{Error, Transaction};
 
-pub fn session(tx: &mut Transaction<'_>, bearer: &str) -> Result<(rp::Session, bool), Error> {
+/// Local login credentials last independently of short-lived upstream access
+/// tokens, but never extend the backing OAuth session or its refresh grant.
+const CLI_LOGIN_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+pub fn session_id(tx: &mut Transaction<'_>, bearer: &str) -> Result<(String, bool), Error> {
     let digest = rp::digest(bearer);
     if let Some(row) = tx.get("factorio.cli", &[digest.clone().into()])? {
         let (Some(snap_store::Value::Text(id)), Some(snap_store::Value::Integer(expires))) =
@@ -16,15 +20,20 @@ pub fn session(tx: &mut Transaction<'_>, bearer: &str) -> Result<(rp::Session, b
         if *expires <= crate::now() {
             return Err(Error::NotFound);
         }
-        return Ok((rp::lease(tx, id, crate::now())?, false));
+        return Ok((id.clone(), false));
     }
     if let Some(row) = tx.get("factorio.agents", &[digest.clone().into()])? {
         let Some(snap_store::Value::Text(id)) = row.get("session") else {
             return Err(Error::Invalid);
         };
-        return Ok((rp::lease(tx, id, crate::now())?, false));
+        return Ok((id.clone(), false));
     }
-    Ok((rp::lease(tx, &digest, crate::now())?, true))
+    Ok((digest, true))
+}
+
+pub fn session(tx: &mut Transaction<'_>, bearer: &str) -> Result<(rp::Session, bool), Error> {
+    let (id, human) = session_id(tx, bearer)?;
+    Ok((rp::lease(tx, &id, crate::now())?, human))
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, Error> {
     v[key].as_str().ok_or(Error::Invalid)
@@ -125,7 +134,7 @@ pub fn register(
                     if *expires <= crate::now() || !rp::same_secret(proof,&rp::digest(text(input,"proof")?)) {return Err(Error::NotFound);}
                     if session.is_empty() { return Ok(Value::Null); }
                     let s = rp::lease(tx,session,crate::now())?;
-                    let token = crate::random(); let expires = (crate::now()+1800).min(s.expires).min(s.tokens.access_expires);
+                    let token = crate::random(); let expires = (crate::now()+CLI_LOGIN_SECONDS).min(s.expires);
                     tx.insert("factorio.cli",[("id".into(),rp::digest(&token).into()),("session".into(),session.clone().into()),("expires".into(),expires.into())].into_iter().collect())?;
                     tx.delete("factorio.cli_login", &[code.into()])?;
                     Ok(json!({"bearer":token,"expires":expires,"owner":s.owner}))
@@ -142,7 +151,7 @@ pub fn register(
             progress: |_| false,
             guard: |tx, _, _, bearer| {
                 // Only an ordinary agent token may delegate CLI authority. A CLI
-                // credential cannot extend itself or borrow browser refresh rights.
+                // credential cannot delegate or extend its backing OAuth grant.
                 let digest = rp::digest(bearer.ok_or(Error::NotFound)?);
                 tx.get("factorio.agents", &[digest.into()])?
                     .ok_or(Error::NotFound)?;
@@ -154,9 +163,7 @@ pub fn register(
                     return Err(Error::NotFound);
                 }
                 let token = crate::random();
-                let expires = (crate::now() + 1800)
-                    .min(s.expires)
-                    .min(s.tokens.access_expires);
+                let expires = (crate::now() + CLI_LOGIN_SECONDS).min(s.expires);
                 tx.insert(
                     "factorio.cli",
                     [

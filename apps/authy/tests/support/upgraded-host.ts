@@ -50,7 +50,7 @@ export async function host(relyingPartyOrigin = "http://127.0.0.1:3850", overrid
     await start();
   } catch (error) { await stop(); await rm(directory, { recursive: true, force: true }); throw error; }
   return { get base() { return base; }, database, clientSecret,
-    async restart() { await stop(); logs = ""; await start(); },
+    async restart(beforeStart?: () => Promise<void>) { await stop(); logs = ""; await beforeStart?.(); await start(); },
     async close() { await stop(); await rm(directory, { recursive: true, force: true }); },
   };
 }
