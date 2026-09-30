@@ -1,4 +1,3 @@
-import { Invocations } from "../../platforms/document/client";
 import { BrowserRuntime, type Publication } from "../../platforms/browser/runtime";
 import { wasmModule } from "../../platforms/browser/wasm";
 import { OAuthIdentity } from "../../platforms/identity/oauth";
@@ -16,121 +15,50 @@ const bindings = wasmModule<{ default(options: { module_or_path: string }): Prom
 type Update = (workspace: Workspace | null, error?: string) => void;
 export function randomID() { return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""); }
 
-/** One logical connection for commands and replication. Application calls use
- * shared ACK/retry/reconnect channels; the Rust SDK owns Document reconciliation. */
+/** Browser application adapter. Snap owns the connection lifecycle and the Rust
+ * SDK owns Document reconciliation; Factorio supplies commands and workspace views. */
 export class Factorio {
   identity: Identity = { identified:false };
   workspaceID = "";
-  private socket?: WebSocket;
-  private binding?: Binding;
-  private sequence = 0;
-  private lifetime = randomID();
-  private ready = false;
-  private opening?: Promise<void>;
-  private closed = false;
-  private timer?: ReturnType<typeof setTimeout>;
   private listeners = new Set<Update>();
   private documents: Record<string,Snapshot> = {};
   private credential?: string;
-  private calls = new Invocations((operation,input) => this.binding?.invoke(operation,JSON.stringify(input)) ?? JSON.stringify({Invoke:{id:++this.sequence,operation,input}}), frame => {
-    if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) throw new Error("Disconnected");
-    this.socket.send(frame);
-  });
-  readonly runtime?: BrowserRuntime<Identity, Binding, Result>;
-  constructor(readonly origin: string, private readonly token?: string, private readonly transport: typeof fetch = globalThis.fetch.bind(globalThis)) {
-    if (typeof window !== "undefined" && !token) {
-      this.runtime = new BrowserRuntime({
-        identity: new OAuthIdentity<Identity>(origin, transport),
-        key: identity => identity.owner!,
-        create: async identity => new (await bindings()).FactorioClient(identity.owner!),
-        decode: raw => JSON.parse(raw) as Result,
-        publish: result => {
-          this.documents = result?.documents ?? {};
-          if (!result) { this.workspaceID = ""; this.credential = undefined; }
-          this.emit(result?.error ?? undefined);
-        },
-      });
-      this.runtime.subscribe(() => {
-        const state = this.runtime!.getSnapshot();
-        this.identity = state.account ?? { identified: false };
-        this.emit(state.error ?? (state.phase === "ready" && state.connection !== "connected" ? "Reconnecting" : undefined));
-      });
-    }
+  readonly runtime: BrowserRuntime<Identity, Binding, Result>;
+  constructor(readonly origin: string, private readonly transport: typeof fetch = globalThis.fetch.bind(globalThis)) {
+    this.runtime = new BrowserRuntime({
+      identity: new OAuthIdentity<Identity>(origin, transport),
+      key: identity => identity.owner!,
+      create: async identity => new (await bindings()).FactorioClient(identity.owner!),
+      decode: raw => JSON.parse(raw) as Result,
+      publish: result => {
+        this.documents = result?.documents ?? {};
+        if (!result) { this.workspaceID = ""; this.credential = undefined; }
+        this.emit(result?.error ?? undefined);
+      },
+    });
+    this.runtime.subscribe(() => {
+      const state = this.runtime.getSnapshot();
+      this.identity = state.account ?? { identified: false };
+      this.emit(state.error ?? (state.phase === "ready" && state.connection !== "connected" ? "Reconnecting" : undefined));
+    });
   }
   private async request<T>(path: string, body?: unknown): Promise<T> {
     const headers: Record<string,string> = {};
-    if (this.token) headers.authorization = `Bearer ${this.token}`;
-    if (body !== undefined) { headers["content-type"]="application/json"; if (!this.token) headers["x-snap-csrf"]=this.identity.csrf??""; }
+    if (body !== undefined) { headers["content-type"]="application/json"; headers["x-snap-csrf"]=this.identity.csrf??""; }
     const response = await this.transport(`${this.origin}${path}`,{method:body===undefined?"GET":"POST",headers,body:body===undefined?undefined:JSON.stringify(body),credentials:"same-origin"});
     const value = await response.json().catch(()=>null);
     if (!response.ok) throw new Error(value?.error_description??`Request failed (${response.status})`);
     return value as T;
   }
   async identify() {
-    if (this.runtime) { await this.runtime.resolve(); return this.identity; }
-    return this.identity = await this.request<Identity>("/api/session");
+    await this.runtime.resolve();
+    return this.identity;
   }
-  private async connect(): Promise<void> {
-    if (this.runtime) { await this.runtime.resolve(); if (!this.identity.identified) throw new Error("Sign in to continue"); return; }
-    if (this.closed) throw new Error("Client closed");
-    if (this.ready) return;
-    if (this.opening) return this.opening;
-    this.opening = (async()=>{
-      // Cookie bootstrap refreshes the OAuth access lease before reattachment.
-      // Agent credentials never borrow that browser refresh authority.
-      if (!this.token || !this.identity.identified) await this.identify();
-      if (!this.identity.identified) {
-        this.calls.close("Sign-in ended; outstanding outcomes are unknown");
-        throw new Error("Sign in to continue");
-      }
-      await new Promise<void>((resolve,reject)=>{
-        const socket=this.socket=new WebSocket(`${this.origin.replace(/^http/,"ws")}/transport`);
-        const timeout=setTimeout(()=>{reject(new Error("Connection timed out"));socket.close();},10000);
-        socket.onopen=()=>{
-          const command=JSON.parse(this.binding?.connect(this.lifetime)??JSON.stringify({Connect:{bearer:"",client_id:this.lifetime}}));
-          command.Connect.bearer=this.token??"";
-          socket.send(JSON.stringify(command));
-        };
-        socket.onmessage=event=>{
-          try {
-            const frame=String(event.data), response=JSON.parse(frame);
-            if (response.Attached) { this.ready=true; clearTimeout(timeout); resolve(); }
-            const owned=this.calls.receive(frame);
-            if (response.Failed!==undefined) throw new Error(JSON.stringify(response.Failed));
-            if (response==="Detached") {
-              this.calls.close("Logical connection ended; outstanding outcomes are unknown");
-              throw new Error("Disconnected");
-            }
-            if (owned) return;
-            if (this.binding) {
-              const result=JSON.parse(this.binding.receive(frame));
-              this.documents=result.documents;
-              for (const send of result.send) socket.send(send);
-              this.emit();
-            }
-          } catch(error) { reject(error); this.emit(String(error)); socket.close(); }
-        };
-        socket.onerror=()=>reject(new Error("Connection failed"));
-        socket.onclose=()=>{
-          clearTimeout(timeout); this.ready=false; this.calls.detached();
-          reject(new Error("Connection closed"));
-          if (!this.closed) { this.emit("Reconnecting"); this.reconnect(); }
-        };
-      });
-    })().catch(error=>{
-      // Bootstrap can fail transiently while the backend is restarting, before
-      // there is a socket whose close handler could schedule another attempt.
-      if(this.identity.identified) this.reconnect();
-      throw error;
-    }).finally(()=>{this.opening=undefined;});
-    return this.opening;
+  async invoke<T>(operation: string, input: unknown): Promise<T> {
+    await this.runtime.resolve();
+    if (!this.identity.identified) throw new Error("Sign in to continue");
+    return this.runtime.invoke<T>(operation,input);
   }
-  private reconnect() {
-    if(this.closed) return;
-    clearTimeout(this.timer);
-    this.timer=setTimeout(()=>void this.connect().catch(error=>this.emit(String(error))),500);
-  }
-  async invoke<T>(operation: string, input: unknown): Promise<T> { await this.connect(); return this.runtime ? this.runtime.invoke<T>(operation,input) : this.calls.invoke<T>(operation,input); }
   repositories() { return this.invoke<Repository[]>("factorio.repositories",{}); }
   async workspaces() { return this.invoke<{id:string;repository:string}[]>("factorio.workspaces",{}); }
   async onboard(repository: string) { const value=await this.invoke<{id:string}>("factorio.onboard",{repository});this.workspaceID=value.id;return this.workspace(); }
@@ -156,7 +84,7 @@ export class Factorio {
   }
   approve(id:string,commit:string) { return this.command({command:"approve",id,commit}); }
   agentToken() { return this.invoke<{token:string}>("factorio.agent-token",{}); }
-  async logout() { const result = await this.request<{redirect:string}>("/auth/logout",{}); await this.runtime?.replace(null); return result; }
+  async logout() { const result = await this.request<{redirect:string}>("/auth/logout",{}); await this.runtime.replace(null); return result; }
   async intake(id:string,description:string) {
     await this.workspace();
     const intake=await this.invoke<Intake>("factorio.intake-create",{workspace:this.workspaceID,id,description});
@@ -169,7 +97,7 @@ export class Factorio {
     await this.workspace();
     if(action.action==="ready") return this.invoke("factorio.intake-ready",{workspace:this.workspaceID,id,revision:action.revision});
     if(action.action==="resume" || action.action==="message") {
-      this.credential??=this.token??(await this.agentToken()).token;
+      this.credential??=(await this.agentToken()).token;
       action={...action,credential:this.credential};
     }
     const value=await this.request(`/api/workspaces/${encodeURIComponent(this.workspaceID)}/intakes/${encodeURIComponent(id)}/opencode`,action);
@@ -177,7 +105,7 @@ export class Factorio {
     return value;
   }
   eventsURL(id:string) { return `${this.origin}/api/workspaces/${encodeURIComponent(this.workspaceID)}/intakes/${encodeURIComponent(id)}/events`; }
-  watch(update:Update) { this.listeners.add(update);void this.connect().catch(error=>update(null,String(error)));this.emit();return ()=>{ this.listeners.delete(update); }; }
+  watch(update:Update) { this.listeners.add(update);void this.runtime.resolve().catch(error=>update(null,String(error)));this.emit();return ()=>{ this.listeners.delete(update); }; }
   private emit(error?:string) {
     const roots=Object.values(this.documents).filter(d=>d.kind==="factorio.workspace");
     if(!this.workspaceID && roots[0]) this.workspaceID=roots[0].id;
@@ -186,6 +114,6 @@ export class Factorio {
     const workspace=root ? {config:root.config,tickets:values(root.tickets),sessions:values(root.sessions),intakes:values(root.intakes)} as Workspace : null;
     for(const listener of this.listeners) listener(workspace,error);
   }
-  close() { this.runtime?.close();this.closed=true;clearTimeout(this.timer);this.calls.close();this.socket?.close();this.binding?.free();this.binding=undefined; }
+  close() { this.runtime.close();this.listeners.clear(); }
 }
 export async function subscribe(client:Factorio, update:Update) { const stop=client.watch(update);return ()=>{stop();client.close();}; }

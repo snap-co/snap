@@ -5,7 +5,7 @@ import { WorkspacePage } from "./pages/workspace";
 import { SignInPage } from "./pages/sign-in";
 
 export function createAppRouter(client: Factorio) {
-  const runtime = client.runtime!;
+  const runtime = client.runtime;
   const root = sessionRoot(runtime, client);
   const signIn = createRoute({ getParentRoute: () => root, path: "/sign-in", beforeLoad: ({ context }) => requireSignedOut(context.session), component: SignInPage });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "workspace", component: Workspace, beforeLoad: ({ context, location }) => requireSignedIn(context.session, location.href), loader: async ({ context }) => {

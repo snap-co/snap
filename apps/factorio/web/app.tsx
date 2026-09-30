@@ -5,5 +5,5 @@ import "./style.css";
 
 const client = new Factorio(location.origin);
 const router = createAppRouter(client);
-const dispose = mount({ router, runtime: client.runtime!, element: document.getElementById("root")!, dispose: () => client.close() });
+const dispose = mount({ router, runtime: client.runtime, element: document.getElementById("root")!, dispose: () => client.close() });
 if (import.meta.hot) import.meta.hot.dispose(dispose);

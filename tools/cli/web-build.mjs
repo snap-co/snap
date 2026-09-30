@@ -27,9 +27,9 @@ if (await Bun.file(serverAssets).exists()) {
 await build([join(app, "web/app.tsx")], output);
 await copyFile(join(app, "web/index.html"), join(output, "index.html"));
 if (kind === "package") {
-  for (const [source, name] of [["native/bridge.ts", "bridge.js"], ["client.ts", "client.js"]]) {
+  for (const [source, name, target] of [["native/bridge.ts", "bridge.js", "bun"], ["client.ts", "client.js", "browser"]]) {
     if (await Bun.file(join(app, source)).exists()) {
-      await build([join(app, source)], join(output, ".."), { target: "bun", naming: name });
+      await build([join(app, source)], join(output, ".."), { target, naming: name });
     }
   }
 }

@@ -4,20 +4,21 @@ import { BrowserRuntime, type Binding, type Publication } from "./runtime";
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 class Socket {
   readyState = 1;
+  sent: string[] = [];
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onopen = null; onerror = null;
-  send() {}
+  send(frame: string) { this.sent.push(frame); }
   close() { this.readyState = 3; this.onclose?.(); }
   receive(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) }); }
 }
 function fixture(fetch: () => Promise<{ id: string } | null>, create?: () => Promise<Binding>) {
   const sockets: Socket[] = [], publications: (Publication | null)[] = [];
-  let created = 0, freed = 0;
+  let created = 0, freed = 0, sequence = 0;
   const runtime = new BrowserRuntime({
     identity: { fetch }, key: account => account.id,
     create: async () => { created++; return create ? create() : {
-      connect: () => "", invoke: () => "", free: () => { freed++; },
+      connect: () => "", invoke: (operation, input) => JSON.stringify({ Invoke: { id: ++sequence, operation, input: JSON.parse(input) } }), free: () => { freed++; },
       receive: frame => JSON.stringify({ ready: JSON.parse(frame).manifest === true, send: [] }),
     }; },
     decode: raw => JSON.parse(raw) as Publication,
@@ -83,6 +84,9 @@ test("physical reconnect retains ready pages; confirmed expiry clears documents"
   try {
     await f.runtime.refresh();
     f.sockets[0]!.receive({ Attached: { resumed: false } }); f.sockets[0]!.receive({ manifest: true });
+    const call = f.runtime.invoke("example", null);
+    const rejection = call.then(() => { throw new Error("Expected ended session"); }, (error: Error) => error);
+    f.sockets[0]!.receive({ Events: [{ Accepted: { id: 1 } }] });
     const epoch = f.runtime.getSnapshot().epoch;
     const publication = f.publications.at(-1);
     f.sockets[0]!.receive({ reset: true });
@@ -94,6 +98,42 @@ test("physical reconnect retains ready pages; confirmed expiry clears documents"
     account = null; await f.runtime.refresh();
     expect(f.runtime.getSnapshot().phase).toBe("anonymous");
     expect(f.publications.at(-1)).toBeNull(); expect(f.freed).toBe(1);
+    expect((await rejection).message).toContain("Account session ended");
+    expect(f.sockets[1]!.sent).toHaveLength(0);
+  } finally { f.runtime.close(); }
+});
+test("reconnect retries a failed Identity check and recovers the accepted call with the same ID", async () => {
+  const unavailable = deferred<void>(), recovered = deferred<void>();
+  let checks = 0;
+  const f = fixture(async () => {
+    checks++;
+    if (checks === 2) { unavailable.resolve(); throw new Error("backend restarting"); }
+    if (checks === 3) recovered.resolve();
+    return { id: "alice" };
+  });
+  try {
+    await f.runtime.refresh();
+    f.sockets[0]!.receive({ Attached: { resumed: false } }); f.sockets[0]!.receive({ manifest: true });
+    const call = f.runtime.invoke<string>("example.change", { value: "new" });
+    // Observe either settlement immediately, including cleanup on assertion failure.
+    const outcome = call.then(value => ({ value }), error => ({ error }));
+    const frame = f.sockets[0]!.sent[0]!;
+    const id = JSON.parse(frame).Invoke.id;
+    f.sockets[0]!.receive({ Events: [{ Accepted: { id } }] });
+    f.sockets[0]!.close();
+    await unavailable.promise;
+    expect(f.sockets).toHaveLength(1);
+    await recovered.promise;
+    await f.runtime.refresh();
+    expect(checks).toBe(3); expect(f.created).toBe(1);
+    f.sockets[1]!.receive({ Attached: { resumed: true } });
+    f.sockets[1]!.receive({ manifest: true });
+    expect(f.sockets[0]!.sent).toEqual([frame]);
+    expect(f.sockets[1]!.sent).toEqual([frame]);
+    f.sockets[1]!.receive({ Events: [{ Completed: { id, outcome: { Ok: "recovered" } } }] });
+    expect(await outcome).toEqual({ value: "recovered" });
+    expect(f.runtime.getSnapshot().connection).toBe("connected");
+    expect(f.runtime.getSnapshot().error).toBeNull();
   } finally { f.runtime.close(); }
 });
 test("disposal settles route readiness even while Identity IO is pending", async () => {
@@ -106,21 +146,22 @@ test("disposal settles route readiness even while Identity IO is pending", async
   await Promise.resolve(); await Promise.resolve();
   expect(f.sockets).toHaveLength(0);
 });
-for (const terminal of [{ Failed: "StaleConnection" }, "Detached"]) {
-  test(`terminal ${JSON.stringify(terminal)} settles an accepted call without revalidation`, async () => {
-    const f = fixture(async () => ({ id: "alice" }), async () => ({
-      connect: () => "", invoke: () => JSON.stringify({ Invoke: { id: 1 } }), free() {},
-      receive: frame => JSON.stringify({ ready: JSON.parse(frame).manifest === true, send: [] }),
-    }));
+for (const terminal of [{ Failed: "StaleConnection" }, { Failed: "InvalidBearer" }, "Detached"]) {
+  test(`terminal ${JSON.stringify(terminal)} on reconnect settles an accepted call without replay`, async () => {
+    const f = fixture(async () => ({ id: "alice" }));
     try {
       await f.runtime.refresh();
       f.sockets[0]!.receive({ Attached: { resumed: false } }); f.sockets[0]!.receive({ manifest: true });
       let outcome = "pending";
       const call = f.runtime.invoke("example", null).then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
       f.sockets[0]!.receive({ Events: [{ Accepted: { id: 1 } }] });
-      f.sockets[0]!.receive(terminal);
+      f.sockets[0]!.close();
+      await f.runtime.refresh();
+      f.sockets[1]!.receive(terminal);
       await Promise.resolve(); await Promise.resolve();
       expect(outcome).toBe("rejected");
+      expect(f.sockets[0]!.sent).toHaveLength(1);
+      expect(f.sockets[1]!.sent).toHaveLength(0);
       await call;
     } finally { f.runtime.close(); }
   });
