@@ -1,11 +1,11 @@
 //! Structural policy for explicitly declared project packages, checked through Cargo.
-use crate::{config::Project, process::Runner};
+use crate::process::Runner;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use tokio::process::Command;
 
@@ -60,7 +60,7 @@ fn role(package: &Value) -> Result<Option<Role>> {
 }
 
 pub async fn check(
-    project: &Project,
+    root: &Path,
     runner: &Runner,
     manifests: &[PathBuf],
     workspace: bool,
@@ -75,7 +75,11 @@ pub async fn check(
     let mut violations = BTreeSet::new();
     let roots: BTreeSet<_> = manifests
         .iter()
-        .map(|path| project.file(path))
+        .map(|path| {
+            root.join(path)
+                .canonicalize()
+                .with_context(|| format!("Cannot read manifest {}", path.display()))
+        })
         .collect::<Result<_>>()?;
     let mut pending_manifests: Vec<_> = roots.iter().cloned().collect();
     let mut checked_manifests = BTreeSet::new();
@@ -87,7 +91,7 @@ pub async fn check(
             let output = runner
                 .run(
                     Command::new("cargo")
-                        .current_dir(&project.root)
+                        .current_dir(root)
                         .args([
                             "metadata",
                             "--format-version=1",
@@ -192,7 +196,7 @@ pub async fn check(
     );
     for (manifest, name) in portable {
         eprintln!("Checking portable {name}: wasm32v1-none, all features");
-        runner.run(Command::new("cargo").current_dir(&project.root)
+        runner.run(Command::new("cargo").current_dir(root)
             .args(["check", "--lib", "--all-features", "--target", "wasm32v1-none", "--package", &name, "--manifest-path"])
             .arg(&manifest), false).await
             .with_context(|| format!("{name}: portable wasm32v1-none check failed. Keep core/application code no_std + alloc; move concrete IO to a platform package."))?;

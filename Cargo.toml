@@ -32,6 +32,7 @@ members = [
     "crates/identity",
     "platforms/crypto",
     "tests/properties",
+    "tests/browser",
     "tools/cli",
 ]
 resolver = "3"

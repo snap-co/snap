@@ -48,15 +48,15 @@ enum Command {
         /// Platform when a project directory is supplied
         platform: Option<String>,
     },
-    /// Verify the selected project's Rust packages and declared consumer checks
+    /// Static validation of an application or Cargo workspace, without running tests
     Check {
         /// Start discovery here instead of the current directory
         project: Option<PathBuf>,
         /// Only dependency-direction and portable-target checks
         #[arg(long)]
         structure_only: bool,
-        /// Include all workspace packages in structural checks (repository gate)
-        #[arg(long, requires = "structure_only")]
+        /// Check the entire Cargo workspace, even when invoked from an application
+        #[arg(long)]
         workspace: bool,
     },
 }
@@ -85,15 +85,7 @@ async fn main() -> ExitCode {
                 project,
                 structure_only,
                 workspace,
-            } => {
-                check::run(
-                    config::Project::discover(project)?,
-                    &runner,
-                    structure_only,
-                    workspace,
-                )
-                .await
-            }
+            } => check::run(project, &runner, structure_only, workspace).await,
         }
     }
     .await;

@@ -3,6 +3,7 @@ application = "factorio"
 
 [check]
 rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml", "cli/Cargo.toml"]
+typescript = ["web/tsconfig.json"]
 
 [build]
 cli = "factorio"
@@ -15,4 +16,4 @@ commands = [["cargo", "test", "-p", "factorio"]]
 commands = [["cargo", "build", "-p", "factorio-native"], ["cargo", "test", "-p", "snap-transport-native", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
 
 [test.browser]
-commands = [["bun", "../../scripts/test-factorio.ts"]]
+commands = [["../../bin/browser-tests", "factorio"]]

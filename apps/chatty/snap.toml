@@ -4,13 +4,14 @@ application = "chatty"
 [build]
 
 [check]
-rust = ["Cargo.toml", "native/Cargo.toml"]
+rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+typescript = ["web/tsconfig.json"]
 
 [test.memory]
 commands = [["cargo", "test", "-p", "chatty"]]
 
 [test.browser]
-commands = [["../../bin/check-chatty-web"]]
+commands = [["../../bin/browser-tests", "chatty"]]
 
 [test.native]
 commands = [["cargo", "test", "-p", "chatty-native", "--", "--ignored"], ["cargo", "test", "-p", "snap-oauth-local", "--test", "crypto", "--", "--ignored"]]

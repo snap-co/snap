@@ -28,7 +28,7 @@ impl Project {
         fs::create_dir_all(root.join("src")).unwrap();
         let manifest = match role {
             Some(role) => format!("{MANIFEST}\n[package.metadata.snap]\nrole='{role}'\n"),
-            None => MANIFEST.into(),
+            None => format!("{MANIFEST}\n[package.metadata.snap]\nrole='composition'\n"),
         };
         fs::write(root.join("Cargo.toml"), manifest).unwrap();
         fs::write(root.join("src/lib.rs"), "#![no_std]\n").unwrap();

@@ -7,12 +7,41 @@ binary = "testy-web"
 features = ["web"]
 
 [check]
-rust = ["Cargo.toml", "local/Cargo.toml"]
+rust = ["Cargo.toml", "local/Cargo.toml", "wasm/Cargo.toml"]
+typescript = ["web/tsconfig.json"]
+
+[[check.variants]]
+manifest = "local/Cargo.toml"
+features = ["memory"]
+default_features = false
+allowed_local_dependencies = ["testy", "snap-execution", "snap-transport", "snap-platform-local"]
+
+[[check.variants]]
+manifest = "local/Cargo.toml"
+features = ["native"]
+default_features = false
+allowed_local_dependencies = ["testy", "snap-execution", "snap-transport", "snap-platform-local", "snap-config", "snap-store", "snap-sqlite", "snap-identity", "snap-crypto"]
+
+[[check.variants]]
+manifest = "local/Cargo.toml"
+features = ["web"]
+default_features = false
+allowed_local_dependencies = ["testy", "snap-execution", "snap-transport", "snap-platform-local", "snap-config", "snap-store", "snap-sqlite", "snap-identity", "snap-crypto"]
+
+[[check.variants]]
+manifest = "local/Cargo.toml"
+features = ["store"]
+default_features = false
+allowed_local_dependencies = ["testy", "snap-execution", "snap-transport", "snap-platform-local", "snap-store", "snap-sqlite"]
+
+[[check.variants]]
+manifest = "local/Cargo.toml"
+features = ["identity"]
 
 [test.memory]
 commands = [
   ["cargo", "test", "-p", "snap-execution", "-p", "snap-transport", "--", "--include-ignored"],
-  ["cargo", "test", "-p", "testy-local", "--features", "web", "--test", "memory", "--test", "development", "--test", "identity", "--", "--include-ignored"],
+  ["cargo", "test", "-p", "testy-local", "--features", "web", "--test", "memory", "--test", "development", "--test", "store", "--test", "identity", "--", "--include-ignored"],
   ["cargo", "test", "-p", "snap-platform-local", "--features", "web", "--lib", "--", "--include-ignored"],
 ]
 
@@ -23,4 +52,4 @@ commands = [
 ]
 
 [test.browser]
-commands = [["../../bin/check-testy-web"]]
+commands = [["../../bin/browser-tests", "testy"]]

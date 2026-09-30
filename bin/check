@@ -1,25 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cd "$root"
-cargo_cmd=(cargo)
-if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
-packages=(-p snap-config -p snap-cli -p snap-execution -p snap-transport -p snap-store -p snap-access -p snap-document -p snap-document-local -p snap-oauth-local -p snap-model-local -p snap-http -p snap-identity -p snap-oidc -p snap-crypto -p snap-sqlite -p snap-platform-local -p testy -p testy-local -p authy -p authy-native -p authy-wasm -p chatty -p chatty-native -p chatty-wasm -p factorio -p factorio-cli -p factorio-native -p factorio-wasm)
-"${cargo_cmd[@]}" fmt "${packages[@]}" -- --check
-"${cargo_cmd[@]}" clippy "${packages[@]}" --all-targets -- -D warnings
-"${cargo_cmd[@]}" test "${packages[@]}"
-"${cargo_cmd[@]}" check -p snap-execution -p snap-transport -p snap-store -p snap-access -p snap-document -p snap-identity -p snap-oidc -p snap-http -p testy -p authy -p chatty -p factorio --all-features --target wasm32v1-none
-"${cargo_cmd[@]}" clippy -p testy-local --features identity --all-targets -- -D warnings
-"${cargo_cmd[@]}" test -p testy-local --features identity --test store --test identity
-for features in memory native web store; do
-  tree=$("${cargo_cmd[@]}" tree -p testy-local --no-default-features --features "$features" --edges normal --prefix none)
-  while read -r name _; do
-    case "$name" in
-      snap-execution|snap-transport|snap-platform-local) ;;
-      snap-config) if [[ "$features" != native && "$features" != web ]]; then echo "Unexpected host configuration dependency: $name" >&2; exit 1; fi ;;
-      snap-store|snap-sqlite) if [[ "$features" == memory ]]; then echo "Unexpected Store dependency: $name" >&2; exit 1; fi ;;
-      snap-identity|snap-crypto) if [[ "$features" != native && "$features" != web ]]; then echo "Unexpected Identity dependency: $name" >&2; exit 1; fi ;;
-      snap-*) echo "Unexpected Testy dependency: $name" >&2; exit 1 ;;
-    esac
-  done <<< "$tree"
-done
+exec "$root/bin/snap" check "$root" --workspace "$@"

@@ -2,8 +2,7 @@
   "extends": "../../../tsconfig.json",
   "include": [
     "./**/*.ts",
-    "./**/*.tsx",
-    "../tests/**/*.ts"
+    "./**/*.tsx"
   ],
   "compilerOptions": { "types": ["bun", "react", "react-dom"] }
 }

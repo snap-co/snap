@@ -4,13 +4,14 @@ application = "authy"
 [build]
 
 [check]
-rust = ["Cargo.toml", "native/Cargo.toml"]
+rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+typescript = ["web/tsconfig.json"]
 
 [test.memory]
 commands = [["cargo", "test", "-p", "authy", "-p", "snap-oidc"]]
 
 [test.browser]
-commands = [["../../bin/check-authy-web"]]
+commands = [["../../bin/browser-tests", "authy"]]
 
 [test.native]
 commands = [["../../bin/snap", "build", "--project", ".", "--web-only", "--output", "dist/development/web"], ["cargo", "test", "-p", "authy-native", "--test", "http", "--", "--ignored"]]

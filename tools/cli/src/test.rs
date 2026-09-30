@@ -50,13 +50,7 @@ pub async fn run(project: Project, runner: &Runner, platform: &str) -> Result<()
         vec![platform]
     };
     if platform == "full" {
-        crate::check::run(
-            Project::discover(Some(project.root.clone()))?,
-            runner,
-            false,
-            false,
-        )
-        .await?;
+        crate::check::run(Some(project.root.clone()), runner, false, false).await?;
     }
     for name in selected {
         let suite = &project.config.test[name];

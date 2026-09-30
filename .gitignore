@@ -8,9 +8,7 @@
 **/.deployment/*/secrets.toml
 **/.deployment/*/tls/
 /test-results/
-/playwright-report/
 .snap/
-__pycache__/
 .wrangler/
 **/workers/build/
 .dev.vars*

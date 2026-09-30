@@ -20,8 +20,30 @@ pub struct Check {
     /// Empty selects the application root Cargo.toml.
     #[serde(default)]
     pub rust: Vec<PathBuf>,
+    /// Additional compiler configurations and normal local-dependency contracts.
+    #[serde(default)]
+    pub variants: Vec<CheckVariant>,
+    /// TypeScript projects, checked without emitting or preparing application assets.
+    #[serde(default)]
+    pub typescript: Vec<PathBuf>,
     #[serde(default)]
     pub commands: Vec<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckVariant {
+    pub manifest: PathBuf,
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default = "enabled")]
+    pub default_features: bool,
+    /// Exact transitive normal path-dependency allowlist, excluding this package.
+    /// Registry dependencies and dev/build edges are not part of this contract.
+    pub allowed_local_dependencies: Option<Vec<String>>,
+}
+fn enabled() -> bool {
+    true
 }
 
 /// Only target selection varies. Compilation and packaging belong to Snap.
@@ -109,6 +131,12 @@ impl Project {
                     }
                     for manifest in &project.config.check.rust {
                         project.file(manifest)?;
+                    }
+                    for variant in &project.config.check.variants {
+                        project.file(&variant.manifest)?;
+                    }
+                    for config in &project.config.check.typescript {
+                        project.file(config)?;
                     }
                     return Ok(project);
                 }
