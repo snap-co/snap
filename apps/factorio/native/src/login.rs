@@ -6,36 +6,40 @@ use axum::{Form, extract::Path, response::Html};
 /// Refresh native authority before admission, and during idle/long-running
 /// attachments. Selection never accepts an expired local credential. The shared
 /// dispatcher still revalidates authority when admitting each protected operation.
-pub async fn prepare(oauth: &OAuth, command: snap_transport::Command) -> Result<(), Error> {
-    let id = oauth.run("cli.refresh.select", |tx| match command {
-        snap_transport::Command::Connect { bearer, .. }
-        | snap_transport::Command::Request {
-            bearer: Some(bearer),
-            ..
-        } => operations::session_id(tx, &bearer).map(|(id, _)| Some(id)),
-        snap_transport::Command::Request { invocation, .. }
-            if invocation.operation == "factorio.login-finish" =>
-        {
-            let code = invocation.input["code"].as_str().ok_or(Error::Invalid)?;
-            let proof = invocation.input["proof"].as_str().ok_or(Error::Invalid)?;
-            let row = tx
-                .get("factorio.cli_login", &[code.into()])?
-                .ok_or(Error::NotFound)?;
-            let (
-                Some(snap_store::Value::Text(saved)),
-                Some(snap_store::Value::Integer(expires)),
-                Some(snap_store::Value::Text(id)),
-            ) = (row.get("proof"), row.get("expires"), row.get("session"))
-            else {
-                return Err(Error::Invalid);
-            };
-            if *expires <= now() || !rp::same_secret(saved, &rp::digest(proof)) {
-                return Err(Error::NotFound);
+/// Renewal may wait behind an accepted controller; waiting does not block Tokio
+/// or shorten the login/recovery lifetime. Network IO never holds the host lock.
+pub async fn prepare(oauth: &Arc<OAuth>, command: snap_transport::Command) -> Result<(), Error> {
+    let id = oauth
+        .run_async("cli.refresh.select", move |tx| match command {
+            snap_transport::Command::Connect { bearer, .. }
+            | snap_transport::Command::Request {
+                bearer: Some(bearer),
+                ..
+            } => operations::session_id(tx, &bearer).map(|(id, _)| Some(id)),
+            snap_transport::Command::Request { invocation, .. }
+                if invocation.operation == "factorio.login-finish" =>
+            {
+                let code = invocation.input["code"].as_str().ok_or(Error::Invalid)?;
+                let proof = invocation.input["proof"].as_str().ok_or(Error::Invalid)?;
+                let row = tx
+                    .get("factorio.cli_login", &[code.into()])?
+                    .ok_or(Error::NotFound)?;
+                let (
+                    Some(snap_store::Value::Text(saved)),
+                    Some(snap_store::Value::Integer(expires)),
+                    Some(snap_store::Value::Text(id)),
+                ) = (row.get("proof"), row.get("expires"), row.get("session"))
+                else {
+                    return Err(Error::Invalid);
+                };
+                if *expires <= now() || !rp::same_secret(saved, &rp::digest(proof)) {
+                    return Err(Error::NotFound);
+                }
+                Ok((!id.is_empty()).then(|| id.clone()))
             }
-            Ok((!id.is_empty()).then(|| id.clone()))
-        }
-        _ => Ok(None),
-    })?;
+            _ => Ok(None),
+        })
+        .await?;
     if let Some(id) = id {
         oauth.session_id(&id).await?;
     }

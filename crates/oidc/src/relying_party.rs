@@ -187,6 +187,18 @@ pub fn lease(tx: &mut Transaction<'_>, id: &str, now: i64) -> Result<Session, Er
     Ok(session)
 }
 
+/// Preserve recovery state through access expiry and an owned refresh, not
+/// application authority. A lost/uncertain rotation remains fenced by `resolve`
+/// and `lease`, and startup recovery deletes it. Failure/logout deletes the
+/// session, so the next lifetime check retires its state without replaying IO.
+pub fn retained(tx: &mut Transaction<'_>, id: &str, now: i64) -> Result<Session, Error> {
+    let session: Session = read(tx, SESSIONS, id)?.ok_or(Error::NotFound)?;
+    if session.expires <= now {
+        return Err(Error::NotFound);
+    }
+    Ok(session)
+}
+
 /// Run once before opening listeners. Lost exchanges are not replayed and cannot
 /// retain authority through an old access token after restart.
 pub fn recover(tx: &mut Transaction<'_>, now: i64) -> Result<(), Error> {

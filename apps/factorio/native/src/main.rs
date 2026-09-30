@@ -41,13 +41,19 @@ impl App {
                 .map_err(|_| Error::Invalid)?
                 .strip_prefix("Bearer ")
                 .ok_or(Error::Invalid)?;
-            let id = self.oauth.run("factorio.agent.select", |tx| {
-                operations::session_id(tx, bearer).map(|(id, _)| id)
-            })?;
+            let bearer = bearer.to_owned();
+            let credential = bearer.clone();
+            let id = self
+                .oauth
+                .run_async("factorio.agent.select", move |tx| {
+                    operations::session_id(tx, &credential).map(|(id, _)| id)
+                })
+                .await?;
             self.oauth.session_id(&id).await?;
             return self
                 .oauth
-                .run("factorio.agent", |tx| operations::session(tx, bearer));
+                .run_async("factorio.agent", move |tx| operations::session(tx, &bearer))
+                .await;
         }
         let s = self.oauth.session(headers).await?;
         if mutation {
@@ -200,10 +206,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "factorio", origin.starts_with("https:"))?;
-    let host = Host::new(
+    let host = Host::new_with_lifetime_authority(
         store,
         graph::document(),
         Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
+        Arc::new(operations::retained),
         snap_transport::server::Config {
             reconnect_ms: startup.app.tcp.retention_ms,
             ..Default::default()

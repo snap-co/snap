@@ -265,6 +265,19 @@ impl OAuth {
     ) -> Result<T, Error> {
         self.documents.host.lock().unwrap().transact(name, f)
     }
+    /// A transaction may wait behind controller IO. Keep that wait off Tokio's
+    /// async workers; cancellation of the waiter does not cancel the owned task.
+    /// The callback cannot contain network IO or re-enter the application host.
+    pub async fn run_async<T: Send + 'static>(
+        self: &Arc<Self>,
+        name: &'static str,
+        f: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let oauth = self.clone();
+        tokio::task::spawn_blocking(move || oauth.run(name, f))
+            .await
+            .map_err(|_| Error::Unavailable)?
+    }
     fn endpoint(&self, value: &Value, key: &str) -> Result<String, Error> {
         let value = value[key].as_str().ok_or(Error::Invalid)?;
         let url = url::Url::parse(value).map_err(|_| Error::Invalid)?;
@@ -362,18 +375,31 @@ impl OAuth {
     }
     /// Refresh IO is serialized separately from Store. Mutation authority is still
     /// rechecked in the application's own transaction immediately before its write.
-    pub async fn session(&self, headers: &HeaderMap) -> Result<rp::Session, Error> {
+    pub async fn session(self: &Arc<Self>, headers: &HeaderMap) -> Result<rp::Session, Error> {
         let bearer = self.cookies.read(headers, false).ok_or(Error::NotFound)?;
         self.session_id(&rp::digest(&bearer)).await
     }
     /// Refresh a private session selected by a verified application credential.
     /// Browser and native callers share refresh serialization and durable fencing;
-    /// upstream refresh tokens never leave this host. Uncertain IO is not replayed.
-    pub async fn session_id(&self, id: &str) -> Result<rp::Session, Error> {
+    /// upstream refresh tokens never leave this host. Transactions may wait behind
+    /// accepted controller work, without blocking Tokio. The owned rotation task
+    /// settles even if the requesting stream times out or disconnects. Uncertain
+    /// IO is fenced and never replayed, including after a host restart.
+    pub async fn session_id(self: &Arc<Self>, id: &str) -> Result<rp::Session, Error> {
+        let oauth = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move { oauth.refresh_session(id).await })
+            .await
+            .map_err(|_| Error::Unavailable)?
+    }
+    async fn refresh_session(self: &Arc<Self>, id: String) -> Result<rp::Session, Error> {
         let _refresh = self.refresh.lock().await;
-        let previous = self.run("oauth.refresh.begin", |tx| {
-            rp::begin_refresh_id(tx, id, now())
-        })?;
+        let selected = id.clone();
+        let previous = self
+            .run_async("oauth.refresh.begin", move |tx| {
+                rp::begin_refresh_id(tx, &selected, now())
+            })
+            .await?;
         if let Some(previous) = previous {
             let result = async {
                 let metadata = self.discovery().await?;
@@ -388,17 +414,21 @@ impl OAuth {
                         Some(&previous),
                     )
                     .await?;
-                self.run("oauth.refresh.finish", |tx| {
+                self.run_async("oauth.refresh.finish", move |tx| {
                     rp::finish_refresh(tx, &previous, tokens, now())
                 })
+                .await
             }
             .await;
             if result.is_err() {
-                let _ = self.run("oauth.refresh.failed", |tx| rp::revoke_id(tx, id));
+                let _ = self
+                    .run_async("oauth.refresh.failed", move |tx| rp::revoke_id(tx, &id))
+                    .await;
             }
             result
         } else {
-            self.run("oauth.session", |tx| rp::resolve_id(tx, id, now()))
+            self.run_async("oauth.session", move |tx| rp::resolve_id(tx, &id, now()))
+                .await
         }
     }
     pub fn csrf(&self, headers: &HeaderMap, session: &rp::Session) -> Result<(), Error> {

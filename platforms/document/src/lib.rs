@@ -50,6 +50,7 @@ pub struct Request {
 struct StoreAuthority<B> {
     store: Arc<Mutex<Store<B>>>,
     authenticate: Authenticate,
+    lifetime: Authenticate,
 }
 
 impl<B: Backend> Authority for StoreAuthority<B> {
@@ -60,6 +61,13 @@ impl<B: Backend> Authority for StoreAuthority<B> {
             .inspect("document.authenticate", |tx| {
                 (self.authenticate)(tx, bearer)
             })
+            .map_err(storage_error)
+    }
+    fn retained(&self, bearer: &str) -> Result<String, Error> {
+        self.store
+            .lock()
+            .unwrap()
+            .inspect("document.lifetime", |tx| (self.lifetime)(tx, bearer))
             .map_err(storage_error)
     }
 }
@@ -184,11 +192,35 @@ impl<B: Backend> Host<B> {
         config: Config,
         boot: String,
     ) -> Self {
+        Self::new_with_lifetime_authority(
+            store,
+            document,
+            authenticate.clone(),
+            authenticate,
+            config,
+            boot,
+        )
+    }
+
+    /// Separate renewable login lifetime from current access authority. Lifetime
+    /// checks govern retained state only; connect, invocation admission and
+    /// protected Document publication still use `authenticate`. Neither callback
+    /// may do external IO. Local/absolute expiry and known revocation must fail
+    /// both, while an owned refresh may preserve state without granting access.
+    pub fn new_with_lifetime_authority(
+        store: Store<B>,
+        document: Document,
+        authenticate: Authenticate,
+        lifetime: Authenticate,
+        config: Config,
+        boot: String,
+    ) -> Self {
         assert!(!boot.is_empty());
         let store = Arc::new(Mutex::new(store));
         let authority = StoreAuthority {
             store: store.clone(),
             authenticate: authenticate.clone(),
+            lifetime,
         };
         Self {
             store,
@@ -1058,6 +1090,12 @@ impl<B: Backend> Host<B> {
             .lock()
             .unwrap()
             .inspect("document.delivery", |tx| {
+                // A retained renewable login is not current read authority.
+                // Do not publish new holdings while its access is unavailable.
+                let bearer = peer.bearer.as_deref().ok_or(snap_store::Error::NotFound)?;
+                if (self.authenticate)(tx, bearer)? != actor {
+                    return Err(snap_store::Error::NotFound);
+                }
                 self.document
                     .manifest(tx, &self.lifetime(connection), actor, &Manifest::default())
                     .map(|m| m.documents)

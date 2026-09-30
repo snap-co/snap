@@ -35,6 +35,12 @@ pub fn session(tx: &mut Transaction<'_>, bearer: &str) -> Result<(rp::Session, b
     let (id, human) = session_id(tx, bearer)?;
     Ok((rp::lease(tx, &id, crate::now())?, human))
 }
+
+/// Recovery retention cannot authorize operations or extend either login expiry.
+pub fn retained(tx: &mut Transaction<'_>, bearer: &str) -> Result<String, Error> {
+    let (id, _) = session_id(tx, bearer)?;
+    rp::retained(tx, &id, crate::now()).map(|s| s.owner)
+}
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, Error> {
     v[key].as_str().ok_or(Error::Invalid)
 }

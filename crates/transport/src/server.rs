@@ -7,6 +7,12 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 /// token need not change identity; no session IDs, leases or cookies cross here.
 pub trait Authority {
     fn identify(&self, bearer: &str) -> Result<String, Error>;
+    /// Lifetime eligibility only, never permission to connect or invoke. Hosts
+    /// with renewable access may retain state while access is expired or rotation
+    /// is owned. Absolute credential expiry and known revocation still retire it.
+    fn retained(&self, bearer: &str) -> Result<String, Error> {
+        self.identify(bearer)
+    }
 }
 impl<F: Fn(&str) -> Option<String>> Authority for F {
     fn identify(&self, bearer: &str) -> Result<String, Error> {
@@ -113,7 +119,7 @@ impl<R: Authority> Server<R> {
         self.residents.retain(|(identity, _), entry| {
             let valid = entry.accepted > 0
                 || !self.live_authority
-                || match self.authority.identify(&entry.bearer) {
+                || match self.authority.retained(&entry.bearer) {
                     Ok(current) => current == *identity,
                     Err(_) => false,
                 };

@@ -119,10 +119,11 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
     for loss in ["revoked", "session-expired", "access-expired"] {
         let (store, config, mut session) = authority_fixture();
         let owner = session.owner.clone();
-        let host = Host::new(
+        let host = Host::new_with_lifetime_authority(
             store,
             graph::document(),
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+            Arc::new(crate::operations::retained),
             Default::default(),
             "expired-authority".into(),
         );
@@ -158,6 +159,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
             Ok(())
         })
         .unwrap();
+        host.drain(peer).unwrap();
         host.transact("lose authority", |tx| {
             if loss == "revoked" {
                 rp::revoke(tx, "browser")
@@ -180,7 +182,31 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
             }
         })
         .unwrap();
-        assert!(host.submit(peer, edit(2, "Denied"), 1).is_err());
+        if host.submit(peer, edit(2, "Denied"), 1).is_ok() {
+            // A renewable login may keep its attachment while current access is
+            // expired. Admission must reject the operation, not erase recovery.
+            let events: Vec<_> = host
+                .drain(peer)
+                .unwrap()
+                .into_iter()
+                .flat_map(|r| match r {
+                    Response::Events(events) => events,
+                    _ => vec![],
+                })
+                .collect();
+            assert!(events.iter().any(|event| matches!(
+                event,
+                snap_transport::Event::Completed {
+                    id: 2,
+                    outcome: Err(_)
+                }
+            )));
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, snap_transport::Event::Accepted { id: 2 }))
+            );
+        }
         assert!(!host.step());
         host.transact("nothing persisted", |tx| {
             let state = graph::load(tx, ROOT, &owner)?;
@@ -190,6 +216,508 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
         })
         .unwrap();
     }
+}
+
+#[test]
+fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocation() {
+    use snap_document_local::Host;
+    use snap_oidc::relying_party as rp;
+    use snap_transport::{Command, Invocation, Response, json, server::Config};
+    use std::sync::Arc;
+    for loss in [
+        "access-expired",
+        "refreshing",
+        "local-expired",
+        "session-expired",
+        "revoked",
+    ] {
+        let (mut store, config, mut session) = authority_fixture();
+        store
+            .run("seed CLI credential", |tx| {
+                tx.insert(
+                    "factorio.cli",
+                    [
+                        ("id".into(), rp::digest("cli").into()),
+                        ("session".into(), session.id.clone().into()),
+                        ("expires".into(), session.expires.into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                )
+            })
+            .unwrap();
+        let host = Host::new_with_lifetime_authority(
+            store,
+            factorio::documents::document(),
+            Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+            Arc::new(crate::operations::retained),
+            Config {
+                reconnect_ms: 1_800_000,
+                capacity: 8,
+            },
+            "retention".into(),
+        );
+        let mut host = crate::operations::register(host, config, "http://localhost".into());
+        let connect = || Command::Connect {
+            bearer: "cli".into(),
+            client_id: "retained".into(),
+        };
+        let invoke = || {
+            Command::Invoke(Invocation {
+                id: 1,
+                operation: "factorio.identity".into(),
+                input: json!({}),
+            })
+        };
+        let peer = host.open().unwrap();
+        host.submit(peer, connect(), 0).unwrap();
+        let lifetime = host.attachment_lifetime(peer).unwrap();
+        host.drain(peer).unwrap();
+        host.submit(peer, invoke(), 0).unwrap();
+        assert!(host.step());
+        let original: Vec<_> = host
+            .drain(peer)
+            .unwrap()
+            .into_iter()
+            .filter(|response| matches!(response, Response::Events(_)))
+            .collect();
+        host.carrier_control(peer).unwrap().detach(1);
+        host.tick(1);
+        host.transact("lose access or login", |tx| {
+            if loss == "revoked" {
+                return rp::revoke_id(tx, &session.id);
+            }
+            if loss == "local-expired" {
+                tx.update(
+                    "factorio.cli",
+                    &[rp::digest("cli").into()],
+                    [("expires".into(), 0.into())].into_iter().collect(),
+                )?;
+            }
+            if loss == "session-expired" {
+                session.expires = 0;
+            }
+            session.tokens.access_expires = 0;
+            session.refreshing = loss == "refreshing";
+            tx.update(
+                "oidc_rp.sessions",
+                &[session.id.clone().into()],
+                [(
+                    "data".into(),
+                    serde_json::to_string(&session).unwrap().into(),
+                )]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .unwrap();
+        host.tick(610_000);
+        let replacement = host.open().unwrap();
+        // Retention is not access authority: even a surviving lifetime cannot
+        // admit a new connection/operation before its tokens have been refreshed.
+        assert!(host.submit(replacement, connect(), 610_000).is_err());
+        if matches!(loss, "access-expired" | "refreshing") {
+            host.transact("owned refresh settled", |tx| {
+                session.tokens.access_expires = crate::now() + 600;
+                session.refreshing = false;
+                tx.update(
+                    "oidc_rp.sessions",
+                    &[session.id.clone().into()],
+                    [(
+                        "data".into(),
+                        serde_json::to_string(&session).unwrap().into(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )
+            })
+            .unwrap();
+            host.submit(replacement, connect(), 610_001).unwrap();
+            assert_eq!(
+                host.drain(replacement).unwrap(),
+                vec![Response::Attached { resumed: true }]
+            );
+            assert_eq!(host.attachment_lifetime(replacement).unwrap(), lifetime);
+            host.submit(replacement, invoke(), 610_001).unwrap();
+            // The retained completion is returned; the application is not replayed.
+            assert_eq!(host.drain(replacement).unwrap(), original);
+            assert!(!host.step());
+            host.carrier_control(replacement).unwrap().detach(610_002);
+            host.tick(610_002);
+            host.tick(2_410_002);
+            let expired = host.open().unwrap();
+            host.submit(expired, connect(), 2_410_002).unwrap();
+            assert_eq!(
+                host.drain(expired).unwrap(),
+                vec![Response::Attached { resumed: false }]
+            );
+            assert_ne!(host.attachment_lifetime(expired).unwrap(), lifetime);
+        } else {
+            assert!(host.retired(peer));
+        }
+    }
+}
+
+#[test]
+fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
+    use factorio::documents as graph;
+    use snap_document_local::Host;
+    use snap_transport::{Command, Invocation, Response, json};
+    use std::sync::Arc;
+    let (store, config, mut session) = authority_fixture();
+    let host = Host::new_with_lifetime_authority(
+        store,
+        graph::document(),
+        Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+        Arc::new(crate::operations::retained),
+        Default::default(),
+        "holdings-authority".into(),
+    );
+    let mut host = crate::operations::register(host, config, "http://localhost".into());
+    let peer = host.open().unwrap();
+    host.submit(
+        peer,
+        Command::Connect {
+            bearer: "browser".into(),
+            client_id: "watch".into(),
+        },
+        0,
+    )
+    .unwrap();
+    host.drain(peer).unwrap();
+    host.submit(
+        peer,
+        Command::Invoke(Invocation {
+            id: 1,
+            operation: "factorio.identity".into(),
+            input: json!({}),
+        }),
+        0,
+    )
+    .unwrap();
+    assert!(host.step());
+    assert!(
+        host.drain(peer)
+            .unwrap()
+            .iter()
+            .any(|r| matches!(r, Response::Notification { .. }))
+    );
+    session.tokens.access_expires = 0;
+    host.transact("expire access and change watched state", |tx| {
+        tx.update(
+            "oidc_rp.sessions",
+            &[session.id.clone().into()],
+            [(
+                "data".into(),
+                serde_json::to_string(&session).unwrap().into(),
+            )]
+            .into_iter()
+            .collect(),
+        )?;
+        graph::create_intake(
+            tx,
+            ROOT,
+            &session.owner,
+            "private-update",
+            "Not yet visible",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    host.tick(1);
+    assert!(!host.retired(peer));
+    assert!(
+        host.drain(peer).unwrap().is_empty(),
+        "retention must not authorize new watched data"
+    );
+    session.tokens.access_expires = crate::now() + 600;
+    host.transact("access renewed", |tx| {
+        tx.update(
+            "oidc_rp.sessions",
+            &[session.id.clone().into()],
+            [(
+                "data".into(),
+                serde_json::to_string(&session).unwrap().into(),
+            )]
+            .into_iter()
+            .collect(),
+        )
+    })
+    .unwrap();
+    assert!(
+        host.drain(peer)
+            .unwrap()
+            .iter()
+            .any(|r| matches!(r, Response::Notification { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real TLS maintenance and slow controller suite"]
+async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
+    use snap_document_local::{Host, web::Shared};
+    use snap_oauth_local::{Cookies, OAuth};
+    use snap_transport::{Command, Event, Invocation, Response, json};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+    let (mut store, config, _) = authority_fixture();
+    let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
+    let host = Host::new_with_lifetime_authority(
+        store,
+        factorio::documents::document(),
+        Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+        Arc::new(crate::operations::retained),
+        Default::default(),
+        "slow-controller".into(),
+    );
+    let runtime = tokio::runtime::Handle::current();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let mut entered = Some(entered);
+    let host = crate::operations::register(host, config, "http://localhost".into())
+        .with_controller(
+            factorio::documents::WORKSPACE_KIND,
+            Box::new(move |_, _| {
+                if let Some(entered) = entered.take() {
+                    entered.send(()).unwrap();
+                    // Production native controllers await Tokio process IO while
+                    // holding this same host gate. Two renewal waits must leave the
+                    // two async workers free to drive that IO and this deadline.
+                    runtime.block_on(tokio::time::sleep(Duration::from_secs(17)));
+                }
+                Ok(())
+            }),
+        );
+    let shared = Shared::new(host, "http://localhost".into());
+    let oauth = OAuth::new(
+        shared.clone(),
+        cookies,
+        snap_oauth_local::Config {
+            origin: "http://localhost".into(),
+            issuer: "http://localhost:3846".into(),
+            client: "factorio".into(),
+            secret: String::from("fixture-secret-with-at-least-32-bytes").into(),
+            dev_origins: vec![],
+        },
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let prepare: snap_document_local::tcp::Prepare = Arc::new({
+        let calls = calls.clone();
+        move |command| {
+            let oauth = oauth.clone();
+            calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                crate::login::prepare(&oauth, command)
+                    .await
+                    .map_err(|_| snap_transport::Error::InvalidBearer)
+            })
+        }
+    });
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let (server_tls, client_tls) = tls_support::pki(directory.path(), false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let serving = shared.clone();
+    let _server = Stop(tokio::spawn(async move {
+        snap_document_local::tcp::serve_prepared(listener, serving, server_tls, prepare)
+            .await
+            .unwrap();
+    }));
+    let mut clients = Vec::new();
+    for id in ["one", "two"] {
+        let mut client = snap_transport_native::Client::open(&address, &client_tls)
+            .await
+            .unwrap();
+        client
+            .send(&Command::Connect {
+                bearer: "browser".into(),
+                client_id: id.into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            client.receive().await.unwrap().0,
+            Response::Attached { resumed: false }
+        );
+        clients.push(client);
+    }
+    let _dispatcher = Stop(tokio::spawn(snap_document_local::web::dispatch(shared)));
+    clients[0].send(&Command::Invoke(Invocation {
+        id: 1, operation: "factorio.command".into(), input: json!({"workspace":ROOT,"command":{"command":"ticket","ticket":{"id":"one","title":"Trigger controller","description":"","modules":["one"],"status":"draft","notes":"","parent":null,"blockers":[]}}}),
+    })).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        waiting.await.unwrap();
+        loop {
+            if let Response::Events(events) = clients[0].receive().await.unwrap().0
+                && events.iter().any(|event| {
+                    matches!(
+                        event,
+                        Event::Completed {
+                            id: 1,
+                            outcome: Ok(_)
+                        }
+                    )
+                })
+            {
+                break;
+            }
+        }
+        assert!(
+            calls.load(Ordering::SeqCst) >= 4,
+            "both maintained carriers must wait during the controller"
+        );
+        clients[1]
+            .send(&Command::Invoke(Invocation {
+                id: 2,
+                operation: "factorio.identity".into(),
+                input: json!({}),
+            }))
+            .await
+            .unwrap();
+        loop {
+            if let Response::Events(events) = clients[1].receive().await.unwrap().0
+                && events.iter().any(|event| {
+                    matches!(
+                        event,
+                        Event::Completed {
+                            id: 2,
+                            outcome: Ok(_)
+                        }
+                    )
+                })
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("controller IO and deferred renewal must settle on a two-worker runtime");
+}
+
+#[tokio::test]
+#[ignore = "real OAuth IO suite"]
+async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it() {
+    use snap_document_local::{Host, web::Shared};
+    use snap_oauth_local::{Cookies, OAuth};
+    use snap_oidc::relying_party as rp;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+    let (mut store, _, mut session) = authority_fixture();
+    session.tokens.access_expires = 0;
+    store
+        .run("expire access", |tx| {
+            tx.update(
+                "oidc_rp.sessions",
+                &[session.id.clone().into()],
+                [(
+                    "data".into(),
+                    serde_json::to_string(&session).unwrap().into(),
+                )]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .unwrap();
+    let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
+    let host = Host::new(
+        store,
+        factorio::documents::document(),
+        Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+        Default::default(),
+        "cancelled-refresh".into(),
+    );
+    let shared = Shared::new(host, "http://localhost".into());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let router = axum::Router::new().route(
+        "/.well-known/openid-configuration",
+        axum::routing::get({
+            let entered = entered.clone();
+            let release = release.clone();
+            let calls = calls.clone();
+            move || {
+                let entered = entered.clone();
+                let release = release.clone();
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    entered.notify_one();
+                    release.notified().await;
+                    axum::http::StatusCode::BAD_GATEWAY
+                }
+            }
+        }),
+    );
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _server = Stop(tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    }));
+    let oauth = OAuth::new(
+        shared,
+        cookies,
+        snap_oauth_local::Config {
+            origin: "http://localhost".into(),
+            issuer,
+            client: "factorio".into(),
+            secret: String::from("fixture-secret-with-at-least-32-bytes").into(),
+            dev_origins: vec![],
+        },
+    )
+    .unwrap();
+    let request = oauth.clone();
+    let id = session.id.clone();
+    let waiter = tokio::spawn(async move { request.session_id(&id).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    waiter.abort();
+    assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let id = session.id.clone();
+            if oauth
+                .run_async("retired after failed exchange", move |tx| {
+                    rp::retained(tx, &id, crate::now())
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owned failed refresh must retire its session even with no waiter");
+    assert!(oauth.session_id(&session.id).await.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "uncertain exchange must not be retried"
+    );
 }
 
 fn authority_fixture() -> (
