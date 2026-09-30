@@ -35,10 +35,17 @@ pub fn run(args: Args) -> Result<()> {
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
         "Invalid environment name"
     );
-    let directory = project.root.join(".deployment").join(environment);
+    let directory = if environment == "development" {
+        snap_config::development_config(&project.root)?
+            .parent()
+            .context("Development config directory missing")?
+            .to_owned()
+    } else {
+        project.root.join(".deployment").join(environment)
+    };
     ensure!(
         directory.join("config.toml").is_file(),
-        "Create .deployment/<environment>/config.toml first"
+        "Create the development profile or .deployment/<environment>/config.toml first"
     );
     if init {
         for name in [

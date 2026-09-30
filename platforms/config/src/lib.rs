@@ -39,6 +39,66 @@ fn web_name() -> PathBuf {
     "web".into()
 }
 
+/// A private, ignored development profile overrides the tracked template.
+/// An unreadable or malformed selected profile must never fall back to another one.
+pub fn development_config(project: &Path) -> Result<PathBuf> {
+    let private = project.join(".snap/development/config.toml");
+    Ok(if private.try_exists()? {
+        private
+    } else {
+        project.join(".deployment/development/config.toml")
+    })
+}
+
+/// Find this application's checkout from the working directory or executable.
+/// This supports nested source directories and ordinary target/debug builds without
+/// embedding the build machine's source path into a relocatable executable.
+pub fn application_development_config(application: &str) -> Result<Option<PathBuf>> {
+    ensure!(
+        !application.is_empty()
+            && application
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+        "Invalid application name"
+    );
+    let current = std::env::current_dir()?;
+    let executable = std::env::current_exe()?;
+    for start in [
+        &current,
+        executable
+            .parent()
+            .context("Executable directory missing")?,
+    ] {
+        for ancestor in start.ancestors() {
+            for project in [ancestor.to_owned(), ancestor.join("apps").join(application)] {
+                let marker = project.join("snap.toml");
+                let text = match std::fs::read_to_string(&marker) {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error).context("Cannot read snap.toml"),
+                };
+                let document: toml::Table = toml::from_str(&text)
+                    .map_err(|_| anyhow::anyhow!("Invalid snap.toml schema"))?;
+                if document.get("application").and_then(toml::Value::as_str) == Some(application) {
+                    return development_config(&project).map(Some);
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Packaged config beside the executable takes precedence over checkout discovery.
+pub fn application_config(application: &str) -> Result<PathBuf> {
+    let packaged = std::env::current_exe()?.with_file_name("config.toml");
+    if packaged.try_exists()? {
+        return Ok(packaged);
+    }
+    application_development_config(application)?.with_context(|| {
+        format!("No {application} configuration found. Set up the checkout's .snap/development/config.toml, or use --config PATH")
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config<T> {
@@ -130,16 +190,54 @@ impl<T: DeserializeOwned> Config<T> {
             Err(_) => bail!("Cannot read secrets.enc"),
         }
     }
-    pub fn load_secrets(&self) -> Result<Secrets> {
-        let identity = std::env::var("SNAP_MASTER_KEY")
-            .ok()
-            .map(|value| {
-                value
+    /// Explicit environment keys always win, including when invalid. Development
+    /// may otherwise read a private config-adjacent secrets.key; production never does.
+    /// The supervisor and native hosts use the same selection and privacy checks.
+    pub fn master_key(&self) -> Result<Option<age::x25519::Identity>> {
+        match std::env::var("SNAP_MASTER_KEY") {
+            Ok(value) => {
+                return value
                     .trim()
-                    .parse::<age::x25519::Identity>()
-                    .map_err(|_| anyhow::anyhow!("Invalid SNAP_MASTER_KEY"))
-            })
-            .transpose()?;
+                    .parse()
+                    .map(Some)
+                    .map_err(|_| anyhow::anyhow!("Invalid SNAP_MASTER_KEY"));
+            }
+            Err(std::env::VarError::NotUnicode(_)) => bail!("Invalid SNAP_MASTER_KEY"),
+            Err(std::env::VarError::NotPresent) => {}
+        }
+        if self.host.mode != Mode::Development {
+            return Ok(None);
+        }
+        let mut file = match std::fs::File::open(self.path("secrets.key")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("Cannot open development secrets.key"),
+        };
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file() && metadata.len() <= 4096,
+            "Invalid development secrets.key file"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(
+                metadata.permissions().mode() & 0o077 == 0,
+                "Development secrets.key must be private; use chmod 600"
+            );
+        }
+        use std::io::Read;
+        let mut value = String::new();
+        file.read_to_string(&mut value)
+            .context("Cannot read development secrets.key")?;
+        value
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("Invalid development secrets.key"))
+    }
+    pub fn load_secrets(&self) -> Result<Secrets> {
+        let identity = self.master_key()?;
         self.secrets(identity.as_ref())
     }
 }

@@ -89,3 +89,48 @@ fn dev_validates_installation_and_options_before_starting_processes() {
     );
     assert!(!root.path().join(".snap").exists());
 }
+
+#[test]
+fn dev_prefers_the_private_profile_and_explicit_config_overrides_it() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("snap.toml"),
+        "version=1\napplication='fixture'\n",
+    )
+    .unwrap();
+    let private = root.path().join(".snap/development");
+    let template = root.path().join(".deployment/development");
+    fs::create_dir_all(&private).unwrap();
+    fs::create_dir_all(&template).unwrap();
+    fs::write(private.join("config.toml"), "invalid-private-profile").unwrap();
+    fs::write(template.join("config.toml"), "version=1\n[host]\nmode='production'\nlisten='127.0.0.1:0'\norigin='https://fixture.example.test'\ndata_dir='/data'\n[app]\n").unwrap();
+    let invoke = |explicit: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_snap"));
+        command
+            .current_dir(root.path())
+            .env_remove("SNAP_MASTER_KEY")
+            .arg("dev");
+        if explicit {
+            command.arg("--config").arg(template.join("config.toml"));
+        }
+        let result = command.output().unwrap();
+        assert!(!result.status.success());
+        String::from_utf8(result.stderr).unwrap()
+    };
+    let selected = invoke(false);
+    assert!(
+        selected.contains("Invalid config.toml schema"),
+        "{selected}"
+    );
+    assert!(!selected.contains("invalid-private-profile"));
+    let explicit = invoke(true);
+    assert!(
+        explicit.contains("requires development configuration"),
+        "{explicit}"
+    );
+}

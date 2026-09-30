@@ -14,3 +14,11 @@ run = "cargo build --target-dir target -p snap-cli"
 [tasks.dev]
 description = "Build Testy's browser SDK and start its local development host"
 run = "exec ./bin/dev"
+
+[tasks.factorio]
+description = "Build and watch Factorio using this checkout's development profile"
+run = "exec ./bin/snap dev apps/factorio"
+
+[tasks.factorio-build]
+description = "Rebuild this checkout's native Factorio command without installing it"
+run = "cargo build --locked --target-dir target -p factorio-native"

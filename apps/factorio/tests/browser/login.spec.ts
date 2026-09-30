@@ -7,10 +7,12 @@ import { resolve } from "node:path";
 
 const exec = promisify(execFile);
 const base = process.env.FACTORIO_TEST_URL!, directory = process.env.FACTORIO_FIXTURE_DIR!;
-const binary = resolve(import.meta.dirname, "../../../../target/debug/factorio");
-const env = { ...process.env, FACTORIO_TOKEN: "" };
+const binary = process.env.FACTORIO_TEST_CLI_BINARY ?? resolve(import.meta.dirname, "../../../../target/debug/factorio");
+const env = { ...process.env };
+for (const name of ["FACTORIO_TOKEN", "FACTORIO_ADDR", "FACTORIO_CA_FILE", "FACTORIO_SERVER_NAME", "FACTORIO_WORKSPACE", "SNAP_MASTER_KEY"]) delete env[name];
+const cwd = `${directory}/developer`;
 async function cli(path: string, ...args: string[]) {
-  const result = await exec(binary, ["--credentials", path, ...args], { env, timeout: 70000 });
+  const result = await exec(binary, ["--credentials", path, ...args], { env, cwd, timeout: 70000 });
   return JSON.parse(result.stdout);
 }
 async function authority(owner: string, action = "state") {
@@ -20,7 +22,7 @@ async function authority(owner: string, action = "state") {
   expect(response.ok).toBe(true);
   return response.json();
 }
-async function login(page: Page) {
+async function login(page: Page, overrideTrust = false) {
   await page.goto(base);
   await page.getByRole("link", { name: "Continue with Authy" }).click();
   await page.getByRole("button", { name: "New here? Create account", exact: true }).click();
@@ -30,7 +32,9 @@ async function login(page: Page) {
   await page.getByRole("button", { name: "Allow", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Create your first workspace", exact: true })).toBeVisible();
   const path = `${directory}/login-${randomUUID()}.json`;
-  const child = spawn(binary, ["login", "--credentials", path], { env });
+  const profile = `${cwd}/apps/factorio/.snap/development/config.toml`, original = await readFile(profile, "utf8");
+  if (overrideTrust) await writeFile(profile, original.replace(`${directory}/ca.pem`, `${directory}/missing-ca.pem`));
+  const child = spawn(binary, ["login", "--credentials", path, ...(overrideTrust ? ["--ca-file", `${directory}/ca.pem`] : [])], { env, cwd });
   let logs = "", output = "";
   child.stderr.on("data", data => logs += data.toString());
   child.stdout.on("data", data => output += data.toString());
@@ -44,7 +48,10 @@ async function login(page: Page) {
     expect(result.logged_in).toBe(true);
     expect(result.bearer).toBeUndefined();
     return { path, owner: result.owner as string, expires: result.expires as number };
-  } finally { if (child.exitCode === null) { child.kill(); await exit; } }
+  } finally {
+    if (child.exitCode === null) { child.kill(); await exit; }
+    if (overrideTrust) await writeFile(profile, original);
+  }
 }
 
 test("saved login refreshes real Authy tokens after restart without a browser, then respects local expiry", async ({ page }) => {
@@ -53,7 +60,10 @@ test("saved login refreshes real Authy tokens after restart without a browser, t
   const saved = JSON.parse(await readFile(granted.path, "utf8"));
   expect(saved.refresh).toBeUndefined();
   await page.close();
-  expect(await cli(granted.path, "workspaces")).toEqual([]);
+  const profile = `${cwd}/apps/factorio/.snap/development/config.toml`, original = await readFile(profile, "utf8");
+  await writeFile(profile, "invalid-development-profile");
+  try { expect(await cli(granted.path, "workspaces")).toEqual([]); }
+  finally { await writeFile(profile, original); }
   const before = await authority(granted.owner);
   expect(before.cli_expires).toBe(granted.expires);
   await authority(granted.owner, "expire-access");
@@ -73,7 +83,7 @@ test("saved login refreshes real Authy tokens after restart without a browser, t
 });
 
 test("revoked Authy refresh grant rejects saved CLI login and retires its local session", async ({ page }) => {
-  const granted = await login(page);
+  const granted = await login(page, true);
   await page.close();
   await authority(granted.owner, "revoke-grant");
   await expect(cli(granted.path, "workspaces")).rejects.toThrow();

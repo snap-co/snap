@@ -5,6 +5,7 @@ use crate::{
     config::Project,
     process::{OwnedProcess, Runner},
 };
+use age::secrecy::ExposeSecret;
 use anyhow::{Context, Result, bail, ensure};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{Value, json};
@@ -141,12 +142,9 @@ impl Installation {
         let clients = client_origins(&config.app, &hosts)?;
         host_table(&mut document)?
             .insert("dev_client_origins".into(), toml::Value::try_from(clients)?);
-        let key = match std::env::var("SNAP_MASTER_KEY") {
-            Ok(value) => Some(value),
-            Err(_) => optional_read(config.path("secrets.key"))?
-                .map(|bytes| String::from_utf8(bytes).map(|value| value.trim().to_owned()))
-                .transpose()?,
-        };
+        let key = config
+            .master_key()?
+            .map(|key| key.to_string().expose_secret().to_owned());
         let bag = optional_read(config.path("secrets.enc"))?;
         Ok(Self {
             document,
@@ -485,8 +483,10 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
         .build
         .as_ref()
         .map_or(&[][..], |s| s.server_args.as_slice());
-    let configuration =
-        configuration.unwrap_or_else(|| project.root.join(".deployment/development/config.toml"));
+    let configuration = match configuration {
+        Some(configuration) => configuration,
+        None => snap_config::development_config(&project.root)?,
+    };
     let configuration = configuration
         .canonicalize()
         .context("Cannot open config.toml")?;

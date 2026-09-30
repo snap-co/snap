@@ -874,6 +874,7 @@ dependencies = [
 name = "factorio-native"
 version = "0.0.0"
 dependencies = [
+ "age",
  "async-stream",
  "axum",
  "factorio",

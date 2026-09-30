@@ -41,7 +41,7 @@ struct Args {
 enum Mode {
     /// Run the HTTP/browser and verified TLS TCP server.
     Serve {
-        /// Installation config. Defaults to config.toml beside the executable.
+        /// Config override. Defaults to packaged config or the checkout's development profile.
         #[arg(long)]
         config: Option<PathBuf>,
         /// Validate configuration without decrypting secrets or starting listeners.
@@ -163,6 +163,52 @@ fn quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
+struct DevelopmentEndpoint {
+    addr: String,
+    ca_file: Option<PathBuf>,
+    server_name: Option<String>,
+}
+impl DevelopmentEndpoint {
+    fn read() -> Result<Option<Self>> {
+        #[derive(serde::Deserialize)]
+        struct Application {
+            tcp: Tcp,
+        }
+        #[derive(serde::Deserialize)]
+        struct Tcp {
+            listen: std::net::SocketAddr,
+            ca_file: Option<PathBuf>,
+            server_name: Option<String>,
+        }
+        let Some(path) = snap_config::application_development_config("factorio")? else {
+            return Ok(None);
+        };
+        let config = snap_config::Config::<Application>::read(&path)?;
+        ensure!(
+            config.host.mode == snap_config::Mode::Development,
+            "Checkout login defaults require development configuration"
+        );
+        let tcp = &config.app.tcp;
+        let mut address = tcp.listen;
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        ensure!(
+            address.port() != 0,
+            "Set a fixed development TCP port before using factorio login"
+        );
+        Ok(Some(Self {
+            addr: address.to_string(),
+            ca_file: tcp.ca_file.as_ref().map(|path| config.path(path)),
+            server_name: tcp.server_name.clone(),
+        }))
+    }
+}
+
 async fn opencode_api(exe: &str, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
     let mut command = tokio::process::Command::new(exe);
     command
@@ -258,16 +304,41 @@ async fn run(mut args: Args) -> Result<()> {
         None
     };
     let mut credentials = Locked::open(&path, seed)?;
+    // Infer checkout trust only for a fresh default login. Explicit endpoints and
+    // saved logins, including uncertain outcomes, keep their own authority and trust.
+    let development = if login && args.addr.is_none() && credentials.value.addr.is_none() {
+        DevelopmentEndpoint::read()?
+    } else {
+        None
+    };
     let addr = args
         .addr
         .or(credentials.value.addr.clone())
+        .or_else(|| development.as_ref().map(|endpoint| endpoint.addr.clone()))
         .unwrap_or(default_addr);
+    let development_ca = if args.ca_file.is_none() && credentials.value.ca_file.is_none() {
+        development
+            .as_ref()
+            .and_then(|endpoint| endpoint.ca_file.clone())
+            .map(std::fs::canonicalize)
+            .transpose()?
+    } else {
+        None
+    };
     let ca_file = args
         .ca_file
         .map(std::fs::canonicalize)
         .transpose()?
-        .or(credentials.value.ca_file.clone());
-    let server_name = args.server_name.or(credentials.value.server_name.clone());
+        .or(credentials.value.ca_file.clone())
+        .or(development_ca);
+    let server_name = args
+        .server_name
+        .or(credentials.value.server_name.clone())
+        .or_else(|| {
+            development
+                .as_ref()
+                .and_then(|endpoint| endpoint.server_name.clone())
+        });
     if !login && credentials.value.pending.is_some() {
         ensure!(
             credentials
@@ -591,7 +662,10 @@ pub async fn dispatch() -> Result<Option<snap_config::Options>> {
     } = args.command
     {
         return Ok(Some(snap_config::Options {
-            config: config.unwrap_or(std::env::current_exe()?.with_file_name("config.toml")),
+            config: match config {
+                Some(config) => config,
+                None => snap_config::application_config("factorio")?,
+            },
             action: if check_config {
                 snap_config::Action::Check
             } else if migrate {
