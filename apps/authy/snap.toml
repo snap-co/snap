@@ -13,4 +13,4 @@ commands = [["cargo", "test", "-p", "authy", "-p", "snap-oidc"]]
 commands = [["../../bin/check-authy-web"]]
 
 [test.native]
-commands = [["cargo", "build", "-p", "authy-native"], ["bun", "test", "tests/integration"]]
+commands = [["../../bin/snap", "build", "--project", ".", "--web-only", "--output", "dist/development/web"], ["cargo", "test", "-p", "authy-native", "--test", "http", "--", "--ignored"]]

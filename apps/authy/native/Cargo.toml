@@ -34,6 +34,14 @@ rand = "0.8"
 url = "2"
 toml = "0.9"
 
+[dev-dependencies]
+age = { version = "0.11", default-features = false }
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.29"
+nix = { version = "0.30", features = ["signal", "process"] }
+
 [lints]
 workspace = true
 

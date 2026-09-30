@@ -131,9 +131,11 @@ fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
     assert_eq!(host.inspect()["states"][0]["state"]["accumulator"], 64);
     // Expiry changes inspection even when no client submits another operation.
     assert!(!host.tick(300_000));
+    assert_eq!(host.inspect()["states"][0]["state"]["accumulator"], 64);
     assert!(host.tick(300_001));
-    assert_eq!(host.inspect()["releases"], 1);
-    host.control(Control::Step, 300_001).unwrap();
+    // No accepted operation remains to drain, so retirement removes idle state
+    // immediately. Only an in-flight accepted operation needs a queued release.
+    assert_eq!(host.inspect()["releases"], 0);
     assert_eq!(host.inspect()["states"], json!([]));
     assert!(!host.tick(300_002));
 }

@@ -4,6 +4,7 @@ mod build;
 mod cargo;
 mod check;
 mod config;
+mod dependencies;
 mod dev;
 mod migrate;
 mod process;
@@ -38,6 +39,8 @@ enum Command {
     Secrets(secrets::Args),
     /// Create or apply explicit Store schema migrations
     Migrate(migrate::Args),
+    /// Check pinned dependency tools, unused dependencies and dependency policy
+    CheckDeps(dependencies::Options),
     /// Run a project's tests; defaults to the memory platform
     Test {
         /// Project directory or platform (memory, native, workers, browser, full)
@@ -70,6 +73,7 @@ async fn main() -> ExitCode {
             }
             Command::Secrets(args) => secrets::run(args),
             Command::Migrate(args) => migrate::run(args),
+            Command::CheckDeps(options) => dependencies::run(options, &runner).await,
             Command::Test {
                 project_or_platform,
                 platform,

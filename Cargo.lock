@@ -223,11 +223,15 @@ dependencies = [
 name = "authy-native"
 version = "0.0.0"
 dependencies = [
+ "age",
  "authy",
  "axum",
  "base64 0.22.1",
+ "futures-util",
  "hmac",
+ "nix",
  "rand 0.8.8",
+ "reqwest",
  "rsa",
  "serde",
  "serde_json",
@@ -242,7 +246,9 @@ dependencies = [
  "snap-sqlite",
  "snap-store",
  "snap-transport",
+ "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml 0.9.12+spec-1.1.0",
  "tower-http",
  "url",

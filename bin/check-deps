@@ -2,35 +2,4 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-if [[ $# -gt 1 || ( $# == 1 && $1 != --audit ) ]]; then
-  echo "Usage: bin/check-deps [--audit]" >&2
-  exit 2
-fi
-cargo_cmd=(cargo)
-if command -v mise >/dev/null; then cargo_cmd=(mise exec -- cargo); fi
-for tool in machete deny; do
-  expected=$(python3 -c 'import tomllib,sys; print(tomllib.load(open("mise.toml","rb"))["tools"]["cargo:cargo-"+sys.argv[1]])' "$tool")
-  if ! actual=$("${cargo_cmd[@]}" "$tool" --version); then
-    echo "Install the pinned dependency check tools with mise install." >&2
-    exit 1
-  fi
-  if [[ $actual != "$expected" && $actual != "cargo-$tool $expected" ]]; then
-    echo "Expected cargo-$tool $expected, got $actual. Run mise install and use mise exec." >&2
-    exit 1
-  fi
-done
-# Only inspect active workspace members, not app sources awaiting rewrites.
-manifest_paths=$("${cargo_cmd[@]}" metadata --no-deps --format-version 1 | python3 -c '
-import json, sys
-metadata = json.load(sys.stdin)
-members = set(metadata["workspace_members"])
-for package in metadata["packages"]:
-    if package["id"] in members:
-        print(package["manifest_path"])
-')
-mapfile -t manifests <<< "$manifest_paths"
-"${cargo_cmd[@]}" machete "${manifests[@]}"
-"${cargo_cmd[@]}" deny check bans sources
-if [[ ${1:-} == --audit ]]; then
-  "${cargo_cmd[@]}" deny check advisories
-fi
+exec "$root/bin/snap" check-deps "$@"
