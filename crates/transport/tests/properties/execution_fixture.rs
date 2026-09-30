@@ -17,7 +17,7 @@ impl Default for Ledger {
 }
 
 static OPERATIONS: [Operation; 1] = [Operation {
-    key: "apply",
+    key: "fixture.apply",
     identity_required: true,
     input: |value| value["delta"].as_i64().is_some() && value["reads"].as_u64().is_some(),
     output: |value| value.as_i64().is_some(),
@@ -80,7 +80,7 @@ impl Program for Ledger {
 
 pub fn call(delta: i64, reads: usize, mode: u8, guard: bool) -> Call {
     Call {
-        operation: "apply".into(),
+        operation: "fixture.apply".into(),
         identity: Some("verified".into()),
         input: json!({"delta": delta, "reads": reads, "mode": mode, "guard": guard}),
     }

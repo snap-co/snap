@@ -1,30 +1,12 @@
 use super::Value;
 use alloc::{collections::BTreeMap, string::String};
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Error {
-    UnknownOperation,
-    IdentityRequired,
-    InvalidInput,
-    InvalidOutput,
-    InvalidState,
-    Unavailable,
-    Protocol,
-    Capacity,
-    Application(Value),
-}
-pub type Outcome = Result<Value, Error>;
-pub type Validator = fn(&Value) -> bool;
+pub use crate::operation::Validator;
+pub use crate::{Error, Outcome};
 
 /// Descriptions belong to the selected program. The executor never caches these
 /// function pointers across program replacement.
-pub struct Operation {
-    pub key: &'static str,
-    pub identity_required: bool,
-    pub input: Validator,
-    pub output: Validator,
-    pub error: Validator,
-}
+pub type Operation = crate::operation::Contract<&'static str>;
 
 /// Constructed by trusted host composition, never deserialized from a caller.
 #[derive(Clone, Debug)]

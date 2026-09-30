@@ -4,7 +4,7 @@ extern crate alloc;
 use alloc::{string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use snap_access::{Access, Audience, KindDefinition, Role};
+use snap_access::{Audience, Role};
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot};
 use snap_store::{Error, Transaction};
 
@@ -147,10 +147,7 @@ pub fn registry() -> Registry {
 }
 
 pub fn document() -> snap_document::server::Document {
-    snap_document::server::Document::new(
-        registry(),
-        Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap(),
-    )
+    snap_document::server::Document::new(registry())
 }
 
 #[derive(Deserialize, Serialize)]

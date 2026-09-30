@@ -10,9 +10,11 @@ fn definition(name: &str) -> Definition {
         input: |_| true,
         output: |_| true,
         progress: |_| false,
-        guards: &[],
+        error: |_| true,
+        guards: vec![],
+        inputs: &[],
         tables: &[],
-        handler: Box::new(|_, call, _, _| Ok(call.input.clone())),
+        handler: snap_transport::operation::Handler::new(|_, call, _, _, _| Ok(call.input.clone())),
     }
 }
 

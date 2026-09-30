@@ -1,10 +1,21 @@
 use super::{Admission, Attempt, Call, Error, Inputs, Outcome, Program, Value, View, WorkingSet};
 use crate::dispatch::Queue;
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     string::String,
     vec::Vec,
 };
+
+/// Platform-selected transactional capability. The portable executor owns its
+/// FIFO position, once-only preparation, acceptance and execution ordering. The
+/// adapter owns physical commit and keeps credential data out of JSON traces.
+pub type PreparedRequest = Result<Box<dyn FnOnce() -> crate::Outcome + Send>, Error>;
+type Prepare = Box<dyn FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest> + Send>;
+struct Requests {
+    recognizes: fn(&str) -> bool,
+    prepare: Prepare,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Scope(pub u64);
@@ -93,6 +104,10 @@ pub struct Executor<P: Program> {
     sequence: u64,
     paused: bool,
     capacity: usize,
+    requests: Option<Requests>,
+    queued_requests: BTreeMap<Ticket, (crate::Invocation, Option<String>)>,
+    active_request: Option<(Ticket, Box<dyn FnOnce() -> crate::Outcome + Send>)>,
+    private_observation: Option<Ticket>,
 }
 
 /// Data-only snapshot at an idle point. Transport, sockets, pending IO and clocks
@@ -116,14 +131,54 @@ impl<P: Program> Executor<P> {
             sequence: 0,
             paused: false,
             capacity,
+            requests: None,
+            queued_requests: BTreeMap::new(),
+            active_request: None,
+            private_observation: None,
         })
+    }
+    pub fn with_requests(
+        mut self,
+        recognizes: fn(&str) -> bool,
+        prepare: impl FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest>
+        + Send
+        + 'static,
+    ) -> Self {
+        assert!(self.idle(), "assemble before traffic");
+        self.requests = Some(Requests {
+            recognizes,
+            prepare: Box::new(prepare),
+        });
+        self
+    }
+    pub fn recognizes_private(&self, name: &str) -> bool {
+        self.requests
+            .as_ref()
+            .is_some_and(|requests| (requests.recognizes)(name))
+    }
+    pub fn private_request(&self, ticket: Ticket) -> bool {
+        self.queued_requests.contains_key(&ticket)
+            || self
+                .active_request
+                .as_ref()
+                .is_some_and(|(active, _)| *active == ticket)
+            || self.private_observation == Some(ticket)
+    }
+    pub fn submit_request(
+        &mut self,
+        invocation: crate::Invocation,
+        bearer: Option<String>,
+    ) -> Result<Ticket, Error> {
+        let ticket = self.reserve()?;
+        self.queued_requests.insert(ticket, (invocation, bearer));
+        Ok(ticket)
     }
     fn validate_program(program: &P) -> Result<(), Error> {
         if !program.valid_state(&Value::Null) {
             return Err(Error::InvalidState);
         }
         for (i, op) in program.operations().iter().enumerate() {
-            if op.key.is_empty()
+            if !crate::operation::valid_name(op.key)
                 || program.operations()[..i]
                     .iter()
                     .any(|other| other.key == op.key)
@@ -289,6 +344,13 @@ impl<P: Program> Executor<P> {
     /// Performs one observable transition. None means idle or waiting on a read.
     /// Call again after Accepted to enter the handler, or after supply to retry.
     pub fn step(&mut self) -> Option<Event> {
+        self.private_observation = None;
+        if let Some((ticket, run)) = self.active_request.take() {
+            let outcome = run();
+            self.finish_reserved(ticket).expect("owned capability slot");
+            self.private_observation = Some(ticket);
+            return Some(Event::Completed { ticket, outcome });
+        }
         if self.reserved.is_some() {
             return None;
         }
@@ -317,6 +379,30 @@ impl<P: Program> Executor<P> {
                 }
                 Queued::Reserved(ticket) => {
                     self.reserved = Some(ticket);
+                    if let Some((invocation, bearer)) = self.queued_requests.remove(&ticket) {
+                        self.private_observation = Some(ticket);
+                        let result = (self
+                            .requests
+                            .as_mut()
+                            .expect("configured capabilities")
+                            .prepare)(
+                            &invocation, bearer.as_deref()
+                        )
+                        .unwrap_or(Err(Error::UnknownOperation));
+                        return Some(match result {
+                            Ok(run) => {
+                                self.active_request = Some((ticket, run));
+                                Event::Accepted(ticket)
+                            }
+                            Err(error) => {
+                                self.finish_reserved(ticket).expect("owned capability slot");
+                                Event::Completed {
+                                    ticket,
+                                    outcome: Err(error),
+                                }
+                            }
+                        });
+                    }
                     return Some(Event::Reserved(ticket));
                 }
             }
@@ -338,24 +424,21 @@ impl<P: Program> Executor<P> {
             .map(|scope| &self.states[&scope])
             .unwrap_or(&Value::Null);
         if !job.accepted {
-            let admission = if !(op.input)(&job.call.input) {
-                Admission::Reject(Error::InvalidInput)
-            } else if op.identity_required
-                && job.call.identity.as_ref().is_none_or(|id| id.is_empty())
-            {
-                Admission::Reject(Error::IdentityRequired)
-            } else {
-                self.program.admit(
-                    &job.call,
-                    View {
-                        state,
-                        connected: job.scope.is_some(),
-                        inputs: Inputs {
-                            values: &job.inputs,
+            let admission =
+                if let Err(error) = op.validate(&job.call.input, job.call.identity.as_deref()) {
+                    Admission::Reject(error)
+                } else {
+                    self.program.admit(
+                        &job.call,
+                        View {
+                            state,
+                            connected: job.scope.is_some(),
+                            inputs: Inputs {
+                                values: &job.inputs,
+                            },
                         },
-                    },
-                )
-            };
+                    )
+                };
             return Some(match admission {
                 Admission::Ready => {
                     self.active.as_mut().unwrap().accepted = true;
@@ -394,9 +477,7 @@ impl<P: Program> Executor<P> {
         if let Error::Application(value) = &error {
             let job = self.active.as_ref().unwrap();
             let op = &self.program.operations()[job.definition.expect("selected operation")];
-            if !(op.error)(value) {
-                return Error::InvalidOutput;
-            }
+            return op.checked_error(Error::Application(value.clone()));
         }
         error
     }

@@ -18,6 +18,7 @@ pub use serde_json::{Value, json};
 pub enum Error {
     InvalidInput,
     InvalidOutput,
+    InvalidState,
     UnknownOperation,
     IdentityRequired,
     InvalidBearer,

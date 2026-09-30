@@ -24,11 +24,8 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     {
         store.load(table).unwrap();
     }
-    let document = snap_document::server::Document::new(
-        snap_document::Registry::new(vec![]).unwrap(),
-        snap_access::Access::new(vec![snap_access::KindDefinition::kind("document").unwrap()])
-            .unwrap(),
-    );
+    let document =
+        snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
     let executions = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let count = executions.clone();
     let host = Host::new(
@@ -50,9 +47,11 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         input: |v| v.is_null(),
         output: |v| v.is_u64(),
         progress: |_| false,
-        guards: &[],
+        error: |_| true,
+        guards: vec![],
+        inputs: &[],
         tables: &[],
-        handler: Box::new(move |_, _, _, _| {
+        handler: snap_transport::operation::Handler::new(move |_, _, _, _, _| {
             Ok(json!(
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
             ))

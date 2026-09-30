@@ -8,7 +8,7 @@ const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 
 #[test]
 fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
-    use factorio::documents as graph;
+    use factorio::workspaces as graph;
     use snap_document_local::Host;
     use snap_transport::{Command, Event, Invocation, Response, json};
     use std::sync::{
@@ -32,7 +32,7 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
         let authority = live.clone();
         let host = Host::new(
             store,
-            factorio::documents::document(),
+            factorio::workspaces::document(),
             Arc::new(move |tx, bearer| {
                 if !authority.load(Ordering::SeqCst) {
                     return Err(snap_store::Error::NotFound);
@@ -111,7 +111,7 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
 
 #[test]
 fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
-    use factorio::documents as graph;
+    use factorio::workspaces as graph;
     use snap_document_local::Host;
     use snap_oidc::relying_party as rp;
     use snap_transport::{Command, Invocation, Response, json};
@@ -248,7 +248,7 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
             .unwrap();
         let host = Host::new_with_lifetime_authority(
             store,
-            factorio::documents::document(),
+            factorio::workspaces::document(),
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
             Arc::new(crate::operations::retained),
             Config {
@@ -360,7 +360,7 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
 
 #[test]
 fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
-    use factorio::documents as graph;
+    use factorio::workspaces as graph;
     use snap_document_local::Host;
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
@@ -467,7 +467,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
     let host = Host::new_with_lifetime_authority(
         store,
-        factorio::documents::document(),
+        factorio::workspaces::document(),
         Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
         Arc::new(crate::operations::retained),
         Default::default(),
@@ -478,7 +478,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let mut entered = Some(entered);
     let host = crate::operations::register(host, config, "http://localhost".into())
         .with_controller(
-            factorio::documents::WORKSPACE_KIND,
+            factorio::workspaces::WORKSPACE_KIND,
             Box::new(move |_, _| {
                 if let Some(entered) = entered.take() {
                     entered.send(()).unwrap();
@@ -635,7 +635,7 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
     let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
     let host = Host::new(
         store,
-        factorio::documents::document(),
+        factorio::workspaces::document(),
         Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
         Default::default(),
         "cancelled-refresh".into(),
@@ -725,7 +725,7 @@ fn authority_fixture() -> (
     Config,
     snap_oidc::relying_party::Session,
 ) {
-    use factorio::documents as graph;
+    use factorio::workspaces as graph;
     use snap_oidc::relying_party as rp;
     let mut store = snap_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
     for table in snap_access::TABLES
@@ -836,7 +836,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
         .unwrap();
     let host = Host::new(
         store,
-        factorio::documents::document(),
+        factorio::workspaces::document(),
         std::sync::Arc::new(|tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner)),
         Default::default(),
         "cli-test".into(),

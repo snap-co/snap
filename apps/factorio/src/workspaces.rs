@@ -4,11 +4,71 @@ use super::*;
 use alloc::format;
 use sha2::{Digest, Sha256};
 use snap_access::{
-    Access, Actor as AccessActor, Audience, ChangeSet, GrantChange, KindDefinition, LinkChange,
-    Resource, Role,
+    Actor as AccessActor, Audience, ChangeSet, GrantChange, LinkChange, Resource, Role,
 };
 use snap_document::{Definition, Registry, Snapshot};
 use snap_store::Transaction;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    pub repository: String,
+    pub mainline: String,
+    pub modules: BTreeMap<String, String>,
+    pub resources: String,
+    pub first_port: u16,
+    pub setup: Vec<String>,
+    pub teardown: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Workspace {
+    pub config: Config,
+    pub tickets: BTreeMap<String, Ticket>,
+    pub sessions: BTreeMap<String, Session>,
+    pub next_port: u32,
+    #[serde(default)]
+    pub intakes: BTreeMap<String, intake::Intake>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Command {
+    Recover {
+        id: String,
+    },
+    Publish {
+        id: String,
+        evidence: String,
+        findings: Vec<Finding>,
+    },
+    Accept {
+        id: String,
+    },
+    Ticket {
+        ticket: Ticket,
+    },
+    DeleteTicket {
+        id: String,
+    },
+    Start {
+        id: String,
+        prompt: String,
+        tickets: Vec<String>,
+        modules: Vec<String>,
+        base: String,
+        conversation: String,
+    },
+    Expand {
+        id: String,
+        modules: Vec<String>,
+    },
+    Approve {
+        id: String,
+        commit: String,
+    },
+    Abandon {
+        id: String,
+    },
+}
 
 pub const WORKSPACE_KIND: &str = "factorio.workspace";
 pub const TICKET_KIND: &str = "factorio.ticket";
@@ -44,71 +104,21 @@ pub fn registry() -> Registry {
             validate: |v| serde_json::from_value::<Root>(v.clone()).is_ok(),
             mutations: vec![],
         },
-        Definition {
-            kind: TICKET_KIND.into(),
-            version: "1".into(),
-            validate: |v| serde_json::from_value::<Child<Ticket>>(v.clone()).is_ok(),
-            mutations: vec![snap_document::Mutation {
-                name: "ticket.edit".into(),
-                minimum: Role::Editor,
-                guard: Some(|tx, snapshot, intent, actor, _| {
-                    let child: Child<Ticket> = decode(snapshot.value.clone())?;
-                    let ticket: Ticket = decode(intent.args.clone())?;
-                    if ticket.id != child.data.id {
-                        return Ok(false);
-                    }
-                    let state = load(tx, &child.workspace, actor)?;
-                    // Intake edits also advance draft revisions and use the composed
-                    // command handler; a single-Document edit cannot skip that write.
-                    if state
-                        .intakes
-                        .values()
-                        .any(|item| item.tickets.contains(&ticket.id))
-                    {
-                        return Ok(false);
-                    }
-                    Ok(transition(state, actor, false, 0, Command::Ticket { ticket }).is_ok())
-                }),
-                apply: |before, args, _| {
-                    let mut child: Child<Ticket> = serde_json::from_value(before.clone())
-                        .map_err(|_| snap_document::Error::Invalid)?;
-                    let mut ticket: Ticket = serde_json::from_value(args.clone())
-                        .map_err(|_| snap_document::Error::Invalid)?;
-                    // Match composed commands: editing must not reorder work, and
-                    // an undated legacy Document must stay undated.
-                    ticket.created_at = child.data.created_at;
-                    child.data = ticket;
-                    serde_json::to_value(child).map_err(|_| snap_document::Error::Invalid)
-                },
-            }],
-        },
-        Definition {
-            kind: SESSION_KIND.into(),
-            version: "1".into(),
-            validate: |v| serde_json::from_value::<Child<Session>>(v.clone()).is_ok(),
-            mutations: vec![],
-        },
-        Definition {
-            kind: INTAKE_KIND.into(),
-            version: "1".into(),
-            validate: |v| serde_json::from_value::<Child<intake::Intake>>(v.clone()).is_ok(),
-            mutations: vec![],
-        },
+        tickets::definition(),
+        sessions::definition(),
+        intake::definition(),
     ])
     .expect("Factorio Document definitions")
 }
 
 pub fn document() -> snap_document::server::Document {
-    snap_document::server::Document::new(
-        registry(),
-        Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap(),
-    )
+    snap_document::server::Document::new(registry())
 }
 
-fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, Error> {
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, Error> {
     serde_json::from_value(value).map_err(|_| Error::Invalid)
 }
-fn encode(value: &impl Serialize) -> Result<serde_json::Value, Error> {
+pub(crate) fn encode(value: &impl Serialize) -> Result<serde_json::Value, Error> {
     serde_json::to_value(value).map_err(|_| Error::Invalid)
 }
 
@@ -301,18 +311,6 @@ pub fn guard(
     now: i64,
     command: Command,
 ) -> Result<Workspace, Error> {
-    let doc = document();
-    if !snap_access::allows(
-        doc.access.role(
-            tx,
-            &Resource::new("document", workspace)?,
-            Some(actor),
-            false,
-        )?,
-        Role::Owner,
-    ) {
-        return Err(Error::NotFound);
-    }
     let mut next = transition(load(tx, workspace, actor)?, actor, human, now, command)?;
     for session in next.sessions.values_mut() {
         session.branch = format!("factorio/{workspace}/{}", session.id);
@@ -348,7 +346,7 @@ pub fn command(
     Ok(after)
 }
 
-fn save(
+pub(crate) fn save(
     tx: &mut Transaction<'_>,
     workspace: &str,
     actor: &str,
@@ -391,158 +389,18 @@ fn save(
     Ok(())
 }
 
-pub fn create_intake(
-    tx: &mut Transaction<'_>,
-    workspace: &str,
-    actor: &str,
-    id: &str,
-    description: &str,
-) -> Result<intake::Intake, Error> {
-    require_owner(tx, workspace, actor)?;
-    if !valid_id(id) || id.len() > 48 || description.trim().is_empty() || description.len() > 16384
-    {
-        return Err(Error::Invalid);
-    }
-    let before = load(tx, workspace, actor)?;
-    if let Some(item) = before.intakes.get(id) {
-        return if item.owner == actor && item.description == description {
-            Ok(item.clone())
-        } else {
-            Err(Error::Constraint)
-        };
-    }
-    let root = root(tx, workspace, actor)?;
-    let item = intake::Intake {
-        id: id.into(),
-        owner: actor.into(),
-        description: description.into(),
-        conversation: format!(
-            "ses_{}",
-            next_id(workspace, INTAKE_KIND, id, &root.generations)
-        ),
-        route: intake::Route::Explore,
-        rationale: String::new(),
-        tickets: vec![],
-        revision: 0,
-    };
-    let mut after = before.clone();
-    after.intakes.insert(id.into(), item.clone());
-    save(tx, workspace, actor, &before, &after)?;
-    Ok(item)
-}
-
 pub fn require_owner(tx: &mut Transaction<'_>, workspace: &str, actor: &str) -> Result<(), Error> {
-    if snap_access::allows(
-        document().access.role(
-            tx,
-            &Resource::new("document", workspace)?,
-            Some(actor),
-            false,
-        )?,
-        Role::Owner,
-    ) {
-        Ok(())
-    } else {
-        Err(Error::NotFound)
-    }
+    snap_document::DocumentAccessGuard::require(tx, workspace, Some(actor), Role::Owner)
 }
 
-pub fn ready(
-    tx: &mut Transaction<'_>,
+pub use intake::{create as create_intake, delete as delete_intake, drafts, ready};
+
+pub(crate) fn next_id(
     workspace: &str,
-    actor: &str,
-    id: &str,
-    revision: u32,
-) -> Result<intake::Intake, Error> {
-    require_owner(tx, workspace, actor)?;
-    let before = load(tx, workspace, actor)?;
-    let mut after = before.clone();
-    let mut item = before.intakes.get(id).ok_or(Error::NotFound)?.clone();
-    if item.revision != revision || item.route != intake::Route::Implement {
-        return Err(Error::Constraint);
-    }
-    let mut changed = false;
-    for key in &item.tickets {
-        if before
-            .tickets
-            .values()
-            .any(|ticket| ticket.parent.as_ref() == Some(key))
-        {
-            continue;
-        }
-        let mut ticket = before.tickets.get(key).ok_or(Error::NotFound)?.clone();
-        if ticket.status != Status::Draft {
-            continue;
-        }
-        if ticket.modules.len() != 1 {
-            return Err(Error::Constraint);
-        }
-        ticket.status = Status::Ready;
-        after = transition(after, actor, false, 0, Command::Ticket { ticket })?;
-        changed = true;
-    }
-    if !changed {
-        return Err(Error::Constraint);
-    }
-    item.revision = item.revision.checked_add(1).ok_or(Error::Constraint)?;
-    after.intakes.insert(id.into(), item.clone());
-    save(tx, workspace, actor, &before, &after)?;
-    Ok(item)
-}
-
-pub fn delete_intake(
-    tx: &mut Transaction<'_>,
-    workspace: &str,
-    actor: &str,
-    id: &str,
-) -> Result<(), Error> {
-    require_owner(tx, workspace, actor)?;
-    let before = load(tx, workspace, actor)?;
-    let mut after = before.clone();
-    after.intakes.remove(id).ok_or(Error::NotFound)?;
-    save(tx, workspace, actor, &before, &after)
-}
-
-/// Compose every ticket change and the intake revision in one caller transaction.
-/// Ordinary workspace Access is the only credential; there is no intake-only key.
-pub fn drafts(
-    tx: &mut Transaction<'_>,
-    workspace: &str,
-    actor: &str,
-    id: &str,
-    input: intake::Drafts,
-    now: i64,
-) -> Result<intake::Intake, Error> {
-    require_owner(tx, workspace, actor)?;
-    let before = load(tx, workspace, actor)?;
-    let mut after = before.clone();
-    let mut item = before.intakes.get(id).ok_or(Error::NotFound)?.clone();
-    if item.revision != input.revision || input.tickets.len() > 32 || input.rationale.len() > 8192 {
-        return Err(Error::Constraint);
-    }
-    for ticket in input.tickets {
-        if !ticket.id.starts_with(&format!("{id}-"))
-            || ticket.status != Status::Draft
-            || before.tickets.get(&ticket.id).is_some_and(|old| {
-                !item.tickets.contains(&ticket.id) || old.status != Status::Draft
-            })
-        {
-            return Err(Error::Constraint);
-        }
-        if !item.tickets.contains(&ticket.id) {
-            item.tickets.push(ticket.id.clone());
-        }
-        after = transition(after, actor, false, now, Command::Ticket { ticket })?;
-    }
-    item.route = input.route;
-    item.rationale = input.rationale;
-    item.revision = item.revision.checked_add(1).ok_or(Error::Constraint)?;
-    after.intakes.insert(id.into(), item.clone());
-    save(tx, workspace, actor, &before, &after)?;
-    Ok(item)
-}
-
-fn next_id(workspace: &str, kind: &str, key: &str, generations: &BTreeMap<String, u64>) -> String {
+    kind: &str,
+    key: &str,
+    generations: &BTreeMap<String, u64>,
+) -> String {
     let generation = generations
         .get(&format!("{kind}:{key}"))
         .copied()
@@ -603,7 +461,9 @@ fn sync<T: Serialize>(
                 actor,
             )?;
             let child = Resource::new("document", &id)?;
-            let mut links = ChangeSet::new(AccessActor::identity(actor)?);
+            // Dispatch already accepted the workspace composition. Access graph
+            // maintenance is part of the same transaction, not a second policy.
+            let mut links = ChangeSet::new(AccessActor::system());
             links.links.push(LinkChange {
                 child: child.clone(),
                 parent: Resource::new("document", workspace)?,
@@ -616,7 +476,7 @@ fn sync<T: Serialize>(
                 identity: actor.into(),
                 role: None,
             });
-            document().access.change(tx, &links)?;
+            snap_document::access::vocabulary().change(tx, &links)?;
             if kind == SESSION_KIND {
                 let mut lifecycle = document().lifecycle(tx, &id)?;
                 lifecycle

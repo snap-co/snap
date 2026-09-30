@@ -27,39 +27,43 @@ pub fn register(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite
                 }
             },
             progress: |_| false,
-            guards: &[],
+            error: |_| true,
+            guards: vec![],
+            inputs: &[],
             tables: if name == "identity.enroll" {
                 &[snap_document::server::TABLES[0]]
             } else {
                 &[]
             },
-            handler: Box::new(move |tx, invocation, actor, bearer| {
-                if name == "identity.fetch" {
-                    return if actor.is_some() {
-                        Ok(json!(authy::current(
-                            tx,
-                            &snap_crypto::Native,
-                            bearer.ok_or(Error::NotFound)?,
-                            crate::now()
-                        )?))
-                    } else {
-                        Ok(serde_json::Value::Null)
-                    };
-                }
-                let operation = snap_identity::operation::Operation::parse(invocation, None)
-                    .map_err(|_| Error::Invalid)?
-                    .ok_or(Error::Invalid)?;
-                let issued = operation.execute_with_enrollment(
-                    &Identity::default(),
-                    tx,
-                    &mut snap_crypto::Native,
-                    crate::now(),
-                    authy::initialize_account,
-                )?;
-                let bearer = issued["bearer"].as_str().ok_or(Error::Invalid)?;
-                let account = authy::current(tx, &snap_crypto::Native, bearer, crate::now())?;
-                Ok(json!({"account":account,"bearer":bearer}))
-            }),
+            handler: snap_transport::operation::Handler::new(
+                move |tx, invocation, actor, bearer, _| {
+                    if name == "identity.fetch" {
+                        return if actor.is_some() {
+                            Ok(json!(authy::current(
+                                tx,
+                                &snap_crypto::Native,
+                                bearer.ok_or(Error::NotFound)?,
+                                crate::now()
+                            )?))
+                        } else {
+                            Ok(serde_json::Value::Null)
+                        };
+                    }
+                    let operation = snap_identity::operation::Operation::parse(invocation, None)
+                        .map_err(|_| Error::Invalid)?
+                        .ok_or(Error::Invalid)?;
+                    let issued = operation.execute_with_enrollment(
+                        &Identity::default(),
+                        tx,
+                        &mut snap_crypto::Native,
+                        crate::now(),
+                        authy::initialize_account,
+                    )?;
+                    let bearer = issued["bearer"].as_str().ok_or(Error::Invalid)?;
+                    let account = authy::current(tx, &snap_crypto::Native, bearer, crate::now())?;
+                    Ok(json!({"account":account,"bearer":bearer}))
+                },
+            ),
         });
     }
     for name in ["authy.sessions", "authy.credentials", "authy.logout"] {
@@ -75,9 +79,9 @@ pub fn register(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite
                 _ => |v| v.is_null(),
             },
             progress: |_| false,
-            guards: &[],
+            error: |_| true, guards: vec![], inputs: &[],
             tables: &[],
-            handler: Box::new(move |tx, invocation, actor, bearer| {
+            handler: snap_transport::operation::Handler::new(move |tx, invocation, actor, bearer, _| {
                 let actor = actor.ok_or(Error::NotFound)?;
                 let current = snap_crypto::Native.digest(bearer.ok_or(Error::NotFound)?);
                 let identity = Identity::default();

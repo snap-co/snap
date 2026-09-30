@@ -32,7 +32,8 @@ fn manifest_omits_only_snapshots_matching_every_holding_field() {
     };
     let unchanged = store
         .inspect("manifest", |tx| {
-            doc.manifest(tx, LIFETIME, "alice", &manifest)
+            doc.access_guard()
+                .manifest(tx, LIFETIME, "alice", &manifest)
         })
         .unwrap();
     assert!(unchanged.documents.is_empty());
@@ -40,7 +41,8 @@ fn manifest_omits_only_snapshots_matching_every_holding_field() {
     manifest.holdings[0].digest = "stale".into();
     let stale = store
         .inspect("manifest", |tx| {
-            doc.manifest(tx, LIFETIME, "alice", &manifest)
+            doc.access_guard()
+                .manifest(tx, LIFETIME, "alice", &manifest)
         })
         .unwrap();
     assert_eq!(stale.documents, vec![current]);
@@ -112,7 +114,6 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
             }],
         }])
         .unwrap(),
-        access(),
     );
     let mut store = snap_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
     for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
@@ -122,13 +123,16 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
     create_doc(&mut store, &doc, &id, "alice", 0);
     let operation = intent(1, &id, "ready", 0);
     assert!(matches!(
-        store.inspect("cold guard", |tx| doc.admit(tx, "alice", &operation)),
+        store.inspect("cold guard", |tx| doc
+            .access_guard()
+            .admit(tx, "alice", &operation)),
         Err(StoreError::Miss(_))
     ));
     store.load("test.notes").unwrap();
     assert!(matches!(
         store
             .inspect("missing prerequisite", |tx| doc
+                .access_guard()
                 .admit(tx, "alice", &operation))
             .unwrap(),
         Err(snap_document::Error::Denied)
@@ -145,6 +149,7 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
                 .collect(),
             )?;
             let admitted = doc
+                .access_guard()
                 .admit(tx, "alice", &operation)?
                 .map_err(|_| StoreError::Invalid)?;
             doc.execute(tx, admitted)?;
@@ -161,6 +166,43 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
 }
 
 type Store = snap_store::Store<snap_sqlite::Sqlite>;
+
+fn dispatch_document(
+    store: &mut Store,
+    lifetime: &str,
+    actor: &str,
+    name: &str,
+    input: snap_transport::Value,
+) -> snap_transport::Outcome {
+    use snap_transport::operation::{Context, Runtime};
+    let mut runtime = Runtime::default();
+    for definition in snap_document::operations::definitions(std::sync::Arc::new(document())) {
+        runtime.register(definition).unwrap();
+    }
+    let selection = runtime.definitions().resolve(name)?;
+    runtime.enqueue(
+        (),
+        snap_transport::Invocation {
+            id: 1,
+            operation: name.into(),
+            input,
+        },
+        selection,
+    )?;
+    let (work, call, selection) = runtime.acquire().unwrap();
+    let context = Context {
+        actor: Some(actor.into()),
+        lifetime: Some(lifetime.into()),
+        ..Context::default()
+    };
+    if let Err((_, error)) = runtime.accept(store, work, call, selection, context) {
+        runtime.reject();
+        return Err(error);
+    }
+    let outcome = runtime.execute(store).unwrap().outcome;
+    runtime.finish();
+    outcome
+}
 
 fn access() -> Access {
     Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap()
@@ -195,7 +237,7 @@ fn registry() -> Registry {
 }
 
 fn document() -> Document {
-    Document::new(registry(), access())
+    Document::new(registry())
 }
 
 fn uuid(n: u32) -> String {
@@ -231,24 +273,13 @@ fn create_doc(store: &mut Store, doc: &Document, id: &str, owner: &str, value: i
 }
 
 #[test]
-fn application_replacement_and_removal_require_owner_and_share_rollback() {
+fn application_replacement_and_removal_preserve_revision_rollback_and_lifecycle() {
     let mut store = store_loaded();
     let doc = document();
     let id = uuid(91);
     create_doc(&mut store, &doc, &id, "alice", 1);
-    grant(&mut store, &id, "bob", Role::Editor);
-    assert_eq!(
-        store
-            .run("denied replace", |tx| doc.replace(tx, &id, "bob", json!(4)))
-            .unwrap_err(),
-        StoreError::Invalid
-    );
-    assert_eq!(
-        store
-            .run("denied remove", |tx| doc.remove(tx, &id, "bob"))
-            .unwrap_err(),
-        StoreError::Invalid
-    );
+    // Replacement/removal own schema, revision, rollback and lifecycle. Owner
+    // rejection belongs to composed dispatch, not this persistence interface.
     assert_eq!(
         store
             .run("invalid shape", |tx| doc.replace(
@@ -299,12 +330,9 @@ fn application_replacement_and_removal_require_owner_and_share_rollback() {
     );
     assert!(
         store
-            .run("excluded from normal loading", |tx| doc.manifest(
-                tx,
-                LIFETIME,
-                "alice",
-                &Manifest::default()
-            ))
+            .run("excluded from normal loading", |tx| doc
+                .access_guard()
+                .manifest(tx, LIFETIME, "alice", &Manifest::default()))
             .unwrap()
             .value
             .documents
@@ -327,7 +355,7 @@ fn grant(store: &mut Store, id: &str, identity: &str, role: Role) {
 }
 
 #[test]
-fn create_and_authorized_read_round_trip() {
+fn create_and_resident_read_round_trip() {
     let doc = document();
     let mut store = store_loaded();
     let id = uuid(1);
@@ -438,7 +466,8 @@ fn create_rejects_duplicates_conflicts_and_invalid_registry() {
     // Failed creates staged nothing: only the first document exists.
     let listed = store
         .run("list", |tx| {
-            doc.manifest(tx, LIFETIME, "alice", &Manifest::default())
+            doc.access_guard()
+                .manifest(tx, LIFETIME, "alice", &Manifest::default())
         })
         .unwrap()
         .value;
@@ -456,60 +485,55 @@ fn guards_and_minimum_roles_deny_without_document_writes() {
     grant(&mut store, &id, "carol", Role::Editor);
 
     // Viewer cannot run Editor-gated "add" (pre-change minimum).
-    let denied = store
-        .run("mutate", |tx| {
-            doc.mutate(tx, LIFETIME, "bob", &intent(1, &id, "add", 1))
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        denied.completion.result,
-        Err(snap_document::Error::Denied)
-    ));
-    assert!(denied.replication.is_none());
-    assert!(!denied.replayed);
+    let denied = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.mutate",
+        json!(intent(1, &id, "add", 1)),
+    );
+    assert_eq!(
+        denied,
+        Err(snap_transport::Error::Application(json!(
+            snap_document::Error::Denied
+        )))
+    );
 
     // Guard denies bob on "touch" even though Viewer satisfies the minimum;
     // alice passes the same guard.
-    let guarded = store
-        .run("guard", |tx| {
-            doc.mutate(
-                tx,
-                LIFETIME,
-                "bob",
-                &Intent {
-                    id: 2,
-                    document: id.clone(),
-                    version: "1".into(),
-                    mutation: "touch".into(),
-                    args: json!(0),
-                },
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        guarded.completion.result,
-        Err(snap_document::Error::Denied)
-    ));
-    let allowed = store
-        .run("allow", |tx| {
-            doc.mutate(
-                tx,
-                OTHER_LIFETIME,
-                "alice",
-                &Intent {
-                    id: 1,
-                    document: id.clone(),
-                    version: "1".into(),
-                    mutation: "touch".into(),
-                    args: json!(0),
-                },
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(allowed.completion.result.is_ok());
+    let guarded = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.mutate",
+        json!(Intent {
+            id: 2,
+            document: id.clone(),
+            version: "1".into(),
+            mutation: "touch".into(),
+            args: json!(0),
+        }),
+    );
+    assert_eq!(
+        guarded,
+        Err(snap_transport::Error::Application(json!(
+            snap_document::Error::Denied
+        )))
+    );
+    let allowed = dispatch_document(
+        &mut store,
+        OTHER_LIFETIME,
+        "alice",
+        "document.mutate",
+        json!(Intent {
+            id: 1,
+            document: id.clone(),
+            version: "1".into(),
+            mutation: "touch".into(),
+            args: json!(0),
+        }),
+    );
+    assert!(allowed.is_ok());
 
     // Neither denial advanced the document: only the successful
     // guard-passing "touch" committed (a value-identical apply still advances
@@ -522,16 +546,22 @@ fn guards_and_minimum_roles_deny_without_document_writes() {
     assert_eq!(after.value, json!(5));
 
     // An Editor succeeds and advances exactly once more.
-    let edited = store
-        .run("edit", |tx| {
-            doc.mutate(tx, "boot:3", "carol", &intent(1, &id, "add", 2))
-        })
-        .unwrap()
-        .value;
-    let next = edited.completion.result.unwrap().unwrap();
+    let edited = dispatch_document(
+        &mut store,
+        "boot:3",
+        "carol",
+        "document.mutate",
+        json!(intent(1, &id, "add", 2)),
+    )
+    .unwrap();
+    let snap_document::ServerMessage::Completed(completion) =
+        serde_json::from_value(edited).unwrap()
+    else {
+        panic!("mutation completion")
+    };
+    let next = completion.result.unwrap().unwrap();
     assert_eq!(next.value, json!(7));
     assert_eq!(next.revision, 3);
-    assert!(edited.replication.is_some());
 }
 
 #[test]
@@ -541,25 +571,24 @@ fn denied_mutations_leak_no_document_data() {
     let id = uuid(30);
     create_doc(&mut store, &doc, &id, "alice", 42);
     // Bob has no grant at all.
-    let denied = store
-        .run("denied", |tx| {
-            doc.mutate(tx, LIFETIME, "bob", &intent(1, &id, "add", 1))
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        denied.completion.result,
-        Err(snap_document::Error::Denied)
-    ));
-    // Direct read is Invalid and returns no snapshot.
-    assert!(matches!(
-        store.run("read", |tx| doc.read(tx, &id, Some("bob"))),
-        Err(StoreError::Invalid)
-    ));
+    let denied = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.mutate",
+        json!(intent(1, &id, "add", 1)),
+    );
+    assert_eq!(
+        denied,
+        Err(snap_transport::Error::Application(json!(
+            snap_document::Error::Denied
+        )))
+    );
     // Manifest for bob contains no documents.
     let listed = store
         .run("manifest", |tx| {
-            doc.manifest(tx, LIFETIME, "bob", &Manifest::default())
+            doc.access_guard()
+                .manifest(tx, LIFETIME, "bob", &Manifest::default())
         })
         .unwrap()
         .value;
@@ -666,22 +695,27 @@ fn revoked_access_suppresses_recovery_payloads() {
         .unwrap();
 
     // Retry of the same receipt suppresses the snapshot but keeps the id.
-    let reread = store
-        .run("reread", |tx| {
-            doc.mutate(tx, LIFETIME, "bob", &intent(7, &id, "add", 5))
-        })
-        .unwrap()
-        .value;
-    assert!(reread.replayed);
-    assert!(reread.replication.is_none());
-    assert_eq!(reread.completion.id, 7);
-    assert!(matches!(reread.completion.result, Ok(None)));
+    let reread = dispatch_document(
+        &mut store,
+        LIFETIME,
+        "bob",
+        "document.mutate",
+        json!(intent(7, &id, "add", 5)),
+    )
+    .unwrap();
+    let snap_document::ServerMessage::Completed(completion) =
+        serde_json::from_value(reread).unwrap()
+    else {
+        panic!("replay completion")
+    };
+    assert_eq!(completion.id, 7);
+    assert!(matches!(completion.result, Ok(None)));
 
     // Manifest recovery for the same pending intent is suppressed the same way,
     // while the document itself is absent from bob's replacement.
     let recovered = store
         .run("manifest", |tx| {
-            doc.manifest(
+            doc.access_guard().manifest(
                 tx,
                 LIFETIME,
                 "bob",
@@ -734,7 +768,8 @@ fn manifest_returns_full_replacement_and_recovers_pending() {
     // authorized set, not a delta.
     let state = store
         .run("manifest", |tx| {
-            doc.manifest(tx, LIFETIME, "alice", &Manifest::default())
+            doc.access_guard()
+                .manifest(tx, LIFETIME, "alice", &Manifest::default())
         })
         .unwrap()
         .value;
@@ -744,7 +779,7 @@ fn manifest_returns_full_replacement_and_recovers_pending() {
     // (no completion returned).
     let recovery = store
         .run("recover", |tx| {
-            doc.manifest(
+            doc.access_guard().manifest(
                 tx,
                 LIFETIME,
                 "alice",
@@ -866,7 +901,7 @@ fn cold_tables_miss_and_stage_nothing() {
         Err(StoreError::Miss(_))
     ));
     assert!(matches!(
-        store.run("cold-manifest", |tx| doc.manifest(
+        store.run("cold-manifest", |tx| doc.access_guard().manifest(
             tx,
             LIFETIME,
             "alice",
@@ -880,7 +915,9 @@ fn cold_tables_miss_and_stage_nothing() {
     ));
     // A miss poisons the whole attempt even when caught: no partial commit.
     let poisoned = store.run("poison", |tx| {
-        let _ = doc.manifest(tx, LIFETIME, "alice", &Manifest::default());
+        let _ = doc
+            .access_guard()
+            .manifest(tx, LIFETIME, "alice", &Manifest::default());
         Ok(())
     });
     assert!(matches!(poisoned, Err(StoreError::Miss(_))));
@@ -890,7 +927,8 @@ fn cold_tables_miss_and_stage_nothing() {
     // Nothing from the cold attempts survived.
     let empty = store
         .run("empty", |tx| {
-            doc.manifest(tx, LIFETIME, "alice", &Manifest::default())
+            doc.access_guard()
+                .manifest(tx, LIFETIME, "alice", &Manifest::default())
         })
         .unwrap()
         .value;
@@ -989,7 +1027,7 @@ fn receipts_survive_restart_and_manifest_recovers() {
         );
         let recovery = store
             .run("recover", |tx| {
-                doc.manifest(
+                doc.access_guard().manifest(
                     tx,
                     LIFETIME,
                     "alice",

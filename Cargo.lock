@@ -242,6 +242,7 @@ dependencies = [
  "snap-identity",
  "snap-sqlite",
  "snap-store",
+ "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -513,6 +514,7 @@ dependencies = [
  "snap-document",
  "snap-sqlite",
  "snap-store",
+ "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -941,8 +943,10 @@ dependencies = [
  "sha2 0.10.9",
  "snap-access",
  "snap-document",
+ "snap-oidc",
  "snap-sqlite",
  "snap-store",
+ "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -3215,7 +3219,9 @@ dependencies = [
  "ciborium",
  "serde",
  "serde_json",
+ "snap-sqlite",
  "snap-store",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

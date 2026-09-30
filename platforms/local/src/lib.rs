@@ -20,13 +20,7 @@ use std::collections::BTreeMap;
 /// Preparation validates authority without writes once its FIFO slot owns the gate.
 /// The returned closure runs once, after acceptance is queued, with that authority.
 /// Private request payloads and results never enter retained execution traces.
-pub type PreparedRequest = Result<Box<dyn FnOnce() -> snap_transport::Outcome + Send>, Error>;
-type Prepare =
-    Box<dyn FnMut(&snap_transport::Invocation, Option<&str>) -> Option<PreparedRequest> + Send>;
-struct Requests {
-    recognizes: fn(&str) -> bool,
-    prepare: Prepare,
-}
+pub use snap_transport::execution::PreparedRequest;
 
 #[derive(Default)]
 pub struct Peer {
@@ -53,9 +47,6 @@ pub struct Platform<P: Program, R: Authority> {
     invocations: BTreeMap<Ticket, u64>,
     connections: BTreeMap<Ticket, ConnectionId>,
     accepted: std::collections::BTreeSet<Ticket>,
-    requests: Option<Requests>,
-    queued_requests: BTreeMap<Ticket, (snap_transport::Invocation, Option<String>)>,
-    active_request: Option<(Ticket, Box<dyn FnOnce() -> snap_transport::Outcome + Send>)>,
 }
 impl<P: Program, R: Authority> Platform<P, R> {
     pub fn new(transport: Server<R>, execution: Executor<P>) -> Self {
@@ -65,9 +56,6 @@ impl<P: Program, R: Authority> Platform<P, R> {
             invocations: BTreeMap::new(),
             connections: BTreeMap::new(),
             accepted: std::collections::BTreeSet::new(),
-            requests: None,
-            queued_requests: BTreeMap::new(),
-            active_request: None,
         }
     }
     pub fn with_requests(
@@ -77,10 +65,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
         + Send
         + 'static,
     ) -> Self {
-        self.requests = Some(Requests {
-            recognizes,
-            prepare: Box::new(requests),
-        });
+        self.execution = self.execution.with_requests(recognizes, requests);
         self
     }
     pub fn attached(&self, peer: &Peer) -> bool {
@@ -90,11 +75,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
     }
     /// Private capability requests must not enter debugger submission traces.
     pub fn private_request(&self, ticket: Ticket) -> bool {
-        self.queued_requests.contains_key(&ticket)
-            || self
-                .active_request
-                .as_ref()
-                .is_some_and(|(active, _)| *active == ticket)
+        self.execution.private_request(ticket)
     }
     pub fn retired(&self, peer: &Peer) -> bool {
         peer.attachment.is_some() && !self.attached(peer)
@@ -138,15 +119,10 @@ impl<P: Program, R: Authority> Platform<P, R> {
             }
             Command::Request { bearer, invocation } => {
                 let id = invocation.id;
-                if self
-                    .requests
-                    .as_ref()
-                    .is_some_and(|handler| (handler.recognizes)(&invocation.operation))
-                {
-                    return match self.execution.reserve() {
+                if self.execution.recognizes_private(&invocation.operation) {
+                    return match self.execution.submit_request(invocation, bearer) {
                         Ok(ticket) => {
                             self.invocations.insert(ticket, id);
-                            self.queued_requests.insert(ticket, (invocation, bearer));
                             Submission::Pending(ticket)
                         }
                         Err(error) => Submission::Ready(Response::Events(vec![Event::Completed {
@@ -160,11 +136,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
             Command::Invoke(invocation) => {
                 // Request-only operations must never enter the execution queue or
                 // its inspectable trace, even when sent over the wrong command kind.
-                if self
-                    .requests
-                    .as_ref()
-                    .is_some_and(|handler| (handler.recognizes)(&invocation.operation))
-                {
+                if self.execution.recognizes_private(&invocation.operation) {
                     return Submission::Ready(Response::Failed(Error::Protocol));
                 }
                 let id = invocation.id;
@@ -223,57 +195,13 @@ impl<P: Program, R: Authority> Platform<P, R> {
         }
     }
     pub fn step(&mut self) -> Option<Observation> {
-        if let Some((ticket, run)) = self.active_request.take() {
-            let outcome = run();
-            self.execution
-                .finish_reserved(ticket)
-                .expect("owned request slot");
-            let id = self
-                .invocations
-                .remove(&ticket)
-                .expect("owned request invocation");
-            self.transport.tick(0);
-            self.retire();
-            return Some(Observation::Event {
-                ticket,
-                event: Event::Completed { id, outcome },
-                private: true,
-            });
-        }
         // Live authority controls later admission. Transport retention prevents
         // retirement from cancelling work whose acceptance already captured it.
         self.transport.tick(0);
         self.retire();
         Some(match self.execution.step()? {
-            execution::Event::Reserved(ticket) => {
-                let (invocation, bearer) =
-                    self.queued_requests.remove(&ticket).expect("owned request");
-                let prepared = (self.requests.as_mut().expect("configured requests").prepare)(
-                    &invocation,
-                    bearer.as_deref(),
-                )
-                .unwrap_or(Err(Error::UnknownOperation));
-                let event = match prepared {
-                    Ok(run) => {
-                        self.active_request = Some((ticket, run));
-                        Event::Accepted { id: invocation.id }
-                    }
-                    Err(error) => {
-                        self.execution
-                            .finish_reserved(ticket)
-                            .expect("owned request slot");
-                        self.invocations.remove(&ticket);
-                        Event::Completed {
-                            id: invocation.id,
-                            outcome: Err(error),
-                        }
-                    }
-                };
-                Observation::Event {
-                    ticket,
-                    event,
-                    private: true,
-                }
+            execution::Event::Reserved(_) => {
+                unreachable!("capabilities are driven by portable execution")
             }
             execution::Event::Accepted(ticket) => {
                 if let Some(connection) = self.connections.get(&ticket) {
@@ -287,7 +215,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
                     event: Event::Accepted {
                         id: self.invocations[&ticket],
                     },
-                    private: false,
+                    private: self.execution.private_request(ticket),
                 }
             }
             execution::Event::Need { ticket, key } => Observation::Need { ticket, key },
@@ -304,7 +232,7 @@ impl<P: Program, R: Authority> Platform<P, R> {
                 }
                 Observation::Event {
                     ticket,
-                    private: false,
+                    private: self.execution.private_request(ticket),
                     event: Event::Completed {
                         id,
                         outcome: outcome.map_err(transport_error),
@@ -350,14 +278,9 @@ impl<P: Program, R: Authority> Platform<P, R> {
     }
 }
 pub fn transport_error(error: execution::Error) -> Error {
-    match error {
-        execution::Error::UnknownOperation => Error::UnknownOperation,
-        execution::Error::IdentityRequired => Error::IdentityRequired,
-        execution::Error::InvalidInput => Error::InvalidInput,
-        execution::Error::InvalidOutput | execution::Error::InvalidState => Error::InvalidOutput,
-        execution::Error::Unavailable => Error::Unavailable,
-        execution::Error::Protocol => Error::Protocol,
-        execution::Error::Capacity => Error::Capacity,
-        execution::Error::Application(value) => Error::Application(value),
+    if error == Error::InvalidState {
+        Error::InvalidOutput
+    } else {
+        error
     }
 }

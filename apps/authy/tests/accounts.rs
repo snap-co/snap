@@ -51,6 +51,43 @@ fn all_tables() -> Vec<&'static str> {
 
 type Store = snap_store::Store<snap_sqlite::Sqlite>;
 
+fn dispatch_profile(
+    store: &mut Store,
+    lifetime: &str,
+    actor: &str,
+    intent: Intent,
+) -> snap_transport::Outcome {
+    use snap_transport::operation::{Context, Runtime};
+    let mut runtime = Runtime::default();
+    for definition in snap_document::operations::definitions(std::sync::Arc::new(authy::document()))
+    {
+        runtime.register(definition).unwrap();
+    }
+    let selection = runtime.definitions().resolve("document.mutate")?;
+    runtime.enqueue(
+        (),
+        snap_transport::Invocation {
+            id: 1,
+            operation: "document.mutate".into(),
+            input: json!(intent),
+        },
+        selection,
+    )?;
+    let (work, call, selection) = runtime.acquire().unwrap();
+    let context = Context {
+        actor: Some(actor.into()),
+        lifetime: Some(lifetime.into()),
+        ..Context::default()
+    };
+    if let Err((_, error)) = runtime.accept(store, work, call, selection, context) {
+        runtime.reject();
+        return Err(error);
+    }
+    let outcome = runtime.execute(store).unwrap().outcome;
+    runtime.finish();
+    outcome
+}
+
 fn store_loaded() -> (Store, Fake) {
     let mut store = snap_sqlite::Sqlite::memory(&migrations()).unwrap();
     for table in all_tables() {
@@ -316,40 +353,34 @@ fn profile_is_private_and_owner_edit_succeeds() {
     let bob = enroll(&mut store, &mut crypto, "bob@example.com", "password1", 100);
     let alice_profile = authy::profile_id(&alice.session.identity).unwrap();
 
-    // Bob (no grant) cannot read Alice's profile and sees no documents.
-    assert!(matches!(
-        store.run("denied-read", |tx| authy::document().read(
-            tx,
-            &alice_profile,
-            Some(&bob.session.identity)
-        )),
-        Err(StoreError::Invalid)
-    ));
+    // Bob's synchronization policy excludes Alice's private profile. Resident
+    // reads inside accepted handlers do not reinterpret the caller's authority.
     let manifest = store
         .run("manifest", |tx| {
-            authy::document().manifest(tx, "boot:bob", &bob.session.identity, &Manifest::default())
+            authy::document().access_guard().manifest(
+                tx,
+                "boot:bob",
+                &bob.session.identity,
+                &Manifest::default(),
+            )
         })
         .unwrap()
         .value;
     assert!(manifest.documents.iter().all(|d| d.id != alice_profile));
 
     // Bob's edit is denied without a document write (completion carries Denied).
-    let denied = store
-        .run("denied-edit", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:bob",
-                &bob.session.identity,
-                &edit_intent(1, &alice_profile, "Bob", "hi", 1),
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        denied.completion.result,
-        Err(snap_document::Error::Denied)
-    ));
-    assert!(denied.replication.is_none());
+    let denied = dispatch_profile(
+        &mut store,
+        "boot:bob",
+        &bob.session.identity,
+        edit_intent(1, &alice_profile, "Bob", "hi", 1),
+    );
+    assert_eq!(
+        denied,
+        Err(snap_transport::Error::Application(json!(
+            snap_document::Error::Denied
+        )))
+    );
 
     // Owner edit succeeds and advances exactly one revision.
     let edited = store
@@ -396,27 +427,24 @@ fn profile_is_private_and_owner_edit_succeeds() {
     }
     // Missing revision fails the app guard, so it reports Denied (no write);
     // the unguarded apply never runs.
-    let missing_revision = store
-        .run("missing-revision", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:alice-2b",
-                &alice.session.identity,
-                &Intent {
-                    id: 7,
-                    document: alice_profile.clone(),
-                    version: "1".into(),
-                    mutation: "edit".into(),
-                    args: json!({"name": "Alice", "bio": "x"}),
-                },
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        missing_revision.completion.result,
-        Err(snap_document::Error::Denied)
-    ));
+    let missing_revision = dispatch_profile(
+        &mut store,
+        "boot:alice-2b",
+        &alice.session.identity,
+        Intent {
+            id: 7,
+            document: alice_profile.clone(),
+            version: "1".into(),
+            mutation: "edit".into(),
+            args: json!({"name": "Alice", "bio": "x"}),
+        },
+    );
+    assert_eq!(
+        missing_revision,
+        Err(snap_transport::Error::Application(json!(
+            snap_document::Error::Denied
+        )))
+    );
     let long_bio = "b".repeat(2001);
     let rejected = store
         .run("invalid-bio", |tx| {
@@ -485,22 +513,18 @@ fn stale_profile_edit_is_rejected_without_a_write() {
     // denies it without a document write, even though the actor is the owner.
     // Document itself keeps its latest-state policy; this freshness check is
     // app-specific.
-    let stale = store
-        .run("stale-edit", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:stale",
-                &alice.session.identity,
-                &edit_intent(2, &profile, "Stale", "late", 1),
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        stale.completion.result,
-        Err(snap_document::Error::Denied)
-    ));
-    assert!(stale.replication.is_none());
+    let stale = dispatch_profile(
+        &mut store,
+        "boot:stale",
+        &alice.session.identity,
+        edit_intent(2, &profile, "Stale", "late", 1),
+    );
+    assert_eq!(
+        stale,
+        Err(snap_transport::Error::Application(json!(
+            snap_document::Error::Denied
+        )))
+    );
 
     // The committed value is untouched by the stale attempt.
     let kept = store

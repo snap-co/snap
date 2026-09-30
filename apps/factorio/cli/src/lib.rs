@@ -481,7 +481,7 @@ async fn run(mut args: Args) -> Result<()> {
             let mut documents = snap_document::client::Client::new(
                 identity["owner"].as_str().context("Missing owner")?.into(),
             );
-            let registry = factorio::documents::registry();
+            let registry = factorio::workspaces::registry();
             let response = client
                 .invoke(
                     "document.manifest",
@@ -611,9 +611,9 @@ async fn run(mut args: Args) -> Result<()> {
                     let conversation = conversation.unwrap_or_else(|| {
                         format!(
                             "ses_{}",
-                            factorio::documents::child_id(
+                            factorio::workspaces::child_id(
                                 &workspace,
-                                factorio::documents::SESSION_KIND,
+                                factorio::workspaces::SESSION_KIND,
                                 &id
                             )
                         )

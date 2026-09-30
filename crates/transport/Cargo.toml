@@ -10,6 +10,10 @@ serde.workspace = true
 serde_json.workspace = true
 ciborium = { version = "0.2.2", default-features = false }
 
+[dev-dependencies]
+snap-sqlite = { path = "../../platforms/sqlite" }
+toml = "0.9"
+
 [lints]
 workspace = true
 

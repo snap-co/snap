@@ -5,7 +5,7 @@ use snap_document::{
     Definition, Intent, Manifest, Mutation, Registry, ServerMessage, Snapshot, server::Document,
 };
 use snap_document_local::Host;
-use snap_transport::operation::Definition as Request;
+use snap_transport::operation::{Definition as Request, Guard};
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
 use std::sync::Arc;
 
@@ -25,14 +25,16 @@ fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution
             input: |v| v.is_object(),
             output: |v| v.is_i64(),
             progress: |_| false,
-            guards: &[
-                |_, _, v, _| guard_visit(0, v),
-                |_, _, v, _| guard_visit(1, v),
-                |_, _, v, _| guard_visit(2, v),
+            inputs: &[],
+            error: |_| true,
+            guards: vec![
+                Guard::policy(|_, _, v, _| guard_visit(0, v)),
+                Guard::policy(|_, _, v, _| guard_visit(1, v)),
+                Guard::policy(|_, _, v, _| guard_visit(2, v)),
             ],
             tables: &[],
-            handler: Box::new(|tx, _, _, _| {
-                let doc = Document::new(registry(), access());
+            handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
+                let doc = Document::new(registry());
                 let before = doc.retained(tx, ID)?;
                 doc.observe(tx, ID, json!(before.value.as_i64().unwrap() + 1))?;
                 Ok(json!(1))
@@ -74,7 +76,7 @@ fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution
         }
         let committed = host
             .transact("inspect counter", |tx| {
-                Document::new(registry(), access()).retained(tx, ID)
+                Document::new(registry()).retained(tx, ID)
             })
             .unwrap();
         assert_eq!(committed.value, json!(i64::from(rejected.is_none())));
@@ -99,10 +101,12 @@ fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
             input: |v| matches!(v.as_str(), Some("output" | "cold" | "invalid")),
             output: |v| v.is_i64(),
             progress: |_| false,
-            guards: &[],
+            inputs: &[],
+            error: |_| true,
+            guards: vec![],
             tables: &[],
-            handler: Box::new(|tx, call, _, _| {
-                Document::new(registry(), access()).observe(tx, ID, json!(99))?;
+            handler: snap_transport::operation::Handler::new(|tx, call, _, _, _| {
+                Document::new(registry()).observe(tx, ID, json!(99))?;
                 if call.input == "cold" {
                     // A caught Store failure still poisons the whole transaction.
                     assert!(matches!(
@@ -155,7 +159,7 @@ fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
         assert!(host.step());
         let committed = host
             .transact("inspect rollback", |tx| {
-                Document::new(registry(), access()).retained(tx, ID)
+                Document::new(registry()).retained(tx, ID)
             })
             .unwrap();
         assert_eq!(committed.value, json!(1));
@@ -171,12 +175,14 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
             input: |v| v.is_null(),
             output: |v| v.is_u64(),
             progress: |_| false,
-            guards: &[|tx, _, _, _| {
+            inputs: &[],
+            error: |_| true,
+            guards: vec![Guard::policy(|tx, _, _, _| {
                 tx.find(snap_document::server::TABLES[0], "primary", &[])?;
                 Ok(())
-            }],
+            })],
             tables: &[snap_document::server::TABLES[0]],
-            handler: Box::new(|tx, _, _, _| {
+            handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
                 Ok(json!(
                     tx.find(snap_document::server::TABLES[0], "primary", &[])?
                         .len()
@@ -242,12 +248,12 @@ fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
         input: |value| value.is_null(),
         output: |value| value.is_i64(),
         progress: |_| false,
-        guards: &[],
+        inputs: &[],
+        error: |_| true,
+        guards: vec![],
         tables: &[snap_document::server::TABLES[0]],
-        handler: Box::new(|tx, _, _, _| {
-            Ok(Document::new(registry(), access())
-                .read(tx, ID, Some("alice"))?
-                .value)
+        handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
+            Ok(Document::new(registry()).read(tx, ID, Some("alice"))?.value)
         }),
     });
     let (peer, _) = connect(&mut host, "alice", "http-fifo", 0);
@@ -293,7 +299,7 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
     for cleanup in [false, true] {
         let mut host = fixture();
         host.transact("dependency", |tx| {
-            let doc = Document::new(registry(), access());
+            let doc = Document::new(registry());
             doc.create(
                 tx,
                 &Snapshot {
@@ -325,7 +331,7 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
                     return Ok(());
                 }
                 let resident = ctx.inspect("resident dependency", |tx| {
-                    Document::new(registry(), access()).retained(tx, DEP)
+                    Document::new(registry()).retained(tx, DEP)
                 });
                 if cleanup {
                     assert_eq!(resident?.value, json!(12));
@@ -383,7 +389,7 @@ fn fixture() -> Host<snap_sqlite::Sqlite> {
     {
         store.load(table).unwrap();
     }
-    let document = Document::new(registry(), access());
+    let document = Document::new(registry());
     store
         .run("fixture", |tx| {
             document.create(
@@ -933,11 +939,8 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     host.tick(10);
     assert_eq!(host.residency_references(ID), 0);
     assert_eq!(
-        host.transact("read drained mutation", |tx| Document::new(
-            registry(),
-            access()
-        )
-        .read(tx, ID, Some("alice")))
+        host.transact("read drained mutation", |tx| Document::new(registry())
+            .read(tx, ID, Some("alice")))
             .unwrap()
             .value,
         json!(3)
@@ -955,7 +958,7 @@ fn controller_commits_progress_and_converges_before_the_next_acceptance() {
             if snapshot.value == json!(1) {
                 ctx.progress(json!({"message":"preparing"}))?;
                 ctx.transact("controller.observe", |tx| {
-                    Document::new(registry(), access()).replace(tx, ID, "alice", json!(2))?;
+                    Document::new(registry()).replace(tx, ID, "alice", json!(2))?;
                     Ok(())
                 })?;
             }
@@ -1061,7 +1064,7 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     let state = host
         .transact("inspect failure", |tx| {
-            Document::new(registry(), access()).lifecycle(tx, ID)
+            Document::new(registry()).lifecycle(tx, ID)
         })
         .unwrap();
     assert!(state.blocked.is_some());
@@ -1073,7 +1076,7 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     let state = host
         .transact("inspect cleared", |tx| {
-            Document::new(registry(), access()).lifecycle(tx, ID)
+            Document::new(registry()).lifecycle(tx, ID)
         })
         .unwrap();
     assert!(state.blocked.is_none());
@@ -1129,7 +1132,7 @@ fn carrier_close_during_controller_io_drains_only_accepted_work() {
     );
     let saved = host
         .transact("read after close", |tx| {
-            Document::new(registry(), access()).read(tx, ID, Some("alice"))
+            Document::new(registry()).read(tx, ID, Some("alice"))
         })
         .unwrap();
     assert_eq!(saved.value, json!(1));

@@ -7,7 +7,9 @@ mod executor;
 mod program;
 
 pub use crate::{Value, json};
-pub use executor::{Event, Executor, Inspection, JobView, Scope, Snapshot, Ticket};
+pub use executor::{
+    Event, Executor, Inspection, JobView, PreparedRequest, Scope, Snapshot, Ticket,
+};
 pub use program::{
     Admission, Attempt, Call, Error, Inputs, Operation, Outcome, Program, Stop, Validator, View,
     WorkingSet,

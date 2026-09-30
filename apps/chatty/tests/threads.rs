@@ -42,17 +42,49 @@ fn fixture() -> Store<snap_sqlite::Sqlite> {
 fn messages_use_guarded_document_mutations_and_keep_verified_sender() {
     let mut store = fixture();
     let args = json!({"id":"message-1","message":"Hello","created":2});
-    assert!(
-        store
-            .run("denied", |tx| chatty::mutate(
-                tx,
-                "bob",
-                ID,
-                "send",
-                args.clone()
-            ))
-            .is_err()
+    // The real dispatch policy rejects Bob; feature persistence only owns the
+    // transition, deduplication and sender attribution tested below.
+    use snap_transport::operation::{Context, Runtime};
+    let mut runtime = Runtime::default();
+    for definition in
+        snap_document::operations::definitions(std::sync::Arc::new(chatty::document()))
+    {
+        runtime.register(definition).unwrap();
+    }
+    let selection = runtime.definitions().resolve("document.mutate").unwrap();
+    runtime
+        .enqueue(
+            (),
+            snap_transport::Invocation {
+                id: 1,
+                operation: "document.mutate".into(),
+                input: json!(snap_document::Intent {
+                    id: 1,
+                    document: ID.into(),
+                    version: "1".into(),
+                    mutation: "send".into(),
+                    args: args.clone()
+                }),
+            },
+            selection,
+        )
+        .unwrap();
+    let (work, call, selection) = runtime.acquire().unwrap();
+    let result = runtime.accept(
+        &mut store,
+        work,
+        call,
+        selection,
+        Context {
+            actor: Some("bob".into()),
+            lifetime: Some("test:bob".into()),
+            ..Context::default()
+        },
     );
+    assert!(
+        matches!(result, Err(((), snap_transport::Error::Application(value))) if value == json!(snap_document::Error::Denied))
+    );
+    runtime.reject();
     for _ in 0..2 {
         store
             .run("send", |tx| {
@@ -106,7 +138,9 @@ fn composed_mutations_rollback_and_deletion_retains_the_conversation() {
         .unwrap();
     let manifest = store
         .inspect("manifest", |tx| {
-            chatty::document().manifest(tx, "test:1", "alice", &Manifest::default())
+            chatty::document()
+                .access_guard()
+                .manifest(tx, "test:1", "alice", &Manifest::default())
         })
         .unwrap();
     assert!(manifest.documents.is_empty());

@@ -4,7 +4,7 @@ use snap_document_local::{Host, web::Shared};
 use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
 use snap_oidc::relying_party as rp;
 use snap_store::Error;
-use snap_transport::operation::Definition as Request;
+use snap_transport::operation::{Definition as Request, Guard};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -29,9 +29,11 @@ fn operations(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> 
         input: |v| serde_json::from_value::<chatty::Create>(v.clone()).is_ok(),
         output: Value::is_object,
         progress: |_| false,
-        guards: &[],
+        error: |_| true,
+        guards: vec![],
+        inputs: &[],
         tables: &[],
-        handler: Box::new(|tx, invocation, owner, _| {
+        handler: snap_transport::operation::Handler::new(|tx, invocation, owner, _, _| {
             let input = serde_json::from_value::<chatty::Create>(invocation.input.clone())
                 .map_err(|_| Error::Invalid)?;
             chatty::create(tx, owner.ok_or(Error::Invalid)?, &input)?;
@@ -42,13 +44,13 @@ fn operations(mut host: Host<snap_sqlite::Sqlite>) -> Host<snap_sqlite::Sqlite> 
         host = host.with_request(Request {
             name: name.into(), identity_required: true, input: |v| v["thread_id"].is_string(), output: Value::is_object, progress: |_| false,
             tables: &[],
-            guards: &[|tx, actor, input, _| {
+            inputs: &[], error: |_| true, guards: vec![Guard::policy(|tx, actor, input, _| {
                 let snapshot = chatty::document().read(tx, field(input, "thread_id")?, actor)?;
                 let resource = snap_access::Resource::new("document", &snapshot.id).map_err(|_| Error::Invalid)?;
-                if !snap_access::allows(chatty::document().access.role(tx, &resource, actor, false)?, snap_access::Role::Owner) { return Err(Error::Invalid); }
+                if !snap_access::allows(snap_document::access::vocabulary().role(tx, &resource, actor, false)?, snap_access::Role::Owner) { return Err(Error::Invalid); }
                 Ok(())
-            }],
-            handler: Box::new(move |tx, invocation, owner, _| {
+            })],
+            handler: snap_transport::operation::Handler::new(move |tx, invocation, owner, _, _| {
                 let owner = owner.ok_or(Error::Invalid)?;
                 let input = &invocation.input;
                 let id = field(input, "thread_id")?;

@@ -5,23 +5,18 @@ pub mod tcp;
 pub mod web;
 pub use controller::{Controller, ControllerContext};
 
-use snap_document::{
-    ClientMessage, Completion, Manifest, ServerMessage, Snapshot,
-    server::{AdmittedMutation, Document},
-};
+use snap_document::{Completion, Manifest, ServerMessage, Snapshot, server::Document};
 use snap_store::{Backend, Store, Transaction};
+use snap_transport::operation::{Context, Definition, Runtime, Selection};
 use snap_transport::server::{Attachment, Authority, Config, ConnectionId, Server};
 use snap_transport::{Command, Error, Event, Invocation, Response, Value, json};
-use snap_transport::{
-    dispatch::Queue,
-    operation::{Definition, Registry as Operations, Selection},
-};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Runs inside the SAME Store transaction as each protected document operation.
 pub type Authenticate =
     Arc<dyn Fn(&mut Transaction<'_>, &str) -> Result<String, snap_store::Error> + Send + Sync>;
+type Input = Box<dyn FnMut(&str) -> Result<Value, Error> + Send>;
 struct StoreAuthority<B> {
     store: Arc<Mutex<Store<B>>>,
     authenticate: Authenticate,
@@ -107,55 +102,39 @@ impl Output {
     }
 }
 
-#[derive(Clone, PartialEq)]
-enum Operation {
-    Document(ClientMessage),
-    Request(Invocation, Selection),
-}
-
 struct Call {
     peer: u64,
-    operation: Operation,
+    operation: Invocation,
     accepted: bool,
     outcome: Option<snap_transport::Outcome>,
 }
 
+#[derive(Clone)]
 struct Work {
     peer: u64,
     connection: Option<u64>,
     wire_id: u64,
     bearer: Option<String>,
     actor: Option<String>,
-    operation: Operation,
-}
-
-enum Prepared {
-    Mutation(AdmittedMutation),
-    Replay(Completion),
-    Manifest(Manifest),
-    Request,
+    operation: Invocation,
+    selection: Selection,
 }
 
 pub struct Host<B: Backend> {
     store: Arc<Mutex<Store<B>>>,
-    document: Document,
+    document: Arc<Document>,
     transport: Server<StoreAuthority<B>>,
     authenticate: Authenticate,
-    requests: Operations,
+    requests: Runtime<Work>,
+    input: Input,
     http_requests: BTreeSet<Selection>,
     peers: BTreeMap<u64, Peer>,
     lifetimes: BTreeSet<u64>,
-    queue: Queue<Work>,
-    active: Option<(Work, Prepared)>,
     controllers: BTreeMap<String, Controller<B>>,
     reconcile: BTreeMap<String, Snapshot>,
     calls: BTreeMap<(u64, u64), Call>,
     residency: BTreeMap<u64, (String, BTreeSet<String>)>,
     pinned: BTreeSet<String>,
-    /// Full-table knowledge required by the accepted definition survives carrier
-    /// housekeeping as well as the gap before handler entry. Key pins alone
-    /// cannot preserve complete secondary-index or empty-table knowledge.
-    resident_tables: &'static [&'static str],
     next_peer: u64,
     boot: String,
     retention_ms: u64,
@@ -201,23 +180,26 @@ impl<B: Backend> Host<B> {
             authenticate: authenticate.clone(),
             lifetime,
         };
+        let document = Arc::new(document);
+        let mut requests = Runtime::default();
+        for definition in snap_document::operations::definitions(document.clone()) {
+            requests.register(definition).expect("document operation");
+        }
         Self {
             store,
             document,
             transport: Server::new(authority, config).with_live_authority(),
             authenticate,
-            requests: Operations::default(),
+            requests,
+            input: Box::new(|_| Err(Error::Unavailable)),
             http_requests: BTreeSet::new(),
             peers: BTreeMap::new(),
             lifetimes: BTreeSet::new(),
-            queue: Queue::default(),
-            active: None,
             controllers: BTreeMap::new(),
             reconcile: BTreeMap::new(),
             calls: BTreeMap::new(),
             residency: BTreeMap::new(),
             pinned: BTreeSet::new(),
-            resident_tables: &[],
             next_peer: 0,
             boot,
             retention_ms: config.reconnect_ms,
@@ -226,19 +208,22 @@ impl<B: Backend> Host<B> {
 
     pub fn with_request(mut self, request: Definition) -> Self {
         assert!(
-            self.peers.is_empty() && self.queue.idle(),
+            self.peers.is_empty() && self.requests.idle(),
             "assemble operations before accepting traffic"
-        );
-        assert!(
-            !matches!(
-                request.name.as_str(),
-                "document.mutate" | "document.manifest"
-            ),
-            "reserved document operation"
         );
         self.requests
             .register(request)
             .expect("valid, unique operation name");
+        self
+    }
+
+    /// Bootstrap selects physical providers for explicitly declared read-only
+    /// inputs. Called only for the FIFO owner, never inside a portable handler.
+    pub fn with_inputs(
+        mut self,
+        input: impl FnMut(&str) -> Result<Value, Error> + Send + 'static,
+    ) -> Self {
+        self.input = Box::new(input);
         self
     }
 
@@ -249,7 +234,7 @@ impl<B: Backend> Host<B> {
         let name = request.name.clone();
         self = self.with_request(request);
         self.http_requests
-            .insert(self.requests.resolve(&name).unwrap());
+            .insert(self.requests.definitions().resolve(&name).unwrap());
         self
     }
 
@@ -262,6 +247,7 @@ impl<B: Backend> Host<B> {
 
     pub fn is_preconnection_request(&self, name: &str) -> bool {
         self.requests
+            .definitions()
             .resolve(name)
             .is_ok_and(|selection| self.http_requests.contains(&selection))
     }
@@ -305,15 +291,15 @@ impl<B: Backend> Host<B> {
         invocation: Invocation,
         bearer: Option<String>,
     ) -> snap_transport::Outcome {
-        let selection = self.requests.resolve(&invocation.operation)?;
+        let selection = self.requests.definitions().resolve(&invocation.operation)?;
         if !self.http_requests.contains(&selection) {
             return Err(Error::UnknownOperation);
         }
-        let request = self.requests.get(selection);
+        let request = self.requests.definitions().get(selection);
         if !(request.input)(&invocation.input) {
             return Err(Error::InvalidInput);
         }
-        if self.queue.len() >= 1024 {
+        if self.requests.pending() >= 1024 {
             return Err(Error::Capacity);
         }
         let peer = self.open()?;
@@ -326,7 +312,8 @@ impl<B: Backend> Host<B> {
                 wire_id: id,
                 bearer,
                 actor: None,
-                operation: Operation::Request(invocation, selection),
+                operation: invocation,
+                selection,
             })?;
             loop {
                 while let Some(response) = output.pop_front() {
@@ -386,7 +373,7 @@ impl<B: Backend> Host<B> {
             {
                 *ids = store
                     .run("residency.authorized", |tx| {
-                        self.document.authorized_ids(tx, actor)
+                        snap_document::DocumentAccessGuard::new(&self.document).extent(tx, actor)
                     })?
                     .value;
             }
@@ -403,7 +390,8 @@ impl<B: Backend> Host<B> {
             .collect();
         store.load_keys(snap_document::server::TABLES[0], &keys)?;
         if self
-            .resident_tables
+            .requests
+            .tables()
             .contains(&snap_document::server::TABLES[0])
         {
             Ok(())
@@ -551,7 +539,8 @@ impl<B: Backend> Host<B> {
         }
         if released
             && !self
-                .resident_tables
+                .requests
+                .tables()
                 .contains(&snap_document::server::TABLES[0])
         {
             let keys = self
@@ -621,9 +610,11 @@ impl<B: Backend> Host<B> {
             return Err(Error::StaleConnection);
         }
         let selection = match &command {
-            Command::Invoke(invocation) | Command::Request { invocation, .. } => {
-                self.requests.resolve(&invocation.operation).ok()
-            }
+            Command::Invoke(invocation) | Command::Request { invocation, .. } => self
+                .requests
+                .definitions()
+                .resolve(&invocation.operation)
+                .ok(),
             _ => None,
         };
         if selection.is_some_and(|selection| self.http_requests.contains(&selection)) {
@@ -667,7 +658,7 @@ impl<B: Backend> Host<B> {
                 }
             }
             Command::Invoke(invocation) => {
-                if self.queue.len() >= 1024 {
+                if self.requests.pending() >= 1024 {
                     return Err(Error::Capacity);
                 }
                 let attachment = self.peers[&peer_id]
@@ -678,24 +669,11 @@ impl<B: Backend> Host<B> {
                     return Err(Error::StaleConnection);
                 }
                 let connection = attachment.connection().0;
-                let operation = match invocation.operation.as_str() {
-                    "document.mutate" => Operation::Document(ClientMessage::Mutate(
-                        serde_json::from_value(invocation.input)
-                            .map_err(|_| Error::InvalidInput)?,
-                    )),
-                    "document.manifest" => Operation::Document(ClientMessage::Manifest(
-                        serde_json::from_value(invocation.input)
-                            .map_err(|_| Error::InvalidInput)?,
-                    )),
-                    _ => {
-                        let selection = selection.ok_or(Error::UnknownOperation)?;
-                        let request = self.requests.get(selection);
-                        if !(request.input)(&invocation.input) {
-                            return Err(Error::InvalidInput);
-                        }
-                        Operation::Request(invocation.clone(), selection)
-                    }
-                };
+                let selection = selection.ok_or(Error::UnknownOperation)?;
+                let request = self.requests.definitions().get(selection);
+                if !(request.input)(&invocation.input) {
+                    return Err(Error::InvalidInput);
+                }
                 let id = invocation.id;
                 self.enqueue(Work {
                     peer: peer_id,
@@ -703,17 +681,18 @@ impl<B: Backend> Host<B> {
                     wire_id: id,
                     bearer: self.peers[&peer_id].bearer.clone(),
                     actor: self.peers[&peer_id].actor.clone(),
-                    operation,
+                    operation: invocation,
+                    selection,
                 })?;
                 self.admit_next();
                 return Ok(());
             }
             Command::Request { bearer, invocation } => {
-                if self.queue.len() >= 1024 {
+                if self.requests.pending() >= 1024 {
                     return Err(Error::Capacity);
                 }
                 let selection = selection.ok_or(Error::UnknownOperation)?;
-                let request = self.requests.get(selection);
+                let request = self.requests.definitions().get(selection);
                 if !(request.input)(&invocation.input) {
                     return Err(Error::InvalidInput);
                 }
@@ -724,7 +703,8 @@ impl<B: Backend> Host<B> {
                     wire_id: id,
                     bearer,
                     actor: None,
-                    operation: Operation::Request(invocation, selection),
+                    operation: invocation,
+                    selection,
                 })?;
                 self.admit_next();
                 return Ok(());
@@ -794,6 +774,8 @@ impl<B: Backend> Host<B> {
         if self.calls.len() >= 16384 {
             return Err(Error::Capacity);
         }
+        self.requests
+            .enqueue(work.clone(), work.operation.clone(), work.selection)?;
         self.calls.insert(
             key,
             Call {
@@ -803,7 +785,6 @@ impl<B: Backend> Host<B> {
                 outcome: None,
             },
         );
-        self.queue.push_back(work);
         Ok(())
     }
 
@@ -828,31 +809,23 @@ impl<B: Backend> Host<B> {
 
     fn admit_next(&mut self) {
         self.apply_carrier_controls();
-        if self.queue.busy() {
-            return;
-        }
-        while let Some(mut work) = self.queue.acquire() {
-            // The portable definition declares residency for every application
-            // operation, loaded at its FIFO turn before read-only admission. This is
-            // not an implicit StoreMiss retry or a second mutation path.
-            if let Operation::Request(_, selection) = &work.operation {
-                let tables = self.requests.get(*selection).tables;
-                let loaded = tables
-                    .iter()
-                    .try_for_each(|table| self.store.lock().unwrap().load(table));
-                if let Err(error) = loaded {
-                    self.respond(
-                        &work,
-                        Event::Completed {
-                            id: work.wire_id,
-                            outcome: Err(storage_error(error)),
-                        },
-                    );
-                    self.queue.finish();
-                    continue;
-                }
+        while let Some((mut work, invocation, selection)) = self.requests.acquire() {
+            let tables = self.requests.definitions().get(selection).tables;
+            let loaded = tables
+                .iter()
+                .try_for_each(|table| self.store.lock().unwrap().load(table));
+            if let Err(error) = loaded {
+                self.respond(
+                    &work,
+                    Event::Completed {
+                        id: work.wire_id,
+                        outcome: Err(storage_error(error)),
+                    },
+                );
+                self.requests.reject();
+                continue;
             }
-            let prepared = self
+            let authenticated = self
                 .store
                 .lock()
                 .unwrap()
@@ -871,72 +844,11 @@ impl<B: Backend> Host<B> {
                     if work.connection.is_some() && actor != work.actor {
                         return Err(snap_store::Error::Invalid);
                     }
-                    work.actor = actor.clone();
-                    match &work.operation {
-                        Operation::Document(ClientMessage::Mutate(intent)) => {
-                            let actor = actor.as_deref().ok_or(snap_store::Error::Invalid)?;
-                            let lifetime = self.lifetime(work.connection.unwrap());
-                            if let Some(completion) =
-                                self.document.recover(tx, &lifetime, actor, intent)?
-                            {
-                                return Ok(Ok(Prepared::Replay(completion)));
-                            }
-                            Ok(self
-                                .document
-                                .admit(tx, actor, intent)?
-                                .map(Prepared::Mutation)
-                                .map_err(|error| Error::Application(json!(error))))
-                        }
-                        Operation::Document(ClientMessage::Manifest(manifest)) => {
-                            Ok(Ok(Prepared::Manifest(manifest.clone())))
-                        }
-                        Operation::Request(invocation, selection) => {
-                            let request = self.requests.get(*selection);
-                            if request.identity_required && actor.is_none() {
-                                return Ok(Err(Error::IdentityRequired));
-                            }
-                            request.admit(
-                                tx,
-                                actor.as_deref(),
-                                &invocation.input,
-                                work.bearer.as_deref(),
-                            )?;
-                            Ok(Ok(Prepared::Request))
-                        }
-                    }
+                    Ok(actor)
                 })
-                .map_err(storage_error)
-                .and_then(|prepared| prepared);
-            match prepared {
-                Ok(prepared) => {
-                    if let Some(connection) = work.connection
-                        && let Err(error) = self.transport.retain(ConnectionId(connection))
-                    {
-                        self.respond(
-                            &work,
-                            Event::Completed {
-                                id: work.wire_id,
-                                outcome: Err(error),
-                            },
-                        );
-                        self.queue.finish();
-                        continue;
-                    }
-                    self.resident_tables = match &work.operation {
-                        Operation::Request(_, selection) => self.requests.get(*selection).tables,
-                        _ => &[],
-                    };
-                    self.respond(&work, Event::Accepted { id: work.wire_id });
-                    if let Some(connection) = work.connection {
-                        self.pinned = self
-                            .residency
-                            .get(&connection)
-                            .map(|(_, ids)| ids.clone())
-                            .unwrap_or_default();
-                    }
-                    self.active = Some((work, prepared));
-                    return;
-                }
+                .map_err(storage_error);
+            let actor = match authenticated {
+                Ok(actor) => actor,
                 Err(error) => {
                     self.respond(
                         &work,
@@ -945,7 +857,89 @@ impl<B: Backend> Host<B> {
                             outcome: Err(error),
                         },
                     );
-                    self.queue.finish();
+                    self.requests.reject();
+                    continue;
+                }
+            };
+            work.actor = actor.clone();
+            if let Some(connection) = work.connection
+                && let Err(error) = self.transport.retain(ConnectionId(connection))
+            {
+                self.respond(
+                    &work,
+                    Event::Completed {
+                        id: work.wire_id,
+                        outcome: Err(error),
+                    },
+                );
+                self.requests.reject();
+                continue;
+            }
+            let mut context = Context {
+                actor,
+                bearer: work.bearer.clone(),
+                lifetime: work.connection.map(|id| self.lifetime(id)),
+                ..Context::default()
+            };
+            let supplied = self
+                .requests
+                .definitions()
+                .get(selection)
+                .inputs
+                .iter()
+                .try_for_each(|key| {
+                    context.inputs.insert((*key).into(), (self.input)(key)?);
+                    Ok::<_, Error>(())
+                });
+            if let Err(error) = supplied {
+                if let Some(connection) = work.connection {
+                    self.transport
+                        .release(ConnectionId(connection))
+                        .expect("prepared connection pin");
+                }
+                self.respond(
+                    &work,
+                    Event::Completed {
+                        id: work.wire_id,
+                        outcome: Err(error),
+                    },
+                );
+                self.requests.reject();
+                continue;
+            }
+            let result = self.requests.accept(
+                &mut self.store.lock().unwrap(),
+                work.clone(),
+                invocation,
+                selection,
+                context,
+            );
+            match result {
+                Ok(()) => {
+                    self.respond(&work, Event::Accepted { id: work.wire_id });
+                    if let Some(connection) = work.connection {
+                        self.pinned = self
+                            .residency
+                            .get(&connection)
+                            .map(|(_, ids)| ids.clone())
+                            .unwrap_or_default();
+                    }
+                    return;
+                }
+                Err((_, error)) => {
+                    if let Some(connection) = work.connection {
+                        self.transport
+                            .release(ConnectionId(connection))
+                            .expect("prepared connection pin");
+                    }
+                    self.respond(
+                        &work,
+                        Event::Completed {
+                            id: work.wire_id,
+                            outcome: Err(error),
+                        },
+                    );
+                    self.requests.reject();
                 }
             }
         }
@@ -955,95 +949,28 @@ impl<B: Backend> Host<B> {
     /// slot is the gate, including the gap between admission and execution.
     pub fn step(&mut self) -> bool {
         self.admit_next();
-        let Some((work, prepared)) = self.active.take() else {
+        let Some(completed) = self.requests.execute(&mut self.store.lock().unwrap()) else {
             return false;
         };
-        let mut replication = None;
-        let mut changes = Vec::new();
-        let outcome = match &work.operation {
-            Operation::Request(invocation, selection) => {
-                let output = self.requests.get(*selection).output;
-                let handler = self.requests.handler(*selection);
-                let mut invalid_output = false;
-                self.store
-                    .lock()
-                    .unwrap()
-                    .run("application.request", |tx| {
-                        let value = handler(
-                            tx,
-                            invocation,
-                            work.actor.as_deref(),
-                            work.bearer.as_deref(),
-                        )?;
-                        tx.status()?;
-                        if !output(&value) {
-                            invalid_output = true;
-                            return Err(snap_store::Error::Invalid);
-                        }
-                        Ok(value)
-                    })
-                    .map(|value| {
-                        changes = value.changes;
-                        value.value
-                    })
-                    .map_err(|error| {
-                        if invalid_output {
-                            return Error::InvalidOutput;
-                        }
-                        if self.http_requests.contains(selection) {
-                            match error {
-                                snap_store::Error::Invalid => Error::InvalidInput,
-                                snap_store::Error::Constraint => {
-                                    Error::Application(json!({"code":"Conflict"}))
-                                }
-                                other => storage_error(other),
-                            }
-                        } else {
-                            storage_error(error)
-                        }
-                    })
-            }
-            Operation::Document(_) => {
-                let connection = work.connection.expect("connected document operation");
-                if !self.lifetimes.contains(&connection) {
-                    Err(Error::StaleConnection)
-                } else {
-                    let lifetime = self.lifetime(connection);
-                    let result = self.store.lock().unwrap().run("document.dispatch", |tx| {
-                        let actor = work.actor.as_deref().ok_or(snap_store::Error::Invalid)?;
-                        match prepared {
-                            Prepared::Manifest(manifest) => {
-                                let state =
-                                    self.document.manifest(tx, &lifetime, actor, &manifest)?;
-                                Ok((ServerMessage::Manifest(state), None))
-                            }
-                            Prepared::Mutation(admitted) => {
-                                let result =
-                                    self.document.execute_recorded(tx, &lifetime, admitted)?;
-                                Ok((
-                                    ServerMessage::Completed(result.completion),
-                                    result.replication,
-                                ))
-                            }
-                            Prepared::Replay(completion) => {
-                                Ok((ServerMessage::Completed(completion), None))
-                            }
-                            Prepared::Request => unreachable!(),
-                        }
-                    });
-                    result
-                        .map(|committed| {
-                            changes = committed.changes;
-                            let (message, intent) = committed.value;
-                            replication = intent;
-                            serde_json::to_value(message).expect("serializable document result")
-                        })
-                        .map_err(storage_error)
-                }
-            }
+        let work = completed.work;
+        let replication = serde_json::from_value::<Option<snap_document::Replication>>(
+            completed.context.publication,
+        )
+        .unwrap_or(None);
+        let changes = completed.changes;
+        let outcome = if self.http_requests.contains(&work.selection)
+            && let Some(error) = completed.storage_failure
+        {
+            Err(match error {
+                snap_store::Error::Invalid => Error::InvalidInput,
+                snap_store::Error::Constraint => Error::Application(json!({"code":"Conflict"})),
+                other => storage_error(other),
+            })
+        } else {
+            completed.outcome
         };
         // Publish the desired commit before reconciling its external resources.
-        if let Operation::Document(ClientMessage::Mutate(_)) = &work.operation
+        if work.operation.operation == "document.mutate"
             && let Ok(value) = &outcome
             && let Ok(ServerMessage::Completed(completion)) =
                 serde_json::from_value::<ServerMessage>(value.clone())
@@ -1068,9 +995,10 @@ impl<B: Backend> Host<B> {
                 self.reconcile(Some(&work))
             });
         let full_documents = self
-            .resident_tables
+            .requests
+            .tables()
             .contains(&snap_document::server::TABLES[0]);
-        self.resident_tables = &[];
+        self.requests.release_tables();
         if full_documents {
             self.pinned.clear();
             // Restore the current extent after all accepted work and controllers
@@ -1101,7 +1029,7 @@ impl<B: Backend> Host<B> {
                 outcome,
             },
         );
-        self.queue.finish();
+        self.requests.finish();
         true
     }
 
@@ -1124,6 +1052,7 @@ impl<B: Backend> Host<B> {
                     return Err(snap_store::Error::NotFound);
                 }
                 self.document
+                    .access_guard()
                     .manifest(tx, &self.lifetime(connection), actor, &Manifest::default())
                     .map(|m| m.documents)
             })
@@ -1305,10 +1234,5 @@ fn notification(message: ServerMessage) -> Response {
 }
 
 pub fn storage_error(error: snap_store::Error) -> Error {
-    match error {
-        snap_store::Error::Miss(_) => Error::Application(json!({"code":"StoreMiss"})),
-        snap_store::Error::Indeterminate | snap_store::Error::Unavailable => Error::Unavailable,
-        snap_store::Error::NotFound => Error::InvalidBearer,
-        _ => Error::Application(json!({"code":"Rejected"})),
-    }
+    snap_transport::operation::storage_error(error)
 }

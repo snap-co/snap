@@ -1,4 +1,4 @@
-//! Store-backed document server: guarded mutations, receipts and replacement.
+//! Resident Document behavior, receipts and replacement after dispatch acceptance.
 //!
 //! Portable `no_std` with `alloc`; hosts own execution, lifetimes and external
 //! IO. All methods take the caller's `&mut Transaction` so Access and
@@ -24,15 +24,13 @@
 //!   re-executing (`replayed: true`, `replication: None`). The same key with a
 //!   different actor or intent is misuse (`StoreError::Invalid`) and stages
 //!   nothing new.
-//! * Successful writes stage the document update and the receipt insert
-//!   together; both commit atomically. Denials and declared rejections stage
-//!   only the receipt (a `Completion` with `Err`), so retries dedup without
-//!   partial document writes. Guard and minimum-role checks run against the
-//!   pre-change Access state.
-//! * A reread (retry or `manifest` recovery) suppresses the payload when the
-//!   actor can no longer read the document: `Ok(Some(_))` becomes `Ok(None)`.
-//!   `Ok(None)` means "committed but forbidden"; it never carries a snapshot.
-//! * `manifest` reconciles all authorized active Documents: missing/stale
+//! * Successful writes stage the document update and receipt together. Domain
+//!   rejections can record a failed completion without partial document writes.
+//!   Access decisions belong exclusively to `DocumentAccessGuard` at admission.
+//! * Receipt reads return persisted results without reevaluating authority.
+//!   Dispatch recovery policy and the captured manifest extent suppress results
+//!   outside current visibility to `Ok(None)`, without losing the committed fact.
+//! * `manifest` reconciles the supplied accepted extent: missing/stale
 //!   snapshots, validated unchanged holdings, and recovered pending completions.
 //!   Deleted/archived Documents are retained for cleanup but excluded from loading.
 //! * `expire` deletes receipt rows for one lifetime only; document rows are
@@ -41,7 +39,7 @@
 //!   `Completion`. Handlers must propagate it with `?`.
 //! * Misuse (empty lifetime/actor, zero or storage-unsafe IDs, malformed UUIDs,
 //!   conflicting receipt reuse) reports `StoreError::Invalid`. Domain failures
-//!   (denied, missing, incompatible, rejected) report inside `Completion`.
+//!   (missing, incompatible, rejected) report inside `Completion`.
 //! * Revisions and intent IDs must fit in signed 64-bit storage
 //!   (`1..=i64::MAX`). Larger values report `StoreError::Invalid`.
 //! * The host namespaces `lifetime` per boot (for example `"boot:connection"`),
@@ -59,7 +57,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use snap_access::{Access, Audience, DirectGrant, Resource, Role};
+use snap_access::{Audience, DirectGrant, Resource, Role};
 use snap_store::{Row, Transaction, Value};
 
 use crate::{Completion, Intent, Manifest, Reconciliation, Replication, Snapshot, digest};
@@ -98,41 +96,25 @@ pub struct MutationResult {
 
 /// Admission captures the pre-change authority and snapshot. The host must retain
 /// its application gate until execution finishes; no other writer may intervene.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct AdmittedMutation {
-    before: Snapshot,
+    pub(crate) before: Snapshot,
     intent: Intent,
     actor: String,
 }
 
 /// Document server over the caller's Store transaction.
 ///
-/// Holds the app `Registry` (deterministic behavior) and the `Access`
-/// vocabulary (authorization). Rows live in the transaction; this struct holds
-/// no per-document state.
+/// Holds deterministic application definitions. Rows live in the transaction;
+/// this struct holds neither authorization policy nor per-document state.
 pub struct Document {
     /// App definitions selecting deterministic behavior by `Snapshot::kind`.
     pub registry: Registry,
-    /// Authorization vocabulary; must contain kind `"document"`.
-    pub access: Access,
 }
 
 impl Document {
-    /// Authorized identities for the host residency controller. This queries the
-    /// resident Access graph, not Document contents or storage IO.
-    pub fn authorized_ids(
-        &self,
-        tx: &mut Transaction<'_>,
-        actor: &str,
-    ) -> Result<BTreeSet<String>, StoreError> {
-        let mut ids = BTreeSet::new();
-        for entry in self.access.accessible(tx, Some(actor), true)? {
-            if entry.resource.kind == RESOURCE_KIND
-                && self.lifecycle(tx, &entry.resource.id)?.state == crate::lifecycle::State::Active
-            {
-                ids.insert(entry.resource.id);
-            }
-        }
-        Ok(ids)
+    pub fn access_guard(&self) -> crate::DocumentAccessGuard<'_> {
+        crate::DocumentAccessGuard::new(self)
     }
     /// Translate a committed Store change to current Document state. Deletion
     /// requires retained lifecycle state so controllers can finish cleanup.
@@ -176,13 +158,9 @@ impl Document {
         }
         Ok(ids)
     }
-    /// Assemble the server from an app registry and an Access vocabulary.
-    ///
-    /// The supplied `Access` must already contain kind `"document"`
-    /// (for example `KindDefinition::kind("document")`); otherwise every
-    /// operation touching Access reports `StoreError::Invalid`.
-    pub fn new(registry: Registry, access: Access) -> Self {
-        Self { registry, access }
+    /// Assemble resident behavior. Dispatch separately composes Access policy.
+    pub fn new(registry: Registry) -> Self {
+        Self { registry }
     }
 
     /// Atomically register the Access resource and insert the document row.
@@ -217,9 +195,8 @@ impl Document {
         let resource =
             Resource::new(RESOURCE_KIND, &snapshot.id).map_err(|_| StoreError::Invalid)?;
         let grant = DirectGrant::new(owner, Role::Owner).map_err(|_| StoreError::Invalid)?;
-        let created = self
-            .access
-            .register(tx, &resource, audience, &[grant], None)?;
+        let created =
+            crate::access::vocabulary().register(tx, &resource, audience, &[grant], None)?;
         if !created {
             return Err(StoreError::Invalid);
         }
@@ -227,11 +204,9 @@ impl Document {
         Ok(())
     }
 
-    /// Authorized read of one document.
-    ///
-    /// Requires at least `Viewer` with audience-derived viewing. Denials
-    /// report `StoreError::Invalid` without leaking the value; missing rows
-    /// report `StoreError::NotFound`; cold reads report `Miss`.
+    /// Read resident state without checking permission. Caller authority is
+    /// captured by dispatch before handler entry. Missing rows report `NotFound`,
+    /// cold reads report `Miss`, and schema failures report `Invalid`.
     pub fn read(
         &self,
         tx: &mut Transaction<'_>,
@@ -253,16 +228,11 @@ impl Document {
         self.registry
             .validate(&snapshot)
             .map_err(|_| StoreError::Invalid)?;
-        let resource = Resource::new(RESOURCE_KIND, id).map_err(|_| StoreError::Invalid)?;
-        let role = self.access.role(tx, &resource, actor, true)?;
-        if !snap_access::allows(role, Role::Viewer) {
-            return Err(StoreError::Invalid);
-        }
         Ok(snapshot)
     }
 
     /// Trusted controller observation, including retained deleted/archived values.
-    /// This grants no client authority; wire operations must use `read` instead.
+    /// This grants no client authority; wire operations require dispatch policy.
     pub fn retained(&self, tx: &mut Transaction<'_>, id: &str) -> Result<Snapshot, StoreError> {
         if !is_uuid(id) {
             return Err(StoreError::Invalid);
@@ -278,9 +248,8 @@ impl Document {
     }
 
     /// Replace a document from a trusted application operation, for example a
-    /// committed external-model result. Requires pre-change Owner authority and
-    /// validates the existing kind/version. This is not a wire operation: callers
-    /// must apply their session and domain guards in the same transaction. It has
+    /// committed external-model result. Validates the existing kind/version,
+    /// without rechecking dispatch authority. This is not a wire operation. It has
     /// no optimistic intent or receipt; publish authoritative holdings after commit.
     pub fn replace(
         &self,
@@ -290,13 +259,6 @@ impl Document {
         value: serde_json::Value,
     ) -> Result<Snapshot, StoreError> {
         let mut snapshot = self.read(tx, id, Some(actor))?;
-        let resource = Resource::new(RESOURCE_KIND, id).map_err(|_| StoreError::Invalid)?;
-        if !snap_access::allows(
-            self.access.role(tx, &resource, Some(actor), false)?,
-            Role::Owner,
-        ) {
-            return Err(StoreError::Invalid);
-        }
         snapshot.revision = snapshot
             .revision
             .checked_add(1)
@@ -319,7 +281,7 @@ impl Document {
         Ok(snapshot)
     }
 
-    /// Request deletion under Owner authority. Retain data, Access and finalizers
+    /// Request deletion after acceptance. Retain data, Access and finalizers
     /// for cleanup, while excluding the Document from normal synchronization.
     pub fn remove(
         &self,
@@ -328,13 +290,6 @@ impl Document {
         actor: &str,
     ) -> Result<(), StoreError> {
         self.read(tx, id, Some(actor))?;
-        let resource = Resource::new(RESOURCE_KIND, id).map_err(|_| StoreError::Invalid)?;
-        if !snap_access::allows(
-            self.access.role(tx, &resource, Some(actor), false)?,
-            Role::Owner,
-        ) {
-            return Err(StoreError::Invalid);
-        }
         let mut lifecycle = self.lifecycle(tx, id)?;
         lifecycle.state = crate::lifecycle::State::Deleted;
         self.set_lifecycle(tx, id, &lifecycle)?;
@@ -457,8 +412,8 @@ impl Document {
         validate_intent_shape(intent)?;
         let intent_key = intent.id as i64;
 
-        // Receipt reread first: exact replays suppress when revoked, conflicts
-        // report Invalid, misses abort.
+        // Receipt reread first: exact replays retain the stored result, conflicts
+        // report Invalid, and misses abort. Recipient policy belongs to dispatch.
         if let Some(row) = tx.get(
             RECEIPTS,
             &[Value::Text(lifetime.into()), Value::Integer(intent_key)],
@@ -472,7 +427,7 @@ impl Document {
             {
                 return Err(StoreError::Invalid);
             }
-            let completion = self.suppress_if_revoked(tx, actor, stored.completion)?;
+            let completion = stored.completion;
             return Ok(MutationResult {
                 completion,
                 replication: None,
@@ -480,7 +435,7 @@ impl Document {
             });
         }
 
-        let admitted = self.admit(tx, actor, intent)?;
+        let admitted = self.prepare(tx, actor, intent)?;
         let result = match admitted {
             Ok(admitted) => self.execute(tx, admitted)?,
             Err(error) => MutationResult {
@@ -497,9 +452,9 @@ impl Document {
         Ok(result)
     }
 
-    /// Check Access and mutation guards before ACK. This does not execute the
-    /// mutation or stage writes. Storage failures remain distinct from rejection.
-    pub fn admit(
+    /// Prepare domain behavior without authorization or writes. Dispatch policy
+    /// may inspect the same snapshot before accepting it under the shared gate.
+    pub(crate) fn prepare(
         &self,
         tx: &mut Transaction<'_>,
         actor: &str,
@@ -520,14 +475,6 @@ impl Document {
             if intent.version != before.version || !intent.args.is_null() {
                 return Ok(Err(DomainError::Invalid));
             }
-            let resource =
-                Resource::new(RESOURCE_KIND, &intent.document).map_err(|_| StoreError::Invalid)?;
-            if !snap_access::allows(
-                self.access.role(tx, &resource, Some(actor), false)?,
-                Role::Owner,
-            ) {
-                return Ok(Err(DomainError::Denied));
-            }
             return Ok(Ok(AdmittedMutation {
                 before,
                 intent: intent.clone(),
@@ -538,24 +485,10 @@ impl Document {
             return Ok(Err(DomainError::NotFound));
         }
 
-        let mutation = match self.registry.mutation(&before, intent) {
-            Ok(found) => found,
+        match self.registry.mutation(&before, intent) {
+            Ok(_) => {}
             Err(error) => {
                 return Ok(Err(error));
-            }
-        };
-
-        // Pre-change authorization: minimum role plus optional guard.
-        let resource =
-            Resource::new(RESOURCE_KIND, &intent.document).map_err(|_| StoreError::Invalid)?;
-        let role = self.access.role(tx, &resource, Some(actor), true)?;
-        if !snap_access::allows(role, mutation.minimum) {
-            return Ok(Err(DomainError::Denied));
-        }
-        if let Some(guard) = mutation.guard {
-            let effective = role.ok_or(StoreError::Invalid)?;
-            if !(guard)(tx, &before, intent, actor, effective)? {
-                return Ok(Err(DomainError::Denied));
             }
         }
         Ok(Ok(AdmittedMutation {
@@ -573,7 +506,7 @@ impl Document {
         actor: &str,
         intent: &Intent,
     ) -> Result<MutationResult, StoreError> {
-        match self.admit(tx, actor, intent)? {
+        match self.prepare(tx, actor, intent)? {
             Ok(admitted) => self.execute(tx, admitted),
             Err(error) => Ok(MutationResult {
                 completion: Completion {
@@ -737,21 +670,17 @@ impl Document {
         lifetime: &str,
         actor: &str,
         manifest: &Manifest,
+        extent: &BTreeSet<String>,
     ) -> Result<Reconciliation, StoreError> {
         validate_lifetime(lifetime)?;
         validate_actor(actor)?;
         validate_pending(manifest)?;
 
-        let accessible = self.access.accessible(tx, Some(actor), true)?;
         let mut documents = Vec::new();
         let mut unchanged = Vec::new();
         let mut allowed: BTreeSet<String> = BTreeSet::new();
-        for entry in accessible {
-            if entry.resource.kind != RESOURCE_KIND {
-                continue;
-            }
-            let id = entry.resource.id;
-            if self.lifecycle(tx, &id)?.state != crate::lifecycle::State::Active {
+        for id in extent {
+            if self.lifecycle(tx, id)?.state != crate::lifecycle::State::Active {
                 continue;
             }
             let Some(row) = tx.get(DOCUMENTS, &[Value::Text(id.clone())])? else {
@@ -842,24 +771,6 @@ impl Document {
             )?;
         }
         Ok(())
-    }
-
-    /// Re-evaluate read authority for a stored completion.
-    fn suppress_if_revoked(
-        &self,
-        tx: &mut Transaction<'_>,
-        actor: &str,
-        mut completion: Completion,
-    ) -> Result<Completion, StoreError> {
-        if completion.result.as_ref().is_ok_and(|slot| slot.is_some()) {
-            let resource = Resource::new(RESOURCE_KIND, &completion.document)
-                .map_err(|_| StoreError::Invalid)?;
-            let role = self.access.role(tx, &resource, Some(actor), true)?;
-            if !snap_access::allows(role, Role::Viewer) {
-                completion.result = Ok(None);
-            }
-        }
-        Ok(completion)
     }
 }
 

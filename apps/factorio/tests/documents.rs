@@ -1,10 +1,50 @@
-use factorio::{Command, Config, Status, Ticket, documents as graph};
+use factorio::{Command, Config, Status, Ticket, workspaces as graph};
 use snap_access::{Actor, ChangeSet, GrantChange, Resource, Role};
 use snap_document::Intent;
 use snap_store::{Error, Store};
 
 const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 const OTHER: &str = "a0000000-0000-4000-8000-000000000002";
+
+/// Exercise actual portable application admission and commit rather than asking
+/// persistence helpers to authorize a caller. Store fixtures remain real SQLite.
+fn dispatch(
+    store: &mut snap_store::Store<snap_sqlite::Sqlite>,
+    actor: &str,
+    name: &str,
+    input: serde_json::Value,
+) -> snap_transport::Outcome {
+    use snap_transport::operation::{Context, Runtime};
+    let mut runtime = Runtime::default();
+    for definition in factorio::application(config(), "http://candidate.invalid".into()).requests {
+        runtime.register(definition).unwrap();
+    }
+    let selection = runtime.definitions().resolve(name)?;
+    runtime.enqueue(
+        (),
+        snap_transport::Invocation {
+            id: 1,
+            operation: name.into(),
+            input,
+        },
+        selection,
+    )?;
+    let (work, call, selection) = runtime.acquire().unwrap();
+    let context = Context {
+        actor: Some(actor.into()),
+        inputs: [("clock".into(), serde_json::json!(0))]
+            .into_iter()
+            .collect(),
+        ..Context::default()
+    };
+    if let Err((_, error)) = runtime.accept(store, work, call, selection, context) {
+        runtime.reject();
+        return Err(error);
+    }
+    let outcome = runtime.execute(store).unwrap().outcome;
+    runtime.finish();
+    outcome
+}
 fn store() -> Store<snap_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
@@ -162,7 +202,7 @@ fn creation_dates_are_server_owned_and_survive_edits_and_legacy_snapshots() {
             };
             let accepted = store
                 .inspect("admit named edit", |tx| {
-                    graph::document().admit(tx, "alice", &intent)
+                    graph::document().access_guard().admit(tx, "alice", &intent)
                 })
                 .unwrap()
                 .unwrap();
@@ -232,12 +272,31 @@ fn linked_documents_inherit_workspace_access_without_a_service_owner() {
     assert_ne!(id, graph::child_id(OTHER, graph::TICKET_KIND, "one"));
     store
         .inspect("isolated graphs", |tx| {
-            assert!(graph::load(tx, ROOT, "bob").is_err());
-            assert!(graph::document().read(tx, &id, Some("bob")).is_err());
-            assert_eq!(graph::document().authorized_ids(tx, "alice")?.len(), 2);
+            assert_eq!(
+                graph::document().access_guard().extent(tx, "alice")?.len(),
+                2
+            );
             Ok(())
         })
         .unwrap();
+    assert!(
+        dispatch(
+            &mut store,
+            "bob",
+            "factorio.workspace",
+            serde_json::json!({"workspace":ROOT})
+        )
+        .is_err()
+    );
+    assert!(
+        dispatch(
+            &mut store,
+            "alice",
+            "factorio.workspace",
+            serde_json::json!({"workspace":ROOT})
+        )
+        .is_ok()
+    );
     store
         .run("transfer workspace", |tx| {
             let mut change = ChangeSet::new(Actor::identity("alice")?);
@@ -248,17 +307,40 @@ fn linked_documents_inherit_workspace_access_without_a_service_owner() {
                     role,
                 });
             }
-            graph::document().access.change(tx, &change)?;
+            snap_document::access::vocabulary().change(tx, &change)?;
             Ok(())
         })
         .unwrap();
     store
         .inspect("inherited transfer", |tx| {
-            assert!(graph::document().authorized_ids(tx, "alice")?.is_empty());
+            assert!(
+                graph::document()
+                    .access_guard()
+                    .extent(tx, "alice")?
+                    .is_empty()
+            );
             assert_eq!(graph::load(tx, ROOT, "bob")?.tickets.len(), 1);
             Ok(())
         })
         .unwrap();
+    assert!(
+        dispatch(
+            &mut store,
+            "alice",
+            "factorio.workspace",
+            serde_json::json!({"workspace":ROOT})
+        )
+        .is_err()
+    );
+    assert!(
+        dispatch(
+            &mut store,
+            "bob",
+            "factorio.workspace",
+            serde_json::json!({"workspace":ROOT})
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -297,15 +379,13 @@ fn replacements_get_fresh_document_and_conversation_incarnations() {
         })
         .unwrap();
     assert!(
-        store
-            .run("stranger cannot recreate", |tx| graph::create_intake(
-                tx,
-                ROOT,
-                "bob",
-                "request",
-                "Replacement"
-            ))
-            .is_err()
+        dispatch(
+            &mut store,
+            "bob",
+            "factorio.intake-create",
+            serde_json::json!({"workspace":ROOT,"id":"request","description":"Replacement"})
+        )
+        .is_err()
     );
     let replaced = store
         .run("recreate", |tx| {
@@ -346,8 +426,13 @@ fn replacements_get_fresh_document_and_conversation_incarnations() {
                 version: "1".into(),
                 args: serde_json::to_value(ticket("one")).unwrap(),
             };
-            assert!(graph::document().admit(tx, "alice", &stale)?.is_err());
-            let active = graph::document().authorized_ids(tx, "alice")?;
+            assert!(
+                graph::document()
+                    .access_guard()
+                    .admit(tx, "alice", &stale)?
+                    .is_err()
+            );
+            let active = graph::document().access_guard().extent(tx, "alice")?;
             assert_eq!(active.len(), 3);
             assert!(!active.contains(&old_ticket));
             assert!(!active.contains(&old_intake));
@@ -441,7 +526,10 @@ fn intake_drafts_are_independent_documents_with_atomic_revision_guards() {
     );
     let snapshot = store
         .inspect("documents", |tx| {
-            assert_eq!(graph::document().authorized_ids(tx, "alice")?.len(), 4);
+            assert_eq!(
+                graph::document().access_guard().extent(tx, "alice")?.len(),
+                4
+            );
             assert_eq!(
                 graph::load(tx, ROOT, "alice")?.tickets["request-first"].created_at,
                 Some(400)
@@ -512,7 +600,12 @@ fn deleted_session_retains_claims_and_cleanup_finalizer() {
         .unwrap();
     store
         .inspect("cleanup still owns claims", |tx| {
-            assert!(!graph::document().authorized_ids(tx, "alice")?.contains(&id));
+            assert!(
+                !graph::document()
+                    .access_guard()
+                    .extent(tx, "alice")?
+                    .contains(&id)
+            );
             assert!(
                 graph::document()
                     .lifecycle(tx, &id)?
@@ -701,7 +794,10 @@ fn claims_and_port_allocation_commit_atomically_across_documents() {
             let state = graph::load(tx, ROOT, "alice")?;
             assert!(state.sessions.is_empty());
             assert_eq!(state.next_port, 10000);
-            assert_eq!(graph::document().authorized_ids(tx, "alice")?.len(), 2);
+            assert_eq!(
+                graph::document().access_guard().extent(tx, "alice")?.len(),
+                2
+            );
             Ok(())
         })
         .unwrap();
@@ -744,6 +840,7 @@ fn claims_and_port_allocation_commit_atomically_across_documents() {
     assert!(
         store
             .inspect("forged completion", |tx| graph::document()
+                .access_guard()
                 .admit(tx, "alice", &intent))
             .unwrap()
             .is_err()

@@ -16,6 +16,7 @@ serde_json.workspace = true
 workspace = true
 
 [dev-dependencies]
+snap-transport = { path = "../../crates/transport" }
 snap-sqlite = { path = "../../platforms/sqlite" }
 toml = "0.9"
 

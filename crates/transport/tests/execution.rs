@@ -11,7 +11,7 @@ impl App {
     fn new(entries: Rc<Cell<usize>>, factor: i64, version: u64) -> Self {
         Self {
             operations: [Operation {
-                key: "add",
+                key: "fixture.add",
                 identity_required: true,
                 input: |value| value["add"].as_i64().is_some(),
                 output: |value| value.as_i64().is_some(),
@@ -71,7 +71,7 @@ impl Program for App {
 }
 fn call(add: i64, mode: &str) -> Call {
     Call {
-        operation: "add".into(),
+        operation: "fixture.add".into(),
         identity: Some("verified".into()),
         input: json!({"add": add, "mode": mode}),
     }

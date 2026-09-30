@@ -1,6 +1,6 @@
 //! One synchronous reconciliation step per pass. The shared host owns scheduling,
 //! the execution gate, blocked state and explicit retries.
-use factorio::{Config, Desired, Effect, Phase, Session, documents as graph};
+use factorio::{Config, Desired, Effect, Phase, Session, workspaces as graph};
 use snap_document_local::{ControllerContext, Host};
 use snap_store::Error;
 

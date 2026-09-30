@@ -1,4 +1,4 @@
-use factorio::{Command, Config, Effect, Status, Ticket, documents as graph};
+use factorio::{Command, Config, Effect, Status, Ticket, workspaces as graph};
 use hegel::{TestCase, generators as gs};
 use snap_store::Error;
 
@@ -73,9 +73,12 @@ fn linked_claims_and_cleanup_match_committed_resource_ownership(tc: TestCase) {
         let slot = action as usize % count;
         let rollback = action & 64 != 0;
         let cleanup = action & 128 != 0;
-        let unauthorized = action & 32 != 0;
-        let actor = if unauthorized { "stranger" } else { "owner" };
-        tc.note(&format!("step={step} module={slot} rollback={rollback} cleanup={cleanup} unauthorized={unauthorized}"));
+        let actor = "owner";
+        // These properties own domain composition, claims and rollback.
+        // Caller authorization is proved at the shared dispatcher boundary.
+        tc.note(&format!(
+            "step={step} module={slot} rollback={rollback} cleanup={cleanup}"
+        ));
         let existing = claims[slot].clone();
         let id = format!("session-{step}");
         let result = store.run("generated composition", |tx| {
@@ -113,7 +116,7 @@ fn linked_claims_and_cleanup_match_committed_resource_ownership(tc: TestCase) {
             }
             Ok(())
         });
-        let success = !unauthorized && !rollback && (existing.is_none() || cleanup);
+        let success = !rollback && (existing.is_none() || cleanup);
         assert_eq!(result.is_ok(), success);
         if success {
             if cleanup && existing.is_some() {
@@ -141,7 +144,12 @@ fn linked_claims_and_cleanup_match_committed_resource_ownership(tc: TestCase) {
                     graph::document().cleanup_ids(tx)?.len(),
                     claims.iter().filter(|claim| claim.is_some()).count()
                 );
-                assert!(graph::document().authorized_ids(tx, "stranger")?.is_empty());
+                assert!(
+                    graph::document()
+                        .access_guard()
+                        .extent(tx, "stranger")?
+                        .is_empty()
+                );
                 Ok(())
             })
             .unwrap();

@@ -1,4 +1,4 @@
-use factorio::{Command, Config, Effect, Phase, Status, Ticket, Workspace, documents as graph};
+use factorio::{Command, Config, Effect, Phase, Status, Ticket, Workspace, workspaces as graph};
 use snap_store::{Error, Store};
 type Database = Store<snap_sqlite::Sqlite>;
 const ROOT: &str = "a0000000-0000-4000-8000-000000000001";

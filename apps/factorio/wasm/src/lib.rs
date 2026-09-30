@@ -40,7 +40,7 @@ impl FactorioClient {
     }
     pub fn receive(&mut self, text: &str) -> Result<String, JsValue> {
         let response: snap_transport::Response = serde_json::from_str(text).map_err(error)?;
-        let registry = factorio::documents::registry();
+        let registry = factorio::workspaces::registry();
         let mut manifest = false;
         match response {
             snap_transport::Response::Attached { resumed } => {

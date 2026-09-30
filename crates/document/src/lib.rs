@@ -2,7 +2,10 @@
 //! logical connection lifetimes; Store owns durability and transaction exclusion.
 #![no_std]
 extern crate alloc;
+pub mod access;
 pub mod lifecycle;
+pub mod operations;
+pub use access::DocumentAccessGuard;
 
 pub mod client;
 mod definition;

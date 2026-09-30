@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use factorio::{Workspace, documents as graph};
+use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
 use snap_document_local::{Host, web::Shared};
 use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
@@ -79,9 +79,9 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_document::server::LIFECYCLE_MIGRATION,
         rp::MIGRATION,
         snap_oauth_local::MIGRATION,
-        include_str!("../migrations/0003_factorio_agents.toml"),
-        include_str!("../migrations/0004_factorio_intake.toml"),
-        include_str!("../migrations/0005_factorio_cli.toml"),
+        factorio::MIGRATIONS[0],
+        factorio::MIGRATIONS[1],
+        factorio::MIGRATIONS[2],
     ]
     .into_iter()
     .map(|s| toml::from_str(s).unwrap())

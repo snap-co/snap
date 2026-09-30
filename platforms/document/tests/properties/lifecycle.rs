@@ -1,8 +1,6 @@
 //! Generated admission/lifetime histories through the actual Document host.
 use hegel::{TestCase, generators as gs};
-use snap_access::{
-    Access, Actor, Audience, ChangeSet, GrantChange, KindDefinition, Resource, Role,
-};
+use snap_access::{Actor, Audience, ChangeSet, GrantChange, Resource, Role};
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot, server::Document};
 use snap_document_local::Host;
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
@@ -24,7 +22,6 @@ fn document() -> Document {
             }],
         }])
         .unwrap(),
-        Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap(),
     )
 }
 
@@ -35,7 +32,9 @@ fn grant(tx: &mut snap_store::Transaction<'_>, enabled: bool) -> Result<(), snap
         identity: "bob".into(),
         role: enabled.then_some(Role::Editor),
     });
-    document().access.change(tx, &changes).map(|_| ())
+    snap_document::access::vocabulary()
+        .change(tx, &changes)
+        .map(|_| ())
 }
 
 #[hegel::test]

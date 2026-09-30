@@ -61,7 +61,7 @@ use alloc::{
     format,
     string::{String, ToString},
 };
-use snap_access::{Access, Audience, KindDefinition, Role};
+use snap_access::{Audience, Role};
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot};
 use snap_store::{Error as StoreError, Row, Transaction, Value};
 
@@ -125,8 +125,7 @@ pub fn registry() -> snap_document::Registry {
 /// profile [`registry`] with an Access vocabulary containing kind
 /// `"document"`.
 pub fn document() -> snap_document::server::Document {
-    let access = Access::new(alloc::vec![KindDefinition::kind("document").unwrap()]).unwrap();
-    snap_document::server::Document::new(registry(), access)
+    snap_document::server::Document::new(registry())
 }
 
 /// Deterministically derive the profile UUID for an opaque 64-hex identity:
