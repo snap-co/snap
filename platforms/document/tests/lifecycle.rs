@@ -92,56 +92,146 @@ fn guard_visit(index: usize, input: &serde_json::Value) -> Result<(), snap_store
 
 #[test]
 fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
-    let mut host = fixture().with_request(Request {
-        name: "fixture.invalid-output".into(),
-        identity_required: true,
-        input: |v| v.is_null(),
-        output: |v| v.is_i64(),
-        progress: |_| false,
-        guards: &[],
-        tables: &[],
-        handler: Box::new(|tx, _, _, _| {
-            Document::new(registry(), access()).observe(tx, ID, json!(99))?;
-            Ok(json!("not the declared output"))
-        }),
-    });
-    let (peer, _) = connect(&mut host, "alice", "invalid-output", 0);
-    host.submit(
-        peer,
-        Command::Invoke(Invocation {
-            id: 1,
-            operation: "fixture.invalid-output".into(),
-            input: json!(null),
-        }),
-        0,
-    )
-    .unwrap();
-    submit(&mut host, peer, 2, intent(1, 1));
-    assert_eq!(
-        host.drain(peer).unwrap(),
-        vec![Response::Events(vec![Event::Accepted { id: 1 }])]
-    );
-    assert!(host.step());
-    let terminal: Vec<_> = host
-        .drain(peer)
-        .unwrap()
-        .into_iter()
-        .filter(|response| matches!(response, Response::Events(_)))
-        .collect();
-    assert_eq!(
-        terminal,
-        vec![Response::Events(vec![Event::Completed {
-            id: 1,
-            outcome: Err(snap_transport::Error::InvalidOutput),
-        }])]
-    );
-    assert!(host.step());
-    let committed = host
-        .transact("inspect rollback", |tx| {
-            Document::new(registry(), access()).retained(tx, ID)
-        })
+    for failure in ["output", "cold", "invalid"] {
+        let mut host = fixture().with_request(Request {
+            name: "fixture.invalid-output".into(),
+            identity_required: true,
+            input: |v| matches!(v.as_str(), Some("output" | "cold" | "invalid")),
+            output: |v| v.is_i64(),
+            progress: |_| false,
+            guards: &[],
+            tables: &[],
+            handler: Box::new(|tx, call, _, _| {
+                Document::new(registry(), access()).observe(tx, ID, json!(99))?;
+                if call.input == "cold" {
+                    // A caught Store failure still poisons the whole transaction.
+                    assert!(matches!(
+                        tx.find(snap_document::server::TABLES[0], "primary", &[]),
+                        Err(snap_store::Error::Miss(_))
+                    ));
+                } else if call.input == "invalid" {
+                    assert_eq!(
+                        tx.get(snap_document::server::TABLES[0], &[]),
+                        Err(snap_store::Error::Invalid)
+                    );
+                }
+                Ok(json!("not the declared output"))
+            }),
+        });
+        let (peer, _) = connect(&mut host, "alice", "invalid-output", 0);
+        host.submit(
+            peer,
+            Command::Invoke(Invocation {
+                id: 1,
+                operation: "fixture.invalid-output".into(),
+                input: json!(failure),
+            }),
+            0,
+        )
         .unwrap();
-    assert_eq!(committed.value, json!(1));
+        submit(&mut host, peer, 2, intent(1, 1));
+        assert_eq!(
+            host.drain(peer).unwrap(),
+            vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+        );
+        assert!(host.step());
+        let terminal: Vec<_> = host
+            .drain(peer)
+            .unwrap()
+            .into_iter()
+            .filter(|response| matches!(response, Response::Events(_)))
+            .collect();
+        assert_eq!(
+            terminal,
+            vec![Response::Events(vec![Event::Completed {
+                id: 1,
+                outcome: Err(match failure {
+                    "cold" => snap_transport::Error::Application(json!({"code":"StoreMiss"})),
+                    "invalid" => snap_transport::Error::Application(json!({"code":"Rejected"})),
+                    _ => snap_transport::Error::InvalidOutput,
+                }),
+            }])]
+        );
+        assert!(host.step());
+        let committed = host
+            .transact("inspect rollback", |tx| {
+                Document::new(registry(), access()).retained(tx, ID)
+            })
+            .unwrap();
+        assert_eq!(committed.value, json!(1));
+    }
+}
+
+#[test]
+fn accepted_table_residency_survives_connection_housekeeping_without_readmission() {
+    for housekeeping in ["none", "connect", "close", "expire"] {
+        let mut host = fixture().with_request(Request {
+            name: "fixture.scan".into(),
+            identity_required: true,
+            input: |v| v.is_null(),
+            output: |v| v.is_u64(),
+            progress: |_| false,
+            guards: &[|tx, _, _, _| {
+                tx.find(snap_document::server::TABLES[0], "primary", &[])?;
+                Ok(())
+            }],
+            tables: &[snap_document::server::TABLES[0]],
+            handler: Box::new(|tx, _, _, _| {
+                Ok(json!(
+                    tx.find(snap_document::server::TABLES[0], "primary", &[])?
+                        .len()
+                ))
+            }),
+        });
+        let (peer, _) = connect(&mut host, "alice", "scan", 0);
+        let other = if matches!(housekeeping, "close" | "expire") {
+            Some(connect(&mut host, "bob", "other", 0).0)
+        } else {
+            None
+        };
+        if housekeeping == "expire" {
+            host.submit(other.unwrap(), Command::Disconnect, 0).unwrap();
+        }
+        host.submit(
+            peer,
+            Command::Invoke(Invocation {
+                id: 1,
+                operation: "fixture.scan".into(),
+                input: json!(null),
+            }),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            host.drain(peer).unwrap(),
+            vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+        );
+        match housekeeping {
+            "connect" => {
+                connect(&mut host, "bob", "other", 0);
+            }
+            "close" => {
+                host.submit(other.unwrap(), Command::Close, 0).unwrap();
+            }
+            "expire" => host.tick(100),
+            _ => {}
+        }
+        assert!(host.step());
+        let terminal: Vec<_> = host
+            .drain(peer)
+            .unwrap()
+            .into_iter()
+            .filter(|response| matches!(response, Response::Events(_)))
+            .collect();
+        assert_eq!(
+            terminal,
+            vec![Response::Events(vec![Event::Completed {
+                id: 1,
+                outcome: Ok(json!(1))
+            }])],
+            "{housekeeping}"
+        );
+    }
 }
 
 #[test]

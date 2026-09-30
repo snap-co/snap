@@ -372,6 +372,17 @@ pub struct Transaction<'a> {
 }
 
 impl Transaction<'_> {
+    /// Return a previous Store failure even if its caller caught the result.
+    /// Platforms check this before validating handler output so a poisoned
+    /// transaction remains a storage failure, not an output-schema rejection.
+    /// Checking status neither clears the failure nor performs backend IO.
+    pub fn status(&self) -> Result<(), Error> {
+        match &self.failed {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
     fn check<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, Error>) -> Result<T, Error> {
         if let Some(error) = &self.failed {
             return Err(error.clone());

@@ -152,6 +152,10 @@ pub struct Host<B: Backend> {
     calls: BTreeMap<(u64, u64), Call>,
     residency: BTreeMap<u64, (String, BTreeSet<String>)>,
     pinned: BTreeSet<String>,
+    /// Full-table knowledge required by the accepted definition survives carrier
+    /// housekeeping as well as the gap before handler entry. Key pins alone
+    /// cannot preserve complete secondary-index or empty-table knowledge.
+    resident_tables: &'static [&'static str],
     next_peer: u64,
     boot: String,
     retention_ms: u64,
@@ -213,6 +217,7 @@ impl<B: Backend> Host<B> {
             calls: BTreeMap::new(),
             residency: BTreeMap::new(),
             pinned: BTreeSet::new(),
+            resident_tables: &[],
             next_peer: 0,
             boot,
             retention_ms: config.reconnect_ms,
@@ -397,7 +402,14 @@ impl<B: Backend> Host<B> {
             .map(|id| vec![snap_store::Value::Text(id.clone())])
             .collect();
         store.load_keys(snap_document::server::TABLES[0], &keys)?;
-        store.retain_keys(snap_document::server::TABLES[0], &keys)
+        if self
+            .resident_tables
+            .contains(&snap_document::server::TABLES[0])
+        {
+            Ok(())
+        } else {
+            store.retain_keys(snap_document::server::TABLES[0], &keys)
+        }
     }
 
     pub fn residency_references(&self, document: &str) -> usize {
@@ -537,7 +549,11 @@ impl<B: Backend> Host<B> {
                 }
             }
         }
-        if released {
+        if released
+            && !self
+                .resident_tables
+                .contains(&snap_document::server::TABLES[0])
+        {
             let keys = self
                 .residency
                 .values()
@@ -906,6 +922,10 @@ impl<B: Backend> Host<B> {
                         self.queue.finish();
                         continue;
                     }
+                    self.resident_tables = match &work.operation {
+                        Operation::Request(_, selection) => self.requests.get(*selection).tables,
+                        _ => &[],
+                    };
                     self.respond(&work, Event::Accepted { id: work.wire_id });
                     if let Some(connection) = work.connection {
                         self.pinned = self
@@ -955,6 +975,7 @@ impl<B: Backend> Host<B> {
                             work.actor.as_deref(),
                             work.bearer.as_deref(),
                         )?;
+                        tx.status()?;
                         if !output(&value) {
                             invalid_output = true;
                             return Err(snap_store::Error::Invalid);
@@ -1039,13 +1060,23 @@ impl<B: Backend> Host<B> {
                     .push_back(notification(ServerMessage::Committed(completion)));
             }
         }
-        let reconciled = self
+        let mut reconciled = self
             .committed(&changes)
             .and_then(|()| self.reconcile_residency())
             .and_then(|()| {
                 self.synchronize(replication.as_ref(), work.connection);
                 self.reconcile(Some(&work))
             });
+        let full_documents = self
+            .resident_tables
+            .contains(&snap_document::server::TABLES[0]);
+        self.resident_tables = &[];
+        if full_documents {
+            self.pinned.clear();
+            // Restore the current extent after all accepted work and controllers
+            // finish. This releases full-table knowledge without readmission.
+            reconciled = reconciled.and(self.reconcile_residency());
+        }
         let outcome = match (outcome, reconciled) {
             (Ok(_), Err(error)) => Err(Error::Application(
                 json!({"code":"Blocked", "committed":true, "cause":error.to_string()}),
