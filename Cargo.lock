@@ -839,7 +839,6 @@ dependencies = [
  "sha2 0.10.9",
  "snap-access",
  "snap-document",
- "snap-oidc",
  "snap-sqlite",
  "snap-store",
  "toml 0.9.12+spec-1.1.0",

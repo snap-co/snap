@@ -1,20 +1,15 @@
-//! One shared development workspace. All domain transitions run in the caller's
-//! Store transaction. Hosts commit intent before Git, setup or OpenCode effects.
+//! Development workspace domain transitions and linked-Document persistence.
+//! Hosts commit intent before Git, setup or OpenCode effects.
 #![no_std]
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
-use snap_access::{Access, Audience, KindDefinition};
-use snap_document::{Definition, Registry, Snapshot};
-use snap_oidc::relying_party as rp;
-use snap_store::{Error, Transaction};
+use snap_store::Error;
 
-pub const WORKSPACE: &str = "faca0000-0000-4000-8000-000000000001";
 pub mod client;
 pub mod documents;
 pub mod intake;
-const OWNER: &str = "factorio-service";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -135,72 +130,6 @@ pub struct Workspace {
     #[serde(default)]
     pub intakes: BTreeMap<String, intake::Intake>,
 }
-pub fn registry() -> Registry {
-    Registry::new(vec![Definition {
-        kind: "factorio-workspace".into(),
-        version: "1".into(),
-        validate: |v| serde_json::from_value::<Workspace>(v.clone()).is_ok(),
-        mutations: vec![],
-    }])
-    .expect("workspace schema")
-}
-pub fn document() -> snap_document::server::Document {
-    snap_document::server::Document::new(
-        registry(),
-        Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap(),
-    )
-}
-pub fn initialize(tx: &mut Transaction<'_>, config: &Config) -> Result<(), Error> {
-    match document().read(tx, WORKSPACE, Some(OWNER)) {
-        Ok(snapshot) => {
-            let w: Workspace =
-                serde_json::from_value(snapshot.value).map_err(|_| Error::Invalid)?;
-            if w.config != *config {
-                return Err(Error::Constraint);
-            }
-            Ok(())
-        }
-        Err(Error::NotFound) => {
-            if config.modules.is_empty() || config.first_port < 1024 {
-                return Err(Error::Invalid);
-            }
-            let w = Workspace {
-                config: config.clone(),
-                tickets: BTreeMap::new(),
-                sessions: BTreeMap::new(),
-                next_port: config.first_port as u32,
-                intakes: BTreeMap::new(),
-            };
-            document().create(
-                tx,
-                &Snapshot {
-                    id: WORKSPACE.into(),
-                    kind: "factorio-workspace".into(),
-                    version: "1".into(),
-                    revision: 1,
-                    value: serde_json::to_value(w).map_err(|_| Error::Invalid)?,
-                },
-                Audience::Authenticated,
-                OWNER,
-            )?;
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
-}
-pub fn load(tx: &mut Transaction<'_>) -> Result<Workspace, Error> {
-    serde_json::from_value(document().read(tx, WORKSPACE, Some(OWNER))?.value)
-        .map_err(|_| Error::Invalid)
-}
-fn save(tx: &mut Transaction<'_>, w: &Workspace) -> Result<(), Error> {
-    document().replace(
-        tx,
-        WORKSPACE,
-        OWNER,
-        serde_json::to_value(w).map_err(|_| Error::Invalid)?,
-    )?;
-    Ok(())
-}
 fn scope(w: &Workspace, modules: &[String]) -> Result<(), Error> {
     if modules.is_empty()
         || modules
@@ -257,13 +186,6 @@ fn oid(id: &str) -> bool {
     matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Browser and agent callers share the same commands. Only the host's dedicated
-/// cookie+CSRF approval route may construct `human = true`; JSON cannot set it.
-pub struct Actor<'a> {
-    pub session: &'a str,
-    pub human: bool,
-    pub now: i64,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -304,17 +226,6 @@ pub enum Command {
         id: String,
     },
 }
-pub fn command(
-    tx: &mut Transaction<'_>,
-    actor: Actor<'_>,
-    cmd: Command,
-) -> Result<Workspace, Error> {
-    let who = rp::lease(tx, actor.session, actor.now)?;
-    let w = transition(load(tx)?, &who.owner, actor.human, actor.now, cmd)?;
-    save(tx, &w)?;
-    Ok(w)
-}
-
 /// Pure desired-state transition, shared by admission guards and transactional
 /// handlers. No credentials, Store writes or host effects run here.
 pub fn transition(
@@ -566,40 +477,6 @@ pub enum Effect {
     Cleaned,
     Failed(String),
 }
-pub fn effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Workspace, Error> {
-    if matches!(
-        effect,
-        Effect::Published { .. } | Effect::Integrating { .. }
-    ) {
-        return Err(Error::Constraint);
-    }
-    apply_effect(tx, id, effect)
-}
-
-/// Publication and new integration intent require current initiating authority
-/// after preparatory IO. Recovery of already committed intent uses `effect`.
-pub fn authorized_intent(
-    tx: &mut Transaction<'_>,
-    actor: Actor<'_>,
-    id: &str,
-    effect: Effect,
-) -> Result<Workspace, Error> {
-    if !matches!(
-        effect,
-        Effect::Published { .. } | Effect::Integrating { .. }
-    ) {
-        return Err(Error::Invalid);
-    }
-    rp::lease(tx, actor.session, actor.now)?;
-    apply_effect(tx, id, effect)
-}
-
-fn apply_effect(tx: &mut Transaction<'_>, id: &str, effect: Effect) -> Result<Workspace, Error> {
-    let w = observe(load(tx)?, id, effect)?;
-    save(tx, &w)?;
-    Ok(w)
-}
-
 /// Pure controller observation. Hosts persist these only after the corresponding
 /// resource check/effect; failures leave desired state and resource claims intact.
 pub fn observe(mut w: Workspace, id: &str, effect: Effect) -> Result<Workspace, Error> {

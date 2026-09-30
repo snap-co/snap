@@ -6,7 +6,6 @@ publish.workspace = true
 
 [dependencies]
 snap-store.workspace = true
-snap-oidc.workspace = true
 snap-access.workspace = true
 snap-document.workspace = true
 serde.workspace = true

@@ -4,87 +4,262 @@ use std::path::Path;
 #[path = "../../../../platforms/transport/tests/support/mod.rs"]
 mod tls_support;
 
+const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
+
 #[test]
-fn accepted_identity_uses_captured_authority_while_new_admissions_reject() {
+fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
+    use factorio::documents as graph;
     use snap_document_local::Host;
     use snap_transport::{Command, Event, Invocation, Response, json};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    for operation in [
+        "factorio.identity",
+        "factorio.command",
+        "factorio.intake-drafts",
+    ] {
+        let (mut store, config, session) = authority_fixture();
+        let owner = session.owner.clone();
+        store
+            .run("seed intake", |tx| {
+                graph::create_intake(tx, ROOT, &owner, "request", "A bounded change")?;
+                Ok(())
+            })
+            .unwrap();
+        let live = Arc::new(AtomicBool::new(true));
+        let authority = live.clone();
+        let host = Host::new(
+            store,
+            factorio::documents::document(),
+            Arc::new(move |tx, bearer| {
+                if !authority.load(Ordering::SeqCst) {
+                    return Err(snap_store::Error::NotFound);
+                }
+                crate::operations::session(tx, bearer).map(|(s, _)| s.owner)
+            }),
+            Default::default(),
+            "accepted-authority".into(),
+        );
+        let mut host = crate::operations::register(host, config, "http://localhost".into());
+        let peer = host.open().unwrap();
+        host.submit(
+            peer,
+            Command::Connect {
+                bearer: "browser".into(),
+                client_id: "identity-test".into(),
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            host.drain(peer).unwrap(),
+            vec![Response::Attached { resumed: false }]
+        );
+        let ticket = json!({"id":"request-first","title":"Accepted change","description":"","modules":["one"],"status":"draft","notes":"","parent":null,"blockers":[]});
+        let input = match operation {
+            "factorio.command" => {
+                json!({"workspace":ROOT,"command":{"command":"ticket","ticket":ticket}})
+            }
+            "factorio.intake-drafts" => {
+                json!({"workspace":ROOT,"id":"request","drafts":{"revision":0,"route":"implement","rationale":"Agreed","tickets":[ticket]}})
+            }
+            _ => json!({}),
+        };
+        let invoke = |id| {
+            Command::Invoke(Invocation {
+                id,
+                operation: operation.into(),
+                input: input.clone(),
+            })
+        };
+        host.submit(peer, invoke(1), 0).unwrap();
+        assert_eq!(
+            host.drain(peer).unwrap(),
+            vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+        );
+        live.store(false, Ordering::SeqCst);
+        assert!(host.step());
+        let completion = host.drain(peer).unwrap().into_iter().find_map(|response| {
+            let Response::Events(events) = response else {
+                return None;
+            };
+            events.into_iter().find_map(|event| match event {
+                Event::Completed { id: 1, outcome } => Some(outcome),
+                _ => None,
+            })
+        });
+        let outcome = completion.expect("accepted operation must settle").unwrap();
+        host.transact("committed accepted work", |tx| {
+            let state = graph::load(tx, ROOT, &owner)?;
+            if operation == "factorio.identity" {
+                assert_eq!(outcome, json!({"owner":owner}));
+            } else {
+                assert_eq!(state.tickets["request-first"].title, "Accepted change");
+                if operation == "factorio.intake-drafts" {
+                    assert_eq!(state.intakes["request"].revision, 1);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(host.submit(peer, invoke(2), 1).is_err());
+        assert!(!host.step());
+    }
+}
+
+#[test]
+fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
+    use factorio::documents as graph;
+    use snap_document_local::Host;
+    use snap_oidc::relying_party as rp;
+    use snap_transport::{Command, Invocation, Response, json};
+    use std::sync::Arc;
+    for loss in ["revoked", "session-expired", "access-expired"] {
+        let (store, config, mut session) = authority_fixture();
+        let owner = session.owner.clone();
+        let host = Host::new(
+            store,
+            graph::document(),
+            Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+            Default::default(),
+            "expired-authority".into(),
+        );
+        let mut host = crate::operations::register(host, config, "http://localhost".into());
+        let peer = host.open().unwrap();
+        host.submit(
+            peer,
+            Command::Connect {
+                bearer: "browser".into(),
+                client_id: "authority-test".into(),
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            host.drain(peer).unwrap(),
+            vec![Response::Attached { resumed: false }]
+        );
+        let edit = |id, title| {
+            Command::Invoke(Invocation {
+                id,
+                operation: "factorio.command".into(),
+                input: json!({"workspace":ROOT,"command":{"command":"ticket","ticket":{"id":"one","title":title,"description":"","modules":["one"],"status":"draft","notes":"","parent":null,"blockers":[]}}}),
+            })
+        };
+        host.submit(peer, edit(1, "Allowed"), 0).unwrap();
+        assert!(host.step());
+        host.transact("valid command committed", |tx| {
+            assert_eq!(
+                graph::load(tx, ROOT, &owner)?.tickets["one"].title,
+                "Allowed"
+            );
+            Ok(())
+        })
+        .unwrap();
+        host.transact("lose authority", |tx| {
+            if loss == "revoked" {
+                rp::revoke(tx, "browser")
+            } else {
+                if loss == "session-expired" {
+                    session.expires = 0;
+                } else {
+                    session.tokens.access_expires = 0;
+                }
+                tx.update(
+                    "oidc_rp.sessions",
+                    &[session.id.clone().into()],
+                    [(
+                        "data".into(),
+                        serde_json::to_string(&session).unwrap().into(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )
+            }
+        })
+        .unwrap();
+        assert!(host.submit(peer, edit(2, "Denied"), 1).is_err());
+        assert!(!host.step());
+        host.transact("nothing persisted", |tx| {
+            let state = graph::load(tx, ROOT, &owner)?;
+            assert_eq!(state.tickets["one"].title, "Allowed");
+            assert!(state.intakes.is_empty());
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+fn authority_fixture() -> (
+    snap_store::Store<snap_sqlite::Sqlite>,
+    Config,
+    snap_oidc::relying_party::Session,
+) {
+    use factorio::documents as graph;
+    use snap_oidc::relying_party as rp;
     let mut store = snap_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
-        .chain(snap_oidc::relying_party::TABLES.iter())
+        .chain(rp::TABLES.iter())
         .chain(["factorio.agents", "factorio.cli", "factorio.cli_login"].iter())
     {
         store.load(table).unwrap();
     }
-    let live = Arc::new(AtomicBool::new(true));
-    let authority = live.clone();
-    let host = Host::new(
-        store,
-        factorio::documents::document(),
-        Arc::new(move |_, _| {
-            if authority.load(Ordering::SeqCst) {
-                Ok("captured-owner".into())
-            } else {
-                Err(snap_store::Error::NotFound)
-            }
-        }),
-        Default::default(),
-        "accepted-authority".into(),
-    );
-    let config = factorio::Config {
+    let session = authority_session("browser");
+    let config = Config {
         repository: "/repo".into(),
         mainline: "main".into(),
-        modules: Default::default(),
+        modules: [("one".into(), "apps/one".into())].into_iter().collect(),
         resources: "/resources".into(),
         first_port: 15000,
         setup: vec![],
         teardown: vec![],
     };
-    let mut host = crate::operations::register(host, config, "http://localhost".into());
-    let peer = host.open().unwrap();
-    host.submit(
-        peer,
-        Command::Connect {
-            bearer: "opaque-private-credential".into(),
-            client_id: "identity-test".into(),
+    store
+        .run("seed authenticated workspace", |tx| {
+            tx.insert(
+                "oidc_rp.sessions",
+                [
+                    ("id".into(), session.id.clone().into()),
+                    (
+                        "data".into(),
+                        serde_json::to_string(&session).unwrap().into(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
+            graph::onboard(tx, ROOT, &session.owner, config.clone())?;
+            Ok(())
+        })
+        .unwrap();
+    (store, config, session)
+}
+
+fn authority_session(bearer: &str) -> snap_oidc::relying_party::Session {
+    use snap_oidc::relying_party as rp;
+    rp::Session {
+        id: rp::digest(bearer),
+        owner: rp::owner("http://issuer", "subject"),
+        subject: "subject".into(),
+        issuer: "http://issuer".into(),
+        csrf: "csrf".into(),
+        nonce: "nonce".into(),
+        profile: serde_json::json!({}),
+        tokens: rp::Tokens {
+            access: "access".into(),
+            refresh: "refresh".into(),
+            id_token: "id".into(),
+            access_expires: crate::now() + 3600,
+            auth_time: None,
         },
-        0,
-    )
-    .unwrap();
-    assert_eq!(
-        host.drain(peer).unwrap(),
-        vec![Response::Attached { resumed: false }]
-    );
-    let invoke = |id| {
-        Command::Invoke(Invocation {
-            id,
-            operation: "factorio.identity".into(),
-            input: json!({}),
-        })
-    };
-    host.submit(peer, invoke(1), 0).unwrap();
-    assert_eq!(
-        host.drain(peer).unwrap(),
-        vec![Response::Events(vec![Event::Accepted { id: 1 }])]
-    );
-    live.store(false, Ordering::SeqCst);
-    assert!(host.step());
-    let completion = host.drain(peer).unwrap().into_iter().find_map(|response| {
-        let Response::Events(events) = response else {
-            return None;
-        };
-        events.into_iter().find_map(|event| match event {
-            Event::Completed { id: 1, outcome } => Some(outcome),
-            _ => None,
-        })
-    });
-    assert_eq!(completion, Some(Ok(json!({"owner":"captured-owner"}))));
-    assert!(host.submit(peer, invoke(2), 1).is_err());
+        expires: crate::now() + 3600,
+        refreshing: false,
+        version: 1,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -103,26 +278,8 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     {
         store.load(table).unwrap();
     }
-    let owner = rp::owner("http://issuer", "subject");
-    let session = rp::Session {
-        id: rp::digest("browser"),
-        owner: owner.clone(),
-        subject: "subject".into(),
-        issuer: "http://issuer".into(),
-        csrf: "csrf".into(),
-        nonce: "nonce".into(),
-        profile: json!({}),
-        tokens: rp::Tokens {
-            access: "access".into(),
-            refresh: "refresh".into(),
-            id_token: "id".into(),
-            access_expires: crate::now() + 3600,
-            auth_time: None,
-        },
-        expires: crate::now() + 3600,
-        refreshing: false,
-        version: 1,
-    };
+    let session = authority_session("browser");
+    let owner = session.owner.clone();
     store
         .run("seed", |tx| {
             tx.insert(

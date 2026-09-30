@@ -3,7 +3,12 @@
 use super::*;
 use alloc::format;
 use sha2::{Digest, Sha256};
-use snap_access::{Actor as AccessActor, ChangeSet, GrantChange, LinkChange, Resource, Role};
+use snap_access::{
+    Access, Actor as AccessActor, Audience, ChangeSet, GrantChange, KindDefinition, LinkChange,
+    Resource, Role,
+};
+use snap_document::{Definition, Registry, Snapshot};
+use snap_store::Transaction;
 
 pub const WORKSPACE_KIND: &str = "factorio.workspace";
 pub const TICKET_KIND: &str = "factorio.ticket";
