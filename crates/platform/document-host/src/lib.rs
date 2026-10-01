@@ -1,5 +1,6 @@
 //! Store-backed, globally serialized document host. Network adapters only submit
 //! commands and drain observations; acceptance and execution are separate steps.
+mod carrier;
 mod controller;
 pub mod tcp;
 pub mod web;
@@ -71,27 +72,42 @@ impl CarrierControl {
 /// Carrier-owned handle. Socket writes and progress draining never acquire the
 /// execution gate, including while a synchronous controller is doing host IO.
 #[derive(Clone, Default)]
-pub struct Output(Arc<Mutex<VecDeque<Response>>>);
+pub struct Output(Arc<Mutex<VecDeque<snap_transport::carrier::Frame>>>);
 
 impl Output {
     pub fn pop_front(&self) -> Option<Response> {
+        self.pop_frame().map(|frame| frame.response)
+    }
+    fn pop_frame(&self) -> Option<snap_transport::carrier::Frame> {
         self.0.lock().unwrap().pop_front()
     }
+    fn push_frame(&self, frame: snap_transport::carrier::Frame) {
+        self.0.lock().unwrap().push_back(frame);
+    }
     fn push_back(&self, response: Response) {
-        self.0.lock().unwrap().push_back(response);
+        self.push_frame(snap_transport::carrier::Frame {
+            response,
+            handshake: false,
+            attachment: None,
+            terminal: false,
+        });
     }
     fn is_empty(&self) -> bool {
         self.0.lock().unwrap().is_empty()
     }
     fn front(&self) -> Option<Response> {
-        self.0.lock().unwrap().front().cloned()
+        self.0
+            .lock()
+            .unwrap()
+            .front()
+            .map(|frame| frame.response.clone())
     }
-    fn retain(&self, keep: impl FnMut(&Response) -> bool) {
-        self.0.lock().unwrap().retain(keep);
+    fn retain(&self, mut keep: impl FnMut(&Response) -> bool) {
+        self.0.lock().unwrap().retain(|frame| keep(&frame.response));
     }
     fn authorize(&self, allowed: &BTreeSet<String>) {
-        self.0.lock().unwrap().retain_mut(|response| {
-            if let Response::Notification { input, .. } = response
+        self.0.lock().unwrap().retain_mut(|frame| {
+            if let Response::Notification { input, .. } = &mut frame.response
                 && let Ok(mut message) = serde_json::from_value::<ServerMessage>(input.clone())
             {
                 if !filter_message(&mut message, Some(allowed)) {
@@ -718,11 +734,24 @@ impl<B: Backend> Host<B> {
                 Response::Detached
             }
         };
+        let attachment = if matches!(response, Response::Attached { .. }) {
+            Some(snap_transport::carrier::AttachmentInfo {
+                retention_ms: self.retention_ms(),
+                lifetime: self.attachment_lifetime(peer_id)?,
+            })
+        } else {
+            None
+        };
         self.peers
             .get_mut(&peer_id)
             .unwrap()
             .output
-            .push_back(response);
+            .push_frame(snap_transport::carrier::Frame {
+                handshake: matches!(response, Response::Attached { .. } | Response::Failed(_)),
+                response,
+                attachment,
+                terminal: false,
+            });
         Ok(())
     }
 

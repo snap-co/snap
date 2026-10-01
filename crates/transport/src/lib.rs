@@ -4,6 +4,7 @@
 extern crate alloc;
 
 pub mod binary;
+pub mod carrier;
 pub mod client;
 pub mod dispatch;
 pub mod execution;

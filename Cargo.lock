@@ -3113,6 +3113,7 @@ dependencies = [
  "snap-store-sqlite",
  "snap-transport",
  "snap-transport-tcp",
+ "snap-transport-ws",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -3191,6 +3192,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snap-transport",
+ "snap-transport-ws",
  "tokio",
  "tower-http",
 ]
@@ -3234,6 +3236,21 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "webpki-roots",
+]
+
+[[package]]
+name = "snap-transport-ws"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "rcgen",
+ "serde_json",
+ "snap-transport",
+ "snap-transport-tcp",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

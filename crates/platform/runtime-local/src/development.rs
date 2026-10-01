@@ -113,6 +113,25 @@ impl<P: Program, R: Authority> Development<P, R> {
         }
         self.pump();
     }
+    /// Physical teardown bypasses the outstanding-command guard. Logical Close
+    /// must still reach Transport while accepted work is waiting for a host input.
+    pub(crate) fn teardown(&mut self, id: u64, close: bool, now: u64) -> Response {
+        let response = if let Some(connection) = self.peers.get_mut(&id) {
+            let command = if close {
+                Command::Close
+            } else {
+                Command::Disconnect
+            };
+            match self.platform.submit(&mut connection.peer, command, now) {
+                Submission::Ready(response) => response,
+                Submission::Pending(_) => unreachable!("teardown never invokes an operation"),
+            }
+        } else {
+            Response::Failed(snap_transport::Error::StaleConnection)
+        };
+        self.lost(id, now);
+        response
+    }
     pub fn send(&mut self, id: u64, command: Command, now: u64) -> Result<(), String> {
         let connection = self.peers.get_mut(&id).ok_or("unknown peer")?;
         if connection.pending {

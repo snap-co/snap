@@ -1,6 +1,7 @@
 //! Binary v1 carrier contract. Header integers use network byte order; payloads
 //! are one CBOR value using the existing Transport serde envelopes. EOF between
 //! frames detaches, while Close explicitly retires the logical lifetime.
+pub use crate::carrier::AttachmentInfo;
 use crate::{Command, Error, Response};
 use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -14,14 +15,6 @@ pub const SEGMENT: u8 = 3;
 pub const CONNECT_LIMIT: usize = 4096;
 pub const MESSAGE_LIMIT: usize = 65536;
 pub const LOGICAL_MESSAGE_LIMIT: usize = 16 * 1024 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttachmentInfo {
-    pub retention_ms: u64,
-    /// Opaque boot/lifetime namespace. Relative `resumed` alone cannot prove
-    /// continuity when a prior handshake reply was lost.
-    pub lifetime: String,
-}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

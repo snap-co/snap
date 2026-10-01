@@ -1,18 +1,15 @@
 //! Local browser host. HTTP controls and WebSockets drive the same Development
 //! instance. The listener must be loopback: these controls expose resident data.
+mod carrier;
 mod debugger;
 use crate::development::{Control, Development};
 use axum::{
     Json, Router,
-    extract::{
-        State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
-    },
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
-use futures_util::{SinkExt, StreamExt};
 use snap_transport::execution::Program;
 use snap_transport::{json, server::Authority};
 use std::{
@@ -83,72 +80,6 @@ async fn control<P: Program, R: Authority>(
         Err(error) => (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response(),
     }
 }
-async fn upgrade<P: Program + Send + 'static, R: Authority + Send + 'static>(
-    State(shared): State<Host<P, R>>,
-    headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> Response {
-    if !local(&headers, &shared.authority) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let peer = match shared.change(Development::open) {
-        Ok(id) => id,
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-    };
-    let failed = shared.clone();
-    ws.max_message_size(64 * 1024)
-        .max_frame_size(64 * 1024)
-        .on_failed_upgrade(move |_| {
-            failed.change(|host| host.lost(peer, failed.clock.elapsed().as_millis() as u64));
-        })
-        .on_upgrade(move |socket| connection(socket, shared, peer))
-}
-async fn connection<P: Program + Send + 'static, R: Authority + Send + 'static>(
-    socket: WebSocket,
-    shared: Host<P, R>,
-    peer: u64,
-) {
-    let (mut sink, mut stream) = socket.split();
-    let mut flush = tokio::time::interval(Duration::from_millis(10));
-    loop {
-        tokio::select! {
-            _ = flush.tick() => {},
-            message = stream.next() => match message {
-                Some(Ok(Message::Text(text))) => {
-                    let Ok(command) = serde_json::from_str(&text) else { break; };
-                    if shared.change(|host| host.send(peer, command, shared.clock.elapsed().as_millis() as u64)).is_err() { break; }
-                }
-                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {},
-                _ => break,
-            }
-        }
-        let responses = shared.host.lock().unwrap().drain(peer);
-        let Ok(responses) = responses else {
-            break;
-        };
-        let mut failed = false;
-        for response in responses {
-            let result = tokio::time::timeout(
-                Duration::from_secs(5),
-                sink.send(Message::Text(
-                    serde_json::to_string(&response).unwrap().into(),
-                )),
-            )
-            .await;
-            if !matches!(result, Ok(Ok(()))) {
-                failed = true;
-                break;
-            }
-        }
-        if failed {
-            break;
-        }
-        if shared.host.lock().unwrap().retired(peer) {
-            break;
-        }
-    }
-    shared.change(|host| host.lost(peer, shared.clock.elapsed().as_millis() as u64));
-}
 pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
     listener: tokio::net::TcpListener,
     host: Development<P, R>,
@@ -179,11 +110,9 @@ pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send +
         authority: origin,
         updates,
     });
-    let mut app = Router::new()
-        .route("/transport", get(upgrade::<P, R>))
-        .fallback_service(
-            ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
-        );
+    let mut app = Router::new().fallback_service(
+        ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
+    );
     if development {
         app = app
             .route("/__dev", get(inspect::<P, R>).post(control::<P, R>))
@@ -199,7 +128,13 @@ pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send +
                 axum::routing::any(|| async { StatusCode::NOT_FOUND }),
             );
     }
-    let app = app.with_state(shared.clone());
+    let transport = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
+        dispatch: carrier::Dispatcher(shared.clone()),
+        origin: shared.authority.clone(),
+        cookie: None,
+        require_cookie: false,
+    }));
+    let app = app.with_state(shared.clone()).merge(transport);
     let sweep = async {
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         loop {

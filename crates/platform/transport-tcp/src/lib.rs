@@ -2,7 +2,9 @@
 //! here. Failed reads/writes have unknown operation outcomes and are never retried.
 use snap_transport::{Command, Response, binary};
 use std::{io, time::Duration};
+mod server;
 pub mod tls;
+pub use server::serve;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 fn protocol(error: snap_transport::Error) -> io::Error {

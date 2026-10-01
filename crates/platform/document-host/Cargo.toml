@@ -10,13 +10,14 @@ snap-access.workspace = true
 snap-store.workspace = true
 snap-transport = { path = "../../transport" }
 snap-transport-tcp = { path = "../transport-tcp" }
+snap-transport-ws = { path = "../transport-ws" }
 serde_json.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
-futures-util = "0.3"
 tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
+futures-util = "0.3"
 snap-store-sqlite = { path = "../store-sqlite" }
 toml = "0.9"
 tokio-tungstenite = "0.29"

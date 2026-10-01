@@ -1,18 +1,20 @@
 [package]
-name = "snap-transport-tcp"
+name = "snap-transport-ws"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
 snap-transport = { path = "../../transport" }
-tokio = { version = "1", features = ["net", "io-util", "time", "rt", "sync", "macros"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-rustls-pemfile = "2"
-webpki-roots = "1"
+serde_json.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["time"] }
+futures-util = "0.3"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "test-util"] }
+snap-transport-tcp = { path = "../transport-tcp" }
+tokio = { version = "1", features = ["macros", "rt", "net", "sync"] }
+tokio-tungstenite = "0.29"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 tempfile = "3"
 

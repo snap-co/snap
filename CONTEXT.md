@@ -82,6 +82,9 @@ _Avoid_: Missing as a synonym for both unresolved MISS and confirmed NX.
 **Driver**:
 A platform-selected implementation at a Snap interface. Memory and network drivers are alternatives for Transport; memory and database drivers are alternatives for Store.
 
+**Transport carrier**:
+The physical communication and wire encoding used to exchange Transport commands and responses. Carrier handling is separate from operation execution, application policy and logical-connection bookkeeping.
+
 **Memory driver**:
 A driver whose operations use process memory without external IO. It is a driver choice, not an application mode.
 
