@@ -3,7 +3,7 @@ import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const [app, output, mode, kind, library] = process.argv.slice(2);
+const [source, output, mode, library, sdk] = process.argv.slice(2);
 const production = mode === "production";
 const options = { target: "browser", sourcemap: production ? "none" : "linked", minify: production,
   naming: { entry: "[name].[ext]", chunk: "chunks/[name]-[hash].[ext]", asset: "assets/[name]-[hash].[ext]" },
@@ -16,7 +16,7 @@ async function build(entrypoints, outdir, extra = {}) {
   const result = await Bun.build({ ...options, ...extra, entrypoints, outdir });
   if (!result.success) throw new AggregateError(result.logs, "Frontend build failed");
 }
-const serverAssets = join(app, "web/server.tsx");
+const serverAssets = join(source, "server.tsx");
 if (await Bun.file(serverAssets).exists()) {
   const assets = await (await import(pathToFileURL(serverAssets).href)).default();
   for (const [name, content] of Object.entries(assets)) {
@@ -24,12 +24,6 @@ if (await Bun.file(serverAssets).exists()) {
     await Bun.write(join(output, name), content);
   }
 }
-await build([join(app, "web/app.tsx")], output);
-await copyFile(join(app, "web/index.html"), join(output, "index.html"));
-if (kind === "package") {
-  for (const [source, name, target] of [["native/bridge.ts", "bridge.js", "bun"], ["client.ts", "client.js", "browser"]]) {
-    if (await Bun.file(join(app, source)).exists()) {
-      await build([join(app, source)], join(output, ".."), { target, naming: name });
-    }
-  }
-}
+await build([join(source, "app.tsx")], output);
+await copyFile(join(source, "index.html"), join(output, "index.html"));
+if (sdk) await build([sdk], output, { naming: "client.js" });

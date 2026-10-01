@@ -1,6 +1,6 @@
 import { createRoute, createRouter } from "@tanstack/react-router";
 import { sessionRoot, requireSignedIn, requireSignedOut } from "../../../kits/react/router";
-import { Chatty } from "../client";
+import { Chatty } from "./client";
 import { ConversationsPage } from "./pages/conversations";
 import { SignInPage } from "./pages/sign-in";
 

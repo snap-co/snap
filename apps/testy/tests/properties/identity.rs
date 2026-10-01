@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
 };
-use testy_local::identity::{Sessions, platform};
+use testy_server::identity::{Sessions, platform};
 
 #[hegel::test]
 fn accepted_work_drains_before_queued_logout_across_expiry_and_dependency_failure(tc: TestCase) {

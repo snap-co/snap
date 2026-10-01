@@ -245,18 +245,16 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
         std::fs::create_dir_all(destination)?;
         for entry in std::fs::read_dir(source)? {
             let entry = entry?;
+            // App-owned JS packages have workspace-local dependency links with
+            // Bun's isolated linker. Reuse them just like the root dependencies;
+            // copying package sources must not hide server-only dependencies.
+            if entry.file_name() == "node_modules" {
+                std::os::unix::fs::symlink(entry.path(), destination.join(entry.file_name()))?;
+                continue;
+            }
             if matches!(
                 entry.file_name().to_str(),
-                Some(
-                    ".snap"
-                        | ".deployment"
-                        | "node_modules"
-                        | "target"
-                        | "build"
-                        | "dist"
-                        | ".git"
-                        | ".tmp"
-                )
+                Some(".snap" | ".deployment" | "target" | "build" | "dist" | ".git" | ".tmp")
             ) {
                 continue;
             }

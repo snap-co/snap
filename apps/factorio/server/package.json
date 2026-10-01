@@ -1,0 +1,8 @@
+{
+  "name": "@snap/factorio-server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@opencode/client": "2.0.18"
+  }
+}

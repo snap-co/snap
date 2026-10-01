@@ -1,5 +1,5 @@
 import { mount } from "../../../kits/react/host";
-import { Chatty } from "../client";
+import { Chatty } from "./client";
 import { createAppRouter } from "./routes";
 import "./style.css";
 

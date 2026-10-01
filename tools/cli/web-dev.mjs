@@ -1,13 +1,18 @@
 // Vite adapter only. Rust owns configuration, builds and backend lifetime.
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
 
 const initial = JSON.parse(await readFile(process.argv[2], "utf8"));
 // The embedded helper runs from a private directory, not the app's node_modules.
 const require = createRequire(join(initial.project, "package.json"));
-const dependencies = dirname(dirname(require.resolve("vite/package.json")));
+// Bun workspaces may resolve Vite inside node_modules/.bun/. Permit the outer
+// dependency tree so React and other packages in that store remain accessible.
+let dependencies = dirname(dirname(require.resolve("vite/package.json")));
+for (let directory = dependencies; directory !== dirname(directory); directory = dirname(directory)) {
+  if (basename(directory) === "node_modules") dependencies = directory;
+}
 const { createServer } = await import(require.resolve("vite"));
 const { default: react } = await import(require.resolve("@vitejs/plugin-react"));
 let state = initial;
@@ -33,7 +38,7 @@ const logger = {
   clearScreen() {}, hasErrorLogged() { return false; },
 };
 const server = await createServer({
-  configFile: false, root: join(state.project, "web"), publicDir: false, customLogger: logger,
+  configFile: false, root: state.source, publicDir: false, customLogger: logger,
   plugins: [react(), {
     name: "snap-development", enforce: "pre",
     resolveId(id) { if (id === "@snap/wasm") return join(state.generation, "web/bindings", `${state.library}.js`); },
@@ -66,7 +71,7 @@ const server = await createServer({
     host: state.listenHost, port: state.listenPort, strictPort: true,
     allowedHosts: state.origins.map(origin => new URL(origin).hostname), cors: false,
     fs: {
-      allow: [join(state.project, "web"), dependencies, state.session],
+      allow: [state.source, dependencies, state.session],
       deny: ["**/.env", "**/.env.*", "**/*.{crt,pem,key}", "**/.git/**", "**/.deployment/**",
         "**/secrets.{key,toml,enc}", "**/config.toml", "**/*.{sqlite,sqlite-*,db,db-*}"],
     },

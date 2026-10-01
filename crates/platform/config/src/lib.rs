@@ -2,7 +2,7 @@
 //! never this loader, filesystem paths to secrets, or ambient configuration.
 use age::secrecy::{ExposeSecret, SecretString};
 use anyhow::{Context, Result, bail, ensure};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
@@ -88,10 +88,62 @@ pub fn application_development_config(application: &str) -> Result<Option<PathBu
     Ok(None)
 }
 
-/// Packaged config beside the executable takes precedence over checkout discovery.
+/// Paths in a deployment inventory are relative to its environment root. All
+/// target binaries share that root's configuration and client assets, so moving
+/// the complete package preserves app-owned config-relative resource paths.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Artifacts {
+    pub version: u32,
+    pub application: String,
+    pub clients: BTreeMap<String, PathBuf>,
+    pub native_clients: Vec<NativeArtifact>,
+    pub servers: Vec<NativeArtifact>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeArtifact {
+    pub name: String,
+    pub target: String,
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+}
+
+/// A nested target executable locates configuration through artifacts.toml.
+/// A malformed matching deployment must not fall back to checkout credentials.
+pub fn packaged_config(directory: &Path, application: Option<&str>) -> Result<Option<PathBuf>> {
+    let adjacent = directory.join("config.toml");
+    if adjacent.try_exists()? {
+        return Ok(Some(adjacent));
+    }
+    for ancestor in directory.ancestors() {
+        let inventory = ancestor.join("artifacts.toml");
+        let text = match std::fs::read_to_string(&inventory) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("Cannot read artifacts.toml"),
+        };
+        let artifacts: Artifacts =
+            toml::from_str(&text).map_err(|_| anyhow::anyhow!("Invalid artifacts.toml schema"))?;
+        ensure!(artifacts.version == 1, "Unsupported artifacts.toml version");
+        if application.is_none_or(|application| artifacts.application == application) {
+            let config = ancestor.join("config.toml");
+            ensure!(config.is_file(), "Packaged config.toml is missing");
+            return Ok(Some(config));
+        }
+    }
+    Ok(None)
+}
+
+/// Packaged config takes precedence over checkout discovery.
 pub fn application_config(application: &str) -> Result<PathBuf> {
-    let packaged = std::env::current_exe()?.with_file_name("config.toml");
-    if packaged.try_exists()? {
+    let executable = std::env::current_exe()?;
+    if let Some(packaged) = packaged_config(
+        executable
+            .parent()
+            .context("Executable directory missing")?,
+        Some(application),
+    )? {
         return Ok(packaged);
     }
     application_development_config(application)?.with_context(|| {
@@ -454,16 +506,27 @@ impl Options {
         Self::from_args(std::env::args().skip(1))
     }
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self> {
-        let mut config = std::env::current_exe()?.with_file_name("config.toml");
+        let executable = std::env::current_exe()?;
+        let directory = executable
+            .parent()
+            .context("Executable directory missing")?;
+        let mut config = directory.join("config.toml");
+        let mut explicit_config = false;
         let mut action = Action::Serve;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--config" => config = args.next().context("--config requires a path")?.into(),
+                "--config" => {
+                    config = args.next().context("--config requires a path")?.into();
+                    explicit_config = true;
+                }
                 "--check-config" if action == Action::Serve => action = Action::Check,
                 "--migrate" if action == Action::Serve => action = Action::Migrate,
                 _ => bail!("usage: server [--config PATH] [--check-config | --migrate]"),
             }
+        }
+        if !explicit_config && let Some(packaged) = packaged_config(directory, None)? {
+            config = packaged;
         }
         Ok(Self { config, action })
     }

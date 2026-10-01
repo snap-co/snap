@@ -1,5 +1,5 @@
 use snap_runtime_local::native;
-use testy_local::identity::{Sessions, platform};
+use testy_server::identity::{Sessions, platform};
 
 #[test]
 fn authenticated_sdk_over_real_tcp_discards_connection_state() {

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
@@ -46,24 +47,154 @@ fn enabled() -> bool {
     true
 }
 
-/// Only target selection varies. Compilation and packaging belong to Snap.
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// App-owned package selection. Cargo's target directory is a compilation cache;
+/// deployable artifacts are assembled separately under the application's dist/.
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Build {
-    #[serde(default = "native")]
-    pub server: String,
-    pub binary: Option<String>,
-    #[serde(default)]
-    pub features: Vec<String>,
-    /// Arguments selecting server mode when the executable also provides client commands.
-    /// Changing these requires restarting the watched development supervisor.
-    #[serde(default)]
-    pub server_args: Vec<String>,
-    /// Optional application-owned native command executable, packaged beside server.
-    pub cli: Option<String>,
+    pub clients: BTreeMap<String, ClientBuild>,
+    pub servers: BTreeMap<String, NativeBuild>,
+    pub scripts: BTreeMap<String, ScriptBuild>,
+    pub development_client: String,
+    pub development_server: String,
 }
-fn native() -> String {
-    "native".into()
+impl Default for Build {
+    fn default() -> Self {
+        Self {
+            clients: BTreeMap::from([("web".into(), ClientBuild::Web(WebBuild::default()))]),
+            servers: BTreeMap::from([("native".into(), NativeBuild::default())]),
+            scripts: BTreeMap::new(),
+            development_client: "web".into(),
+            development_server: "native".into(),
+        }
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ClientBuild {
+    Web(WebBuild),
+    Native(NativeBuild),
+}
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebBuild {
+    pub source: PathBuf,
+    pub wasm: PathBuf,
+    /// Optional browser SDK entry point, relative to the application root.
+    pub sdk: Option<PathBuf>,
+}
+impl Default for WebBuild {
+    fn default() -> Self {
+        Self {
+            source: "web".into(),
+            wasm: "web/wasm/Cargo.toml".into(),
+            sdk: None,
+        }
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NativeBuild {
+    pub manifest: PathBuf,
+    pub binary: Option<String>,
+    pub features: Vec<String>,
+    pub default_features: bool,
+    /// Rust target triples. "host" resolves to rustc's host triple at build time.
+    /// Workers need their own runtime adapter; browser Wasm is not a native server.
+    pub targets: Vec<String>,
+    pub args: Vec<String>,
+}
+impl Default for NativeBuild {
+    fn default() -> Self {
+        Self {
+            manifest: "server/Cargo.toml".into(),
+            binary: None,
+            features: Vec::new(),
+            default_features: true,
+            targets: vec!["host".into()],
+            args: Vec::new(),
+        }
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptBuild {
+    pub source: PathBuf,
+    pub target: String,
+}
+impl Config {
+    pub fn build(&self) -> Build {
+        self.build.clone().unwrap_or_default()
+    }
+}
+impl Build {
+    pub fn web(&self, name: &str) -> Result<&WebBuild> {
+        match self.clients.get(name) {
+            Some(ClientBuild::Web(web)) => Ok(web),
+            _ => bail!("Build client {name} must be a declared web client"),
+        }
+    }
+    pub fn server(&self, name: &str) -> Result<&NativeBuild> {
+        self.servers
+            .get(name)
+            .with_context(|| format!("Unknown build server {name}"))
+    }
+    pub fn validate(&self) -> Result<()> {
+        for name in self.clients.keys().chain(self.servers.keys()) {
+            ensure!(artifact_name(name), "Invalid build artifact name {name}");
+        }
+        for (name, script) in &self.scripts {
+            ensure!(
+                !name.is_empty()
+                    && !matches!(
+                        name.as_str(),
+                        "." | ".."
+                            | "config.toml"
+                            | "secrets.enc"
+                            | "artifacts.toml"
+                            | "clients"
+                            | "servers"
+                            | "server"
+                            | "web"
+                    )
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
+                "Invalid build script output {name}"
+            );
+            ensure!(
+                matches!(script.target.as_str(), "bun" | "node" | "browser"),
+                "Unsupported script target {}",
+                script.target
+            );
+        }
+        self.web(&self.development_client)?;
+        self.server(&self.development_server)?;
+        for native in self
+            .servers
+            .values()
+            .chain(self.clients.values().filter_map(|client| match client {
+                ClientBuild::Native(native) => Some(native),
+                ClientBuild::Web(_) => None,
+            }))
+        {
+            ensure!(
+                !native.targets.is_empty(),
+                "Native builds must declare at least one target"
+            );
+            if let Some(binary) = &native.binary {
+                ensure!(artifact_name(binary), "Invalid native binary name {binary}");
+            }
+        }
+        Ok(())
+    }
+}
+pub fn artifact_name(name: &str) -> bool {
+    !name.is_empty()
+        && !matches!(name, "." | "..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Suites own literal commands, including any host preparation they require.

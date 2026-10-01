@@ -212,15 +212,15 @@ async fn prepare() -> Result<()> {
         "-p",
         "snap-browser-tests",
         "-p",
-        "authy-native",
+        "authy-server",
         "-p",
-        "chatty-native",
+        "chatty-server",
         "-p",
-        "factorio-native",
+        "factorio-server",
         "-p",
-        "testy-local",
+        "testy-server",
         "--features",
-        "testy-local/web",
+        "testy-server/web",
     ]);
     support::checked(&mut command, 120).await?;
     for app in ["testy", "authy", "chatty", "factorio"] {
@@ -230,7 +230,7 @@ async fn prepare() -> Result<()> {
             .args(["build", "--project"])
             .arg(format!("apps/{app}"))
             .args(["--web-only", "--output"])
-            .arg(root.join(format!("apps/{app}/dist/development/web")));
+            .arg(root.join(format!("apps/{app}/dist/development/clients/web")));
         support::checked(&mut command, 120).await?;
     }
     Ok(())

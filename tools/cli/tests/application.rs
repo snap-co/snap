@@ -114,7 +114,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         .canonicalize()
         .unwrap();
     let root = tempfile::tempdir().unwrap();
-    for name in ["native", "wasm", "web", "client.ts"] {
+    for name in ["server", "web"] {
         std::os::unix::fs::symlink(
             repository.join("apps/chatty").join(name),
             root.path().join(name),
@@ -131,11 +131,8 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         root.path().join("Cargo.toml"),
     )
     .unwrap();
-    fs::write(
-        root.path().join("snap.toml"),
-        "version=1\napplication='chatty'\n[build]\n",
-    )
-    .unwrap();
+    let settings = fs::read_to_string(repository.join("apps/chatty/snap.toml")).unwrap();
+    fs::write(root.path().join("snap.toml"), format!("{settings}\n[build.clients.preview]\nkind='web'\nsource='web'\nwasm='web/wasm/Cargo.toml'\n[build.servers.replica]\nmanifest='server/Cargo.toml'\ntargets=['host']\n")).unwrap();
     let input = root.path().join(".deployment/development");
     fs::create_dir_all(&input).unwrap();
     fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='{}'\n[app.oauth]\nissuer='http://127.0.0.1:3846'\nclient_id='chatty'\nclient_secret_ref='oauth.client_secret'\n", root.path().join("data").display())).unwrap();
@@ -177,12 +174,72 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     ] {
         assert!(!package.join(name).exists());
     }
-    assert!(package.join("web/index.html").is_file());
-    assert!(package.join("web/bindings/chatty_wasm_bg.wasm").is_file());
-    assert!(package.join("client.js").is_file());
+    assert!(package.join("clients/web/index.html").is_file());
+    assert!(
+        package
+            .join("clients/web/bindings/chatty_wasm_bg.wasm")
+            .is_file()
+    );
+    assert!(package.join("clients/web/client.js").is_file());
+    let artifacts: snap_config::Artifacts =
+        toml::from_str(&fs::read_to_string(package.join("artifacts.toml")).unwrap()).unwrap();
+    assert_eq!(artifacts.servers.len(), 2);
+    assert_eq!(artifacts.clients.len(), 2);
+    assert!(package.join("clients/preview/index.html").is_file());
+    for artifact in &artifacts.servers {
+        assert!(package.join(&artifact.executable).is_file());
+        assert_ne!(artifact.target, "host");
+    }
+    let inventory = fs::read_to_string(package.join("artifacts.toml")).unwrap();
+    for (targets, expected) in [
+        (vec!["--target", "not-a-rust-target"], "Unknown Rust target"),
+        (
+            vec!["--target", "host", "--target", "host"],
+            "Duplicate native target",
+        ),
+        (
+            vec!["--target", "wasm32-unknown-unknown"],
+            "runtime adapter",
+        ),
+    ] {
+        let rejected = Command::new(env!("CARGO_BIN_EXE_snap"))
+            .current_dir(root.path())
+            .arg("build")
+            .args(targets)
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains(expected));
+        assert_eq!(
+            fs::read_to_string(package.join("artifacts.toml")).unwrap(),
+            inventory
+        );
+    }
+    let selected = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root.path())
+        .args([
+            "build",
+            "--server",
+            "native",
+            "--target",
+            &artifacts.servers[0].target,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let artifacts: snap_config::Artifacts =
+        toml::from_str(&fs::read_to_string(package.join("artifacts.toml")).unwrap()).unwrap();
+    assert_eq!(artifacts.servers.len(), 1);
+    assert_eq!(artifacts.servers[0].name, "native");
+    assert!(!package.join("servers/replica").exists());
+    let executable = &artifacts.servers[0].executable;
     let relocated = root.path().join("relocated");
     fs::rename(package, &relocated).unwrap();
-    let migrate = Command::new(relocated.join("server"))
+    let migrate = Command::new(relocated.join(executable))
         .current_dir(&repository)
         .arg("--migrate")
         .output()
@@ -192,7 +249,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         "{}",
         String::from_utf8_lossy(&migrate.stderr)
     );
-    let mut server = Command::new(relocated.join("server"))
+    let mut server = Command::new(relocated.join(executable))
         .current_dir(&repository)
         .env("SNAP_MASTER_KEY", identity.to_string().expose_secret())
         .stdout(Stdio::piped())
@@ -249,7 +306,7 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
         .canonicalize()
         .unwrap();
     let root = tempfile::tempdir().unwrap();
-    for name in ["local", "wasm", "web"] {
+    for name in ["server", "native", "web"] {
         std::os::unix::fs::symlink(
             repository.join("apps/testy").join(name),
             root.path().join(name),
@@ -266,7 +323,11 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
         root.path().join("Cargo.toml"),
     )
     .unwrap();
-    fs::write(root.path().join("snap.toml"), "version=1\napplication='testy'\n[build]\nserver='local'\nbinary='testy-web'\nfeatures=['web']\n").unwrap();
+    fs::copy(
+        repository.join("apps/testy/snap.toml"),
+        root.path().join("snap.toml"),
+    )
+    .unwrap();
     let input = root.path().join(".deployment/production");
     fs::create_dir_all(&input).unwrap();
     fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='production'\nlisten='0.0.0.0:0'\norigin='https://testy.example.test:443/'\ndata_dir='{}'\n[app]\n", root.path().join("data").display())).unwrap();
@@ -282,17 +343,30 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
         String::from_utf8_lossy(&result.stderr)
     );
     let package = root.path().join("dist/production");
-    assert!(!package.join("web/app.js.map").exists());
-    assert!(package.join("web/app.js").is_file());
-    assert!(package.join("web/bindings/testy_wasm.d.ts").is_file());
+    assert!(!package.join("clients/web/app.js.map").exists());
+    assert!(package.join("clients/web/app.js").is_file());
     assert!(
-        Command::new(package.join("server"))
+        package
+            .join("clients/web/bindings/testy_wasm.d.ts")
+            .is_file()
+    );
+    let artifacts: snap_config::Artifacts =
+        toml::from_str(&fs::read_to_string(package.join("artifacts.toml")).unwrap()).unwrap();
+    assert_eq!(artifacts.native_clients.len(), 1);
+    assert!(
+        package
+            .join(&artifacts.native_clients[0].executable)
+            .is_file()
+    );
+    let executable = package.join(&artifacts.servers[0].executable);
+    assert!(
+        Command::new(&executable)
             .arg("--migrate")
             .status()
             .unwrap()
             .success()
     );
-    let mut server = Command::new(package.join("server"))
+    let mut server = Command::new(&executable)
         .env_remove("SNAP_MASTER_KEY")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -1,5 +1,5 @@
 import { mount } from "../../../kits/react/host";
-import { AuthyClient } from "../client";
+import { AuthyClient } from "./client";
 import { createAppRouter } from "./routes";
 import "./style.css";
 

@@ -1,7 +1,7 @@
 use snap_store::Row;
 use snap_store_sqlite::Sqlite;
 use snap_transport::{Command, Error, Event, Invocation, Response, json};
-use testy_local::store::{Host, migration};
+use testy_server::store::{Host, migration};
 
 #[test]
 fn signup_returns_a_miss_then_a_separate_request_commits_all_modules() {

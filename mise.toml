@@ -20,4 +20,4 @@ run = "exec ./bin/snap dev apps/factorio"
 
 [tasks.factorio-build]
 description = "Rebuild this checkout's native Factorio command without installing it"
-run = "cargo build --locked --target-dir target -p factorio-native"
+run = "cargo build --locked --target-dir target -p factorio-server"

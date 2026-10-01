@@ -101,7 +101,7 @@ impl AuthyHost {
     /// `AUTHY_APP_DOMAIN`, and `SNAP_ORIGIN` (public host origin).
     pub async fn start(rp: &str, overrides: Value) -> Result<Self> {
         let root = support::root();
-        let web_dir = root.join("apps/authy/dist/development/web");
+        let web_dir = root.join("apps/authy/dist/development/clients/web");
         ensure!(
             web_dir.join("index.html").is_file(),
             "missing Authy web assets: {}",
@@ -264,7 +264,7 @@ impl ChattyHost {
             AuthyHost::start(&base, json!({})).await?
         };
         let directory = support::scratch("snap-chatty-pair-")?;
-        let web_dir = support::root().join("apps/chatty/dist/development/web");
+        let web_dir = support::root().join("apps/chatty/dist/development/clients/web");
         ensure!(
             web_dir.join("index.html").is_file(),
             "missing Chatty web assets: {}",

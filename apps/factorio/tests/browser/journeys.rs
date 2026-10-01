@@ -862,7 +862,7 @@ async fn setup_fixture(dev: bool) -> Result<FactorioSetup> {
         "setup": ["/bin/sh", dir.join("setup.sh").to_str().unwrap()],
         "teardown": [],
     });
-    let web_dir = root.join("apps/factorio/dist/development/web");
+    let web_dir = root.join("apps/factorio/dist/development/clients/web");
     ensure!(
         web_dir.join("index.html").is_file(),
         "build Factorio web assets first: {}",
@@ -1961,14 +1961,14 @@ async fn journey_sessions(
         let settings = std::fs::read_to_string(&manifest)?;
         let before_arguments = setup.generations();
         ensure!(
-            settings.contains("server_args = [\"serve\"]"),
+            settings.contains("args = [\"serve\"]"),
             "fixture server mode declaration missing"
         );
         std::fs::write(
             &manifest,
             settings.replace(
-                "server_args = [\"serve\"]",
-                "server_args = [\"serve\", \"--check-config\"]",
+                "args = [\"serve\"]",
+                "args = [\"serve\", \"--check-config\"]",
             ),
         )?;
         timeout(Duration::from_secs(15), async {

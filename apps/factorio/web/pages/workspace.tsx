@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { Factorio, randomID, type Workspace, type Ticket, type Session, type Repository } from "../../client";
+import { Factorio, randomID, type Workspace, type Ticket, type Session, type Repository } from "../client";
 import { IntakeDesk } from "./intake";
 import { Icon, ListDrawer, ShellNavigation, type Section } from "../shell";
 

@@ -2,8 +2,8 @@
 members = [
     "crates/platform/config",
     "apps/factorio",
-    "apps/factorio/native",
-    "apps/factorio/wasm",
+    "apps/factorio/server",
+    "apps/factorio/web/wasm",
     "apps/factorio/properties",
     "crates/transport",
     "crates/platform/runtime-local",
@@ -12,23 +12,23 @@ members = [
     "crates/platform/transport-ws",
     "apps/factorio/cli",
     "crates/platform/oauth",
-    "crates/platform/model",
     "crates/http",
     "crates/platform/store-sqlite",
     "apps/testy",
-    "apps/testy/local",
-    "apps/testy/wasm",
+    "apps/testy/server",
+    "apps/testy/native",
+    "apps/testy/web/wasm",
     "apps/testy/properties",
     "crates/store",
     "crates/access",
     "crates/document",
     "crates/oidc",
     "apps/authy",
-    "apps/authy/native",
-    "apps/authy/wasm",
+    "apps/authy/server",
+    "apps/authy/web/wasm",
     "apps/chatty",
-    "apps/chatty/native",
-    "apps/chatty/wasm",
+    "apps/chatty/server",
+    "apps/chatty/web/wasm",
     "crates/identity",
     "crates/platform/crypto",
     "tests/properties",
@@ -39,22 +39,21 @@ resolver = "3"
 default-members = [
     "crates/platform/config",
     "apps/factorio",
-    "apps/factorio/native",
-    "apps/factorio/wasm",
+    "apps/factorio/server",
+    "apps/factorio/web/wasm",
     "crates/http",
     "crates/platform/oauth",
-    "crates/platform/model",
     "apps/chatty",
-    "apps/chatty/native",
-    "apps/chatty/wasm",
+    "apps/chatty/server",
+    "apps/chatty/web/wasm",
     "crates/oidc",
     "crates/platform/document-host",
     "crates/platform/transport-tcp",
     "crates/platform/transport-ws",
     "apps/factorio/cli",
     "apps/authy",
-    "apps/authy/native",
-    "apps/authy/wasm",
+    "apps/authy/server",
+    "apps/authy/web/wasm",
     "crates/document",
     "crates/access",
     "crates/identity",
@@ -64,7 +63,8 @@ default-members = [
     "crates/transport",
     "crates/platform/runtime-local",
     "apps/testy",
-    "apps/testy/local",
+    "apps/testy/server",
+    "apps/testy/native",
 ]
 
 [workspace.package]
@@ -75,7 +75,6 @@ publish = false
 [workspace.dependencies]
 snap-config = { path = "crates/platform/config" }
 snap-http = { path = "crates/http" }
-snap-model-local = { path = "crates/platform/model" }
 chatty = { path = "apps/chatty" }
 snap-access = { path = "crates/access" }
 snap-document = { path = "crates/document" }

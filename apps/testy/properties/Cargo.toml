@@ -8,7 +8,7 @@ autotests = false
 [dev-dependencies]
 hegeltest = { version = "=0.47.4", features = ["static-engine"] }
 testy = { path = ".." }
-testy-local = { path = "../local", features = ["identity"] }
+testy-server = { path = "../server", features = ["identity"] }
 snap-identity = { path = "../../../crates/identity" }
 snap-store.workspace = true
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }

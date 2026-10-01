@@ -1,6 +1,6 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import { Chatty, randomID, type Thread, type View } from "../../client";
+import { Chatty, randomID, type Thread, type View } from "../client";
 import { Text } from "./text";
 
 export function ConversationsPage({ sdk }: { sdk: Chatty }) {

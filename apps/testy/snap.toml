@@ -1,53 +1,66 @@
 version = 1
 application = "testy"
 
-[build]
-server = "local"
+[build.clients.web]
+kind = "web"
+source = "web"
+wasm = "web/wasm/Cargo.toml"
+
+[build.clients.native]
+kind = "native"
+manifest = "native/Cargo.toml"
+binary = "testy-client-native"
+targets = ["host"]
+
+[build.servers.native]
+manifest = "server/Cargo.toml"
+targets = ["host"]
 binary = "testy-web"
 features = ["web"]
+default_features = false
 
 [check]
-rust = ["Cargo.toml", "local/Cargo.toml", "wasm/Cargo.toml"]
+rust = ["Cargo.toml", "server/Cargo.toml", "web/wasm/Cargo.toml", "native/Cargo.toml"]
 typescript = ["web/tsconfig.json"]
 
 [[check.variants]]
-manifest = "local/Cargo.toml"
+manifest = "server/Cargo.toml"
 features = ["memory"]
 default_features = false
 allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-store"]
 
 [[check.variants]]
-manifest = "local/Cargo.toml"
+manifest = "server/Cargo.toml"
 features = ["native"]
 default_features = false
 allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
 
 [[check.variants]]
-manifest = "local/Cargo.toml"
+manifest = "server/Cargo.toml"
 features = ["web"]
 default_features = false
 allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-transport-ws", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
 
 [[check.variants]]
-manifest = "local/Cargo.toml"
+manifest = "server/Cargo.toml"
 features = ["store"]
 default_features = false
 allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-store", "snap-store-sqlite"]
 
 [[check.variants]]
-manifest = "local/Cargo.toml"
+manifest = "server/Cargo.toml"
 features = ["identity"]
 
 [test.memory]
 commands = [
   ["cargo", "test", "-p", "snap-transport", "--", "--include-ignored"],
-  ["cargo", "test", "-p", "testy-local", "--features", "web", "--test", "memory", "--test", "development", "--test", "store", "--test", "identity", "--", "--include-ignored"],
+  ["cargo", "test", "-p", "testy-server", "--features", "web", "--test", "memory", "--test", "development", "--test", "store", "--test", "identity", "--", "--include-ignored"],
   ["cargo", "test", "-p", "snap-runtime-local", "--features", "web", "--lib", "--", "--include-ignored"],
 ]
 
 [test.native]
 commands = [
-  ["cargo", "test", "-p", "testy-local", "--features", "native", "--test", "native", "--test", "startup", "--", "--include-ignored"],
+  ["cargo", "test", "-p", "testy-server", "--features", "native", "--test", "native", "--test", "startup", "--", "--include-ignored"],
   ["cargo", "test", "-p", "snap-crypto", "--test", "native", "--", "--ignored"],
 ]
 

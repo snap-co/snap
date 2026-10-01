@@ -1,17 +1,25 @@
 version = 1
 application = "chatty"
 
-[build]
+[build.clients.web]
+kind = "web"
+source = "web"
+wasm = "web/wasm/Cargo.toml"
+sdk = "web/client.ts"
+
+[build.servers.native]
+manifest = "server/Cargo.toml"
+targets = ["host"]
 
 [check]
-rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+rust = ["Cargo.toml", "server/Cargo.toml", "web/wasm/Cargo.toml"]
 typescript = ["web/tsconfig.json"]
 
 [test.memory]
-commands = [["cargo", "test", "-p", "chatty"]]
+commands = [["cargo", "test", "-p", "chatty"], ["cargo", "test", "-p", "chatty-server", "--test", "responses"]]
 
 [test.browser]
 commands = [["../../bin/browser-tests", "chatty"]]
 
 [test.native]
-commands = [["cargo", "test", "-p", "chatty-native", "--", "--ignored"], ["cargo", "test", "-p", "snap-oauth-local", "--test", "crypto", "--", "--ignored"]]
+commands = [["cargo", "test", "-p", "chatty-server", "--", "--ignored"], ["cargo", "test", "-p", "snap-oauth-local", "--test", "crypto", "--", "--ignored"]]

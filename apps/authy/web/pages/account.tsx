@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { AuthyClient } from "../../client";
+import { AuthyClient } from "../client";
 import { AuthShell, AuthHeading } from "../auth-ui";
 
 function accountError(error: unknown): string {

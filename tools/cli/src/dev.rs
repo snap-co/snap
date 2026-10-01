@@ -280,13 +280,14 @@ struct Adapter {
 }
 struct Frontend {
     project: PathBuf,
+    source: PathBuf,
     session: PathBuf,
     library: String,
     backend: SocketAddr,
 }
 impl Frontend {
     fn state(&self, directory: &Path, installation: &Installation) -> Value {
-        json!({"project":self.project, "session":self.session, "library":self.library,
+        json!({"project":self.project, "source":self.source, "session":self.session, "library":self.library,
             "generation":directory, "backend":format!("http://{}", self.backend), "origin":installation.origin,
             "origins":installation.origins, "listenHost":installation.listen.ip().to_string(), "listenPort":installation.listen.port()})
     }
@@ -466,9 +467,24 @@ fn changes(event: notify::Event, configuration: &Path, adapter: &Path) -> Change
             continue;
         }
         if path.extension().is_some_and(|extension| extension == "rs")
+            || path.extension().is_some_and(|extension| extension == "ts")
+                && relative
+                    .components()
+                    .any(|component| component.as_os_str() == "server")
+            || relative
+                .components()
+                .any(|component| component.as_os_str() == "prompts")
             || matches!(
                 path.file_name().and_then(|name| name.to_str()),
-                Some("Cargo.toml" | "Cargo.lock" | "snap.toml" | "server.tsx" | "auth-ui.tsx")
+                Some(
+                    "Cargo.toml"
+                        | "Cargo.lock"
+                        | "package.json"
+                        | "bun.lock"
+                        | "snap.toml"
+                        | "server.tsx"
+                        | "auth-ui.tsx"
+                )
             )
         {
             result.build = true;
@@ -478,11 +494,9 @@ fn changes(event: notify::Event, configuration: &Path, adapter: &Path) -> Change
 }
 
 pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBuf>) -> Result<()> {
-    let server_args = project
-        .config
-        .build
-        .as_ref()
-        .map_or(&[][..], |s| s.server_args.as_slice());
+    let settings = project.config.build();
+    let server_args = &settings.server(&settings.development_server)?.args;
+    let web = settings.web(&settings.development_client)?;
     let configuration = match configuration {
         Some(configuration) => configuration,
         None => snap_config::development_config(&project.root)?,
@@ -492,13 +506,14 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
         .context("Cannot open config.toml")?;
     let mut installation =
         Installation::load(&configuration, runner, None, &project.config.application).await?;
-    let (_, metadata) = cargo::metadata(&project, runner, Path::new("wasm/Cargo.toml")).await?;
+    settings.validate()?;
+    let (_, metadata) = cargo::metadata(&project, runner, &web.wasm).await?;
     let workspace = PathBuf::from(
         metadata["workspace_root"]
             .as_str()
             .context("Missing Cargo workspace")?,
     );
-    let wasm = cargo::selected_package(&metadata, &project.file(Path::new("wasm/Cargo.toml"))?)?;
+    let wasm = cargo::selected_package(&metadata, &project.file(&web.wasm)?)?;
     let library = wasm["targets"]
         .as_array()
         .context("Missing Wasm targets")?
@@ -542,6 +557,7 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
     let backend = TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let frontend = Frontend {
         project: project.root.clone(),
+        source: project.root.join(&web.source),
         session: session.path().to_owned(),
         library,
         backend,
@@ -588,13 +604,15 @@ pub async fn run(project: Project, runner: &Runner, configuration: Option<PathBu
                     // Do not pair a rebuilt executable with the previous command mode.
                     // This supervisor retains its startup arguments for launch and rollback.
                     let selected = Project::discover(Some(project.root.clone()))?;
-                    ensure!(selected.config.build.as_ref().map_or(&[][..], |s| s.server_args.as_slice()) == server_args,
+                    let selected_build = selected.config.build();
+                    ensure!(&selected_build.server(&selected_build.development_server)?.args == server_args,
                         "Server arguments changed; restart snap dev to apply them");
+                    ensure!(selected_build.web(&selected_build.development_client)? == web, "Browser client selection changed; restart snap dev to apply it");
                     if let Some((directory, _)) = current.as_ref().filter(|_| !pending.build) {
                         // Configuration-only changes do not recompile application code.
                         build::copy_tree(directory, &candidate)?;
                     } else {
-                        build::run(build::Args { environment: "development".into(), project: Some(project.root.clone()), web_only: false, output: Some(candidate.clone()) }, runner).await?;
+                        build::run(build::Args { environment: "development".into(), project: Some(project.root.clone()), web_only: false, client: None, server: None, target: Vec::new(), output: Some(candidate.clone()) }, runner).await?;
                     }
                     installation.write_generation(&candidate, backend)?;
                     runner.run(Command::new(candidate.join("server")).args(server_args).arg("--check-config").arg("--config").arg(candidate.join("config.toml")).env_remove("SNAP_MASTER_KEY"), false).await?;

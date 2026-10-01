@@ -1,10 +1,18 @@
 version = 1
 application = "authy"
 
-[build]
+[build.clients.web]
+kind = "web"
+source = "web"
+wasm = "web/wasm/Cargo.toml"
+sdk = "web/client.ts"
+
+[build.servers.native]
+manifest = "server/Cargo.toml"
+targets = ["host"]
 
 [check]
-rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml"]
+rust = ["Cargo.toml", "server/Cargo.toml", "web/wasm/Cargo.toml"]
 typescript = ["web/tsconfig.json"]
 
 [test.memory]
@@ -14,4 +22,4 @@ commands = [["cargo", "test", "-p", "authy", "-p", "snap-oidc"]]
 commands = [["../../bin/browser-tests", "authy"]]
 
 [test.native]
-commands = [["../../bin/snap", "build", "--project", ".", "--web-only", "--output", "dist/development/web"], ["cargo", "test", "-p", "authy-native", "--test", "http", "--", "--ignored"]]
+commands = [["../../bin/snap", "build", "--project", ".", "--web-only", "--output", "dist/development/clients/web"], ["cargo", "test", "-p", "authy-server", "--test", "http", "--", "--ignored"]]

@@ -247,7 +247,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "authy-native"
+name = "authy-server"
 version = "0.0.0"
 dependencies = [
  "age",
@@ -519,17 +519,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "chatty-native"
+name = "chatty-server"
 version = "0.0.0"
 dependencies = [
  "axum",
  "chatty",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "snap-access",
  "snap-config",
  "snap-document",
  "snap-document-host",
+ "snap-http",
  "snap-oauth-local",
  "snap-oidc",
  "snap-store",
@@ -971,7 +973,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "factorio-native"
+name = "factorio-properties"
+version = "0.0.0"
+dependencies = [
+ "factorio",
+ "hegeltest",
+ "snap-access",
+ "snap-document",
+ "snap-store",
+ "snap-store-sqlite",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "factorio-server"
 version = "0.0.0"
 dependencies = [
  "age",
@@ -998,19 +1013,6 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tower-http",
  "uuid",
-]
-
-[[package]]
-name = "factorio-properties"
-version = "0.0.0"
-dependencies = [
- "factorio",
- "hegeltest",
- "snap-access",
- "snap-document",
- "snap-store",
- "snap-store-sqlite",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -3137,16 +3139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snap-model-local"
-version = "0.0.0"
-dependencies = [
- "reqwest 0.12.28",
- "serde_json",
- "snap-http",
- "tokio",
-]
-
-[[package]]
 name = "snap-oauth-local"
 version = "0.0.0"
 dependencies = [
@@ -3393,22 +3385,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "testy-local"
+name = "testy-native"
 version = "0.0.0"
 dependencies = [
- "futures",
- "serde",
- "snap-config",
- "snap-crypto",
- "snap-identity",
  "snap-runtime-local",
- "snap-store",
- "snap-store-sqlite",
- "snap-transport",
- "tempfile",
  "testy",
  "tokio",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -3423,7 +3405,26 @@ dependencies = [
  "snap-store-sqlite",
  "snap-transport",
  "testy",
- "testy-local",
+ "testy-server",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "testy-server"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "serde",
+ "snap-config",
+ "snap-crypto",
+ "snap-identity",
+ "snap-runtime-local",
+ "snap-store",
+ "snap-store-sqlite",
+ "snap-transport",
+ "tempfile",
+ "testy",
+ "tokio",
  "toml 0.9.12+spec-1.1.0",
 ]
 

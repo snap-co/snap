@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Factorio, randomID, type Workspace } from "../../client";
+import { Factorio, randomID, type Workspace } from "../client";
 
 type Answer = Record<string, string | number | boolean | string[]>;
 type Field = { key: string; type: string; title?: string; description?: string; required?: boolean; hidden?: boolean; default?: Answer[string]; options?: { value: string; label: string }[]; custom?: boolean; url?: string; when?: { key: string; op: "eq" | "neq"; value: unknown }[] };

@@ -1,6 +1,6 @@
 import { createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { sessionRoot, requireSignedIn, requireSignedOut } from "../../../kits/react/router";
-import { Factorio } from "../client";
+import { Factorio } from "./client";
 import { WorkspacePage } from "./pages/workspace";
 import { SignInPage } from "./pages/sign-in";
 

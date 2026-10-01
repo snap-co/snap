@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
 };
-use testy_local::identity::{Sessions, platform};
+use testy_server::identity::{Sessions, platform};
 
 #[test]
 fn session_logout_waits_for_accepted_work_and_then_retires_its_connections() {

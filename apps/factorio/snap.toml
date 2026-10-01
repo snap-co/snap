@@ -2,18 +2,35 @@ version = 1
 application = "factorio"
 
 [check]
-rust = ["Cargo.toml", "native/Cargo.toml", "wasm/Cargo.toml", "cli/Cargo.toml"]
+rust = ["Cargo.toml", "server/Cargo.toml", "web/wasm/Cargo.toml", "cli/Cargo.toml"]
 typescript = ["web/tsconfig.json"]
 
-[build]
-cli = "factorio"
-server_args = ["serve"]
+[build.clients.web]
+kind = "web"
+source = "web"
+wasm = "web/wasm/Cargo.toml"
+sdk = "web/client.ts"
+
+[build.clients.cli]
+kind = "native"
+manifest = "server/Cargo.toml"
+binary = "factorio"
+targets = ["host"]
+
+[build.scripts."bridge.js"]
+source = "server/bridge.ts"
+target = "bun"
+
+[build.servers.native]
+manifest = "server/Cargo.toml"
+targets = ["host"]
+args = ["serve"]
 
 [test.memory]
 commands = [["cargo", "test", "-p", "factorio"]]
 
 [test.native]
-commands = [["cargo", "build", "-p", "factorio-native"], ["cargo", "test", "-p", "snap-transport-tcp", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
+commands = [["cargo", "build", "-p", "factorio-server"], ["cargo", "test", "-p", "snap-transport-tcp", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-server", "--", "--include-ignored"]]
 
 [test.browser]
 commands = [["../../bin/browser-tests", "factorio"]]

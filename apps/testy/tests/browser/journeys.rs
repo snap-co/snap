@@ -94,7 +94,7 @@ impl Fixture {
     /// spawn `testy-web` against freshly built web assets.
     async fn start() -> Result<Self> {
         let root = support::root();
-        let assets = root.join("apps/testy/dist/development/web");
+        let assets = root.join("apps/testy/dist/development/clients/web");
         ensure!(
             assets.join("index.html").is_file(),
             "build Testy web assets first (bin/browser-tests builds them)"

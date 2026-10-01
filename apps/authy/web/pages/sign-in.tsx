@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { AuthyClient } from "../../client";
+import { AuthyClient } from "../client";
 import { AuthShell, AuthHeading, AuthActions, AuthButton, AuthField } from "../auth-ui";
 
 export function SignInPage({ client }: { client: AuthyClient }) {

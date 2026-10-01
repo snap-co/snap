@@ -1,6 +1,6 @@
 import { createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { sessionRoot, requireSignedIn, requireSignedOut } from "../../../kits/react/router";
-import { AuthyClient } from "../client";
+import { AuthyClient } from "./client";
 import { AccountPage } from "./pages/account";
 import { SignInPage } from "./pages/sign-in";
 
