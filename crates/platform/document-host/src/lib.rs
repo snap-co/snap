@@ -72,17 +72,38 @@ impl CarrierControl {
 /// Carrier-owned handle. Socket writes and progress draining never acquire the
 /// execution gate, including while a synchronous controller is doing host IO.
 #[derive(Clone, Default)]
-pub struct Output(Arc<Mutex<VecDeque<snap_transport::carrier::Frame>>>);
+pub struct Output(Arc<Mutex<Outbox>>);
+
+#[derive(Default)]
+struct Outbox {
+    frames: VecDeque<snap_transport::carrier::Frame>,
+    sealed: bool,
+}
 
 impl Output {
     pub fn pop_front(&self) -> Option<Response> {
         self.pop_frame().map(|frame| frame.response)
     }
     fn pop_frame(&self) -> Option<snap_transport::carrier::Frame> {
-        self.0.lock().unwrap().pop_front()
+        self.0.lock().unwrap().frames.pop_front()
     }
     fn push_frame(&self, frame: snap_transport::carrier::Frame) {
-        self.0.lock().unwrap().push_back(frame);
+        let mut outbox = self.0.lock().unwrap();
+        if !outbox.sealed {
+            outbox.frames.push_back(frame);
+        }
+    }
+    /// Append any final frame and stop physical publication under one lock.
+    /// Already queued frames remain drainable. Accepted work may still complete
+    /// and update retained replay state through Host::respond after sealing.
+    fn seal(&self, final_frame: Option<snap_transport::carrier::Frame>) {
+        let mut outbox = self.0.lock().unwrap();
+        if !outbox.sealed {
+            if let Some(frame) = final_frame {
+                outbox.frames.push_back(frame);
+            }
+            outbox.sealed = true;
+        }
     }
     fn push_back(&self, response: Response) {
         self.push_frame(snap_transport::carrier::Frame {
@@ -93,20 +114,25 @@ impl Output {
         });
     }
     fn is_empty(&self) -> bool {
-        self.0.lock().unwrap().is_empty()
+        self.0.lock().unwrap().frames.is_empty()
     }
     fn front(&self) -> Option<Response> {
         self.0
             .lock()
             .unwrap()
+            .frames
             .front()
             .map(|frame| frame.response.clone())
     }
     fn retain(&self, mut keep: impl FnMut(&Response) -> bool) {
-        self.0.lock().unwrap().retain(|frame| keep(&frame.response));
+        self.0
+            .lock()
+            .unwrap()
+            .frames
+            .retain(|frame| keep(&frame.response));
     }
     fn authorize(&self, allowed: &BTreeSet<String>) {
-        self.0.lock().unwrap().retain_mut(|frame| {
+        self.0.lock().unwrap().frames.retain_mut(|frame| {
             if let Response::Notification { input, .. } = &mut frame.response
                 && let Ok(mut message) = serde_json::from_value::<ServerMessage>(input.clone())
             {

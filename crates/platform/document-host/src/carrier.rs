@@ -84,13 +84,22 @@ impl<B: Backend> State<B> {
     fn disconnect(&self) {
         self.control.detach(self.shared.now());
     }
-    fn failure(&self, error: Error, handshake: bool) {
-        self.output.push_frame(Frame {
+    fn retire(&self, final_frame: Option<Frame>) {
+        self.output.seal(final_frame);
+        self.retired.store(true, Ordering::Release);
+    }
+    fn failure(&self, error: Error, handshake: bool, terminal: bool) {
+        let frame = Frame {
             response: Response::Failed(error),
             handshake,
             attachment: None,
-            terminal: self.one_shot,
-        });
+            terminal,
+        };
+        if terminal {
+            self.retire(Some(frame));
+        } else {
+            self.output.push_frame(frame);
+        }
     }
 }
 impl<B: Backend> Drop for Endpoint<B> {
@@ -249,8 +258,7 @@ async fn run<B: Backend + Send + 'static>(
                             Command::Request { invocation, .. } => Response::Events(vec![Event::Completed { id: invocation.id, outcome: Err(error) }]),
                             _ => Response::Failed(error),
                         };
-                        state.output.push_frame(Frame { response, handshake, attachment: None, terminal: true });
-                        state.retired.store(true, Ordering::Release);
+                        state.retire(Some(Frame { response, handshake, attachment: None, terminal: true }));
                         break;
                     }
                     if handshake { maintenance = Some(Maintenance::start(prepare.clone(), command.clone())); }
@@ -269,27 +277,26 @@ async fn run<B: Backend + Send + 'static>(
                         && processing.one_shot && host.is_preconnection_request(&invocation.operation) {
                         if fresh {
                             let outcome = host.preconnection_request(invocation.clone(), bearer.clone());
-                            processing.output.push_frame(Frame { response: Response::Events(vec![Event::Completed { id: invocation.id, outcome }]), handshake: false, attachment: None, terminal: true });
+                            processing.retire(Some(Frame { response: Response::Events(vec![Event::Completed { id: invocation.id, outcome }]), handshake: false, attachment: None, terminal: true }));
                         }
                         return true;
                     }
                     if let Err(error) = host.submit(peer, command, processing.shared.now()) {
-                        processing.failure(error, handshake);
+                        processing.failure(error, handshake, processing.one_shot);
                         return processing.one_shot;
                     }
                     false
-                }).await.unwrap_or_else(|_| { state.failure(Error::Unavailable, handshake); true });
-                if terminal { state.retired.store(true, Ordering::Release); break; }
+                }).await.unwrap_or_else(|_| { state.failure(Error::Unavailable, handshake, true); true });
+                if terminal { state.retire(None); break; }
             }
             _ = sweep.tick() => {
                 if let Some(maintenance) = &mut maintenance && maintenance.task.is_finished() {
                     let error = (&mut maintenance.task).await.ok().and_then(Result::err).unwrap_or(Error::InvalidBearer);
-                    state.failure(error, false);
-                    state.retired.store(true, Ordering::Release);
+                    state.failure(error, false, true);
                     break;
                 }
                 if state.shared.host.try_lock().is_ok_and(|host| host.retired(peer)) {
-                    state.retired.store(true, Ordering::Release);
+                    state.retire(None);
                     break;
                 }
             }
@@ -303,23 +310,244 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     fn fixture() -> Arc<Shared<snap_store_sqlite::Sqlite>> {
+        Shared::new(
+            host_fixture(snap_document::server::Document::new(
+                snap_document::Registry::new(vec![]).unwrap(),
+            )),
+            "http://localhost".into(),
+        )
+    }
+
+    fn host_fixture(
+        document: snap_document::server::Document,
+    ) -> crate::Host<snap_store_sqlite::Sqlite> {
         let migrations = [
             snap_access::MIGRATION,
             snap_document::server::MIGRATION,
             snap_document::server::LIFECYCLE_MIGRATION,
         ]
         .map(|source| toml::from_str(source).unwrap());
-        let store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
-        let document =
-            snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
-        let host = crate::Host::new(
+        let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
+        for table in snap_access::TABLES
+            .iter()
+            .chain(snap_document::server::TABLES.iter())
+        {
+            store.load(table).unwrap();
+        }
+        crate::Host::new(
             store,
             document,
             Arc::new(|_, _| Ok("actor".into())),
             Default::default(),
             "boot".into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn maintenance_retirement_seals_output_while_controller_finishes_and_completion_replays()
+    {
+        use snap_document::{
+            Definition, Intent, Mutation, Registry, ServerMessage, Snapshot, server::Document,
+        };
+        use snap_transport::json;
+        const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
+        let document = || {
+            Document::new(
+                Registry::new(vec![Definition {
+                    kind: "counter".into(),
+                    version: "1".into(),
+                    validate: |value| value.is_i64(),
+                    mutations: vec![Mutation {
+                        name: "add".into(),
+                        minimum: snap_access::Role::Editor,
+                        guard: None,
+                        apply: |value, args, _| {
+                            Ok(json!(value.as_i64().unwrap() + args.as_i64().unwrap()))
+                        },
+                    }],
+                }])
+                .unwrap(),
+            )
+        };
+        let mut host = host_fixture(document());
+        let document = document();
+        host.transact("seed", |tx| {
+            document.create(
+                tx,
+                &Snapshot {
+                    id: ID.into(),
+                    kind: "counter".into(),
+                    version: "1".into(),
+                    revision: 1,
+                    value: json!(0),
+                },
+                snap_access::Audience::Restricted,
+                "actor",
+            )
+        })
+        .unwrap();
+
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let mut entered = Some(entered);
+        let (finish, released) = std::sync::mpsc::channel::<()>();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let host = host.with_controller(
+            "counter",
+            Box::new(move |ctx, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                ctx.progress(json!("before retirement"))?;
+                entered.take().unwrap().send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(10));
+                ctx.progress(json!("after retirement"))?;
+                Ok(())
+            }),
         );
-        Shared::new(host, "http://localhost".into())
+        let shared = Shared::new(host, "http://localhost".into());
+        let preparation = Arc::new(AtomicUsize::new(0));
+        let prepare: Prepare = Arc::new(move |_| {
+            let first = preparation.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if first {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidBearer)
+                }
+            })
+        });
+        let channel = Dispatcher::tcp(shared.clone(), Some(prepare))
+            .open(None, 4096)
+            .await
+            .unwrap();
+        let connect = || Command::Connect {
+            bearer: "token".into(),
+            client_id: "retained".into(),
+        };
+        channel.submit(connect(), 1).unwrap();
+        assert_eq!(
+            next_frame(&channel).await.response,
+            Response::Attached { resumed: false }
+        );
+        let invocation = Invocation {
+            id: 1,
+            operation: "document.mutate".into(),
+            input: serde_json::to_value(Intent {
+                id: 1,
+                document: ID.into(),
+                version: "1".into(),
+                mutation: "add".into(),
+                args: json!(1),
+            })
+            .unwrap(),
+        };
+        channel
+            .submit(Command::Invoke(invocation.clone()), 1)
+            .unwrap();
+        assert_eq!(
+            next_frame(&channel).await.response,
+            Response::Events(vec![Event::Accepted { id: 1 }])
+        );
+        let executing = shared.clone();
+        let worker = std::thread::spawn(move || executing.host.lock().unwrap().step());
+        tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        // Advance the real maintenance timer while the controller holds the gate.
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(15)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !channel.retired() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let controller_still_running = !worker.is_finished();
+        let final_frames: Vec<_> = std::iter::from_fn(|| channel.receive()).collect();
+        // Release before assertions so even a red regression cannot strand work.
+        drop(finish);
+        assert!(worker.join().unwrap());
+        tokio::time::resume();
+        let late: Vec<_> = std::iter::from_fn(|| channel.receive()).collect();
+        assert!(
+            controller_still_running,
+            "retirement waited for controller execution"
+        );
+        assert!(
+            late.is_empty(),
+            "retired physical outbox published late controller output: {late:?}"
+        );
+        assert!(final_frames.iter().any(|frame| frame.response
+            == Response::Events(vec![Event::Progress {
+                id: 1,
+                value: json!("before retirement")
+            }])));
+        let final_frame = final_frames.last().unwrap();
+        assert_eq!(final_frame.response, Response::Failed(Error::InvalidBearer));
+        assert!(final_frame.terminal);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared
+                .host
+                .lock()
+                .unwrap()
+                .transact("read commit", |tx| document.retained(tx, ID))
+                .unwrap()
+                .value,
+            json!(1)
+        );
+
+        // Socket loss does not discard the accepted result. Reconnect alone must
+        // not publish it, but an explicit retry reattaches completion interest.
+        channel.disconnect();
+        let reopened = Dispatcher::web(shared.clone())
+            .open(None, 4096)
+            .await
+            .unwrap();
+        reopened.submit(connect(), 1).unwrap();
+        assert_eq!(
+            next_frame(&reopened).await.response,
+            Response::Attached { resumed: true }
+        );
+        assert!(reopened.receive().is_none());
+        reopened.submit(Command::Invoke(invocation), 1).unwrap();
+        assert_eq!(
+            next_frame(&reopened).await.response,
+            Response::Events(vec![Event::Accepted { id: 1 }])
+        );
+        let Response::Events(events) = next_frame(&reopened).await.response else {
+            panic!("missing completion replay");
+        };
+        let [
+            Event::Completed {
+                id: 1,
+                outcome: Ok(value),
+            },
+        ] = events.as_slice()
+        else {
+            panic!("unexpected replay: {events:?}");
+        };
+        let ServerMessage::Completed(completion) = serde_json::from_value(value.clone()).unwrap()
+        else {
+            panic!("not a Document completion");
+        };
+        assert_eq!(completion.result.unwrap().unwrap().value, json!(1));
+        assert!(!shared.host.lock().unwrap().step());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    async fn next_frame(channel: &Endpoint<snap_store_sqlite::Sqlite>) -> Frame {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(frame) = channel.receive() {
+                    return frame;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("host did not publish a frame")
     }
 
     #[tokio::test]
