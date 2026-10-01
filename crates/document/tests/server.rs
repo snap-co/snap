@@ -88,7 +88,7 @@ fn migrations_with_notes() -> Vec<snap_store::migration::Migration> {
 }
 
 fn store_loaded() -> Store {
-    let mut store = snap_sqlite::Sqlite::memory(&migrations()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
         store.load(table).unwrap();
     }
@@ -115,7 +115,7 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
         }])
         .unwrap(),
     );
-    let mut store = snap_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
     for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
         store.load(table).unwrap();
     }
@@ -165,7 +165,7 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
     );
 }
 
-type Store = snap_store::Store<snap_sqlite::Sqlite>;
+type Store = snap_store::Store<snap_store_sqlite::Sqlite>;
 
 fn dispatch_document(
     store: &mut Store,
@@ -872,7 +872,7 @@ fn mutations_serialize_onto_latest_state_without_stale_rejection() {
 #[test]
 fn access_and_document_writes_roll_back_together() {
     let doc = document();
-    let mut store = snap_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(TABLES.iter())
@@ -917,7 +917,7 @@ fn access_and_document_writes_roll_back_together() {
 #[test]
 fn cold_tables_miss_and_stage_nothing() {
     let doc = document();
-    let mut store = snap_sqlite::Sqlite::memory(&migrations()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     let id = uuid(90);
     assert!(matches!(
         store.run("cold-create", |tx| doc.create(
@@ -1018,10 +1018,10 @@ fn receipts_survive_restart_and_manifest_recovers() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    snap_sqlite::migrate(&path, &migrations()).unwrap();
+    snap_store_sqlite::migrate(&path, &migrations()).unwrap();
     let id = uuid(110);
     {
-        let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+        let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
         for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
             store.load(table).unwrap();
         }
@@ -1038,7 +1038,7 @@ fn receipts_survive_restart_and_manifest_recovers() {
             .unwrap();
     }
     {
-        let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+        let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
         for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
             store.load(table).unwrap();
         }
@@ -1165,7 +1165,7 @@ fn document_migration_applies_cleanly() {
     assert_eq!(parsed.id, "0001_document");
     assert_eq!(parsed.changes.len(), 2);
     let lifecycle = toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap();
-    let mut store = snap_sqlite::Sqlite::memory(&[parsed, lifecycle]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&[parsed, lifecycle]).unwrap();
     for table in TABLES {
         store.load(table).unwrap();
     }

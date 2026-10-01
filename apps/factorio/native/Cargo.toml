@@ -14,14 +14,14 @@ factorio-cli = { path = "../cli" }
 snap-config.workspace = true
 factorio = { path = ".." }
 snap-document.workspace = true
-snap-document-local = { path = "../../../platforms/document" }
-snap-oauth-local = { path = "../../../platforms/oauth" }
-snap-sqlite = { path = "../../../platforms/sqlite" }
+snap-document-host = { path = "../../../crates/platform/document-host" }
+snap-oauth-local = { path = "../../../crates/platform/oauth" }
+snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-access.workspace = true
 snap-oidc.workspace = true
 snap-store.workspace = true
 snap-transport = { path = "../../../crates/transport" }
-snap-transport-native = { path = "../../../platforms/transport" }
+snap-transport-tcp = { path = "../../../crates/platform/transport-tcp" }
 serde_json.workspace = true
 serde.workspace = true
 axum = "0.8"

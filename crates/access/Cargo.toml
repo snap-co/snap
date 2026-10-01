@@ -8,7 +8,7 @@ publish.workspace = true
 snap-store.workspace = true
 
 [dev-dependencies]
-snap-sqlite = { path = "../../platforms/sqlite" }
+snap-store-sqlite = { path = "../platform/store-sqlite" }
 toml = "0.9"
 
 [lints]

@@ -15,7 +15,7 @@ serde_json.workspace = true
 sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
-snap-sqlite = { path = "../../platforms/sqlite" }
+snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 toml = "0.9"
 
 [lints]

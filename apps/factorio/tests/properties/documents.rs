@@ -17,7 +17,7 @@ fn linked_claims_and_cleanup_match_committed_resource_ownership(tc: TestCase) {
     .map(|s| toml::from_str(s).unwrap())
     .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut store = snap_sqlite::Sqlite::memory(&migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())

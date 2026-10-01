@@ -1,4 +1,4 @@
-use snap_platform_local::{development::Development, web};
+use snap_runtime_local::{development::Development, web};
 use snap_transport::json;
 
 #[tokio::main(flavor = "current_thread")]
@@ -12,7 +12,7 @@ async fn main() -> std::io::Result<()> {
     if options.action == snap_config::Action::Migrate {
         let database = config.database();
         std::fs::create_dir_all(database.parent().unwrap())?;
-        snap_sqlite::migrate(
+        snap_store_sqlite::migrate(
             &database,
             &[toml::from_str(snap_identity::MIGRATION).map_err(std::io::Error::other)?],
         )

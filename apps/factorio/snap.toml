@@ -13,7 +13,7 @@ server_args = ["serve"]
 commands = [["cargo", "test", "-p", "factorio"]]
 
 [test.native]
-commands = [["cargo", "build", "-p", "factorio-native"], ["cargo", "test", "-p", "snap-transport-native", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
+commands = [["cargo", "build", "-p", "factorio-native"], ["cargo", "test", "-p", "snap-transport-tcp", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-native", "--", "--include-ignored"]]
 
 [test.browser]
 commands = [["../../bin/browser-tests", "factorio"]]

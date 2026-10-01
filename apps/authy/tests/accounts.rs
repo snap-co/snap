@@ -49,7 +49,7 @@ fn all_tables() -> Vec<&'static str> {
     tables
 }
 
-type Store = snap_store::Store<snap_sqlite::Sqlite>;
+type Store = snap_store::Store<snap_store_sqlite::Sqlite>;
 
 fn dispatch_profile(
     store: &mut Store,
@@ -89,7 +89,7 @@ fn dispatch_profile(
 }
 
 fn store_loaded() -> (Store, Fake) {
-    let mut store = snap_sqlite::Sqlite::memory(&migrations()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     for table in all_tables() {
         store.load(table).unwrap();
     }
@@ -307,7 +307,7 @@ fn late_failure_after_enroll_discards_everything() {
 
 #[test]
 fn cold_tables_report_miss_and_stage_nothing() {
-    let mut store = snap_sqlite::Sqlite::memory(&migrations()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     let mut crypto = Fake::default();
     assert!(matches!(
         store.run("cold-enroll", |tx| authy::enroll(
@@ -789,9 +789,9 @@ fn sessions_and_profiles_survive_reopen() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    snap_sqlite::migrate(&path, &migrations()).unwrap();
+    snap_store_sqlite::migrate(&path, &migrations()).unwrap();
     let (bearer, identity_id, profile) = {
-        let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+        let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
         for table in all_tables() {
             store.load(table).unwrap();
         }
@@ -817,7 +817,7 @@ fn sessions_and_profiles_survive_reopen() {
         (issued.bearer, issued.session.identity, profile)
     };
     {
-        let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+        let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
         for table in all_tables() {
             store.load(table).unwrap();
         }
@@ -878,7 +878,7 @@ fn authy_migration_applies_cleanly() {
     let parsed: snap_store::migration::Migration = toml::from_str(authy::MIGRATION).unwrap();
     assert_eq!(parsed.id, "0001_authy");
     assert_eq!(parsed.changes.len(), 1);
-    let mut store = snap_sqlite::Sqlite::memory(&[parsed]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&[parsed]).unwrap();
     for table in authy::TABLES {
         store.load(table).unwrap();
     }

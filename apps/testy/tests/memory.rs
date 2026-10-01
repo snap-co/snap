@@ -1,5 +1,5 @@
 use futures::executor::block_on;
-use snap_platform_local::memory::Memory;
+use snap_runtime_local::memory::Memory;
 use snap_transport::{
     Channel, Command, Error, Event, Invocation, Response, json,
     server::{Config, Server},

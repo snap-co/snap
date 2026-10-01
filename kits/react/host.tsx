@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { createRoot } from "react-dom/client";
 import { RouterProvider, type AnyRouter } from "@tanstack/react-router";
-import type { SessionRuntime } from "../../platforms/browser/runtime";
+import type { SessionRuntime } from "../../crates/platform/wasm-browser/runtime";
 import { SessionPublication } from "./publication";
 
 /** Own subscriptions and client lifetime outside React effects, including HMR.

@@ -24,8 +24,8 @@ columns = [{ name = "id", kind = "text" }, { name = "body", kind = "text" }]
     .unwrap()
 }
 
-fn store(loaded: bool) -> Store<snap_sqlite::Sqlite> {
-    let mut store = snap_sqlite::Sqlite::memory(&[migration()]).unwrap();
+fn store(loaded: bool) -> Store<snap_store_sqlite::Sqlite> {
+    let mut store = snap_store_sqlite::Sqlite::memory(&[migration()]).unwrap();
     if loaded {
         for table in snap_access::TABLES {
             store.load(table).unwrap();
@@ -34,8 +34,8 @@ fn store(loaded: bool) -> Store<snap_sqlite::Sqlite> {
     store
 }
 
-fn store_with_notes() -> Store<snap_sqlite::Sqlite> {
-    let mut store = snap_sqlite::Sqlite::memory(&[migration(), notes_migration()]).unwrap();
+fn store_with_notes() -> Store<snap_store_sqlite::Sqlite> {
+    let mut store = snap_store_sqlite::Sqlite::memory(&[migration(), notes_migration()]).unwrap();
     for table in snap_access::TABLES.iter().chain(["test.notes"].iter()) {
         store.load(table).unwrap();
     }
@@ -84,7 +84,7 @@ fn link(child: Resource, parent: Resource, linked: bool) -> LinkChange {
 
 fn setup_three(
     access: &Access,
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
 ) -> (Resource, Resource, Resource) {
     let parent = res("doc", 1);
     let child = res("doc", 2);
@@ -1198,7 +1198,7 @@ fn access_and_caller_writes_commit_and_roll_back_together() {
     assert_eq!(rolled_back, (None, false));
 
     // A Store miss late in the attempt discards earlier Access and caller writes.
-    let mut cold = snap_sqlite::Sqlite::memory(&[migration(), notes_migration()]).unwrap();
+    let mut cold = snap_store_sqlite::Sqlite::memory(&[migration(), notes_migration()]).unwrap();
     let missed = cold.run("cold-joint", |tx| {
         let mut changes = system_change();
         changes
@@ -1233,7 +1233,7 @@ fn access_migration_applies_cleanly() {
     let parsed = migration();
     assert_eq!(parsed.id, "0001_access");
     assert_eq!(parsed.changes.len(), 3);
-    let mut store = snap_sqlite::Sqlite::memory(&[parsed]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&[parsed]).unwrap();
     for table in snap_access::TABLES {
         store.load(table).unwrap();
     }

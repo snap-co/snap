@@ -1,7 +1,7 @@
 #[path = "../../../crates/identity/tests/support/mod.rs"]
 mod support;
 use futures::{FutureExt, executor::block_on, task::noop_waker};
-use snap_platform_local::memory::Memory;
+use snap_runtime_local::memory::Memory;
 use snap_transport::{Channel, Command, Error, Invocation, Response, json};
 use std::sync::{
     Arc,

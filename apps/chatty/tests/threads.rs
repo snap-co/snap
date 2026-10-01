@@ -3,7 +3,7 @@ use snap_document::Manifest;
 use snap_store::{Error, Store};
 
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
-fn fixture() -> Store<snap_sqlite::Sqlite> {
+fn fixture() -> Store<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
@@ -14,7 +14,7 @@ fn fixture() -> Store<snap_sqlite::Sqlite> {
     .map(|s| toml::from_str(s).unwrap())
     .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut store = snap_sqlite::Sqlite::memory(&migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())

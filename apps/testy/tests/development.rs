@@ -1,4 +1,4 @@
-use snap_platform_local::development::{Control, Development};
+use snap_runtime_local::development::{Control, Development};
 use snap_transport::{
     Command, Event, Invocation, Response,
     execution::Runtime,

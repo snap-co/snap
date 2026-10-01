@@ -20,7 +20,7 @@ notify = "8"
 url = "2"
 reqwest = { version = "0.12", default-features = false }
 snap-store.workspace = true
-snap-sqlite = { path = "../../platforms/sqlite" }
+snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-config.workspace = true
 age = { version = "0.11", default-features = false }
 wasm-bindgen-cli-support = "=0.2.128"

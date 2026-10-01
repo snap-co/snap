@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-snap-sqlite = { path = "../../platforms/sqlite" }
+snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 toml = "0.9"
 
 [lints]

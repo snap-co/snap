@@ -220,7 +220,6 @@ impl SourceCopy {
             "bun.lock",
             "tsconfig.json",
             "crates",
-            "platforms",
             "kits",
             "tools/cli",
             "apps",

@@ -223,8 +223,8 @@ fn cold_reads_and_late_failures_cannot_partially_enroll() {
 fn credentials_and_revocation_survive_reopen() {
     let path = std::env::temp_dir().join(format!("snap-identity-{}.sqlite", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    snap_sqlite::migrate(&path, &[support::migration()]).unwrap();
-    let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+    snap_store_sqlite::migrate(&path, &[support::migration()]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
     for table in snap_identity::TABLES {
         store.load(table).unwrap();
     }
@@ -237,7 +237,7 @@ fn credentials_and_revocation_survive_reopen() {
         .unwrap()
         .value;
     drop(store);
-    let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
     for table in snap_identity::TABLES {
         store.load(table).unwrap();
     }
@@ -252,7 +252,7 @@ fn credentials_and_revocation_survive_reopen() {
         })
         .unwrap();
     drop(store);
-    let mut store = snap_sqlite::Sqlite::open(&path).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
     for table in snap_identity::TABLES {
         store.load(table).unwrap();
     }

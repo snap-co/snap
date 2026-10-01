@@ -1,5 +1,5 @@
-use snap_sqlite::Sqlite;
 use snap_store::Row;
+use snap_store_sqlite::Sqlite;
 use snap_transport::{Command, Error, Event, Invocation, Response, json};
 use testy_local::store::{Host, migration};
 

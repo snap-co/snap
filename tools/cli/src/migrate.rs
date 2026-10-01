@@ -106,9 +106,9 @@ pub fn run(args: Args) -> Result<()> {
     )?;
     let migrations = read(&args.migrations)?;
     let report = if args.status {
-        snap_sqlite::status(&database, &migrations)?
+        snap_store_sqlite::status(&database, &migrations)?
     } else {
-        snap_sqlite::migrate(&database, &migrations)?
+        snap_store_sqlite::migrate(&database, &migrations)?
     };
     for id in &report.applied {
         println!("applied {id}");

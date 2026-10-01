@@ -1,6 +1,6 @@
-import { BrowserRuntime, type Publication } from "../../platforms/browser/runtime";
-import { wasmModule } from "../../platforms/browser/wasm";
-import { OAuthIdentity } from "../../platforms/identity/oauth";
+import { BrowserRuntime, type Publication } from "../../crates/platform/wasm-browser/runtime";
+import { wasmModule } from "../../crates/platform/wasm-browser/wasm";
+import { OAuthIdentity } from "../../crates/platform/identity/oauth";
 export type Ticket = { id: string; created_at?: number | null; title: string; description: string; modules: string[]; status: "draft" | "ready" | "done" | "cancelled"; notes: string; parent: string | null; blockers: string[] };
 export type Candidate = { commit: string; target: string; evidence: string; findings: { text: string; disposition: string }[]; approval: { human: string; at: number; commit: string } | null };
 export type Session = { id: string; created_at?: number | null; owner: string; prompt: string; tickets: string[]; modules: string[]; phase: string; base: string; branch: string; worktree: string; data: string; port: number; conversation: string; candidate: Candidate | null; integration: string | null; error: string };

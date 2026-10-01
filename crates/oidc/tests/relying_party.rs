@@ -3,8 +3,9 @@ use snap_oidc::relying_party as rp;
 use snap_store::{Error, Store};
 
 const STATE: &str = "fixture-state-with-at-least-32-characters";
-fn store() -> Store<snap_sqlite::Sqlite> {
-    let mut store = snap_sqlite::Sqlite::memory(&[toml::from_str(rp::MIGRATION).unwrap()]).unwrap();
+fn store() -> Store<snap_store_sqlite::Sqlite> {
+    let mut store =
+        snap_store_sqlite::Sqlite::memory(&[toml::from_str(rp::MIGRATION).unwrap()]).unwrap();
     for table in rp::TABLES {
         store.load(table).unwrap();
     }
@@ -44,7 +45,7 @@ fn session() -> rp::Session {
         version: 1,
     }
 }
-fn login(store: &mut Store<snap_sqlite::Sqlite>) {
+fn login(store: &mut Store<snap_store_sqlite::Sqlite>) {
     store
         .run("start", |tx| rp::start(tx, STATE, &attempt()))
         .unwrap();

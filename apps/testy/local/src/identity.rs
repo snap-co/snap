@@ -126,8 +126,8 @@ pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
 }
 pub fn open(
     path: &std::path::Path,
-) -> Result<Sessions<snap_sqlite::Sqlite, snap_crypto::Native>, Box<dyn std::error::Error>> {
-    let mut store = snap_sqlite::Sqlite::open(path)?;
+) -> Result<Sessions<snap_store_sqlite::Sqlite, snap_crypto::Native>, Box<dyn std::error::Error>> {
+    let mut store = snap_store_sqlite::Sqlite::open(path)?;
     for table in snap_identity::TABLES {
         store.load(table)?;
     }

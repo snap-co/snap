@@ -17,7 +17,7 @@ serde_json.workspace = true
 workspace = true
 
 [dev-dependencies]
-snap-sqlite = { path = "../../platforms/sqlite" }
+snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 toml = "0.9"
 
 [package.metadata.snap]

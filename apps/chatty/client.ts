@@ -1,6 +1,6 @@
-import { BrowserRuntime, type Publication } from "../../platforms/browser/runtime";
-import { wasmModule } from "../../platforms/browser/wasm";
-import { OAuthIdentity } from "../../platforms/identity/oauth";
+import { BrowserRuntime, type Publication } from "../../crates/platform/wasm-browser/runtime";
+import { wasmModule } from "../../crates/platform/wasm-browser/wasm";
+import { OAuthIdentity } from "../../crates/platform/identity/oauth";
 export function randomID() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6]! & 0x0f) | 0x40; bytes[8] = (bytes[8]! & 0x3f) | 0x80;

@@ -9,7 +9,7 @@ snap-config.workspace = true
 factorio = { path = ".." }
 snap-document.workspace = true
 snap-transport = { path = "../../../crates/transport" }
-snap-transport-native = { path = "../../../platforms/transport" }
+snap-transport-tcp = { path = "../../../crates/platform/transport-tcp" }
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 anyhow = "1"

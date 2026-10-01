@@ -99,16 +99,16 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         .collect()
 }
 
-fn store() -> Store<snap_sqlite::Sqlite> {
-    let mut store = snap_sqlite::Sqlite::memory(&migrations()).unwrap();
+fn store() -> Store<snap_store_sqlite::Sqlite> {
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     for table in snap_identity::TABLES.iter().chain(snap_oidc::TABLES.iter()) {
         store.load(table).unwrap();
     }
     store
 }
 
-fn cold_store() -> Store<snap_sqlite::Sqlite> {
-    snap_sqlite::Sqlite::memory(&migrations()).unwrap()
+fn cold_store() -> Store<snap_store_sqlite::Sqlite> {
+    snap_store_sqlite::Sqlite::memory(&migrations()).unwrap()
 }
 
 fn config() -> Config {
@@ -146,14 +146,14 @@ fn public_auth() -> ClientAuth<'static> {
 }
 
 fn enroll(
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
     crypto: &mut IdCrypto,
 ) -> (String, BrowserSession) {
     enroll_as(store, crypto, "oidc@example.test")
 }
 
 fn enroll_as(
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
     crypto: &mut IdCrypto,
     email: &str,
 ) -> (String, BrowserSession) {
@@ -394,7 +394,7 @@ fn preapproved_login_resume_is_single_use_and_retains_explicit_consent() {
 }
 
 fn authorize(
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
     host: &mut TestHost,
     authority: &TestAuthority,
     config: &Config,
@@ -415,7 +415,7 @@ fn authorize(
 }
 
 fn consent(
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
     host: &mut TestHost,
     authority: &TestAuthority,
     config: &Config,
@@ -466,7 +466,7 @@ fn consent(
 }
 
 fn exchange(
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
     host: &mut TestHost,
     authority: &TestAuthority,
     config: &Config,
@@ -499,7 +499,7 @@ fn exchange(
 }
 
 fn full_grant(
-    store: &mut Store<snap_sqlite::Sqlite>,
+    store: &mut Store<snap_store_sqlite::Sqlite>,
     host: &mut TestHost,
     authority: &TestAuthority,
     config: &Config,

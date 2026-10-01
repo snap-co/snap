@@ -1,7 +1,7 @@
 use crate::effects;
 use factorio::{Candidate, Config, Phase, Session};
 use std::path::Path;
-#[path = "../../../../platforms/transport/tests/support/mod.rs"]
+#[path = "../../../../crates/platform/transport-tcp/tests/support/mod.rs"]
 mod tls_support;
 
 const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
@@ -9,7 +9,7 @@ const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 #[test]
 fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
     use factorio::workspaces as graph;
-    use snap_document_local::Host;
+    use snap_document_host::Host;
     use snap_transport::{Command, Event, Invocation, Response, json};
     use std::sync::{
         Arc,
@@ -112,7 +112,7 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
 #[test]
 fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
     use factorio::workspaces as graph;
-    use snap_document_local::Host;
+    use snap_document_host::Host;
     use snap_oidc::relying_party as rp;
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
@@ -220,7 +220,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
 
 #[test]
 fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocation() {
-    use snap_document_local::Host;
+    use snap_document_host::Host;
     use snap_oidc::relying_party as rp;
     use snap_transport::{Command, Invocation, Response, json, server::Config};
     use std::sync::Arc;
@@ -361,7 +361,7 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
 #[test]
 fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
     use factorio::workspaces as graph;
-    use snap_document_local::Host;
+    use snap_document_host::Host;
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
     let (store, config, mut session) = authority_fixture();
@@ -455,7 +455,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real TLS maintenance and slow controller suite"]
 async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
-    use snap_document_local::{Host, web::Shared};
+    use snap_document_host::{Host, web::Shared};
     use snap_oauth_local::{Cookies, OAuth};
     use snap_transport::{Command, Event, Invocation, Response, json};
     use std::sync::{
@@ -504,7 +504,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     )
     .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
-    let prepare: snap_document_local::tcp::Prepare = Arc::new({
+    let prepare: snap_document_host::tcp::Prepare = Arc::new({
         let calls = calls.clone();
         move |command| {
             let oauth = oauth.clone();
@@ -528,13 +528,13 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let address = listener.local_addr().unwrap().to_string();
     let serving = shared.clone();
     let _server = Stop(tokio::spawn(async move {
-        snap_document_local::tcp::serve_prepared(listener, serving, server_tls, prepare)
+        snap_document_host::tcp::serve_prepared(listener, serving, server_tls, prepare)
             .await
             .unwrap();
     }));
     let mut clients = Vec::new();
     for id in ["one", "two"] {
-        let mut client = snap_transport_native::Client::open(&address, &client_tls)
+        let mut client = snap_transport_tcp::Client::open(&address, &client_tls)
             .await
             .unwrap();
         client
@@ -550,7 +550,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
         );
         clients.push(client);
     }
-    let _dispatcher = Stop(tokio::spawn(snap_document_local::web::dispatch(shared)));
+    let _dispatcher = Stop(tokio::spawn(snap_document_host::web::dispatch(shared)));
     clients[0].send(&Command::Invoke(Invocation {
         id: 1, operation: "factorio.command".into(), input: json!({"workspace":ROOT,"command":{"command":"ticket","ticket":{"id":"one","title":"Trigger controller","description":"","modules":["one"],"status":"draft","notes":"","parent":null,"blockers":[]}}}),
     })).await.unwrap();
@@ -606,7 +606,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
 #[tokio::test]
 #[ignore = "real OAuth IO suite"]
 async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it() {
-    use snap_document_local::{Host, web::Shared};
+    use snap_document_host::{Host, web::Shared};
     use snap_oauth_local::{Cookies, OAuth};
     use snap_oidc::relying_party as rp;
     use std::{
@@ -721,13 +721,13 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
 }
 
 fn authority_fixture() -> (
-    snap_store::Store<snap_sqlite::Sqlite>,
+    snap_store::Store<snap_store_sqlite::Sqlite>,
     Config,
     snap_oidc::relying_party::Session,
 ) {
     use factorio::workspaces as graph;
     use snap_oidc::relying_party as rp;
-    let mut store = snap_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
@@ -794,10 +794,10 @@ fn authority_session(bearer: &str) -> snap_oidc::relying_party::Session {
 #[ignore = "real native CLI processes"]
 async fn native_cli_login_intake_tools_and_authority_without_shell_environment() {
     use serde_json::json;
-    use snap_document_local::{Host, web::Shared};
+    use snap_document_host::{Host, web::Shared};
     use snap_oidc::relying_party as rp;
     let (temp, config, _) = fixture().await;
-    let mut store = snap_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
@@ -846,12 +846,12 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
-    let tcp = tokio::spawn(snap_document_local::tcp::serve(
+    let tcp = tokio::spawn(snap_document_host::tcp::serve(
         listener,
         shared.clone(),
         server_tls.clone(),
     ));
-    let dispatch = tokio::spawn(snap_document_local::web::dispatch(shared.clone()));
+    let dispatch = tokio::spawn(snap_document_host::web::dispatch(shared.clone()));
     let binary = std::env::current_exe()
         .unwrap()
         .parent()
@@ -1028,12 +1028,12 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
                         let (mut up_read,mut up_write)=tokio::io::split(up);
                         let forwarding=tokio::spawn(async move {let _=tokio::io::copy(&mut down_read,&mut up_write).await;});
                         loop {
-                            let (response,retention)=snap_transport_native::read_response(&mut up_read).await.unwrap();
+                            let (response,retention)=snap_transport_tcp::read_response(&mut up_read).await.unwrap();
                             if lose_handshake && matches!(response,snap_transport::Response::Attached {..}) {
                                  forwarding.abort();let _=forwarding.await;let _=tokio::io::AsyncWriteExt::shutdown(&mut down_write).await;break;
                             }
                             let accepted=matches!(&response,snap_transport::Response::Events(events) if events.iter().any(|e|matches!(e,snap_transport::Event::Accepted {..})));
-                            snap_transport_native::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.as_ref()).await.unwrap();
+                            snap_transport_tcp::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.as_ref()).await.unwrap();
                              if accepted {forwarding.abort();let _=forwarding.await;let _=tokio::io::AsyncWriteExt::shutdown(&mut down_write).await;break;}
                         }
                     });
@@ -1096,7 +1096,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
         serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
     assert!(config["next_id"].as_u64().unwrap() > 5);
     let client_id = config["client_id"].as_str().unwrap();
-    let mut reattach = snap_transport_native::Client::open(&addr, &client_tls)
+    let mut reattach = snap_transport_tcp::Client::open(&addr, &client_tls)
         .await
         .unwrap();
     reattach

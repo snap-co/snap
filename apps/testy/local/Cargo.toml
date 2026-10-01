@@ -9,21 +9,21 @@ snap-config = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 testy = { path = ".." }
 snap-transport = { path = "../../../crates/transport" }
-snap-platform-local = { path = "../../../platforms/local" }
+snap-runtime-local = { path = "../../../crates/platform/runtime-local" }
 futures = { version = "0.3", features = ["executor"], optional = true }
 tokio = { version = "1", features = ["rt", "net", "sync", "macros"], optional = true }
 snap-store = { workspace = true, optional = true }
-snap-sqlite = { path = "../../../platforms/sqlite", optional = true }
+snap-store-sqlite = { path = "../../../crates/platform/store-sqlite", optional = true }
 toml = { version = "0.9", optional = true }
 snap-identity = { path = "../../../crates/identity", optional = true }
-snap-crypto = { path = "../../../platforms/crypto", optional = true }
+snap-crypto = { path = "../../../crates/platform/crypto", optional = true }
 
 [features]
 default = ["memory"]
 memory = ["dep:futures"]
-native = ["snap-platform-local/native", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
-web = ["snap-platform-local/web", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
-store = ["testy/store", "dep:snap-store", "dep:snap-sqlite", "dep:toml"]
+native = ["snap-runtime-local/native", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
+web = ["snap-runtime-local/web", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
+store = ["testy/store", "dep:snap-store", "dep:snap-store-sqlite", "dep:toml"]
 identity = ["store", "dep:snap-identity", "dep:snap-crypto"]
 
 [[test]]

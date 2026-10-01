@@ -2,6 +2,14 @@
 
 Transport invokes operations, operations read and stage changes through Store, and successful Store commits signal Controllers. External effects and nondeterministic inputs belong to platform-supplied capabilities rather than ambient IO inside operation code, so the same application behavior can run on real or controlled testing platforms.
 
+Application behavior depends on portable shared interfaces and modules, not concrete platform implementations. A separate host composition selects platform capabilities and connects them to the application. Store and Transport are the current shared interfaces for storage and invocation; modules do not each require a paired platform package.
+
+The intended layout groups platform libraries under `crates/platform/`, with independently selectable driver packages and runtime packages specific to their execution environment. A runtime does not unconditionally include every driver. Browser WebAssembly is an environment distinct from other WebAssembly hosts; future Swift or Kotlin UI integration may need its own host integration, but foreign-language bindings and ABI mechanics are deferred. The directory layout does not replace dependency-role enforcement, and final package names remain to be settled during cleanup.
+
+Package names use `snap-` followed by the capability or implementation, such as `snap-store-sqlite` and `snap-transport-tcp`, without requiring another `platform` prefix. Directory grouping does not establish correct ownership by itself: Document-specific host assembly and existing Model/OAuth placement still require separate ownership cleanup, not recognition as permanent platform capabilities.
+
+Production statically links the composition, platform and application while preserving their dependency separation. Loading and unloading application code without restarting the host is a development-only goal, not a current requirement. Dynamic-library formats, ABI stability, reload lifecycle and state handoff are deferred; organizing dependencies does not require selecting those mechanisms now.
+
 For now, portable code, compiler checks, dependency rules and agent instructions enforce this architecture cooperatively; this is not a sandbox guarantee for arbitrary native code. Deterministic simulation is a long-term goal, not a strict current replay or same-seed guarantee, and mostly single-threaded execution is sufficient for present work.
 
 Controller interfaces, concurrency, parallelism, distribution and notification-delivery guarantees remain undecided. MVCC, isolation options and Viewstamped Replication also remain undecided; this decision does not select them.

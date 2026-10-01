@@ -1,7 +1,7 @@
-import { BrowserRuntime, type Publication } from "../../platforms/browser/runtime";
-import { wasmModule } from "../../platforms/browser/wasm";
-import { Identity } from "../../platforms/identity/client";
-import { Transport } from "../../platforms/transport/browser";
+import { BrowserRuntime, type Publication } from "../../crates/platform/wasm-browser/runtime";
+import { wasmModule } from "../../crates/platform/wasm-browser/wasm";
+import { Identity } from "../../crates/platform/identity/client";
+import { Transport } from "../../crates/platform/wasm-browser/transport";
 
 export interface Account { identity: string; email: string; profile: string; authenticated_at: number }
 export interface ProfileView { name: string; bio: string; revision: string }

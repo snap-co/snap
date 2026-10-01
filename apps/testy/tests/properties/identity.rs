@@ -2,7 +2,7 @@
 mod support;
 use futures::{FutureExt, executor::block_on, task::noop_waker};
 use hegel::{TestCase, generators as gs};
-use snap_platform_local::memory::Memory;
+use snap_runtime_local::memory::Memory;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},

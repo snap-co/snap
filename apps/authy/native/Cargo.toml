@@ -18,9 +18,9 @@ snap-access.workspace = true
 snap-document.workspace = true
 snap-oidc.workspace = true
 snap-transport = { path = "../../../crates/transport" }
-snap-document-local = { path = "../../../platforms/document" }
-snap-sqlite = { path = "../../../platforms/sqlite" }
-snap-crypto = { path = "../../../platforms/crypto" }
+snap-document-host = { path = "../../../crates/platform/document-host" }
+snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
+snap-crypto = { path = "../../../crates/platform/crypto" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }

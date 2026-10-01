@@ -28,7 +28,7 @@ fn write(tx: &mut Transaction<'_>, value: i64) -> Result<(), StoreError> {
         [("value".into(), value.into())].into_iter().collect(),
     )
 }
-fn store() -> snap_store::Store<snap_sqlite::Sqlite> {
+fn store() -> snap_store::Store<snap_store_sqlite::Sqlite> {
     let migrations = [toml::from_str(
         r#"
 id = "0001_quota"
@@ -41,7 +41,7 @@ columns = [{name="id",kind="integer"},{name="value",kind="integer"}]
 "#,
     )
     .unwrap()];
-    let mut store = snap_sqlite::Sqlite::memory(&migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     store.load("quota.counter").unwrap();
     store
         .run("seed", |tx| {

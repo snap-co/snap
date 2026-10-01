@@ -1,19 +1,19 @@
 [workspace]
 members = [
-    "platforms/config",
+    "crates/platform/config",
     "apps/factorio",
     "apps/factorio/native",
     "apps/factorio/wasm",
     "apps/factorio/properties",
     "crates/transport",
-    "platforms/local",
-    "platforms/document",
-    "platforms/transport",
+    "crates/platform/runtime-local",
+    "crates/platform/document-host",
+    "crates/platform/transport-tcp",
     "apps/factorio/cli",
-    "platforms/oauth",
-    "platforms/model",
+    "crates/platform/oauth",
+    "crates/platform/model",
     "crates/http",
-    "platforms/sqlite",
+    "crates/platform/store-sqlite",
     "apps/testy",
     "apps/testy/local",
     "apps/testy/wasm",
@@ -29,26 +29,26 @@ members = [
     "apps/chatty/native",
     "apps/chatty/wasm",
     "crates/identity",
-    "platforms/crypto",
+    "crates/platform/crypto",
     "tests/properties",
     "tests/browser",
     "tools/cli",
 ]
 resolver = "3"
 default-members = [
-    "platforms/config",
+    "crates/platform/config",
     "apps/factorio",
     "apps/factorio/native",
     "apps/factorio/wasm",
     "crates/http",
-    "platforms/oauth",
-    "platforms/model",
+    "crates/platform/oauth",
+    "crates/platform/model",
     "apps/chatty",
     "apps/chatty/native",
     "apps/chatty/wasm",
     "crates/oidc",
-    "platforms/document",
-    "platforms/transport",
+    "crates/platform/document-host",
+    "crates/platform/transport-tcp",
     "apps/factorio/cli",
     "apps/authy",
     "apps/authy/native",
@@ -56,11 +56,11 @@ default-members = [
     "crates/document",
     "crates/access",
     "crates/identity",
-    "platforms/crypto",
+    "crates/platform/crypto",
     "crates/store",
-    "platforms/sqlite",
+    "crates/platform/store-sqlite",
     "crates/transport",
-    "platforms/local",
+    "crates/platform/runtime-local",
     "apps/testy",
     "apps/testy/local",
 ]
@@ -71,9 +71,9 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-snap-config = { path = "platforms/config" }
+snap-config = { path = "crates/platform/config" }
 snap-http = { path = "crates/http" }
-snap-model-local = { path = "platforms/model" }
+snap-model-local = { path = "crates/platform/model" }
 chatty = { path = "apps/chatty" }
 snap-access = { path = "crates/access" }
 snap-document = { path = "crates/document" }

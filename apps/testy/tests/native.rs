@@ -1,4 +1,4 @@
-use snap_platform_local::native;
+use snap_runtime_local::native;
 use testy_local::identity::{Sessions, platform};
 
 #[test]
@@ -9,7 +9,7 @@ fn authenticated_sdk_over_real_tcp_discards_connection_state() {
         .unwrap()
         .block_on(tokio::task::LocalSet::new().run_until(async {
             let migration = toml::from_str(snap_identity::MIGRATION).unwrap();
-            let mut store = snap_sqlite::Sqlite::memory(&[migration]).unwrap();
+            let mut store = snap_store_sqlite::Sqlite::memory(&[migration]).unwrap();
             for table in snap_identity::TABLES {
                 store.load(table).unwrap();
             }

@@ -1,6 +1,6 @@
 import { createRootRouteWithContext, Outlet, redirect, useRouter } from "@tanstack/react-router";
 import { useContext, useSyncExternalStore } from "react";
-import type { SessionRuntime, SessionState } from "../../platforms/browser/runtime";
+import type { SessionRuntime, SessionState } from "../../crates/platform/wasm-browser/runtime";
 import { Failure, Loading } from "./states";
 import { SessionPublication } from "./publication";
 import "./theme.css";

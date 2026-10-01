@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::{support, ui::Session};
 
 pub async fn run(browser: &Browser, filter: &str) -> Result<()> {
-    let entry = support::root().join("platforms/browser/tests/fixture.ts");
+    let entry = support::root().join("crates/platform/wasm-browser/tests/fixture.ts");
     let host = support::BundleHost::start(&entry).await?;
     let cases = [
         (

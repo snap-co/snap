@@ -23,7 +23,7 @@ pub struct Keys {
 
 impl Keys {
     pub fn load(
-        store: &mut Store<snap_sqlite::Sqlite>,
+        store: &mut Store<snap_store_sqlite::Sqlite>,
         secure: bool,
         cookie_key: Option<&snap_config::Secret>,
     ) -> Result<Self, Error> {

@@ -27,7 +27,13 @@ A framework-managed assignment of a role to an identity for a resource. A qualif
 A framework-managed parent-child relationship between resources used by Access. It is not limited to Document resources or relational storage.
 
 **Application**:
-Application-specific behavior and policy composed from Snap interfaces and modules. Its choice of platform is separate from that behavior.
+Application-specific behavior and policy composed from Snap interfaces and modules, independent of concrete platform drivers. Its choice of platform is separate from that behavior.
+
+**Composition**:
+The host assembly that selects platform capabilities and connects them to application behavior through shared interfaces. It can depend on both platform implementations and application code without making application behavior depend on those implementations.
+
+**Runtime host**:
+Execution integration for a particular environment that connects application behavior to selected platform drivers. It does not imply dynamic code loading or require every available driver.
 
 **Operation**:
 Application or module behavior invoked through Transport that reads and stages changes through Store without performing external IO.

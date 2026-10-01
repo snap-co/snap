@@ -24,8 +24,8 @@ impl Crypto for Fake {
 pub fn migration() -> snap_store::migration::Migration {
     toml::from_str(snap_identity::MIGRATION).unwrap()
 }
-pub fn store(loaded: bool) -> Store<snap_sqlite::Sqlite> {
-    let mut store = snap_sqlite::Sqlite::memory(&[migration()]).unwrap();
+pub fn store(loaded: bool) -> Store<snap_store_sqlite::Sqlite> {
+    let mut store = snap_store_sqlite::Sqlite::memory(&[migration()]).unwrap();
     if loaded {
         for table in snap_identity::TABLES {
             store.load(table).unwrap();

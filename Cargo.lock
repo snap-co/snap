@@ -240,8 +240,8 @@ dependencies = [
  "snap-access",
  "snap-document",
  "snap-identity",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -267,11 +267,11 @@ dependencies = [
  "snap-config",
  "snap-crypto",
  "snap-document",
- "snap-document-local",
+ "snap-document-host",
  "snap-identity",
  "snap-oidc",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "tempfile",
  "tokio",
@@ -512,8 +512,8 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -529,11 +529,11 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-document",
- "snap-document-local",
+ "snap-document-host",
  "snap-oauth-local",
  "snap-oidc",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -944,8 +944,8 @@ dependencies = [
  "snap-access",
  "snap-document",
  "snap-oidc",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -964,7 +964,7 @@ dependencies = [
  "snap-config",
  "snap-document",
  "snap-transport",
- "snap-transport-native",
+ "snap-transport-tcp",
  "tempfile",
  "tokio",
  "uuid",
@@ -986,13 +986,13 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-document",
- "snap-document-local",
+ "snap-document-host",
  "snap-oauth-local",
  "snap-oidc",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
+ "snap-transport-tcp",
  "tempfile",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -1008,8 +1008,8 @@ dependencies = [
  "hegeltest",
  "snap-access",
  "snap-document",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -2998,8 +2998,8 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 name = "snap-access"
 version = "0.0.0"
 dependencies = [
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -3037,8 +3037,8 @@ dependencies = [
  "serde",
  "serde_json",
  "snap-config",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "tempfile",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -3066,10 +3066,10 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
- "snap-document-local",
+ "snap-document-host",
  "snap-identity",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -3093,14 +3093,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "snap-access",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
-name = "snap-document-local"
+name = "snap-document-host"
 version = "0.0.0"
 dependencies = [
  "axum",
@@ -3109,10 +3109,10 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
+ "snap-transport-tcp",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -3129,8 +3129,8 @@ name = "snap-identity"
 version = "0.0.0"
 dependencies = [
  "serde",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -3159,10 +3159,10 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "snap-config",
- "snap-document-local",
+ "snap-document-host",
  "snap-oidc",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "tokio",
  "url",
 ]
@@ -3176,14 +3176,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "snap-identity",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "toml 0.9.12+spec-1.1.0",
  "url",
 ]
 
 [[package]]
-name = "snap-platform-local"
+name = "snap-runtime-local"
 version = "0.0.0"
 dependencies = [
  "axum",
@@ -3196,19 +3196,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "snap-sqlite"
+name = "snap-store"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "snap-store-sqlite"
 version = "0.0.0"
 dependencies = [
  "rusqlite",
  "serde_json",
  "snap-store",
-]
-
-[[package]]
-name = "snap-store"
-version = "0.0.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -3218,13 +3218,13 @@ dependencies = [
  "ciborium",
  "serde",
  "serde_json",
- "snap-sqlite",
  "snap-store",
+ "snap-store-sqlite",
  "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
-name = "snap-transport-native"
+name = "snap-transport-tcp"
 version = "0.0.0"
 dependencies = [
  "rcgen",
@@ -3383,9 +3383,9 @@ dependencies = [
  "snap-config",
  "snap-crypto",
  "snap-identity",
- "snap-platform-local",
- "snap-sqlite",
+ "snap-runtime-local",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "tempfile",
  "testy",
@@ -3400,9 +3400,9 @@ dependencies = [
  "futures",
  "hegeltest",
  "snap-identity",
- "snap-platform-local",
- "snap-sqlite",
+ "snap-runtime-local",
  "snap-store",
+ "snap-store-sqlite",
  "snap-transport",
  "testy",
  "testy-local",

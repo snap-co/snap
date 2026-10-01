@@ -15,7 +15,7 @@ use axum::{
 };
 use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
-use snap_document_local::{Host, web::Shared};
+use snap_document_host::{Host, web::Shared};
 use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
 use snap_oidc::relying_party as rp;
 use snap_store::Error;
@@ -114,14 +114,14 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let database = startup.database();
     if options.action == snap_config::Action::Migrate {
         std::fs::create_dir_all(database.parent().unwrap())?;
-        snap_sqlite::migrate(&database, &migrations())?;
+        snap_store_sqlite::migrate(&database, &migrations())?;
         println!("Factorio migrations applied");
         return Ok(());
     }
     let secrets = startup.load_secrets()?;
     // Check-config is schema-only for deployment packaging. Serving loads and
     // validates mounted TLS material before either listener can bind.
-    let tcp_tls = snap_transport_native::tls::ServerTls::new(
+    let tcp_tls = snap_transport_tcp::tls::ServerTls::new(
         &startup.path(&startup.app.tcp.cert_file),
         &startup.path(&startup.app.tcp.key_file),
     )?;
@@ -132,7 +132,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         .as_deref()
         .map(|path| startup.path(path));
     let tcp_ca_file = tcp_ca_file.map(std::fs::canonicalize).transpose()?;
-    snap_transport_native::tls::ClientTls::new(
+    snap_transport_tcp::tls::ClientTls::new(
         tcp_ca_file.as_deref(),
         startup.app.tcp.server_name.as_deref(),
     )?;
@@ -205,7 +205,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let tcp_listener = tokio::net::TcpListener::bind(startup.app.tcp.listen).await?;
     let tcp_address = tcp_listener.local_addr()?;
     let origin = snap_oauth_local::origin(&startup.host.public_origin(address))?;
-    let mut store = snap_sqlite::Sqlite::open(&database)?;
+    let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
@@ -274,14 +274,14 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         )
         .with_state(app)
         .merge(oauth.routes())
-        .merge(snap_document_local::web::router(documents.clone()))
+        .merge(snap_document_host::web::router(documents.clone()))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Factorio http://{address}");
     println!("Factorio tls://{tcp_address}");
-    let prepare: snap_document_local::tcp::Prepare = Arc::new(move |command| {
+    let prepare: snap_document_host::tcp::Prepare = Arc::new(move |command| {
         let oauth = oauth.clone();
         Box::pin(async move {
             login::prepare(&oauth, command)
@@ -292,6 +292,6 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
                 })
         })
     });
-    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_local::tcp::serve_prepared(tcp_listener,documents.clone(),tcp_tls,prepare)=>result?, _=snap_document_local::web::dispatch(documents)=>unreachable!() }
+    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_host::tcp::serve_prepared(tcp_listener,documents.clone(),tcp_tls,prepare)=>result?, _=snap_document_host::web::dispatch(documents)=>unreachable!() }
     Ok(())
 }

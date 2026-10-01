@@ -11,11 +11,11 @@ autotests = false
 hegeltest = { version = "=0.47.4", features = ["static-engine"] }
 snap-transport = { path = "../../crates/transport" }
 snap-store = { path = "../../crates/store" }
-snap-sqlite = { path = "../../platforms/sqlite" }
+snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-identity = { path = "../../crates/identity" }
 snap-access = { path = "../../crates/access" }
 snap-document = { path = "../../crates/document" }
-snap-document-local = { path = "../../platforms/document" }
+snap-document-host = { path = "../../crates/platform/document-host" }
 serde_json.workspace = true
 toml = "0.9"
 
@@ -51,4 +51,4 @@ path = "../../crates/identity/tests/properties/identity.rs"
 
 [[test]]
 name = "document-host-properties"
-path = "../../platforms/document/tests/properties/lifecycle.rs"
+path = "../../crates/platform/document-host/tests/properties/lifecycle.rs"

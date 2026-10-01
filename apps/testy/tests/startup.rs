@@ -38,7 +38,7 @@ fn native_startup_validates_app_schema_and_present_bags_before_listening() {
     assert!(String::from_utf8_lossy(&check.stderr).contains("Invalid config.toml schema"));
     fs::write(&config, &text).unwrap();
     assert!(command().arg("--check-config").status().unwrap().success());
-    snap_sqlite::migrate(
+    snap_store_sqlite::migrate(
         &data.join("store.sqlite"),
         &[toml::from_str(snap_identity::MIGRATION).unwrap()],
     )

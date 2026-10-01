@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-use snap_document_local::{
+use snap_document_host::{
     Host,
     web::{ReadCookie, Shared},
 };
@@ -25,7 +25,7 @@ use std::{
 use tower_http::services::{ServeDir, ServeFile};
 
 pub struct App {
-    pub documents: Arc<Shared<snap_sqlite::Sqlite>>,
+    pub documents: Arc<Shared<snap_store_sqlite::Sqlite>>,
     pub keys: Arc<keys::Keys>,
     pub origin: String,
     pub issuer: oidc_http::Issuer,
@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = config.database();
     if options.action == snap_config::Action::Migrate {
         std::fs::create_dir_all(database.parent().unwrap())?;
-        let report = snap_sqlite::migrate(&database, &migrations())?;
+        let report = snap_store_sqlite::migrate(&database, &migrations())?;
         println!(
             "Applied {} migrations to {}",
             report.applied.len(),
@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("host.origin must be an HTTP(S) origin".into());
     }
     let origin = parsed.origin().ascii_serialization();
-    let mut store = snap_sqlite::Sqlite::open(&database)?;
+    let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_identity::TABLES
         .iter()
         .chain(snap_access::TABLES.iter())
@@ -188,23 +188,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         issuer,
         pages: pages::Pages::load(&assets)?,
     });
-    let identity_routes = snap_document_local::web::http_router(
+    let identity_routes = snap_document_host::web::http_router(
         documents.clone(),
         vec![
-            snap_document_local::web::HttpOperation {
+            snap_document_host::web::HttpOperation {
                 name: "identity.acquire",
                 method: Method::POST,
-                session: snap_document_local::web::SessionProjection::Issue,
+                session: snap_document_host::web::SessionProjection::Issue,
             },
-            snap_document_local::web::HttpOperation {
+            snap_document_host::web::HttpOperation {
                 name: "identity.enroll",
                 method: Method::POST,
-                session: snap_document_local::web::SessionProjection::Issue,
+                session: snap_document_host::web::SessionProjection::Issue,
             },
-            snap_document_local::web::HttpOperation {
+            snap_document_host::web::HttpOperation {
                 name: "identity.fetch",
                 method: Method::GET,
-                session: snap_document_local::web::SessionProjection::Fetch,
+                session: snap_document_host::web::SessionProjection::Fetch,
             },
         ],
         {
@@ -221,7 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(oidc_http::routes(app.clone()))
         .with_state(app)
         .merge(identity_routes)
-        .merge(snap_document_local::web::router(documents.clone()))
+        .merge(snap_document_host::web::router(documents.clone()))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
@@ -229,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Authy http://{address}");
     tokio::select! {
         result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;})=>result?,
-        _=snap_document_local::web::dispatch(documents)=>unreachable!(),
+        _=snap_document_host::web::dispatch(documents)=>unreachable!(),
     }
     Ok(())
 }

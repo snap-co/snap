@@ -70,7 +70,7 @@ fn server_preparation_is_offline_and_separate_from_client_credentials() {
     );
     let database = root.path().join("data/store.sqlite");
     assert!(database.is_file());
-    let mut store = snap_sqlite::Sqlite::open(&database).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&database).unwrap();
     store.load("factorio.cli").unwrap();
     assert!(!root.path().join("home").exists());
 }

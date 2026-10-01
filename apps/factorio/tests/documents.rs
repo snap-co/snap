@@ -9,7 +9,7 @@ const OTHER: &str = "a0000000-0000-4000-8000-000000000002";
 /// Exercise actual portable application admission and commit rather than asking
 /// persistence helpers to authorize a caller. Store fixtures remain real SQLite.
 fn dispatch(
-    store: &mut snap_store::Store<snap_sqlite::Sqlite>,
+    store: &mut snap_store::Store<snap_store_sqlite::Sqlite>,
     actor: &str,
     name: &str,
     input: serde_json::Value,
@@ -45,7 +45,7 @@ fn dispatch(
     runtime.finish();
     outcome
 }
-fn store() -> Store<snap_sqlite::Sqlite> {
+fn store() -> Store<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
@@ -55,7 +55,7 @@ fn store() -> Store<snap_sqlite::Sqlite> {
     .map(|s| toml::from_str(s).unwrap())
     .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut store = snap_sqlite::Sqlite::memory(&migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())

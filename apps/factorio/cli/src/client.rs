@@ -1,7 +1,7 @@
 use crate::credentials::Locked;
 use anyhow::{Result, bail, ensure};
 use snap_transport::{Command, Event, Invocation, Response, Value};
-use snap_transport_native::Client as Tcp;
+use snap_transport_tcp::Client as Tcp;
 use std::time::Duration;
 
 pub struct Client {
@@ -24,7 +24,7 @@ impl std::error::Error for OperationError {}
 impl Client {
     pub async fn connect(
         addr: &str,
-        tls: &snap_transport_native::tls::ClientTls,
+        tls: &snap_transport_tcp::tls::ClientTls,
         mut credentials: Locked,
     ) -> Result<Self> {
         let start = std::time::Instant::now();

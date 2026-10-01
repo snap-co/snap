@@ -1,6 +1,6 @@
 use factorio::{Command, Config, Effect, Phase, Status, Ticket, Workspace, workspaces as graph};
 use snap_store::{Error, Store};
-type Database = Store<snap_sqlite::Sqlite>;
+type Database = Store<snap_store_sqlite::Sqlite>;
 const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 fn fixture() -> Database {
     let mut migrations: Vec<snap_store::migration::Migration> = [
@@ -12,7 +12,7 @@ fn fixture() -> Database {
     .map(|s| toml::from_str(s).unwrap())
     .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut store = snap_sqlite::Sqlite::memory(&migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
