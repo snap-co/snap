@@ -10,8 +10,8 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -56,16 +56,29 @@ impl<B: Backend> Dispatcher<B> {
 
 pub struct Endpoint<B: Backend> {
     state: Arc<State<B>>,
-    sender: mpsc::Sender<(Command, usize)>,
+    sender: mpsc::Sender<(Command, Reservation<B>)>,
 }
 struct State<B: Backend> {
     shared: Arc<Shared<B>>,
     output: Output,
     control: CarrierControl,
     retired: AtomicBool,
-    pending_bytes: AtomicUsize,
+    pending: Mutex<(usize, usize)>,
     max_pending_bytes: usize,
     one_shot: bool,
+}
+// Reservations follow commands through the queue and a blocked worker. They are
+// released only at the host admission boundary or when a command is discarded.
+struct Reservation<B: Backend> {
+    state: Arc<State<B>>,
+    bytes: usize,
+}
+impl<B: Backend> Drop for Reservation<B> {
+    fn drop(&mut self) {
+        let mut pending = self.state.pending.lock().unwrap();
+        pending.0 -= 1;
+        pending.1 -= self.bytes;
+    }
 }
 impl<B: Backend> State<B> {
     fn disconnect(&self) {
@@ -98,16 +111,24 @@ impl<B: Backend + Send + 'static> Connection for Endpoint<B> {
         if self.state.retired.load(Ordering::Acquire) {
             return Err(Error::StaleConnection);
         }
-        self.state
-            .pending_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-                pending
-                    .checked_add(bytes)
-                    .filter(|sum| *sum <= self.state.max_pending_bytes)
-            })
-            .map_err(|_| Error::Capacity)?;
-        if let Err(error) = self.sender.try_send((command, bytes)) {
-            self.state.pending_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        {
+            let mut pending = self.state.pending.lock().unwrap();
+            let total = pending
+                .1
+                .checked_add(bytes)
+                .filter(|total| *total <= self.state.max_pending_bytes)
+                .ok_or(Error::Capacity)?;
+            if pending.0 >= 1024 {
+                return Err(Error::Capacity);
+            }
+            pending.0 += 1;
+            pending.1 = total;
+        }
+        let reservation = Reservation {
+            state: self.state.clone(),
+            bytes,
+        };
+        if let Err(error) = self.sender.try_send((command, reservation)) {
             return Err(match error {
                 mpsc::error::TrySendError::Full(_) => Error::Capacity,
                 _ => Error::StaleConnection,
@@ -152,7 +173,7 @@ impl<B: Backend + Send + 'static> Dispatch for Dispatcher<B> {
                 output,
                 control,
                 retired: AtomicBool::new(false),
-                pending_bytes: AtomicUsize::new(0),
+                pending: Mutex::new((0, 0)),
                 max_pending_bytes,
                 one_shot,
             });
@@ -209,7 +230,7 @@ impl Maintenance {
 
 async fn run<B: Backend + Send + 'static>(
     state: Arc<State<B>>,
-    mut receiver: mpsc::Receiver<(Command, usize)>,
+    mut receiver: mpsc::Receiver<(Command, Reservation<B>)>,
     peer: u64,
     prepare: Option<Prepare>,
 ) {
@@ -219,8 +240,7 @@ async fn run<B: Backend + Send + 'static>(
     loop {
         tokio::select! {
             command = receiver.recv() => {
-                let Some((command, bytes)) = command else { break; };
-                state.pending_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                let Some((command, reservation)) = command else { break; };
                 let handshake = matches!(command, Command::Connect { .. });
                 if first && matches!(command, Command::Connect { .. } | Command::Request { .. })
                     && let Some(prepare) = &prepare {
@@ -240,6 +260,7 @@ async fn run<B: Backend + Send + 'static>(
                 first = false;
                 let terminal = tokio::task::spawn_blocking(move || {
                     let mut host = processing.shared.host.lock().unwrap();
+                    drop(reservation);
                     // Socket teardown is consumed before protected admission,
                     // even if the command waited while a controller held the gate.
                     host.tick(processing.shared.now());
@@ -279,9 +300,9 @@ async fn run<B: Backend + Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
-    #[tokio::test]
-    async fn handoff_and_teardown_do_not_wait_for_the_execution_gate() {
+    fn fixture() -> Arc<Shared<snap_store_sqlite::Sqlite>> {
         let migrations = [
             snap_access::MIGRATION,
             snap_document::server::MIGRATION,
@@ -298,7 +319,12 @@ mod tests {
             Default::default(),
             "boot".into(),
         );
-        let shared = Shared::new(host, "http://localhost".into());
+        Shared::new(host, "http://localhost".into())
+    }
+
+    #[tokio::test]
+    async fn handoff_and_teardown_do_not_wait_for_the_execution_gate() {
+        let shared = fixture();
         let dispatcher = Dispatcher::web(shared.clone());
         let channel = Arc::new(dispatcher.open(None, 4).await.unwrap());
         // Holding the real host gate must not stop a carrier from returning to
@@ -338,6 +364,42 @@ mod tests {
             channel.receive().is_none(),
             "closed queued command reached admission"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_held_commands_keep_byte_and_count_reservations() {
+        for (budget, bytes, additional) in [(4, 4, 0), (usize::MAX, 1, 1023)] {
+            let shared = fixture();
+            let (preparing, entered) = std::sync::mpsc::channel();
+            let prepare: Prepare = Arc::new(move |_| {
+                let preparing = preparing.clone();
+                Box::pin(async move {
+                    preparing.send(()).unwrap();
+                    Ok(())
+                })
+            });
+            let channel = Dispatcher::tcp(shared.clone(), Some(prepare))
+                .open(None, budget)
+                .await
+                .unwrap();
+            let command = || Command::Connect {
+                bearer: "token".into(),
+                client_id: "queued".into(),
+            };
+            let gate = shared.host.lock().unwrap();
+            assert_eq!(channel.submit(command(), bytes), Ok(Submission::Queued));
+            // Preparation is a production callback before admission. Its signal
+            // proves the real worker took the command, without an introspection hook.
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            for _ in 0..additional {
+                assert_eq!(channel.submit(command(), bytes), Ok(Submission::Queued));
+            }
+            let overflow = channel.submit(command(), bytes);
+            channel.submit(Command::Close, 0).unwrap();
+            channel.disconnect();
+            drop(gate);
+            assert_eq!(overflow, Err(Error::Capacity));
+        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -11,7 +11,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Duration,
 };
@@ -24,16 +24,29 @@ impl<P: Program, R: Authority> Clone for Dispatcher<P, R> {
     }
 }
 pub(super) struct Endpoint {
-    sender: mpsc::Sender<(Command, usize)>,
+    sender: mpsc::Sender<(Command, Reservation)>,
     state: Arc<State>,
 }
 struct State {
     output: Mutex<VecDeque<Frame>>,
     teardown: AtomicU8,
     retired: AtomicBool,
-    pending_bytes: AtomicUsize,
+    pending: Mutex<(usize, usize)>,
     max_pending_bytes: usize,
     wake: tokio::sync::Notify,
+}
+// Include the item held by a worker waiting for the execution gate. Removing it
+// from mpsc must not free its ingress count or byte budget before admission.
+struct Reservation {
+    state: Arc<State>,
+    bytes: usize,
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut pending = self.state.pending.lock().unwrap();
+        pending.0 -= 1;
+        pending.1 -= self.bytes;
+    }
 }
 impl Drop for Endpoint {
     fn drop(&mut self) {
@@ -57,16 +70,24 @@ impl Connection for Endpoint {
         if self.retired() {
             return Err(Error::StaleConnection);
         }
-        self.state
-            .pending_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-                pending
-                    .checked_add(bytes)
-                    .filter(|sum| *sum <= self.state.max_pending_bytes)
-            })
-            .map_err(|_| Error::Capacity)?;
-        if let Err(error) = self.sender.try_send((command, bytes)) {
-            self.state.pending_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        {
+            let mut pending = self.state.pending.lock().unwrap();
+            let total = pending
+                .1
+                .checked_add(bytes)
+                .filter(|total| *total <= self.state.max_pending_bytes)
+                .ok_or(Error::Capacity)?;
+            if pending.0 >= 1024 {
+                return Err(Error::Capacity);
+            }
+            pending.0 += 1;
+            pending.1 = total;
+        }
+        let reservation = Reservation {
+            state: self.state.clone(),
+            bytes,
+        };
+        if let Err(error) = self.sender.try_send((command, reservation)) {
             return Err(match error {
                 mpsc::error::TrySendError::Full(_) => Error::Capacity,
                 _ => Error::StaleConnection,
@@ -99,7 +120,7 @@ impl<P: Program + Send + 'static, R: Authority + Send + 'static> Dispatch for Di
                 output: Mutex::new(VecDeque::new()),
                 teardown: AtomicU8::new(0),
                 retired: AtomicBool::new(false),
-                pending_bytes: AtomicUsize::new(0),
+                pending: Mutex::new((0, 0)),
                 max_pending_bytes,
                 wake: tokio::sync::Notify::new(),
             });
@@ -120,7 +141,7 @@ async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(
     shared: Arc<Shared<P, R>>,
     peer: u64,
     state: Arc<State>,
-    mut receiver: mpsc::Receiver<(Command, usize)>,
+    mut receiver: mpsc::Receiver<(Command, Reservation)>,
 ) {
     let mut sweep = tokio::time::interval(Duration::from_millis(50));
     let mut updates = shared.updates.subscribe();
@@ -128,7 +149,7 @@ async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(
         let command = tokio::select! {
             command = receiver.recv() => {
                 match command {
-                    Some((command, bytes)) => { state.pending_bytes.fetch_sub(bytes, Ordering::AcqRel); Some(command) }
+                    Some(command) => Some(command),
                     None => { state.teardown.fetch_max(1, Ordering::AcqRel); None }
                 }
             }
@@ -141,6 +162,10 @@ async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(
         let retired = tokio::task::spawn_blocking(move || {
             let now = host.clock.elapsed().as_millis() as u64;
             host.change(|host| {
+                let command = command.map(|(command, reservation)| {
+                    drop(reservation);
+                    command
+                });
                 match processing.teardown.load(Ordering::Acquire) {
                     signal @ (2 | 3) => {
                         let response = host.teardown(peer, signal == 3, now);
@@ -176,7 +201,11 @@ async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(
                             terminal: false,
                         }));
                 }
-                host.retired(peer)
+                let retired = host.retired(peer);
+                if retired {
+                    host.lost(peer, now);
+                }
+                retired
             })
         })
         .await

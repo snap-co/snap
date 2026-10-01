@@ -2,6 +2,8 @@
 //! instance. The listener must be loopback: these controls expose resident data.
 mod carrier;
 mod debugger;
+#[cfg(test)]
+mod tests;
 use crate::development::{Control, Development};
 use axum::{
     Json, Router,
@@ -58,16 +60,19 @@ fn local(headers: &HeaderMap, authority: &str) -> bool {
             .get("origin")
             .is_none_or(|header| header.to_str().ok() == Some(&origin))
 }
-async fn inspect<P: Program, R: Authority>(
+async fn inspect<P: Program + Send + 'static, R: Authority + Send + 'static>(
     State(shared): State<Host<P, R>>,
     headers: HeaderMap,
 ) -> Response {
     if !local(&headers, &shared.authority) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    Json(shared.host.lock().unwrap().inspect()).into_response()
+    match tokio::task::spawn_blocking(move || shared.host.lock().unwrap().inspect()).await {
+        Ok(report) => Json(report).into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
-async fn control<P: Program, R: Authority>(
+async fn control<P: Program + Send + 'static, R: Authority + Send + 'static>(
     State(shared): State<Host<P, R>>,
     headers: HeaderMap,
     Json(control): Json<Control>,
@@ -75,7 +80,12 @@ async fn control<P: Program, R: Authority>(
     if !local(&headers, &shared.authority) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match shared.change(|host| host.control(control, shared.clock.elapsed().as_millis() as u64)) {
+    let result = tokio::task::spawn_blocking(move || {
+        shared.change(|host| host.control(control, shared.clock.elapsed().as_millis() as u64))
+    })
+    .await
+    .unwrap_or_else(|_| Err("host control unavailable".into()));
+    match result {
         Ok(value) => Json(value).into_response(),
         Err(error) => (StatusCode::CONFLICT, Json(json!({"error": error}))).into_response(),
     }
@@ -139,10 +149,15 @@ pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send +
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         loop {
             interval.tick().await;
-            let mut host = shared.host.lock().unwrap();
-            if host.tick(shared.clock.elapsed().as_millis() as u64) {
-                shared.publish(&host);
-            }
+            let shared = shared.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut host = shared.host.lock().unwrap();
+                if host.tick(shared.clock.elapsed().as_millis() as u64) {
+                    shared.publish(&host);
+                }
+            })
+            .await
+            .expect("development sweep panicked");
         }
     };
     tokio::select! { result = axum::serve(listener, app) => result, _ = sweep => unreachable!() }

@@ -7,7 +7,10 @@ use snap_transport::{
     json,
 };
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{io::AsyncWriteExt, sync::mpsc};
@@ -21,11 +24,15 @@ struct HostPeer {
     incoming: mpsc::UnboundedReceiver<Command>,
     outgoing: mpsc::UnboundedSender<Frame>,
     teardown: mpsc::UnboundedReceiver<bool>,
+    late_reply: Arc<Mutex<Option<Frame>>>,
 }
 struct Endpoint {
     incoming: mpsc::UnboundedSender<Command>,
     outgoing: Mutex<mpsc::UnboundedReceiver<Frame>>,
     teardown: mpsc::UnboundedSender<bool>,
+    publish: mpsc::UnboundedSender<Frame>,
+    late_reply: Arc<Mutex<Option<Frame>>>,
+    retired: AtomicBool,
 }
 impl Connection for Endpoint {
     fn submit(&self, command: Command, _: usize) -> Result<Submission, Error> {
@@ -39,10 +46,19 @@ impl Connection for Endpoint {
             .map_err(|_| Error::Unavailable)
     }
     fn receive(&self) -> Option<Frame> {
-        self.outgoing.lock().unwrap().try_recv().ok()
+        let response = self.outgoing.lock().unwrap().try_recv().ok();
+        if response.is_none()
+            && let Some(frame) = self.late_reply.lock().unwrap().take()
+        {
+            // Reproduce the legal interleaving: an empty receive, publication,
+            // then retirement before the driver makes its next observation.
+            self.publish.send(frame).unwrap();
+            self.retired.store(true, Ordering::Release);
+        }
+        response
     }
     fn retired(&self) -> bool {
-        false
+        self.retired.load(Ordering::Acquire)
     }
     fn disconnect(&self) {
         let _ = self.teardown.send(false);
@@ -54,17 +70,22 @@ impl Dispatch for Queues {
         let (incoming, requests) = mpsc::unbounded_channel();
         let (replies, outgoing) = mpsc::unbounded_channel();
         let (teardown, signals) = mpsc::unbounded_channel();
+        let late_reply = Arc::new(Mutex::new(None));
         self.0
             .send(HostPeer {
                 incoming: requests,
-                outgoing: replies,
+                outgoing: replies.clone(),
                 teardown: signals,
+                late_reply: late_reply.clone(),
             })
             .map_err(|_| Error::Unavailable)?;
         Ok(Endpoint {
             incoming,
             outgoing: Mutex::new(outgoing),
             teardown,
+            publish: replies,
+            late_reply,
+            retired: AtomicBool::new(false),
         })
     }
     async fn request(&self, _: Invocation, _: Option<String>) -> Outcome {
@@ -263,4 +284,27 @@ async fn malformed_requests_disconnect_without_reaching_dispatch() {
         );
         assert!(host.incoming.try_recv().is_err());
     }
+}
+
+async fn final_reply_at_retirement(driver: Driver) {
+    let (_server, mut socket, host) = start(driver).await;
+    let response = Response::Events(vec![Event::Completed {
+        id: 9,
+        outcome: Ok(json!("committed")),
+    }]);
+    *host.late_reply.lock().unwrap() = Some(Frame {
+        response: response.clone(),
+        handshake: false,
+        attachment: None,
+        terminal: true,
+    });
+    assert_eq!(socket.receive().await.0, response);
+}
+#[tokio::test]
+async fn websocket_writes_reply_published_at_retirement() {
+    final_reply_at_retirement(Driver::WebSocket).await;
+}
+#[tokio::test]
+async fn tcp_writes_reply_published_at_retirement() {
+    final_reply_at_retirement(Driver::Tcp).await;
 }

@@ -95,6 +95,7 @@ async fn connection<D: Dispatch>(
                 _ => break,
             }
         }
+        let retired = channel.0.retired();
         while let Some(frame) = channel.0.receive() {
             let Ok(text) = serde_json::to_string(&frame.response) else {
                 return;
@@ -113,7 +114,7 @@ async fn connection<D: Dispatch>(
                 return;
             }
         }
-        if channel.0.retired() {
+        if retired {
             break;
         }
     }

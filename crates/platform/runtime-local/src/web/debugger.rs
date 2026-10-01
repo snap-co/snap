@@ -90,10 +90,14 @@ async fn connection<P: Program + Send + 'static, R: Authority + Send + 'static>(
                 Some(Ok(Message::Text(text))) => {
                     let Ok(request) = serde_json::from_str::<Request>(&text) else { break; };
                     if request.id.is_empty() || request.id.len() > 128 { break; }
-                    let result = serde_json::from_value::<Control>(request.control)
-                        .map_err(|error| error.to_string())
-                        .and_then(|control| shared.change(|host|
-                            host.control(control, shared.clock.elapsed().as_millis() as u64)));
+                    let result = match serde_json::from_value::<Control>(request.control) {
+                        Err(error) => Err(error.to_string()),
+                        Ok(control) => {
+                            let shared = shared.clone();
+                            tokio::task::spawn_blocking(move || shared.change(|host| host.control(control, shared.clock.elapsed().as_millis() as u64)))
+                                .await.unwrap_or_else(|_| Err("host control unavailable".into()))
+                        }
+                    };
                     match result {
                         Ok(result) => json!({"type": "result", "id": request.id, "result": result}).to_string(),
                         Err(error) => json!({"type": "result", "id": request.id, "error": error}).to_string(),

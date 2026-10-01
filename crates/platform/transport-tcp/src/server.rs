@@ -64,11 +64,12 @@ async fn connection<D: Dispatch>(socket: tls::ServerStream, dispatch: D) -> io::
                     break;
                 }
                 _ = flush.tick() => {
+                    let retired = channel.0.retired();
                     while let Some(frame) = channel.0.receive() {
                         write_response(&mut writer, &frame.response, frame.handshake, frame.attachment.as_ref()).await?;
                         if frame.terminal { return Ok(()); }
                     }
-                    if channel.0.retired() { return Ok(()); }
+                    if retired { return Ok(()); }
                 }
             }
         }

@@ -39,6 +39,9 @@ pub trait Connection: Send + Sync + 'static {
     /// Drain one already-published observation without the execution gate.
     /// The host owns authorization and ordering before publishing observations.
     fn receive(&self) -> Option<Frame>;
+    /// Publish final frames before reporting retirement, with no later publication.
+    /// Drivers must observe retirement before their final output drain; an earlier
+    /// empty receive does not prove that retirement's final frames were consumed.
     fn retired(&self) -> bool;
     /// Physical loss preserves logical residency. Teardown must remain available
     /// while application execution is busy and cannot downgrade a logical Close.
