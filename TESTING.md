@@ -57,15 +57,58 @@ at the carrier seam; they do not simulate module results. Cases cover command an
 output delivery, malformed input, physical loss and the final-output retirement
 regression where applicable to the selected role.
 
-Store and carrier cases are independently selectable. Passing both does not yet
-prove Transport-to-Store execution through a composed host or cartridge. Wasm,
-memory Transport, browser client carriers and client-side durable module recovery
-are not covered by this consumer. SQLite reopening/locking, migrations, process
-crashes and TLS verification retain their distinct adapter-specific cases.
+Store and carrier cases are independently selectable. The IO-free cartridge in
+`tests/platform/src/cartridge.rs` also exercises actual Transport-to-Store
+execution through the current production Document host. Shared properties and a
+scalar reference model live in `tests/platform/src/dispatch.rs`. The controlled
+native server-role adapter drives public commands, output and execution steps
+against memory, ephemeral SQLite and file-backed SQLite. It does not replace the
+dispatcher or supply acceptance/completion events. Cartridge tables start cold;
+verification reads declare their data again so backend reloads can detect writes
+that reached resident memory only.
+
+Fixed examples run under ordinary Cargo tests. Hegel generates bounded batches,
+retry histories and observer-loss histories through the `platform-dispatch`
+target of `tests/properties/Cargo.toml`. That consumer uses the same cases and
+adapters; it keeps Hegel out of the default-member build. The memory-only fault
+setup rejects the next nonempty backend commit before writing. SQLite fault
+injection and unknown-commit recovery are not covered by that setup.
+
+These controlled command tests do not prove a socket-to-host composition or
+constitute a production memory Transport driver. Wasm execution, browser client
+carriers, client-side durable module recovery and a full Transport/Store matrix
+remain unsupported here. SQLite reopening/locking, migrations, process crashes
+and TLS verification retain their distinct adapter-specific cases.
 
 The package is a workspace default member, so its native cases run without ignore
 flags under ordinary Cargo testing. `snap test <app> full` still selects app
 declarations; it is not the route for these Snap-owned platform contracts.
+
+### Transport properties
+
+These rules describe interface promises, not every behavior of a network. Keep
+the independent model reviewable: passing exploration means the implementation
+matched the encoded rule for explored examples, not that the rule is correct or
+that every input and schedule was checked.
+
+| Rule | Primary proof |
+| --- | --- |
+| Trusted composition resolves identity; stale attachments cannot acquire a replacement's authority. | Existing Transport lifetime model in `crates/transport/tests/properties/lifecycle.rs` |
+| Hosts load declared data before admission. One FIFO owner holds the lane through admission, execution and publication; later guards see prior committed state. | Cartridge batch model, with cold tables and backend-loaded reads |
+| Accepted means admission, not success. Application errors, invalid output and caught Store failures discard staged writes. Confirmed commit rejection must not become success or an automatic retry. | Cartridge batch model and the controlled commit-rejection case |
+| Exact invocation retries observe the same result without another mutation within a retained logical lifetime. Different input under that key is Protocol. | Cartridge retry model, including pending retries and replay after a later mutation |
+| Reconnect alone must not inject an old completion into a fresh exchange. Explicit retry reattaches observation interest. | Cartridge retry model |
+| Observer loss does not cancel accepted work. Disconnect can retain retry state; Close and expiry end that scope after accepted work drains. | Cartridge draining model; core lifetime model separately checks retention boundaries and stale handles |
+| Carriers deliver commands and published output independently of execution, including final output at retirement. Malformed input never enters dispatch. Physical IO loss is not a successful empty response. | Shared fixed carrier cases in `tests/platform/src/transport.rs` |
+
+The cartridge defines a compare guard and two rows that must move together. Its
+scalar oracle computes acceptance and committed values from inputs alone, never
+from production responses. Generated histories vary batch sizes, amounts, stale
+compares, handler outcomes, retries and observer loss. Authentication/credential
+rotation, capacity, arbitrary wire corruption, unknown commit outcomes and
+client correlation retain their existing focused tests rather than being
+claimed as coverage of this cartridge. Retained invocation replay is not a
+global exactly-once or crash-recovery guarantee.
 
 ## Client SDK
 
@@ -133,7 +176,8 @@ transfer ownership of an app scenario to Snap.
 | Snap platform conformance and controlled storage | Shared portable cases and memory backend in `tests/platform/src/`; native setup adapters and default-run coverage in `tests/platform/tests/` |
 | Snap interfaces, modules and adapter-specific guarantees | `crates/*/tests/` and `crates/platform/*/tests/`; shared Store and carrier conformance lives in `tests/platform/` rather than provider-local copies |
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
-| Controlled execution and cartridges | `apps/testy/server/src/memory.rs` and `apps/testy/tests/` contain current examples; their location does not make app-owned copies of platform conformance the target design |
+| Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
+| App controlled execution | `apps/testy/server/src/memory.rs` and `apps/testy/tests/` contain app examples, not the owner of Snap platform conformance |
 | Snap browser and React adapters | Fixtures in `kits/browser/tests/` and `kits/react/tests/`; Rust assertions in `tests/browser/src/client.rs` and `kits/react/tests/router.rs` |
 | App SDK scenarios and properties | `apps/*/tests/` and app-owned `apps/*/properties/Cargo.toml` consumers |
 | App end-to-end scenarios | `apps/*/tests/browser/journeys.rs`, executed by the shared Rust/CDP runner in `tests/browser/` |

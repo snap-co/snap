@@ -5,6 +5,8 @@
 #![no_std]
 extern crate alloc;
 
+pub mod cartridge;
+pub mod dispatch;
 pub mod memory;
 pub mod store;
 pub mod transport;

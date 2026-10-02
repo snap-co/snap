@@ -4,8 +4,10 @@
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,
+    sync::Arc,
     vec::Vec,
 };
+use core::sync::atomic::{AtomicBool, Ordering};
 use snap_store::{Backend, Catalog, CommitError, Error, Row, Rows, Table, Value, Write};
 
 type Tables = BTreeMap<String, BTreeMap<Vec<Value>, Row>>;
@@ -104,5 +106,43 @@ impl Backend for Memory {
             .map_err(CommitError::Rejected)?;
         self.tables = staged;
         Ok(())
+    }
+}
+
+/// Dependency fault control, not a replacement dispatcher. Reject exactly the
+/// next nonempty commit before forwarding any writes. Loads and later commits
+/// still exercise the wrapped backend. This models confirmed rollback only,
+/// never an indeterminate outcome or a process crash.
+pub struct RejectOnce<B> {
+    backend: B,
+    reject: Arc<AtomicBool>,
+}
+pub struct CommitRejection(Arc<AtomicBool>);
+impl CommitRejection {
+    pub fn arm(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+impl<B> RejectOnce<B> {
+    pub fn new(backend: B) -> (Self, CommitRejection) {
+        let reject = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                backend,
+                reject: reject.clone(),
+            },
+            CommitRejection(reject),
+        )
+    }
+}
+impl<B: Backend> Backend for RejectOnce<B> {
+    fn load(&mut self, table: &Table) -> Result<Rows, Error> {
+        self.backend.load(table)
+    }
+    fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
+        if !writes.is_empty() && self.reject.swap(false, Ordering::SeqCst) {
+            return Err(CommitError::Rejected(Error::Unavailable));
+        }
+        self.backend.commit(writes)
     }
 }

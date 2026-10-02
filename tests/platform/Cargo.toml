@@ -7,9 +7,14 @@ publish.workspace = true
 [dependencies]
 snap-store.workspace = true
 snap-transport = { path = "../../crates/transport" }
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+snap-access.workspace = true
+snap-document.workspace = true
+snap-document-host = { path = "../../crates/platform/document-host" }
+toml = "0.9"
 snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-transport-tcp = { path = "../../crates/platform/transport-tcp" }
 snap-transport-ws = { path = "../../crates/platform/transport-ws" }

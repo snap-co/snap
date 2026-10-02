@@ -3077,9 +3077,11 @@ dependencies = [
  "snap-document",
  "snap-document-host",
  "snap-identity",
+ "snap-platform-tests",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -3189,7 +3191,11 @@ dependencies = [
  "axum",
  "futures-util",
  "rcgen",
+ "serde",
  "serde_json",
+ "snap-access",
+ "snap-document",
+ "snap-document-host",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
@@ -3198,6 +3204,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

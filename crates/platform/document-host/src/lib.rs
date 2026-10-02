@@ -706,6 +706,12 @@ impl<B: Backend> Host<B> {
         })
     }
 
+    /// Connected invocation IDs bind the exact operation and input within one
+    /// logical lifetime. An explicit identical retry observes its pending or
+    /// completed result without re-execution; conflicting reuse is Protocol.
+    /// Physical reconnect alone does not replay results. Close/expiry removes
+    /// this cache after accepted work drains; it is not durable across host loss.
+    /// Admission may publish Accepted here, but completion requires driving step.
     pub fn submit(&mut self, peer_id: u64, command: Command, now: u64) -> Result<(), Error> {
         self.tick(now);
         if !self.peers.contains_key(&peer_id) {
