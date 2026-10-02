@@ -711,7 +711,8 @@ impl<B: Backend> Host<B> {
     /// completed result without re-execution; conflicting reuse is Protocol.
     /// Physical reconnect alone does not replay results. Close/expiry removes
     /// this cache after accepted work drains; it is not durable across host loss.
-    /// Admission may publish Accepted here, but completion requires driving step.
+    /// Admission may publish Accepted here. Newly accepted work completes when
+    /// step is driven; admission failures and cached completions can publish here.
     pub fn submit(&mut self, peer_id: u64, command: Command, now: u64) -> Result<(), Error> {
         self.tick(now);
         if !self.peers.contains_key(&peer_id) {
