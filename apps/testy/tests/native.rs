@@ -1,4 +1,4 @@
-use snap_runtime_local::native;
+use testy_native as native;
 use testy_server::identity::{Sessions, platform};
 
 #[test]

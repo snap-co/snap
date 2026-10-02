@@ -3195,21 +3195,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snap-runtime-local"
-version = "0.0.0"
-dependencies = [
- "axum",
- "futures-util",
- "serde",
- "serde_json",
- "snap-transport",
- "snap-transport-ws",
- "tokio",
- "tokio-tungstenite",
- "tower-http",
-]
-
-[[package]]
 name = "snap-store"
 version = "0.0.0"
 dependencies = [
@@ -3419,7 +3404,8 @@ dependencies = [
 name = "testy-native"
 version = "0.0.0"
 dependencies = [
- "snap-runtime-local",
+ "serde_json",
+ "snap-transport",
  "testy",
  "tokio",
 ]
@@ -3431,7 +3417,6 @@ dependencies = [
  "futures",
  "hegeltest",
  "snap-identity",
- "snap-runtime-local",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
@@ -3444,19 +3429,25 @@ dependencies = [
 name = "testy-server"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "futures",
+ "futures-util",
  "serde",
+ "serde_json",
  "snap-config",
  "snap-crypto",
  "snap-identity",
- "snap-runtime-local",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
+ "snap-transport-ws",
  "tempfile",
  "testy",
+ "testy-native",
  "tokio",
+ "tokio-tungstenite",
  "toml 0.9.12+spec-1.1.0",
+ "tower-http",
 ]
 
 [[package]]

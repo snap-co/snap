@@ -12,7 +12,6 @@ testy-server = { path = "../server", features = ["identity"] }
 snap-identity = { path = "../../../crates/identity" }
 snap-store.workspace = true
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
-snap-runtime-local = { path = "../../../crates/platform/runtime-local" }
 snap-transport = { path = "../../../crates/transport" }
 futures = "0.3"
 toml = "0.9"

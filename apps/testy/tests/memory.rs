@@ -1,9 +1,9 @@
 use futures::executor::block_on;
-use snap_runtime_local::memory::Memory;
 use snap_transport::{
     Channel, Command, Error, Event, Invocation, Response, json,
     server::{Config, Server},
 };
+use testy_server::memory::Memory;
 
 fn platform() -> Memory<testy::App, testy::TestAuthority> {
     Memory::new(snap_transport::execution::Runtime::new(

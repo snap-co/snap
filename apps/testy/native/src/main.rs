@@ -7,7 +7,7 @@ fn main() -> std::io::Result<()> {
                 .unwrap_or_else(|_| "127.0.0.1:3847".into())
                 .parse()
                 .map_err(std::io::Error::other)?;
-            let channel = snap_runtime_local::native::Connection::open(address).await?;
+            let channel = testy_native::Connection::open(address).await?;
             let mut client = testy::Client::new(channel);
             let email = std::env::var("TESTY_EMAIL").map_err(std::io::Error::other)?;
             let password = std::env::var("TESTY_PASSWORD").map_err(std::io::Error::other)?;

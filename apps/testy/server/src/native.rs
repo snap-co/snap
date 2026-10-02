@@ -19,7 +19,7 @@ fn main() -> std::io::Result<()> {
             let sessions = testy_server::identity::open(&config.database())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let (_shutdown, receiver) = tokio::sync::watch::channel(false);
-            snap_runtime_local::native::serve(
+            testy_native::serve(
                 listener,
                 testy_server::identity::platform(sessions),
                 receiver,
