@@ -1,9 +1,6 @@
 //! Document host composition for the independent HTTP/WebSocket carrier.
 use crate::{Host, carrier::Dispatcher};
-use axum::{
-    Router,
-    http::{Method, StatusCode},
-};
+use axum::{Router, http::Method};
 use snap_store::Backend;
 pub use snap_transport_ws::ReadCookie;
 use std::{
@@ -21,19 +18,25 @@ pub struct Shared<B: Backend> {
     require_cookie: bool,
 }
 
-/// Host-selected session projection. Identity policy stays in composition; the
-/// HTTP driver only decodes requests and projects the committed response.
+/// Physical HTTP routes for registered connectionless operations.
 pub struct HttpOperation {
     pub name: &'static str,
     pub method: Method,
-    pub session: SessionProjection,
+    pub read_cookie: bool,
 }
-#[derive(Clone, Copy)]
-pub enum SessionProjection {
-    Issue,
-    Fetch,
+impl From<snap_transport::carrier::HttpRoute> for HttpOperation {
+    fn from(route: snap_transport::carrier::HttpRoute) -> Self {
+        use snap_transport::carrier::HttpMethod;
+        Self {
+            name: route.operation,
+            method: match route.method {
+                HttpMethod::Get => Method::GET,
+                HttpMethod::Post => Method::POST,
+            },
+            read_cookie: route.read_bearer,
+        }
+    }
 }
-
 pub fn http_router<B: Backend + Send + 'static>(
     shared: Arc<Shared<B>>,
     operations: Vec<HttpOperation>,
@@ -41,54 +44,11 @@ pub fn http_router<B: Backend + Send + 'static>(
 ) -> Router {
     let operations = operations
         .into_iter()
-        .map(|operation| {
-            let write_cookie = write_cookie.clone();
-            snap_transport_ws::HttpOperation {
-                name: operation.name,
-                method: operation.method,
-                read_cookie: matches!(operation.session, SessionProjection::Fetch),
-                project: Arc::new(move |outcome| {
-                    let mut cookie = None;
-                    match operation.session {
-                        SessionProjection::Issue => {
-                            if let Ok(value) = outcome {
-                                let bearer = value
-                                    .as_object_mut()
-                                    .and_then(|value| value.remove("bearer"));
-                                if let Some(bearer) =
-                                    bearer.as_ref().and_then(|value| value.as_str())
-                                {
-                                    cookie = Some(write_cookie(Some(bearer)));
-                                } else {
-                                    *outcome = Err(snap_transport::Error::Protocol);
-                                }
-                            }
-                        }
-                        SessionProjection::Fetch => {
-                            if matches!(outcome, Err(snap_transport::Error::InvalidBearer)) {
-                                *outcome = Ok(serde_json::Value::Null);
-                            }
-                            if outcome.as_ref().is_ok_and(|value| value.is_null()) {
-                                cookie = Some(write_cookie(None));
-                            }
-                        }
-                    }
-                    let status = match outcome {
-                        Err(snap_transport::Error::Application(value))
-                            if value["code"] == "Forbidden" =>
-                        {
-                            Some(StatusCode::FORBIDDEN)
-                        }
-                        Err(snap_transport::Error::Application(value))
-                            if value["code"] == "Conflict" =>
-                        {
-                            Some(StatusCode::CONFLICT)
-                        }
-                        _ => None,
-                    };
-                    snap_transport_ws::HttpProjection { cookie, status }
-                }),
-            }
+        .map(|operation| snap_transport_ws::HttpOperation {
+            name: operation.name,
+            method: operation.method,
+            read_cookie: operation.read_cookie,
+            write_cookie: write_cookie.clone(),
         })
         .collect();
     snap_transport_ws::http_router(service(shared), operations)

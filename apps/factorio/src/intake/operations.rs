@@ -7,7 +7,7 @@ use alloc::{vec, vec::Vec};
 use serde_json::{Value, json};
 use snap_store::Error;
 use snap_transport::operation::{Definition, Guard, Handler, Validator};
-use workspaces::operations::{TABLES, owner};
+use workspaces::operations::owner;
 
 pub(crate) fn declarations() -> Vec<Definition> {
     let intake: Validator = |v| serde_json::from_value::<super::Intake>(v.clone()).is_ok();
@@ -15,7 +15,7 @@ pub(crate) fn declarations() -> Vec<Definition> {
         request(
             "factorio.intake-create",
             intake,
-            TABLES,
+            workspaces::document().metadata(),
             vec![Guard::new(owner)],
             Handler::new(|tx, call, actor, _, _| {
                 let actor = actor.ok_or(Error::NotFound)?;
@@ -36,7 +36,7 @@ pub(crate) fn declarations() -> Vec<Definition> {
                     && v["tickets"].is_object()
                     && v["modules"].is_object()
             },
-            TABLES,
+            workspaces::document().metadata(),
             vec![Guard::new(owner)],
             Handler::new(|tx, call, actor, _, _| {
                 let actor = actor.ok_or(Error::NotFound)?;
@@ -49,7 +49,7 @@ pub(crate) fn declarations() -> Vec<Definition> {
         request(
             "factorio.intake-drafts",
             intake,
-            TABLES,
+            workspaces::document().metadata(),
             vec![Guard::new(owner)],
             Handler::new(|tx, call, actor, _, context| {
                 let actor = actor.ok_or(Error::NotFound)?;
@@ -67,7 +67,7 @@ pub(crate) fn declarations() -> Vec<Definition> {
         request(
             "factorio.intake-ready",
             intake,
-            TABLES,
+            workspaces::document().metadata(),
             vec![Guard::new(owner)],
             Handler::new(|tx, call, actor, _, _| {
                 let actor = actor.ok_or(Error::NotFound)?;
@@ -87,7 +87,7 @@ pub(crate) fn declarations() -> Vec<Definition> {
         request(
             "factorio.intake-delete",
             Value::is_null,
-            TABLES,
+            workspaces::document().metadata(),
             vec![Guard::new(owner)],
             Handler::new(|tx, call, actor, _, _| {
                 let actor = actor.ok_or(Error::NotFound)?;

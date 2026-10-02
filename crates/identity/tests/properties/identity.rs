@@ -26,7 +26,7 @@ fn session_histories_match_authority_model(tc: TestCase) {
                     assert!(matches!(result, Err(Error::Constraint)));
                 } else {
                     let issued = result.unwrap().value;
-                    owners[owner] = issued.session.identity;
+                    owners[owner] = issued.principal.identity;
                     sessions.push((issued.bearer, owner, now + 10, false));
                     enrolled[owner] = true;
                 }
@@ -34,7 +34,7 @@ fn session_histories_match_authority_model(tc: TestCase) {
             1 | 2 => {
                 let correct = action % 7 == 1;
                 let result = store.run("login", |tx| {
-                    identity.login(
+                    identity.acquire(
                         tx,
                         &mut crypto,
                         &email,
@@ -44,7 +44,7 @@ fn session_histories_match_authority_model(tc: TestCase) {
                 });
                 if enrolled[owner] && correct {
                     let issued = result.unwrap().value;
-                    assert_eq!(issued.session.identity, owners[owner]);
+                    assert_eq!(issued.principal.identity, owners[owner]);
                     sessions.push((issued.bearer, owner, now + 10, false));
                 } else {
                     assert!(matches!(result, Err(Error::NotFound)));
@@ -64,7 +64,7 @@ fn session_histories_match_authority_model(tc: TestCase) {
             }
             5 => {
                 let result = store.run("abort-login", |tx| {
-                    identity.login(tx, &mut crypto, &email, "password1", now)?;
+                    identity.acquire(tx, &mut crypto, &email, "password1", now)?;
                     Err::<(), _>(Error::Unavailable)
                 });
                 assert!(result.is_err());
@@ -126,7 +126,12 @@ fn failed_issuance_never_returns_a_credential_or_partial_authority(tc: TestCase)
     let fault = tc.draw(gs::integers::<u8>().max_value(2));
     let abort = tc.draw(gs::booleans());
     let writes = Arc::new(Mutex::new(vec![]));
-    let catalog = support::migration().apply(&Catalog::default()).unwrap();
+    let catalog = support::migrations()
+        .into_iter()
+        .try_fold(Catalog::default(), |catalog, migration| {
+            migration.apply(&catalog)
+        })
+        .unwrap();
     let mut store = Store::new(
         catalog,
         Disk {
@@ -152,7 +157,7 @@ fn failed_issuance_never_returns_a_credential_or_partial_authority(tc: TestCase)
         assert!(matches!(result, Err(Error::Unavailable)));
         assert!(writes.lock().unwrap().is_empty());
         assert!(matches!(
-            store.run("resolve", |tx| identity.login(
+            store.run("resolve", |tx| identity.acquire(
                 tx,
                 &mut crypto,
                 "a@b",
@@ -165,7 +170,7 @@ fn failed_issuance_never_returns_a_credential_or_partial_authority(tc: TestCase)
         assert!(matches!(result, Err(Error::Indeterminate)));
         assert_eq!(writes.lock().unwrap().len(), 3);
         assert!(matches!(
-            store.run("fenced", |tx| identity.login(
+            store.run("fenced", |tx| identity.acquire(
                 tx,
                 &mut crypto,
                 "a@b",

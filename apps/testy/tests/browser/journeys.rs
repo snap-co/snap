@@ -279,7 +279,10 @@ async fn raw_envelopes(browser: &Browser) -> Result<()> {
   });
   const enrollment = await exchange(first, { Request: { bearer: null,
     invocation: { id: 2, operation: "identity.enroll", input: { email: "raw@example.com", password: "password1" } } } });
-  const token = enrollment[enrollment.length - 1].Events[0].Completed.outcome.Ok.bearer;
+  const events = enrollment.flatMap(frame => frame.Events ?? []);
+  const token = events.find(event => event.Bearer)?.Bearer.change.Set;
+  const completion = events.find(event => event.Completed).Completed.outcome.Ok;
+  if (!token || completion.bearer || completion.session) throw new Error("private bearer handoff");
   const attach = {
     Connect: {
       bearer: token,

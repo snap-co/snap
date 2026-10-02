@@ -13,7 +13,7 @@ fn definition(name: &str) -> Definition {
         error: |_| true,
         guards: vec![],
         inputs: &[],
-        tables: &[],
+        data: snap_store::Data::new(&[]),
         handler: snap_transport::operation::Handler::new(|_, call, _, _, _| Ok(call.input.clone())),
     }
 }

@@ -198,6 +198,7 @@ impl<P: Program, R: Authority> Development<P, R> {
                 ticket,
                 event,
                 private,
+                bearer,
             } => {
                 let completed = matches!(event, Event::Completed { .. });
                 let accepted = matches!(event, Event::Accepted { .. });
@@ -208,6 +209,13 @@ impl<P: Program, R: Authority> Development<P, R> {
                     );
                 }
                 if let Some(connection) = self.peers.get_mut(&owner) {
+                    if let Some(change) = bearer
+                        && let Event::Completed { id, .. } = &event
+                    {
+                        connection
+                            .responses
+                            .push_back(Response::Events(vec![Event::Bearer { id: *id, change }]));
+                    }
                     connection
                         .responses
                         .push_back(Response::Events(vec![event]));

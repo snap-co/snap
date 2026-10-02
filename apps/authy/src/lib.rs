@@ -1,65 +1,14 @@
-//! Authy account application on current Identity, Access and Document.
-//!
-//! Portable `no_std` with `alloc`; hosts own execution, clocks, randomness and
-//! external IO. All methods take the caller's `&mut Transaction` so Identity
-//! enrollment, the first session, the initial profile Document, its Access
-//! grant and the private account metadata commit atomically. Hosts publish
-//! results only from `Store::run`'s `Committed` value; a rejected attempt
-//! publishes nothing and stages nothing.
-//!
-//! Non-obvious guarantees promised beside this interface:
-//!
-//! * One caller-owned transaction composes Identity, Access, Document and the
-//!   private `authy.accounts` metadata. Failed transactions discard every
-//!   staged write, including the Identity credential/session rows. There is no
-//!   partial signup.
-//! * Identity IDs are opaque 64-hex strings issued by `snap-identity`. Profile
-//!   IDs are UUIDs deterministically derived from the first 32 hex characters
-//!   grouped `8-4-4-4-12`. Two identities sharing a 32-hex prefix map to the
-//!   same profile; enrollment rejects the collision with `Constraint` and never
-//!   overwrites the existing profile. Hosts needing independent profile IDs
-//!   must not use this derivation; the stable rejection still applies.
-//! * Profile documents use app kind `"authy-profile"` version `"1"` with value
-//!   `{name, bio}`. The `edit` mutation takes args `{name, bio, revision}`
-//!   and requires the `Owner` role plus an app-specific guard that checks
-//!   the verified actor's captured pre-change `Owner` role AND requires
-//!   `args.revision` to equal the current snapshot revision. Name is trimmed
-//!   `1..=100` chars, bio (trimmed) is `<=2000` chars; `revision` must be a
-//!   storage-safe `1..=i64::MAX` integer. The pure apply validates the shape
-//!   (including a well-formed revision) but ignores the revision value itself;
-//!   only the guard enforces equality. A stale edit therefore reports a
-//!   `Denied` completion without a document write; hosts surface it as a
-//!   changed/denied profile edit. There is no legacy HTTP 409 wire. Document
-//!   itself stays latest-state globally: no blanket stale-base rejection.
-//!   Client bindings take `revision` from the Rust projected snapshot on edit,
-//!   so ACK-paced consecutive profile edits remain causal. All checks run
-//!   against pre-change Access state; a mutation cannot grant itself authority.
-//! * Profiles are private (`Audience::Restricted`): only the owner holds a
-//!   grant. Reads, mutations and manifests for other identities report denials
-//!   without leaking document data. Client profiles go through the shared
-//!   [`registry`] with `snap-document`'s client SDK; there is no alternate
-//!   profile storage.
-//! * `authy.accounts` maps `identity -> (profile, email)` for issuer claims.
-//!   It is private app metadata, not a client-visible document. Email is the
-//!   normalized (trimmed, lowercased) address accepted by Identity.
-//! * [`Account::authenticated_at`] for [`current`] is derived as
-//!   `session.expires - 30 days`. Identity stores only the absolute expiry, so
-//!   this is an app-specific fixed policy valid only with the default 30-day
-//!   session lifetime. Custom lifetimes would need an explicit issued-at
-//!   column. [`account_by_identity`] instead reports the caller-supplied
-//!   current time as `authenticated_at` for OIDC hosts resolving by identity
-//!   without a bearer.
-//! * Store misses (`Error::Miss`) abort the attempt and are never converted
-//!   into domain errors. Hosts must load Identity, Access, Document and Authy
-//!   tables before calling, then submit a new request after loading.
-//! * The native OIDC adapter uses [`account_by_identity`] / [`profile_info`]
-//!   for claims in the same transaction as issuer state changes.
+//! Authy profiles and account metadata. Identity owns authentication; callers
+//! supply public actor and authentication facts. Profile initialization can share
+//! enrollment's transaction without changing Identity's operations or contracts.
 #![no_std]
 extern crate alloc;
 
+pub mod client;
 pub mod operations;
 
 use alloc::{
+    borrow::ToOwned,
     format,
     string::{String, ToString},
 };
@@ -74,10 +23,6 @@ pub const PROFILE_KIND: &str = "authy-profile";
 pub const PROFILE_VERSION: &str = "1";
 /// Sole profile mutation name.
 pub const PROFILE_MUTATION: &str = "edit";
-/// Fixed session lifetime assumed by [`Account::authenticated_at`] in
-/// [`current`]. Matches `snap-identity`'s default of 30 days.
-pub const SESSION_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
-
 /// Ordered migration declarations for the Authy-owned account metadata table.
 /// Module migrations are NOT copied here; hosts compose this with Identity,
 /// Access and Document migrations.
@@ -96,6 +41,16 @@ pub struct Account {
     pub email: String,
     pub profile: String,
     pub authenticated_at: i64,
+}
+
+impl Account {
+    pub fn data() -> snap_store::Data {
+        snap_store::Data::new(&TABLES)
+    }
+}
+/// Application-owned profile and metadata interface used by enrollment composition.
+pub fn enrollment_data() -> snap_store::Data {
+    Account::data().and(document().data())
 }
 
 /// Private profile lookup without an auth timestamp, for hosts that supply
@@ -149,38 +104,17 @@ pub fn profile_id(identity: &str) -> Option<String> {
     ))
 }
 
-/// Atomically enroll an Identity credential, issue its first session, create
-/// the initial private profile Document with an owner grant, and record the
-/// private `identity -> (profile, email)` metadata row.
-///
-/// The initial name is the normalized email local part (truncated to 100
-/// chars when a valid address has an overlong local part) with an empty bio.
-/// Profiles are `Restricted`: only the new identity holds `Owner`.
-/// Duplicate normalized emails report `Constraint` from Identity. A derived
-/// profile that already exists (document row or metadata) reports
-/// `Constraint` without overwriting. Cold tables report `Miss`. Returning
-/// `Err` stages nothing observable: `Store::run` discards the scratch state.
-pub fn enroll(
-    tx: &mut Transaction<'_>,
-    crypto: &mut impl snap_identity::Crypto,
-    email: &str,
-    password: &str,
-    now: i64,
-) -> Result<snap_identity::Issued, StoreError> {
-    let issued = snap_identity::Identity::default().enroll(tx, crypto, email, password, now)?;
-    initialize_account(tx, &issued, email)?;
-    Ok(issued)
-}
-
 /// Enrollment hook for Identity's operation dispatcher. This shares the
 /// transaction that issued the credential and session; failure rolls all back.
+/// `email` is the canonical locator supplied by Identity. The derived profile is
+/// private to its owner; collisions reject enrollment without overwriting data.
 pub fn initialize_account(
     tx: &mut Transaction<'_>,
-    issued: &snap_identity::Issued,
+    identity: &str,
     email: &str,
 ) -> Result<(), StoreError> {
-    let profile = profile_id(&issued.session.identity).ok_or(StoreError::Invalid)?;
-    let normalized = email.trim().to_ascii_lowercase();
+    let profile = profile_id(identity).ok_or(StoreError::Invalid)?;
+    let normalized = email.to_owned();
     let local = normalized.split('@').next().unwrap_or("");
     let name: String = if local.chars().count() > 100 {
         local.chars().take(100).collect()
@@ -208,60 +142,24 @@ pub fn initialize_account(
         revision: 1,
         value: serde_json::json!({"name": name, "bio": ""}),
     };
-    document().create(
-        tx,
-        &snapshot,
-        Audience::Restricted,
-        &issued.session.identity,
-    )?;
+    document().create(tx, &snapshot, Audience::Restricted, identity)?;
     let mut row = Row::new();
-    row.insert(
-        "identity".into(),
-        Value::Text(issued.session.identity.clone()),
-    );
+    row.insert("identity".into(), Value::Text(identity.into()));
     row.insert("profile".into(), Value::Text(profile));
     row.insert("email".into(), Value::Text(normalized));
     tx.insert(ACCOUNTS, row)?;
     Ok(())
 }
 
-/// Resolve the bearer to its session and return the account view. The private
-/// metadata supplies `email`/`profile`; `authenticated_at` is derived as
-/// `expires - 30 days` under the fixed default-lifetime policy documented
-/// above. Unknown/expired bearers report `NotFound`; missing metadata reports
-/// `NotFound`; cold tables report `Miss`.
-pub fn current(
-    tx: &mut Transaction<'_>,
-    crypto: &impl snap_identity::Crypto,
-    bearer: &str,
-    now: i64,
-) -> Result<Account, StoreError> {
-    let session = snap_identity::Identity::default().resolve(tx, crypto, bearer, now)?;
-    let authenticated_at = session
-        .expires
-        .checked_sub(SESSION_LIFETIME_SECONDS)
-        .ok_or(StoreError::Invalid)?;
-    let row = tx
-        .get(ACCOUNTS, &[Value::Text(session.identity.clone())])?
-        .ok_or(StoreError::NotFound)?;
-    Ok(Account {
-        identity: session.identity,
-        email: text_field(&row, "email")?.to_string(),
-        profile: text_field(&row, "profile")?.to_string(),
-        authenticated_at,
-    })
-}
-
-/// Look up an account by identity for hosts without a bearer (for example the
-/// OIDC issuer building ID-token claims). `now` is the host's current Unix
-/// time and is reported as `authenticated_at`, since no session expiry is
-/// available on this path. Unknown identities report `NotFound`.
+/// Join account metadata to authentication facts supplied by the bearer provider.
+/// The timestamp is the captured authentication time, never the current clock.
+/// Unknown identities report `NotFound`; cold metadata remains a Store miss.
 pub fn account_by_identity(
     tx: &mut Transaction<'_>,
     identity: &str,
-    now: i64,
+    authenticated_at: i64,
 ) -> Result<Account, StoreError> {
-    if identity.is_empty() || now < 0 {
+    if identity.is_empty() || authenticated_at < 0 {
         return Err(StoreError::Invalid);
     }
     let row = tx
@@ -271,14 +169,14 @@ pub fn account_by_identity(
         identity: identity.into(),
         email: text_field(&row, "email")?.to_string(),
         profile: text_field(&row, "profile")?.to_string(),
-        authenticated_at: now,
+        authenticated_at,
     })
 }
 
 /// Look up private profile metadata by identity without an auth timestamp.
 /// Unknown identities report `NotFound`. Hosts that need a full [`Account`]
-/// with `auth_time` should use [`account_by_identity`] with their current
-/// time instead.
+/// with `auth_time` should use [`account_by_identity`] with captured authentication
+/// facts instead.
 pub fn profile_info(tx: &mut Transaction<'_>, identity: &str) -> Result<ProfileInfo, StoreError> {
     if identity.is_empty() {
         return Err(StoreError::Invalid);

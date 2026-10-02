@@ -1,4 +1,5 @@
-use authy::{Account, SESSION_LIFETIME_SECONDS};
+use authy::Account;
+const SESSION_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
 use serde_json::json;
 use snap_access::Role;
 use snap_document::{
@@ -31,6 +32,7 @@ impl Crypto for Fake {
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut all = vec![
         toml::from_str(snap_identity::MIGRATION).unwrap(),
+        toml::from_str(snap_identity::SESSION_TIME_MIGRATION).unwrap(),
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap(),
@@ -100,9 +102,18 @@ fn dispatch_account(
     store: &mut Store,
     operation: &str,
     input: serde_json::Value,
-) -> snap_transport::Outcome {
+) -> Result<(serde_json::Value, snap_transport::bearer::Change), snap_transport::Error> {
     use snap_transport::operation::{Context, Runtime};
-    let app = authy::operations::declarations(Fake::default);
+    let app = snap_identity::operation::definitions(
+        Identity::default(),
+        Fake::default,
+        Some(snap_identity::operation::Enrollment {
+            data: authy::enrollment_data(),
+            initialize: Box::new(|tx, principal, email| {
+                authy::initialize_account(tx, &principal.identity, email)
+            }),
+        }),
+    );
     let mut runtime = Runtime::default();
     for definition in app.preconnection.into_iter().chain(app.requests) {
         runtime.register(definition).unwrap();
@@ -131,11 +142,35 @@ fn dispatch_account(
         runtime.reject();
         return Err(error);
     }
-    let outcome = runtime.execute(store).unwrap().outcome;
+    let completed = runtime.execute(store).unwrap();
     runtime.finish();
-    outcome
+    Ok((completed.outcome?, completed.context.bearer_change.unwrap()))
 }
 
+fn compose_enroll(
+    tx: &mut snap_store::Transaction<'_>,
+    crypto: &mut Fake,
+    email: &str,
+    password: &str,
+    now: i64,
+) -> Result<snap_identity::Issued, StoreError> {
+    let issued = Identity::default().enroll(tx, crypto, email, password, now)?;
+    authy::initialize_account(
+        tx,
+        &issued.principal.identity,
+        &email.trim().to_ascii_lowercase(),
+    )?;
+    Ok(issued)
+}
+fn compose_current(
+    tx: &mut snap_store::Transaction<'_>,
+    crypto: &Fake,
+    bearer: &str,
+    now: i64,
+) -> Result<Account, StoreError> {
+    let principal = Identity::default().resolve(tx, crypto, bearer, now)?;
+    authy::account_by_identity(tx, &principal.identity, principal.authenticated_at)
+}
 fn enroll(
     store: &mut Store,
     crypto: &mut Fake,
@@ -145,7 +180,13 @@ fn enroll(
 ) -> snap_identity::Issued {
     store
         .run("enroll", |tx| {
-            authy::enroll(tx, crypto, email, password, now)
+            let issued = Identity::default().enroll(tx, crypto, email, password, now)?;
+            authy::initialize_account(
+                tx,
+                &issued.principal.identity,
+                &email.trim().to_ascii_lowercase(),
+            )?;
+            Ok(issued)
         })
         .unwrap()
         .value
@@ -153,7 +194,10 @@ fn enroll(
 
 fn current(store: &mut Store, crypto: &Fake, bearer: &str, now: i64) -> Account {
     store
-        .run("current", |tx| authy::current(tx, crypto, bearer, now))
+        .run("current", |tx| {
+            let principal = Identity::default().resolve(tx, crypto, bearer, now)?;
+            authy::account_by_identity(tx, &principal.identity, principal.authenticated_at)
+        })
         .unwrap()
         .value
 }
@@ -171,24 +215,32 @@ fn edit_intent(id: u64, document: &str, name: &str, bio: &str, revision: u64) ->
 #[test]
 fn enroll_creates_session_profile_grant_and_metadata_atomically() {
     let (mut store, crypto) = store_loaded();
-    let result = dispatch_account(
+    let (result, change) = dispatch_account(
         &mut store,
         "identity.enroll",
         json!({"email":" Alice@Example.com ", "password":"password1"}),
     )
     .unwrap();
-    let bearer = result["bearer"].as_str().unwrap().to_owned();
+    let snap_transport::bearer::Change::Set(token) = change else {
+        panic!("missing bearer update");
+    };
+    let bearer = token.expose().to_owned();
+    assert!(result.get("bearer").is_none());
+    assert!(result.get("session").is_none());
     let session = store
         .inspect("persisted session", |tx| {
             Identity::default().resolve(tx, &crypto, &bearer, 1_000)
         })
         .unwrap();
-    let issued = snap_identity::Issued { bearer, session };
+    let issued = snap_identity::Issued {
+        bearer,
+        principal: session,
+    };
     assert_eq!(issued.bearer.len(), 64);
-    assert_eq!(issued.session.identity.len(), 64);
-    assert_eq!(issued.session.expires, 1_000 + SESSION_LIFETIME_SECONDS);
+    assert_eq!(issued.principal.identity.len(), 64);
+    assert_eq!(issued.principal.authenticated_at, 1_000);
 
-    let profile = authy::profile_id(&issued.session.identity).unwrap();
+    let profile = authy::profile_id(&issued.principal.identity).unwrap();
     // First-32-hex grouping: deterministic UUID shape.
     assert_eq!(profile.len(), 36);
     assert_eq!(
@@ -202,16 +254,16 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
     );
 
     let account = current(&mut store, &crypto, &issued.bearer, 1_001);
-    assert_eq!(account.identity, issued.session.identity);
+    assert_eq!(account.identity, issued.principal.identity);
     assert_eq!(account.email, "alice@example.com");
     assert_eq!(account.profile, profile);
     assert_eq!(account.authenticated_at, 1_000);
-    assert_eq!(result["account"], json!(account));
+    assert_eq!(result, json!(issued.principal));
 
     // Initial profile value preserves the email local part with empty bio.
     let snapshot = store
         .run("read", |tx| {
-            authy::document().read(tx, &profile, Some(&issued.session.identity))
+            authy::document().read(tx, &profile, Some(&issued.principal.identity))
         })
         .unwrap()
         .value;
@@ -228,7 +280,7 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
                 .role(
                     tx,
                     &snap_access::Resource::new("document", &profile).unwrap(),
-                    Some(&issued.session.identity),
+                    Some(&issued.principal.identity),
                     true,
                 )
         })
@@ -239,7 +291,7 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
     // OIDC path resolves the same metadata with caller-supplied current time.
     let by_identity = store
         .run("by-identity", |tx| {
-            authy::account_by_identity(tx, &issued.session.identity, 5_000)
+            authy::account_by_identity(tx, &issued.principal.identity, 5_000)
         })
         .unwrap()
         .value;
@@ -248,7 +300,7 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
     assert_eq!(by_identity.authenticated_at, 5_000);
     let info = store
         .run("info", |tx| {
-            authy::profile_info(tx, &issued.session.identity)
+            authy::profile_info(tx, &issued.principal.identity)
         })
         .unwrap()
         .value;
@@ -260,7 +312,7 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
     assert_eq!(
         value,
         json!({
-            "identity": issued.session.identity,
+            "identity": issued.principal.identity,
             "email": "alice@example.com",
             "profile": profile,
             "authenticated_at": 1_000,
@@ -272,7 +324,7 @@ fn enroll_creates_session_profile_grant_and_metadata_atomically() {
 fn late_failure_after_enroll_discards_everything() {
     let (mut store, mut crypto) = store_loaded();
     let failed = store.run("signup", |tx| {
-        authy::enroll(tx, &mut crypto, "late@example.com", "password1", 0)?;
+        compose_enroll(tx, &mut crypto, "late@example.com", "password1", 0)?;
         // Simulate a late caller failure after all module writes staged.
         Err::<(), _>(StoreError::Unavailable)
     });
@@ -281,7 +333,7 @@ fn late_failure_after_enroll_discards_everything() {
     // Nothing persisted: login cannot find the credential.
     let identity = Identity::default();
     assert!(matches!(
-        store.run("login", |tx| identity.login(
+        store.run("login", |tx| identity.acquire(
             tx,
             &mut crypto,
             "late@example.com",
@@ -310,7 +362,7 @@ fn cold_tables_report_miss_and_stage_nothing() {
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     let mut crypto = Fake::default();
     assert!(matches!(
-        store.run("cold-enroll", |tx| authy::enroll(
+        store.run("cold-enroll", |tx| compose_enroll(
             tx,
             &mut crypto,
             "cold@example.com",
@@ -321,7 +373,7 @@ fn cold_tables_report_miss_and_stage_nothing() {
     ));
     // A miss poisons the attempt even when caught.
     let poisoned = store.run("poison", |tx| {
-        let _ = authy::enroll(tx, &mut crypto, "cold@example.com", "password1", 0);
+        let _ = compose_enroll(tx, &mut crypto, "cold@example.com", "password1", 0);
         Ok(())
     });
     assert!(matches!(poisoned, Err(StoreError::Miss(_))));
@@ -347,7 +399,7 @@ fn duplicate_email_rejected_without_new_profile() {
         10,
     );
     let duplicate = store.run("duplicate", |tx| {
-        authy::enroll(
+        compose_enroll(
             tx,
             &mut crypto,
             " PERSON@example.test ",
@@ -359,7 +411,7 @@ fn duplicate_email_rejected_without_new_profile() {
 
     // Original session still resolves; no second identity was created.
     let account = current(&mut store, &crypto, &first.bearer, 12);
-    assert_eq!(account.identity, first.session.identity);
+    assert_eq!(account.identity, first.principal.identity);
     let rows = store
         .run("list", |tx| tx.find(authy::TABLES[0], "primary", &[]))
         .unwrap()
@@ -368,7 +420,7 @@ fn duplicate_email_rejected_without_new_profile() {
 
     // Invalid enrollment does not claim the address either.
     assert!(matches!(
-        store.run("short", |tx| authy::enroll(
+        store.run("short", |tx| compose_enroll(
             tx,
             &mut crypto,
             "fresh@example.test",
@@ -384,7 +436,7 @@ fn duplicate_email_rejected_without_new_profile() {
         "password sessions",
         14,
     );
-    assert_ne!(retry.session.identity, first.session.identity);
+    assert_ne!(retry.principal.identity, first.principal.identity);
 }
 
 #[test]
@@ -398,7 +450,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
         100,
     );
     let bob = enroll(&mut store, &mut crypto, "bob@example.com", "password1", 100);
-    let alice_profile = authy::profile_id(&alice.session.identity).unwrap();
+    let alice_profile = authy::profile_id(&alice.principal.identity).unwrap();
 
     // Bob's synchronization policy excludes Alice's private profile. Resident
     // reads inside accepted handlers do not reinterpret the caller's authority.
@@ -407,7 +459,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
             authy::document().access_guard().manifest(
                 tx,
                 "boot:bob",
-                &bob.session.identity,
+                &bob.principal.identity,
                 &Manifest::default(),
             )
         })
@@ -419,7 +471,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
     let denied = dispatch_profile(
         &mut store,
         "boot:bob",
-        &bob.session.identity,
+        &bob.principal.identity,
         edit_intent(1, &alice_profile, "Bob", "hi", 1),
     );
     assert_eq!(
@@ -435,7 +487,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
             authy::document().mutate(
                 tx,
                 "boot:alice",
-                &alice.session.identity,
+                &alice.principal.identity,
                 &edit_intent(1, &alice_profile, "  Alice Cooper  ", "Singer", 1),
             )
         })
@@ -458,7 +510,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
                 authy::document().mutate(
                     tx,
                     &format!("boot:alice-invalid-{index}"),
-                    &alice.session.identity,
+                    &alice.principal.identity,
                     &edit_intent(10 + index as u64, &alice_profile, name, bio, 2),
                 )
             })
@@ -477,7 +529,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
     let missing_revision = dispatch_profile(
         &mut store,
         "boot:alice-2b",
-        &alice.session.identity,
+        &alice.principal.identity,
         Intent {
             id: 7,
             document: alice_profile.clone(),
@@ -498,7 +550,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
             authy::document().mutate(
                 tx,
                 "boot:alice-3",
-                &alice.session.identity,
+                &alice.principal.identity,
                 &edit_intent(3, &alice_profile, "Alice", &long_bio, 2),
             )
         })
@@ -512,7 +564,7 @@ fn profile_is_private_and_owner_edit_succeeds() {
     // Failed edits left the committed value at the successful edit.
     let kept = store
         .run("read", |tx| {
-            authy::document().read(tx, &alice_profile, Some(&alice.session.identity))
+            authy::document().read(tx, &alice_profile, Some(&alice.principal.identity))
         })
         .unwrap()
         .value;
@@ -530,7 +582,7 @@ fn stale_profile_edit_is_rejected_without_a_write() {
         "password1",
         100,
     );
-    let profile = authy::profile_id(&alice.session.identity).unwrap();
+    let profile = authy::profile_id(&alice.principal.identity).unwrap();
 
     // First causal edit at revision 1 commits revision 2.
     let first = store
@@ -538,7 +590,7 @@ fn stale_profile_edit_is_rejected_without_a_write() {
             authy::document().mutate(
                 tx,
                 "boot:stale",
-                &alice.session.identity,
+                &alice.principal.identity,
                 &edit_intent(1, &profile, "First", "one", 1),
             )
         })
@@ -563,7 +615,7 @@ fn stale_profile_edit_is_rejected_without_a_write() {
     let stale = dispatch_profile(
         &mut store,
         "boot:stale",
-        &alice.session.identity,
+        &alice.principal.identity,
         edit_intent(2, &profile, "Stale", "late", 1),
     );
     assert_eq!(
@@ -576,7 +628,7 @@ fn stale_profile_edit_is_rejected_without_a_write() {
     // The committed value is untouched by the stale attempt.
     let kept = store
         .run("read", |tx| {
-            authy::document().read(tx, &profile, Some(&alice.session.identity))
+            authy::document().read(tx, &profile, Some(&alice.principal.identity))
         })
         .unwrap()
         .value;
@@ -590,7 +642,7 @@ fn stale_profile_edit_is_rejected_without_a_write() {
             authy::document().mutate(
                 tx,
                 "boot:stale",
-                &alice.session.identity,
+                &alice.principal.identity,
                 &edit_intent(3, &profile, "Second", "two", 2),
             )
         })
@@ -605,12 +657,12 @@ fn stale_profile_edit_is_rejected_without_a_write() {
 fn client_sdk_drives_optimistic_profile_edits() {
     let (mut store, mut crypto) = store_loaded();
     let alice = enroll(&mut store, &mut crypto, "sdk@example.com", "password1", 50);
-    let profile = authy::profile_id(&alice.session.identity).unwrap();
+    let profile = authy::profile_id(&alice.principal.identity).unwrap();
     let registry = authy::registry();
 
     let base = store
         .run("read", |tx| {
-            authy::document().read(tx, &profile, Some(&alice.session.identity))
+            authy::document().read(tx, &profile, Some(&alice.principal.identity))
         })
         .unwrap()
         .value;
@@ -618,7 +670,7 @@ fn client_sdk_drives_optimistic_profile_edits() {
     // Install authoritative state, enqueue an optimistic edit, and observe the
     // projected view before the server commits. The revision comes from the
     // projected snapshot, keeping ACK-paced edits causal.
-    let mut client = Client::new(alice.session.identity.clone());
+    let mut client = Client::new(alice.principal.identity.clone());
     let outcome = client
         .handle(
             &registry,
@@ -655,7 +707,7 @@ fn client_sdk_drives_optimistic_profile_edits() {
     // coherent publication without double-applying the optimistic entry.
     let result = store
         .run("commit", |tx| {
-            authy::document().mutate(tx, "boot:sdk", &alice.session.identity, &intent)
+            authy::document().mutate(tx, "boot:sdk", &alice.principal.identity, &intent)
         })
         .unwrap()
         .value;
@@ -688,7 +740,7 @@ fn client_sdk_drives_optimistic_profile_edits() {
     };
     let result = store
         .run("commit-2", |tx| {
-            authy::document().mutate(tx, "boot:sdk", &alice.session.identity, &intent)
+            authy::document().mutate(tx, "boot:sdk", &alice.principal.identity, &intent)
         })
         .unwrap()
         .value;
@@ -717,11 +769,11 @@ fn current_login_logout_and_expiry_follow_session_lifetime() {
     );
     let second = store
         .run("login", |tx| {
-            identity.login(tx, &mut crypto, "SESSION@example.com", "password1", 101)
+            identity.acquire(tx, &mut crypto, "SESSION@example.com", "password1", 101)
         })
         .unwrap()
         .value;
-    assert_eq!(first.session.identity, second.session.identity);
+    assert_eq!(first.principal.identity, second.principal.identity);
     assert_ne!(first.bearer, second.bearer);
 
     // Both bearers resolve to the same account; auth time tracks issuance.
@@ -739,7 +791,7 @@ fn current_login_logout_and_expiry_follow_session_lifetime() {
         })
         .unwrap();
     assert!(matches!(
-        store.run("revoked", |tx| authy::current(
+        store.run("revoked", |tx| compose_current(
             tx,
             &crypto,
             &first.bearer,
@@ -749,22 +801,22 @@ fn current_login_logout_and_expiry_follow_session_lifetime() {
     ));
     assert_eq!(
         current(&mut store, &crypto, &second.bearer, 103).identity,
-        second.session.identity
+        second.principal.identity
     );
 
     // Expiry at now >= expires grants no authority.
     assert!(matches!(
-        store.run("expired", |tx| authy::current(
+        store.run("expired", |tx| compose_current(
             tx,
             &crypto,
             &second.bearer,
-            second.session.expires
+            101 + SESSION_LIFETIME_SECONDS
         )),
         Err(StoreError::NotFound)
     ));
     // Unknown bearer and unknown identity are NotFound, not Miss.
     assert!(matches!(
-        store.run("unknown", |tx| authy::current(
+        store.run("unknown", |tx| compose_current(
             tx,
             &crypto,
             &"0".repeat(64),
@@ -803,18 +855,18 @@ fn sessions_and_profiles_survive_reopen() {
             "password1",
             7,
         );
-        let profile = authy::profile_id(&issued.session.identity).unwrap();
+        let profile = authy::profile_id(&issued.principal.identity).unwrap();
         store
             .run("edit", |tx| {
                 authy::document().mutate(
                     tx,
                     "boot:persist",
-                    &issued.session.identity,
+                    &issued.principal.identity,
                     &edit_intent(1, &profile, "Persisted", "kept", 1),
                 )
             })
             .unwrap();
-        (issued.bearer, issued.session.identity, profile)
+        (issued.bearer, issued.principal.identity, profile)
     };
     {
         let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
@@ -837,11 +889,11 @@ fn sessions_and_profiles_survive_reopen() {
         let identity = Identity::default();
         let second = store
             .run("login", |tx| {
-                identity.login(tx, &mut crypto, "persist@example.com", "password1", 9)
+                identity.acquire(tx, &mut crypto, "persist@example.com", "password1", 9)
             })
             .unwrap()
             .value;
-        assert_eq!(second.session.identity, identity_id);
+        assert_eq!(second.principal.identity, identity_id);
     }
     std::fs::remove_file(&path).unwrap();
 }
@@ -903,13 +955,13 @@ fn missing_metadata_reports_not_found_not_a_profile_leak() {
         .run("delete-meta", |tx| {
             tx.delete(
                 authy::TABLES[0],
-                &[Value::Text(alice.session.identity.clone())],
+                &[Value::Text(alice.principal.identity.clone())],
             )
             .map(|_| ())
         })
         .unwrap();
     assert!(matches!(
-        store.run("gone", |tx| authy::current(tx, &crypto, &alice.bearer, 1)),
+        store.run("gone", |tx| compose_current(tx, &crypto, &alice.bearer, 1)),
         Err(StoreError::NotFound)
     ));
 }

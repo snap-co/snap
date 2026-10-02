@@ -32,6 +32,7 @@ impl<P: Program, R: Authority> Host<P, R> {
                     ticket,
                     event,
                     private,
+                    bearer,
                 } => {
                     if matches!(event, Event::Completed { .. })
                         && self
@@ -46,6 +47,11 @@ impl<P: Program, R: Authority> Host<P, R> {
                     }
                     if let Some(mailbox) = self.mailboxes.get_mut(&ticket) {
                         mailbox.done = matches!(event, Event::Completed { .. });
+                        if let Some(change) = bearer
+                            && let Event::Completed { id, .. } = &event
+                        {
+                            mailbox.events.push(Event::Bearer { id: *id, change });
+                        }
                         mailbox.events.push(event);
                         if let Some(waker) = mailbox.waker.take() {
                             waker.wake();

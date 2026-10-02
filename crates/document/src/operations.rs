@@ -29,14 +29,6 @@ impl Operation for Synchronize {
     type Progress = Value;
 }
 
-/// Values follow the recipient extent; complete metadata supports acceptance.
-const TABLES: &[&str] = &[
-    "access.resources",
-    "access.grants",
-    "access.links",
-    "document.receipts",
-    "document.lifecycle",
-];
 #[derive(serde::Serialize, serde::Deserialize)]
 enum Prepared {
     Mutation(AdmittedMutation),
@@ -52,14 +44,14 @@ pub fn definitions(document: Arc<Document>) -> Vec<Definition> {
         Definition::typed::<Mutate>(
             true,
             vec![mutation_policy],
-            TABLES,
+            document.metadata(),
             &[],
             move |tx, _, context| execute(&behavior, tx, context).map_err(Into::into),
         ),
         Definition::typed::<Synchronize>(
             true,
             vec![sync_policy],
-            TABLES,
+            document.metadata(),
             &[],
             move |tx, _, context| execute(&document, tx, context).map_err(Into::into),
         ),

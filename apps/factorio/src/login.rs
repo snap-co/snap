@@ -9,6 +9,12 @@ use snap_transport::{
     operation::{Context, Definition, Failure, Guard, Handler},
 };
 
+/// Residency of the local login/delegation data interface.
+pub(crate) fn data() -> snap_store::Data {
+    snap_store::Data::new(&["factorio.cli_login", "factorio.cli", "factorio.agents"])
+        .and(rp::data())
+}
+
 /// Local login credentials last independently of short-lived upstream access
 /// tokens, but never extend the backing OAuth session or its refresh grant.
 const CLI_LOGIN_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -112,7 +118,7 @@ pub(crate) fn declarations(origin: String) -> Vec<Definition> {
             progress: |_| false,
             error: |_| true,
             guards: vec![],
-            tables: &["factorio.cli_login", "factorio.cli", "oidc_rp.sessions"],
+            data: data(),
             inputs: &["clock", "entropy", "proof"],
             handler: Handler::new(move |tx, _, _, _, context| {
                 let now = now(context)?;
@@ -161,7 +167,7 @@ pub(crate) fn declarations(origin: String) -> Vec<Definition> {
             progress: |_| false,
             error: |_| true,
             guards: vec![Guard::new(finish_guard)],
-            tables: &["factorio.cli_login", "factorio.cli", "oidc_rp.sessions"],
+            data: data(),
             inputs: &["clock", "entropy"],
             handler: Handler::new(|tx, _, _, _, context| {
                 let now = now(context)?;
@@ -195,7 +201,7 @@ pub(crate) fn declarations(origin: String) -> Vec<Definition> {
             output: |v| v["bearer"].is_string() && v["expires"].is_i64() && v["owner"].is_string(),
             progress: |_| false,
             error: |_| true,
-            tables: &["factorio.agents", "factorio.cli", "oidc_rp.sessions"],
+            data: data(),
             inputs: &["clock", "entropy"],
             guards: vec![Guard::new(|tx, _, context| {
                 // Only an ordinary agent token may delegate CLI authority. A CLI
@@ -235,7 +241,7 @@ pub(crate) fn agent_token() -> Definition {
     let mut definition = request(
         "factorio.agent-token",
         |v| v.as_object().is_some_and(|o| o.len() == 1) && v["token"].is_string(),
-        &["factorio.cli", "factorio.agents", "oidc_rp.sessions"],
+        data(),
         vec![Guard::new(human)],
         Handler::new(|tx, _, actor, bearer, context| {
             actor.ok_or(Error::NotFound)?;
@@ -262,7 +268,7 @@ pub(crate) fn logout() -> Definition {
     request(
         "factorio.logout",
         Value::is_null,
-        &["factorio.cli", "factorio.agents"],
+        data(),
         vec![],
         Handler::new(|tx, _, actor, bearer, _| {
             actor.ok_or(Error::NotFound)?;

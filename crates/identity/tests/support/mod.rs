@@ -21,11 +21,17 @@ impl Crypto for Fake {
         secret.as_bytes().to_vec()
     }
 }
-pub fn migration() -> snap_store::migration::Migration {
-    toml::from_str(snap_identity::MIGRATION).unwrap()
+pub fn migrations() -> Vec<snap_store::migration::Migration> {
+    [
+        snap_identity::MIGRATION,
+        snap_identity::SESSION_TIME_MIGRATION,
+    ]
+    .into_iter()
+    .map(|source| toml::from_str(source).unwrap())
+    .collect()
 }
 pub fn store(loaded: bool) -> Store<snap_store_sqlite::Sqlite> {
-    let mut store = snap_store_sqlite::Sqlite::memory(&[migration()]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
     if loaded {
         for table in snap_identity::TABLES {
             store.load(table).unwrap();

@@ -207,6 +207,9 @@ async fn receive_outcome(tcp: &mut Tcp, id: u64) -> Result<snap_transport::Outco
                             ensure!(received == id && accepted, "Unaccepted progress");
                             eprintln!("{value}");
                         }
+                        Event::Bearer { .. } => {
+                            bail!("Unexpected bearer update on an attached operation")
+                        }
                         Event::Completed {
                             id: received,
                             outcome,

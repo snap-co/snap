@@ -14,13 +14,6 @@ use snap_transport::{
     operation::{Context, Definition, Failure, Guard, Handler},
 };
 
-pub(crate) const TABLES: &[&str] = &[
-    "access.resources",
-    "access.grants",
-    "access.links",
-    "document.lifecycle",
-];
-
 pub(crate) fn owner(
     tx: &mut Transaction<'_>,
     call: &Invocation,
@@ -80,7 +73,7 @@ pub(crate) fn declarations(config: Config) -> Vec<Definition> {
         request(
             "factorio.repositories",
             Value::is_array,
-            &[],
+            snap_store::Data::default(),
             vec![],
             Handler::new(move |_, _, actor, _, _| {
                 actor.ok_or(Error::NotFound)?;
@@ -92,7 +85,7 @@ pub(crate) fn declarations(config: Config) -> Vec<Definition> {
         request(
             "factorio.identity",
             |v| v["owner"].is_string(),
-            &[],
+            snap_store::Data::default(),
             vec![],
             Handler::new(|_, _, actor, _, _| Ok(json!({"owner":actor.ok_or(Error::NotFound)?}))),
         ),
@@ -100,7 +93,7 @@ pub(crate) fn declarations(config: Config) -> Vec<Definition> {
         request(
             "factorio.onboard",
             |v| v.as_object().is_some_and(|o| o.len() == 1) && v["id"].is_string(),
-            TABLES,
+            document().metadata(),
             vec![Guard::new(move |tx, call, context| {
                 if text(&call.input, "repository")? != "configured" {
                     return Err(Error::Invalid.into());
@@ -133,7 +126,7 @@ pub(crate) fn declarations(config: Config) -> Vec<Definition> {
         request(
             "factorio.workspaces",
             Value::is_array,
-            TABLES,
+            document().metadata(),
             vec![Guard::new(|tx, _, context| {
                 let actor = context.actor.as_deref().ok_or(Error::NotFound)?;
                 context.prepared = json!(document().access_guard().extent(tx, actor)?);
@@ -158,7 +151,7 @@ pub(crate) fn declarations(config: Config) -> Vec<Definition> {
         request(
             "factorio.workspace",
             |v| serde_json::from_value::<super::Workspace>(v.clone()).is_ok(),
-            TABLES,
+            document().metadata(),
             vec![Guard::new(owner)],
             Handler::new(|tx, call, actor, _, _| {
                 let actor = actor.ok_or(Error::NotFound)?;
@@ -168,15 +161,7 @@ pub(crate) fn declarations(config: Config) -> Vec<Definition> {
         request(
             "factorio.command",
             Value::is_null,
-            &[
-                "access.resources",
-                "access.grants",
-                "access.links",
-                "document.lifecycle",
-                "factorio.cli",
-                "factorio.agents",
-                "oidc_rp.sessions",
-            ],
+            document().metadata().and(login::data()),
             vec![Guard::new(command_guard)],
             Handler::new(|tx, call, actor, _, context| {
                 let actor = actor.ok_or(Error::NotFound)?;

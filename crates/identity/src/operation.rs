@@ -1,188 +1,238 @@
-//! Identity's portable operation dispatch. Parsing precedes Store entry. The host
-//! publishes execute's output only after the enclosing durable transaction commits.
-use crate::{Crypto, Identity};
-use alloc::{string::String, vec::Vec};
-use snap_store::Transaction;
-use snap_transport::{Error, Invocation, Value, json};
+//! Identity-owned contracts and operations over Credential and private Sessions.
+use crate::{
+    Credential, Crypto, Identity, Principal, ReleaseScope, SessionSummary, session::Sessions,
+};
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use snap_store::{Data, Error, Transaction};
+use snap_transport::{
+    Operation, Value,
+    bearer::{Change, Receiver, Token},
+    operation::{Context, Definition, Guard, TypedFailure},
+};
 
-pub enum Operation {
-    Enroll { email: String, password: String },
-    Login { email: String, password: String },
-    Current { bearer: String },
-    Logout { bearer: String },
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proof {
+    pub email: String,
+    pub password: String,
 }
-
-/// Authority captured under the application gate before ACK. Fields cannot be
-/// constructed by a wire caller. Hosts retain the gate through `execute`.
-pub struct Admitted {
-    operation: Operation,
-    session: Option<crate::Session>,
-    digest: Option<Vec<u8>>,
-    now: i64,
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseInput {
+    pub scope: ReleaseScope,
 }
-
-impl Admitted {
-    pub fn name(&self) -> &'static str {
-        self.operation.name()
-    }
-
-    pub fn execute(
-        self,
-        identity: &Identity,
-        tx: &mut Transaction<'_>,
-        crypto: &mut impl Crypto,
-    ) -> Result<Value, snap_store::Error> {
-        match self.operation {
-            Operation::Current { .. } => Ok(json!(self.session.expect("admitted current session"))),
-            Operation::Logout { .. } => {
-                tx.delete(
-                    crate::TABLES[2],
-                    &[snap_store::Value::Bytes(
-                        self.digest.expect("admitted logout digest"),
-                    )],
-                )?;
-                Ok(Value::Null)
-            }
-            operation => operation.execute(identity, tx, crypto, self.now),
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", deny_unknown_fields)]
+pub enum IdentityError {
+    Conflict,
+}
+macro_rules! contract {
+    ($type:ident, $name:literal, $input:ty, $output:ty) => {
+        pub struct $type;
+        impl Operation for $type {
+            const NAME: &'static str = $name;
+            type Input = $input;
+            type Output = $output;
+            type Error = IdentityError;
+            type Progress = ();
         }
-    }
+    };
 }
-impl Operation {
-    pub fn admit(
-        self,
-        identity: &Identity,
-        tx: &mut Transaction<'_>,
-        crypto: &impl Crypto,
-        now: i64,
-    ) -> Result<Admitted, snap_store::Error> {
-        let (session, digest) = match &self {
-            Self::Current { bearer } | Self::Logout { bearer } => (
-                Some(identity.resolve(tx, crypto, bearer, now)?),
-                Some(crypto.digest(bearer)),
+contract!(Enroll, "identity.enroll", Proof, Principal);
+contract!(Acquire, "identity.acquire", Proof, Principal);
+contract!(Fetch, "identity.fetch", (), Option<Principal>);
+contract!(Release, "identity.release", ReleaseInput, ());
+contract!(ListSessions, "identity.sessions", (), Vec<SessionSummary>);
+contract!(
+    ListCredentials,
+    "identity.credentials",
+    (),
+    Vec<crate::CredentialSummary>
+);
+
+pub type Initialize =
+    Box<dyn Fn(&mut Transaction<'_>, &Principal, &str) -> Result<(), Error> + Send>;
+/// Composition can initialize its own data when a new identity is enrolled.
+/// It cannot replace Identity's contracts, credential policy or response shape.
+pub struct Enrollment {
+    pub data: Data,
+    pub initialize: Initialize,
+}
+#[derive(Default)]
+pub struct Operations {
+    pub requests: Vec<Definition>,
+    pub preconnection: Vec<Definition>,
+}
+fn now(context: &Context) -> Result<i64, Error> {
+    context
+        .inputs
+        .get("clock")
+        .and_then(Value::as_i64)
+        .ok_or(Error::Unavailable)
+}
+fn anonymous() -> Guard {
+    Guard::new(|_, _, context| {
+        if context.bearer.is_some() {
+            return Err(snap_transport::Error::InvalidInput.into());
+        }
+        Ok(())
+    })
+}
+fn principal(context: &Context) -> Result<&Principal, Error> {
+    context.principal.as_ref().ok_or(Error::NotFound)
+}
+
+pub fn definitions<C: Crypto>(
+    identity: Identity,
+    crypto: impl Fn() -> C + Clone + Send + 'static,
+    enrollment: Option<Enrollment>,
+) -> Operations {
+    let enroll_crypto = crypto.clone();
+    let acquire_crypto = crypto.clone();
+    let release_crypto = crypto.clone();
+    let sessions_crypto = crypto.clone();
+    let enrollment_data = enrollment
+        .as_ref()
+        .map(|hook| hook.data.clone())
+        .unwrap_or_default();
+    Operations {
+        requests: Vec::new(),
+        preconnection: vec![
+            Definition::typed::<Enroll>(
+                false,
+                vec![anonymous()],
+                identity.data().and(enrollment_data),
+                &["clock"],
+                move |tx, proof, context| {
+                    let issued = match identity.enroll(
+                        tx,
+                        &mut enroll_crypto(),
+                        &proof.email,
+                        &proof.password,
+                        now(context)?,
+                    ) {
+                        Err(Error::Constraint) => {
+                            return Err(TypedFailure::Application(IdentityError::Conflict));
+                        }
+                        result => result?,
+                    };
+                    if let Some(hook) = &enrollment {
+                        (hook.initialize)(tx, &issued.principal, &crate::email_key(&proof.email)?)?;
+                    }
+                    context
+                        .bearer_changed(Change::Set(Token::new(issued.bearer)))
+                        .map_err(|_| Error::Invalid)?;
+                    Ok(issued.principal)
+                },
             ),
-            Self::Enroll { .. } | Self::Login { .. } => (None, None),
-        };
-        Ok(Admitted {
-            operation: self,
-            session,
-            digest,
-            now,
-        })
-    }
-    /// None lets composition dispatch to another capability. Unknown Identity
-    /// operations fail here, so credentials never enter the calculator/debug trace.
-    pub fn parse(invocation: &Invocation, bearer: Option<&str>) -> Result<Option<Self>, Error> {
-        let key = invocation.operation.as_str();
-        if !key.starts_with("identity.") {
-            return Ok(None);
-        }
-        let input = &invocation.input;
-        Ok(Some(match key {
-            "identity.enroll" | "identity.acquire" => {
-                if bearer.is_some() {
-                    return Err(Error::InvalidInput);
+            Definition::typed::<Acquire>(
+                false,
+                vec![anonymous()],
+                identity.data(),
+                &["clock"],
+                move |tx, proof, context| {
+                    let issued = identity.acquire(
+                        tx,
+                        &mut acquire_crypto(),
+                        &proof.email,
+                        &proof.password,
+                        now(context)?,
+                    )?;
+                    context
+                        .bearer_changed(Change::Set(Token::new(issued.bearer)))
+                        .map_err(|_| Error::Invalid)?;
+                    Ok(issued.principal)
+                },
+            ),
+            Definition::typed::<Fetch>(false, vec![], identity.data(), &[], |_, _, context| {
+                if context.principal.is_none() && context.bearer.is_some() {
+                    context
+                        .bearer_changed(Change::Clear)
+                        .map_err(|_| Error::Invalid)?;
                 }
-                let object = input
-                    .as_object()
-                    .filter(|o| o.len() == 2)
-                    .ok_or(Error::InvalidInput)?;
-                let email = object
-                    .get("email")
-                    .and_then(Value::as_str)
-                    .ok_or(Error::InvalidInput)?;
-                let password = object
-                    .get("password")
-                    .and_then(Value::as_str)
-                    .ok_or(Error::InvalidInput)?;
-                if key == "identity.enroll" {
-                    Self::Enroll {
-                        email: email.into(),
-                        password: password.into(),
+                Ok(context.principal.clone())
+            }),
+            Definition::typed::<Release>(
+                true,
+                vec![],
+                identity.data(),
+                &[],
+                move |tx, input, context| {
+                    let actor = principal(context)?.identity.clone();
+                    let bearer = context.bearer.as_deref().ok_or(Error::NotFound)?;
+                    identity.release_accepted(
+                        tx,
+                        &release_crypto(),
+                        &actor,
+                        bearer,
+                        input.scope,
+                    )?;
+                    if input.scope != ReleaseScope::Others {
+                        context
+                            .bearer_changed(Change::Clear)
+                            .map_err(|_| Error::Invalid)?;
                     }
-                } else {
-                    Self::Login {
-                        email: email.into(),
-                        password: password.into(),
-                    }
-                }
-            }
-            "identity.fetch" | "identity.logout" => {
-                if !input.is_null() {
-                    return Err(Error::InvalidInput);
-                }
-                let bearer = bearer.ok_or(Error::IdentityRequired)?;
-                if key == "identity.fetch" {
-                    Self::Current {
-                        bearer: bearer.into(),
-                    }
-                } else {
-                    Self::Logout {
-                        bearer: bearer.into(),
-                    }
-                }
-            }
-            _ => return Err(Error::UnknownOperation),
-        }))
-    }
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Enroll { .. } => "identity.enroll",
-            Self::Login { .. } => "identity.acquire",
-            Self::Current { .. } => "identity.fetch",
-            Self::Logout { .. } => "identity.logout",
-        }
-    }
-    pub fn execute(
-        self,
-        identity: &Identity,
-        tx: &mut Transaction<'_>,
-        crypto: &mut impl Crypto,
-        now: i64,
-    ) -> Result<Value, snap_store::Error> {
-        self.execute_with_enrollment(identity, tx, crypto, now, |_, _, _| Ok(()))
-    }
-
-    /// Compose application enrollment records with Identity's credential and
-    /// first session in the same transaction, without a second credential path.
-    pub fn execute_with_enrollment(
-        self,
-        identity: &Identity,
-        tx: &mut Transaction<'_>,
-        crypto: &mut impl Crypto,
-        now: i64,
-        enrolled: impl FnOnce(
-            &mut Transaction<'_>,
-            &crate::Issued,
-            &str,
-        ) -> Result<(), snap_store::Error>,
-    ) -> Result<Value, snap_store::Error> {
-        let issued = match self {
-            Self::Enroll { email, password } => {
-                let issued = identity.enroll(tx, crypto, &email, &password, now)?;
-                enrolled(tx, &issued, &email)?;
-                issued
-            }
-            Self::Login { email, password } => {
-                identity.login(tx, crypto, &email, &password, now)?
-            }
-            Self::Current { bearer } => {
-                return Ok(json!(identity.resolve(tx, crypto, &bearer, now)?));
-            }
-            Self::Logout { bearer } => {
-                identity.revoke(tx, crypto, &bearer, now)?;
-                return Ok(Value::Null);
-            }
-        };
-        Ok(json!({"bearer": issued.bearer, "session": issued.session}))
+                    Ok(())
+                },
+            ),
+            Definition::typed::<ListSessions>(
+                true,
+                vec![],
+                identity.data(),
+                &["clock"],
+                move |tx, _, context| {
+                    let crypto = sessions_crypto();
+                    let current = crypto.digest(context.bearer.as_deref().ok_or(Error::NotFound)?);
+                    Ok(Sessions::summaries(
+                        tx,
+                        &crypto,
+                        &principal(context)?.identity,
+                        &current,
+                        now(context)?,
+                    )?)
+                },
+            ),
+            Definition::typed::<ListCredentials>(
+                true,
+                vec![],
+                Credential::data(),
+                &[],
+                |tx, _, context| Ok(Credential::summaries(tx, &principal(context)?.identity)?),
+            ),
+        ],
     }
 }
-pub fn transport_error(error: snap_store::Error) -> Error {
-    match error {
-        snap_store::Error::NotFound => Error::InvalidBearer,
-        snap_store::Error::Invalid => Error::InvalidInput,
-        snap_store::Error::Constraint => Error::Application(json!({"code": "Conflict"})),
-        snap_store::Error::Miss(_) => Error::Application(json!({"code": "StoreMiss"})),
-        snap_store::Error::Indeterminate => Error::Application(json!({"code": "Indeterminate"})),
-        snap_store::Error::Unavailable => Error::Unavailable,
-    }
+pub fn recognizes(name: &str) -> bool {
+    matches!(
+        name,
+        Enroll::NAME
+            | Acquire::NAME
+            | Fetch::NAME
+            | Release::NAME
+            | ListSessions::NAME
+            | ListCredentials::NAME
+    )
+}
+
+/// Identity owns the HTTP mapping as well as the native operation contracts.
+pub fn http_routes() -> Vec<snap_transport::carrier::HttpRoute> {
+    use snap_transport::carrier::{
+        HttpMethod::{Get, Post},
+        HttpRoute,
+    };
+    [
+        (Enroll::NAME, Post, false),
+        (Acquire::NAME, Post, false),
+        (Fetch::NAME, Get, true),
+        (Release::NAME, Post, true),
+        (ListSessions::NAME, Get, true),
+        (ListCredentials::NAME, Get, true),
+    ]
+    .into_iter()
+    .map(|(operation, method, read_bearer)| HttpRoute {
+        operation,
+        method,
+        read_bearer,
+    })
+    .collect()
 }

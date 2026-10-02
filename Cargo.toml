@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "kits/react/wasm",
     "crates/platform/config",
     "apps/factorio",
     "apps/factorio/server",
@@ -10,6 +11,7 @@ members = [
     "crates/platform/document-host",
     "crates/platform/transport-tcp",
     "crates/platform/transport-ws",
+    "crates/platform/wasm-browser",
     "apps/factorio/cli",
     "crates/platform/oauth",
     "crates/http",

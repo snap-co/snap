@@ -1,6 +1,6 @@
 import { BrowserRuntime, type Publication } from "../../../crates/platform/wasm-browser/runtime";
 import { wasmModule } from "../../../crates/platform/wasm-browser/wasm";
-import { OAuthIdentity } from "../../../crates/platform/identity/oauth";
+import { bindIdentityProjection } from "../../../kits/react/identity";
 export function randomID() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6]! & 0x0f) | 0x40; bytes[8] = (bytes[8]! & 0x3f) | 0x80;
@@ -14,14 +14,14 @@ export type View = { thread: Thread; turns: Turn[] };
 type Document = { id: string; revision: string; value: Omit<Thread, "id"> & { turns: Turn[] } };
 type Result = Publication & { documents: Document[]; pending: number };
 type Binding = { connect(id: string): string; invoke(operation: string, input: string): string; receive(frame: string): string; free(): void };
-type Module = { default(options: { module_or_path: string }): Promise<void>; ChattyClient: new (actor: string) => Binding };
+type Module = { identity_fetch(origin: string): Promise<string>; default(options: { module_or_path: string }): Promise<void>; ChattyClient: new (actor: string) => Binding };
 export type Snapshot = { session: Session | null; documents: Document[]; connected: boolean; pending: number; error: string | null };
 const bindings = wasmModule<Module>("chatty");
 export class Chatty {
   private snapshot: Snapshot = { session: null, documents: [], connected: false, pending: 0, error: null };
   private listeners = new Set<() => void>();
   readonly runtime = new BrowserRuntime({
-    identity: new OAuthIdentity<Session>(),
+    identity: bindIdentityProjection<Session>(async () => (await bindings()).identity_fetch("")),
     key: (session: Session) => session.account!.owner,
     create: async (session: Session) => new (await bindings()).ChattyClient(session.account!.owner),
     decode: (raw: string) => JSON.parse(raw) as Result,

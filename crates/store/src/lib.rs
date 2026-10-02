@@ -2,7 +2,9 @@
 #![no_std]
 extern crate alloc;
 
+mod data;
 pub mod migration;
+pub use data::Data;
 mod schema;
 mod transaction;
 

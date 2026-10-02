@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-pub use http::{HttpOperation, HttpProjection, Projection, http_router};
+pub use http::{HttpOperation, WriteCookie, http_router};
 use snap_transport::carrier::{Connection, Dispatch, Physical, Submission};
 use std::{sync::Arc, time::Duration};
 

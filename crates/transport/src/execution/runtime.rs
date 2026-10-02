@@ -25,6 +25,7 @@ pub enum Observation {
         ticket: Ticket,
         event: Event,
         private: bool,
+        bearer: Option<crate::bearer::Change>,
     },
     Need {
         ticket: Ticket,
@@ -213,6 +214,7 @@ impl<P: Program, R: Authority> Runtime<P, R> {
                         id: self.invocations[&ticket],
                     },
                     private: self.execution.private_request(ticket),
+                    bearer: None,
                 }
             }
             execution::Event::Need { ticket, key } => Observation::Need { ticket, key },
@@ -230,6 +232,7 @@ impl<P: Program, R: Authority> Runtime<P, R> {
                 Observation::Event {
                     ticket,
                     private: self.execution.private_request(ticket),
+                    bearer: self.execution.take_bearer(),
                     event: Event::Completed {
                         id,
                         outcome: outcome.map_err(transport_error),

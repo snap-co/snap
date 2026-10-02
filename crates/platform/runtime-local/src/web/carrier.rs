@@ -2,7 +2,7 @@
 //! stepping, debugger publication and physical-lifetime policy stay here.
 use super::{Host, Shared};
 use snap_transport::{
-    Command, Error, Invocation, Outcome, Response,
+    Command, Error, Invocation, Response,
     carrier::{Connection, Dispatch, Frame, Submission},
     execution::Program,
     server::Authority,
@@ -133,8 +133,8 @@ impl<P: Program + Send + 'static, R: Authority + Send + 'static> Dispatch for Di
         .await
         .map_err(|_| Error::Unavailable)?
     }
-    async fn request(&self, _: Invocation, _: Option<String>) -> Outcome {
-        Err(Error::UnknownOperation)
+    async fn request(&self, _: Invocation, _: Option<String>) -> snap_transport::bearer::Reply {
+        Err(Error::UnknownOperation).into()
     }
 }
 async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(

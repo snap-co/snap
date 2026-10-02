@@ -1318,3 +1318,8 @@ fn row_identity(row: &Row) -> Result<&str, Error> {
 fn row_resource(row: &Row) -> Result<&str, Error> {
     row_text(row, "resource")
 }
+
+/// Data interface for framework eligibility metadata.
+pub fn data() -> snap_store::Data {
+    snap_store::Data::new(&TABLES)
+}

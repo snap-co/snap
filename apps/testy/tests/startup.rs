@@ -40,7 +40,10 @@ fn native_startup_validates_app_schema_and_present_bags_before_listening() {
     assert!(command().arg("--check-config").status().unwrap().success());
     snap_store_sqlite::migrate(
         &data.join("store.sqlite"),
-        &[toml::from_str(snap_identity::MIGRATION).unwrap()],
+        &[
+            toml::from_str(snap_identity::MIGRATION).unwrap(),
+            toml::from_str(snap_identity::SESSION_TIME_MIGRATION).unwrap(),
+        ],
     )
     .unwrap();
     fs::write(directory.path().join("secrets.enc"), b"damaged bag").unwrap();

@@ -5,22 +5,15 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use snap_transport::{Error, Event, Invocation, Outcome, carrier::Dispatch};
+use snap_transport::{Error, Event, Invocation, carrier::Dispatch};
 use std::sync::Arc;
 
-/// Host-selected projection after committed completion, e.g. removing secret
-/// credentials and returning a Set-Cookie header. No Identity policy lives here.
-pub type Projection = Arc<dyn Fn(&mut Outcome) -> HttpProjection + Send + Sync>;
-#[derive(Default)]
-pub struct HttpProjection {
-    pub status: Option<StatusCode>,
-    pub cookie: Option<String>,
-}
+pub type WriteCookie = Arc<dyn Fn(Option<&str>) -> String + Send + Sync>;
 pub struct HttpOperation {
     pub name: &'static str,
     pub method: Method,
     pub read_cookie: bool,
-    pub project: Projection,
+    pub write_cookie: WriteCookie,
 }
 
 pub fn http_router<D: Dispatch>(
@@ -35,7 +28,7 @@ pub fn http_router<D: Dispatch>(
         let handler = move |headers: HeaderMap, body: axum::body::Bytes| {
             let service = service.clone();
             let method = method.clone();
-            let project = operation.project.clone();
+            let write_cookie = operation.write_cookie.clone();
             async move {
                 let id = headers
                     .get("x-snap-operation-id")
@@ -45,8 +38,8 @@ pub fn http_router<D: Dispatch>(
                     .unwrap_or(1);
                 let forbidden = method == Method::POST
                     && headers.get("origin").and_then(|v| v.to_str().ok()) != Some(&service.origin);
-                let mut outcome = if forbidden {
-                    Err(Error::Application(serde_json::json!({"code":"Forbidden"})))
+                let reply: snap_transport::bearer::Reply = if forbidden {
+                    Err(Error::Application(serde_json::json!({"code":"Forbidden"}))).into()
                 } else {
                     let input = if method == Method::GET {
                         if body.is_empty() {
@@ -65,7 +58,7 @@ pub fn http_router<D: Dispatch>(
                         serde_json::from_slice(&body).map_err(|_| Error::InvalidInput)
                     };
                     match input {
-                        Err(error) => Err(error),
+                        Err(error) => Err(error).into(),
                         Ok(input) => {
                             let bearer = if operation.read_cookie {
                                 service.cookie.as_ref().and_then(|read| read(&headers))
@@ -86,19 +79,32 @@ pub fn http_router<D: Dispatch>(
                         }
                     }
                 };
-                let projection = project(&mut outcome);
+                let cookie = if reply.outcome.is_ok() {
+                    reply.bearer.as_ref().map(|change| match change {
+                        snap_transport::bearer::Change::Set(token) => {
+                            write_cookie(Some(token.expose()))
+                        }
+                        snap_transport::bearer::Change::Clear => write_cookie(None),
+                    })
+                } else {
+                    None
+                };
+                let outcome = reply.outcome;
                 let status = if forbidden {
                     StatusCode::FORBIDDEN
                 } else {
-                    projection.status.unwrap_or(match &outcome {
+                    match &outcome {
                         Ok(_) => StatusCode::OK,
                         Err(Error::InvalidInput) => StatusCode::BAD_REQUEST,
                         Err(Error::InvalidBearer | Error::IdentityRequired) => {
                             StatusCode::UNAUTHORIZED
                         }
                         Err(Error::UnknownOperation) => StatusCode::NOT_FOUND,
+                        Err(Error::Application(value)) if value["code"] == "Conflict" => {
+                            StatusCode::CONFLICT
+                        }
                         Err(_) => StatusCode::SERVICE_UNAVAILABLE,
-                    })
+                    }
                 };
                 let mut response = (
                     status,
@@ -106,7 +112,7 @@ pub fn http_router<D: Dispatch>(
                     Json(Event::Completed { id, outcome }),
                 )
                     .into_response();
-                if let Some(cookie) = projection.cookie {
+                if let Some(cookie) = cookie {
                     response
                         .headers_mut()
                         .insert("set-cookie", cookie.parse().expect("session cookie"));

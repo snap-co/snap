@@ -13,6 +13,10 @@ use snap_store::{Error, Transaction};
 
 pub const MIGRATION: &str = include_str!("../migrations/0001_oidc_rp.toml");
 pub const TABLES: [&str; 2] = ["oidc_rp.attempts", "oidc_rp.sessions"];
+/// Store residency of the relying-party data interface.
+pub fn data() -> snap_store::Data {
+    snap_store::Data::new(&TABLES)
+}
 const ATTEMPTS: &str = TABLES[0];
 const SESSIONS: &str = TABLES[1];
 

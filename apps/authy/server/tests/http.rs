@@ -57,19 +57,29 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
     );
     let created = host
         .post("/identity/enroll", &body, "", &host.base)
+        .header("x-snap-operation-id", "77")
         .send()
         .await
         .unwrap();
     assert_eq!(created.status(), 200);
     let first = cookie(&created);
     let completion = value(created).await;
-    let account = &completion["Completed"]["outcome"]["Ok"]["account"];
+    let account = value(host.request("/authy/account", &first).send().await.unwrap()).await["Completed"]["outcome"]["Ok"].clone();
+    assert_eq!(
+        completion["Completed"]["outcome"]["Ok"]["identity"],
+        account["identity"]
+    );
+    assert!(
+        completion["Completed"]["outcome"]["Ok"]
+            .get("session")
+            .is_none()
+    );
     assert!(
         completion["Completed"]["outcome"]["Ok"]
             .get("bearer")
             .is_none()
     );
-    assert_eq!(completion["Completed"]["id"], 1);
+    assert_eq!(completion["Completed"]["id"], 77);
     assert_eq!(account["email"], "account@example.test");
     assert_eq!(
         host.post("/identity/enroll", &body, "", &host.base)
@@ -99,7 +109,7 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
     assert_eq!(logged_in.status(), 200);
     let second = cookie(&logged_in);
     assert_eq!(
-        value(logged_in).await["Completed"]["outcome"]["Ok"]["account"]["identity"],
+        value(logged_in).await["Completed"]["outcome"]["Ok"]["identity"],
         account["identity"]
     );
     assert!(
@@ -117,11 +127,14 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
             .status(),
         200
     );
-    let sessions = host
-        .invoke(&first, "authy.sessions", Value::Null)
-        .await
-        .unwrap();
-    let sessions = sessions["sessions"].as_array().unwrap();
+    let sessions = value(
+        host.request("/identity/sessions", &first)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let sessions = sessions["Completed"]["outcome"]["Ok"].as_array().unwrap();
     assert_eq!(sessions.len(), 2);
     assert_eq!(
         sessions
@@ -131,9 +144,13 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
         1
     );
     assert_eq!(
-        host.invoke(&first, "authy.credentials", Value::Null)
-            .await
-            .unwrap()["credentials"],
+        value(
+            host.request("/identity/credentials", &first)
+                .send()
+                .await
+                .unwrap()
+        )
+        .await["Completed"]["outcome"]["Ok"],
         json!([{"label":"account@example.test","kind":"password","removable":false}])
     );
     assert_ne!(
@@ -144,19 +161,31 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
             .status(),
         200
     );
-    host.invoke(&first, "authy.logout", json!({"scope":"others"}))
+    assert_eq!(
+        host.post(
+            "/identity/release",
+            &json!({"scope":"others"}),
+            &first,
+            &host.base
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        200
+    );
+    let expired = host
+        .request("/identity/fetch", &second)
+        .send()
         .await
         .unwrap();
     assert!(
-        value(
-            host.request("/identity/fetch", &second)
-                .send()
-                .await
-                .unwrap()
-        )
-        .await["Completed"]["outcome"]["Ok"]
-            .is_null()
+        expired.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
     );
+    assert!(value(expired).await["Completed"]["outcome"]["Ok"].is_null());
     assert_eq!(upgrade(&host, &second).await, 401);
     host.restart().await;
     assert_eq!(
@@ -169,9 +198,23 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
         .await["Completed"]["outcome"]["Ok"]["identity"],
         account["identity"]
     );
-    host.invoke(&first, "authy.logout", json!({"scope":"current"}))
+    let released = host
+        .post(
+            "/identity/release",
+            &json!({"scope":"current"}),
+            &first,
+            &host.base,
+        )
+        .send()
         .await
         .unwrap();
+    assert_eq!(released.status(), 200);
+    assert!(
+        released.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
     assert!(
         value(
             host.request("/identity/fetch", &first)
@@ -215,7 +258,7 @@ async fn canonical_https_origin_selects_secure_host_cookie_and_survives_restart(
     host.restart().await;
     assert_eq!(
         value(
-            host.request("/identity/fetch", &cookie)
+            host.request("/authy/account", &cookie)
                 .send()
                 .await
                 .unwrap()

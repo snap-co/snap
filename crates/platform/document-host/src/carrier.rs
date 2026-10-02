@@ -3,7 +3,7 @@
 use crate::{CarrierControl, Output, web::Shared};
 use snap_store::Backend;
 use snap_transport::{
-    Command, Error, Event, Invocation, Outcome, Response,
+    Command, Error, Event, Invocation, Response,
     carrier::{Connection, Dispatch, Frame, Submission},
 };
 use std::{
@@ -197,17 +197,21 @@ impl<B: Backend + Send + 'static> Dispatch for Dispatcher<B> {
         });
         Ok(channel)
     }
-    async fn request(&self, invocation: Invocation, bearer: Option<String>) -> Outcome {
+    async fn request(
+        &self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> snap_transport::bearer::Reply {
         let shared = self.shared.clone();
         tokio::task::spawn_blocking(move || {
             shared
                 .host
                 .lock()
                 .unwrap()
-                .preconnection_request(invocation, bearer)
+                .preconnection_reply(invocation, bearer)
         })
         .await
-        .unwrap_or(Err(Error::Unavailable))
+        .unwrap_or_else(|_| Err(Error::Unavailable).into())
     }
 }
 
@@ -276,8 +280,12 @@ async fn run<B: Backend + Send + 'static>(
                     if let Command::Request { invocation, bearer } = &command
                         && processing.one_shot && host.is_preconnection_request(&invocation.operation) {
                         if fresh {
-                            let outcome = host.preconnection_request(invocation.clone(), bearer.clone());
-                            processing.retire(Some(Frame { response: Response::Events(vec![Event::Completed { id: invocation.id, outcome }]), handshake: false, attachment: None, terminal: true }));
+                            let reply = host.preconnection_reply(invocation.clone(), bearer.clone());
+                            let mut events = Vec::new();
+                            if reply.accepted { events.push(Event::Accepted { id: invocation.id }); }
+                            if let Some(change) = reply.bearer { events.push(Event::Bearer { id: invocation.id, change }); }
+                            events.push(Event::Completed { id: invocation.id, outcome: reply.outcome });
+                            processing.retire(Some(Frame { response: Response::Events(events), handshake: false, attachment: None, terminal: true }));
                         }
                         return true;
                     }

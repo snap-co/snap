@@ -43,6 +43,8 @@ impl<N> Contract<N> {
 pub struct Context {
     pub actor: Option<String>,
     pub bearer: Option<String>,
+    pub principal: Option<crate::bearer::Principal>,
+    pub bearer_change: Option<crate::bearer::Change>,
     /// Trusted logical lifetime, never copied from invocation input.
     pub lifetime: Option<String>,
     /// Module-owned acceptance data. Guards may capture resident data here;
@@ -139,8 +141,9 @@ pub struct Definition {
     pub progress: Validator,
     /// Evaluated once in declaration order. First failure stops acceptance.
     pub guards: Vec<Guard>,
-    /// Explicit Store residency, loaded by the platform before any guard runs.
-    pub tables: &'static [&'static str],
+    /// Data interfaces select residency; hosts prepare it before guards. Storage
+    /// definitions belong to those interfaces, never to the operation.
+    pub data: snap_store::Data,
     pub inputs: &'static [&'static str],
     pub handler: Handler,
 }
@@ -151,7 +154,7 @@ impl Definition {
     pub fn typed<O>(
         identity_required: bool,
         guards: Vec<Guard>,
-        tables: &'static [&'static str],
+        data: snap_store::Data,
         inputs: &'static [&'static str],
         mut run: impl FnMut(
             &mut Transaction<'_>,
@@ -171,7 +174,7 @@ impl Definition {
             name: O::NAME.into(),
             identity_required,
             guards,
-            tables,
+            data,
             inputs,
             input: |value| serde_json::from_value::<O::Input>(value.clone()).is_ok(),
             output: |value| serde_json::from_value::<O::Output>(value.clone()).is_ok(),
@@ -271,7 +274,7 @@ pub struct Runtime<W> {
     queued: BTreeMap<Ticket, (W, Invocation, Selection)>,
     slot: Option<Ticket>,
     active: Option<(W, Invocation, Selection, Context)>,
-    tables: &'static [&'static str],
+    data: snap_store::Data,
     started: bool,
     preparing: bool,
 }
@@ -283,7 +286,7 @@ impl<W> Default for Runtime<W> {
             queued: BTreeMap::new(),
             slot: None,
             active: None,
-            tables: &[],
+            data: snap_store::Data::default(),
             started: false,
             preparing: false,
         }
@@ -334,11 +337,11 @@ impl<W> Runtime<W> {
     pub fn pending(&self) -> usize {
         self.queued.len()
     }
-    pub fn tables(&self) -> &'static [&'static str] {
-        self.tables
+    pub fn data(&self) -> &snap_store::Data {
+        &self.data
     }
-    pub fn release_tables(&mut self) {
-        self.tables = &[];
+    pub fn release_data(&mut self) {
+        self.data = snap_store::Data::default();
     }
     pub fn enqueue(
         &mut self,
@@ -415,7 +418,7 @@ impl<W> Runtime<W> {
                     .unwrap_or_else(|| storage_error(error)),
             ));
         }
-        self.tables = self.definitions.get(selection).tables;
+        self.data = self.definitions.get(selection).data.clone();
         self.active = Some((work, invocation, selection, context));
         Ok(())
     }
@@ -481,6 +484,7 @@ impl<W> Runtime<W> {
         };
         if outcome.is_err() {
             context.publication = Value::Null;
+            context.bearer_change = None;
         }
         Some(Completed {
             work,
@@ -493,7 +497,7 @@ impl<W> Runtime<W> {
     /// Platform publication/controller work still owns the lane after commit.
     /// Finish only after its terminal result and logical-resource cleanup.
     pub fn finish(&mut self) {
-        self.tables = &[];
+        self.data = snap_store::Data::default();
         self.reject();
     }
 }
@@ -507,5 +511,15 @@ pub fn storage_error(error: snap_store::Error) -> Error {
         }
         snap_store::Error::Unavailable => Error::Unavailable,
         snap_store::Error::Indeterminate => Error::Unavailable,
+    }
+}
+
+impl crate::bearer::Receiver for Context {
+    fn bearer_changed(&mut self, change: crate::bearer::Change) -> Result<(), Error> {
+        if self.bearer_change.is_some() {
+            return Err(Error::Protocol);
+        }
+        self.bearer_change = Some(change);
+        Ok(())
     }
 }

@@ -69,7 +69,7 @@ fn accepted_typed_handler_composes_nested_writes_without_recharging_policy() {
             context.prepared = json!("accepted");
             Ok(())
         })],
-        &["quota.counter"],
+        snap_store::Data::new(&["quota.counter"]),
         &[],
         |tx, input, context| {
             assert_eq!(context.prepared, json!("accepted"));
@@ -126,7 +126,7 @@ fn declared_application_error_rolls_back_all_staged_writes() {
         .register(Definition::typed::<Increment>(
             false,
             vec![],
-            &["quota.counter"],
+            snap_store::Data::new(&["quota.counter"]),
             &[],
             |tx, _, context| {
                 write(tx, 99)?;
@@ -172,4 +172,90 @@ fn declared_application_error_rolls_back_all_staged_writes() {
     assert!(completed.context.publication.is_null());
     runtime.finish();
     assert_eq!(store.inspect("rollback", counter).unwrap(), 0);
+}
+
+#[test]
+fn bearer_callbacks_are_discarded_on_handler_validation_and_commit_failure() {
+    use snap_store::{Backend, Catalog, CommitError, Row, Store, Table, Write};
+    use snap_transport::bearer::{Change, Receiver, Token};
+    struct Disk(u8);
+    impl Backend for Disk {
+        fn load(&mut self, _: &Table) -> Result<Vec<Row>, StoreError> {
+            Ok(vec![])
+        }
+        fn commit(&mut self, _: &[Write]) -> Result<(), CommitError> {
+            match self.0 {
+                1 => Err(CommitError::Rejected(StoreError::Unavailable)),
+                2 => Err(CommitError::Indeterminate),
+                _ => Ok(()),
+            }
+        }
+    }
+    for (fault, failure) in [(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)] {
+        let migration: snap_store::migration::Migration = toml::from_str(
+            r#"id="0001_tokens"
+[[changes]]
+action="create_table"
+[changes.table]
+name="private.tokens"
+primary=["id"]
+columns=[{name="id",kind="integer"}]
+"#,
+        )
+        .unwrap();
+        let mut store =
+            Store::new(migration.apply(&Catalog::default()).unwrap(), Disk(fault)).unwrap();
+        store.load("private.tokens").unwrap();
+        let mut runtime = Runtime::default();
+        let mut definition = Definition::typed::<Increment>(
+            false,
+            vec![],
+            snap_store::Data::default(),
+            &[],
+            move |tx, _, context| {
+                tx.insert(
+                    "private.tokens",
+                    [("id".into(), 1.into())].into_iter().collect(),
+                )?;
+                context
+                    .bearer_changed(Change::Set(Token::new("secret".into())))
+                    .unwrap();
+                if failure == 1 {
+                    return Err(TypedFailure::Application("abort".into()));
+                }
+                Ok(1)
+            },
+        );
+        if failure == 2 {
+            definition.output = |_| false;
+        }
+        let selection = runtime.register(definition).unwrap();
+        runtime
+            .enqueue(
+                (),
+                Invocation {
+                    id: 1,
+                    operation: Increment::NAME.into(),
+                    input: json!(1),
+                },
+                selection,
+            )
+            .unwrap();
+        let (work, call, selection) = runtime.acquire().unwrap();
+        runtime
+            .accept(&mut store, work, call, selection, Context::default())
+            .unwrap_or_else(|_| panic!("admission"));
+        let completed = runtime.execute(&mut store).unwrap();
+        if fault == 0 && failure == 0 {
+            assert_eq!(completed.outcome, Ok(json!(1)));
+            assert!(matches!(
+                completed.context.bearer_change,
+                Some(Change::Set(_))
+            ));
+        } else {
+            assert!(completed.outcome.is_err());
+            assert!(completed.context.bearer_change.is_none());
+            assert!(completed.changes.is_empty());
+        }
+    }
 }

@@ -32,7 +32,7 @@ fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution
                 Guard::policy(|_, _, v, _| guard_visit(1, v)),
                 Guard::policy(|_, _, v, _| guard_visit(2, v)),
             ],
-            tables: &[],
+            data: snap_store::Data::new(&[]),
             handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
                 let doc = Document::new(registry());
                 let before = doc.retained(tx, ID)?;
@@ -104,7 +104,7 @@ fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
             inputs: &[],
             error: |_| true,
             guards: vec![],
-            tables: &[],
+            data: snap_store::Data::new(&[]),
             handler: snap_transport::operation::Handler::new(|tx, call, _, _, _| {
                 Document::new(registry()).observe(tx, ID, json!(99))?;
                 if call.input == "cold" {
@@ -181,7 +181,7 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
                 tx.find(snap_document::server::TABLES[0], "primary", &[])?;
                 Ok(())
             })],
-            tables: &[snap_document::server::TABLES[0]],
+            data: snap_store::Data::new(&[snap_document::server::TABLES[0]]),
             handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
                 Ok(json!(
                     tx.find(snap_document::server::TABLES[0], "primary", &[])?
@@ -251,7 +251,7 @@ fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
         inputs: &[],
         error: |_| true,
         guards: vec![],
-        tables: &[snap_document::server::TABLES[0]],
+        data: snap_store::Data::new(&[snap_document::server::TABLES[0]]),
         handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
             Ok(Document::new(registry()).read(tx, ID, Some("alice"))?.value)
         }),
@@ -1243,4 +1243,88 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
     assert_eq!(a.get(ID).unwrap().value, json!(20));
     assert_eq!(a.authoritative(), b.authoritative());
     assert!(a.pending().is_empty());
+}
+
+#[test]
+fn connectionless_bearer_handoff_is_separate_from_output_and_requires_successful_commit() {
+    use snap_transport::bearer::{Change, Receiver, Token};
+    for failure in [0, 1, 2] {
+        let mut host = fixture().with_preconnection_request(Request {
+            name: "fixture.issue".into(),
+            identity_required: false,
+            input: |v| v.is_null(),
+            output: if failure == 2 {
+                |_| false
+            } else {
+                |v| v.is_null()
+            },
+            progress: |_| false,
+            error: |_| true,
+            guards: vec![],
+            inputs: &[],
+            data: Document::new(registry()).data(),
+            handler: snap_transport::operation::Handler::new(move |tx, _, _, _, context| {
+                Document::new(registry()).observe(tx, ID, json!(1))?;
+                context
+                    .bearer_changed(Change::Set(Token::new("private-token".into())))
+                    .unwrap();
+                if failure == 1 {
+                    return Err(snap_store::Error::Unavailable);
+                }
+                Ok(json!(null))
+            }),
+        });
+        let reply = host.preconnection_reply(
+            Invocation {
+                id: 7,
+                operation: "fixture.issue".into(),
+                input: json!(null),
+            },
+            None,
+        );
+        if failure == 0 {
+            assert_eq!(reply.outcome, Ok(json!(null)));
+            assert!(
+                matches!(reply.bearer, Some(Change::Set(token)) if token.expose() == "private-token")
+            );
+        } else {
+            assert!(reply.outcome.is_err());
+            assert!(reply.bearer.is_none());
+        }
+        let snapshot = host
+            .transact("committed", |tx| Document::new(registry()).retained(tx, ID))
+            .unwrap();
+        assert_eq!(snapshot.value, json!(if failure == 0 { 1 } else { 0 }));
+    }
+}
+
+#[test]
+fn connectionless_reply_preserves_admission_for_failed_execution() {
+    let mut host = fixture().with_preconnection_request(Request {
+        name: "fixture.failure".into(),
+        identity_required: false,
+        input: |v| v.is_null(),
+        output: |v| v.is_null(),
+        progress: |_| false,
+        error: |_| true,
+        guards: vec![],
+        inputs: &[],
+        data: snap_store::Data::default(),
+        handler: snap_transport::operation::Handler::new(|_, _, _, _, _| {
+            Err(snap_store::Error::Unavailable)
+        }),
+    });
+    for (input, accepted) in [(json!(null), true), (json!({}), false)] {
+        let reply = host.preconnection_reply(
+            Invocation {
+                id: 1,
+                operation: "fixture.failure".into(),
+                input,
+            },
+            None,
+        );
+        assert_eq!(reply.accepted, accepted);
+        assert!(reply.outcome.is_err());
+        assert!(reply.bearer.is_none());
+    }
 }

@@ -124,8 +124,8 @@ fn protected_identity_requests_validate_authority_before_ack() {
         bearer: Some("invalid".into()),
         invocation: Invocation {
             id: 1,
-            operation: "identity.fetch".into(),
-            input: json!(null),
+            operation: "identity.release".into(),
+            input: json!({"scope":"current"}),
         },
     }))
     .unwrap();
@@ -193,4 +193,59 @@ fn permission_changes_share_the_fifo_with_calculator_operations() {
     assert_eq!(block_on(queued), Ok(3));
     block_on(revoked).unwrap();
     assert_eq!(memory.residents(), 1);
+}
+
+#[test]
+fn shared_identity_sdk_owns_acquisition_management_and_release_without_tracing_secrets() {
+    let sessions = Sessions::new(
+        support::store(true),
+        support::Fake::default(),
+        snap_identity::Identity::default(),
+        || 10,
+    );
+    let memory = Memory::new(platform(sessions));
+    let mut transport = snap_transport::client::Client::new(memory.channel());
+    assert_eq!(
+        block_on(snap_identity::client::Client::new(&mut transport).fetch()),
+        Ok(None)
+    );
+    let principal = block_on(
+        snap_identity::client::Client::new(&mut transport).enroll(" UI@Example.test ", "password1"),
+    )
+    .unwrap();
+    assert_eq!(principal.authenticated_at, 10);
+    let bearer = transport.bearer().unwrap().to_owned();
+    assert_eq!(
+        block_on(snap_identity::client::Client::new(&mut transport).fetch()),
+        Ok(Some(principal))
+    );
+    let summaries =
+        block_on(snap_identity::client::Client::new(&mut transport).sessions()).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert!(summaries[0].current);
+    assert_ne!(summaries[0].id, bearer);
+    let credentials =
+        block_on(snap_identity::client::Client::new(&mut transport).credentials()).unwrap();
+    assert_eq!(credentials[0].label, "ui@example.test");
+    block_on(
+        snap_identity::client::Client::new(&mut transport)
+            .release(snap_identity::ReleaseScope::Current),
+    )
+    .unwrap();
+    assert_eq!(transport.bearer(), None);
+    assert_eq!(
+        block_on(snap_identity::client::Client::new(&mut transport).fetch()),
+        Ok(None)
+    );
+    transport.use_bearer(&bearer);
+    assert_eq!(
+        block_on(snap_identity::client::Client::new(&mut transport).fetch()),
+        Ok(None)
+    );
+    assert_eq!(
+        transport.bearer(),
+        None,
+        "invalid credentials are cleared by the provider's fetch contract"
+    );
+    assert!(memory.trace().is_empty());
 }

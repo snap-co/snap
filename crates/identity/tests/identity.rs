@@ -17,7 +17,7 @@ fn session_management_is_owner_scoped_and_summaries_are_not_credentials() {
         .value;
     let second = store
         .run("login", |tx| {
-            identity.login(tx, &mut crypto, "a@example.test", "password1", 1)
+            identity.acquire(tx, &mut crypto, "a@example.test", "password1", 1)
         })
         .unwrap()
         .value;
@@ -64,7 +64,7 @@ fn session_management_is_owner_scoped_and_summaries_are_not_credentials() {
             .unwrap()
             .value
             .identity,
-        first.session.identity
+        first.principal.identity
     );
     store
         .run("others", |tx| {
@@ -95,7 +95,11 @@ fn session_management_is_owner_scoped_and_summaries_are_not_credentials() {
             ))
             .unwrap()
             .value,
-        vec!["a@example.test"]
+        vec![snap_identity::CredentialSummary {
+            label: "a@example.test".into(),
+            kind: snap_identity::CredentialKind::Password,
+            removable: false
+        }]
     );
     store
         .run("all", |tx| {
@@ -131,7 +135,7 @@ fn credentials_sessions_and_expiry_are_transactional() {
         Err(Error::Constraint)
     ));
     assert!(matches!(
-        store.run("bad", |tx| identity.login(
+        store.run("bad", |tx| identity.acquire(
             tx,
             &mut crypto,
             "alice@example.com",
@@ -142,11 +146,11 @@ fn credentials_sessions_and_expiry_are_transactional() {
     ));
     let second = store
         .run("login", |tx| {
-            identity.login(tx, &mut crypto, "ALICE@example.com", "password1", 101)
+            identity.acquire(tx, &mut crypto, "ALICE@example.com", "password1", 101)
         })
         .unwrap()
         .value;
-    assert_eq!(first.session.identity, second.session.identity);
+    assert_eq!(first.principal.identity, second.principal.identity);
     assert_ne!(first.bearer, second.bearer);
     store
         .run("revoke", |tx| {
@@ -223,7 +227,7 @@ fn cold_reads_and_late_failures_cannot_partially_enroll() {
 fn credentials_and_revocation_survive_reopen() {
     let path = std::env::temp_dir().join(format!("snap-identity-{}.sqlite", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    snap_store_sqlite::migrate(&path, &[support::migration()]).unwrap();
+    snap_store_sqlite::migrate(&path, &support::migrations()).unwrap();
     let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
     for table in snap_identity::TABLES {
         store.load(table).unwrap();
@@ -267,9 +271,118 @@ fn credentials_and_revocation_survive_reopen() {
     ));
     store
         .run("login", |tx| {
-            identity.login(tx, &mut crypto, "a@b", "password1", 2)
+            identity.acquire(tx, &mut crypto, "a@b", "password1", 2)
         })
         .unwrap();
     drop(store);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn authentication_time_is_durable_and_independent_of_configured_lifetime() {
+    let mut store = store(true);
+    let mut crypto = Fake::default();
+    let issued = store
+        .run("enroll", |tx| {
+            Identity::new(10).unwrap().enroll(
+                tx,
+                &mut crypto,
+                "time@example.test",
+                "password1",
+                100,
+            )
+        })
+        .unwrap()
+        .value;
+    let resolved = store
+        .run("resolve", |tx| {
+            Identity::new(1000)
+                .unwrap()
+                .resolve(tx, &crypto, &issued.bearer, 105)
+        })
+        .unwrap()
+        .value;
+    assert_eq!(resolved, issued.principal);
+    assert_eq!(resolved.authenticated_at, 100);
+}
+
+#[test]
+fn additive_session_migration_preserves_existing_authority_without_inventing_freshness() {
+    use snap_identity::Crypto;
+    let migrations = support::migrations();
+    let path = tempfile_path();
+    let _ = std::fs::remove_file(&path);
+    snap_store_sqlite::migrate(&path, &migrations[..1]).unwrap();
+    let crypto = Fake::default();
+    let bearer = "a".repeat(64);
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
+    store.load(snap_identity::TABLES[0]).unwrap();
+    store.load(snap_identity::TABLES[2]).unwrap();
+    store
+        .run("legacy", |tx| {
+            tx.insert(
+                snap_identity::TABLES[0],
+                [("id".into(), "legacy".into())].into_iter().collect(),
+            )?;
+            tx.insert(
+                snap_identity::TABLES[2],
+                [
+                    ("digest".into(), Value::Bytes(crypto.digest(&bearer))),
+                    ("identity".into(), "legacy".into()),
+                    ("expires".into(), 100.into()),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .unwrap();
+    drop(store);
+    snap_store_sqlite::migrate(&path, &migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
+    Identity::default().data().prepare(&mut store).unwrap();
+    let principal = store
+        .run("resolve", |tx| {
+            Identity::default().resolve(tx, &crypto, &bearer, 99)
+        })
+        .unwrap()
+        .value;
+    assert_eq!(principal.identity, "legacy");
+    assert_eq!(principal.authenticated_at, 0);
+    assert!(matches!(
+        store.run("expired", |tx| Identity::default()
+            .resolve(tx, &crypto, &bearer, 100)),
+        Err(Error::NotFound)
+    ));
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+fn tempfile_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "snap-identity-migration-{}.sqlite",
+        std::process::id()
+    ))
+}
+
+#[test]
+fn invalid_proofs_are_rejected_before_credential_lookup() {
+    let mut store = store(true);
+    let identity = Identity::default();
+    let mut crypto = Fake::default();
+    store
+        .run("enroll", |tx| {
+            identity.enroll(tx, &mut crypto, "known@example.test", "password1", 0)
+        })
+        .unwrap();
+    for email in ["known@example.test", "unknown@example.test"] {
+        assert!(matches!(
+            store.run("invalid-proof", |tx| identity.acquire(
+                tx,
+                &mut crypto,
+                email,
+                "short",
+                1
+            )),
+            Err(Error::Invalid)
+        ));
+    }
 }

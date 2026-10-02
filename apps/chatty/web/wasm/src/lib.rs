@@ -136,3 +136,8 @@ impl ChattyClient {
         serde_json::to_string(&serde_json::json!({"documents":documents,"pending":self.client.pending().len(),"send":send,"error":error,"ready":!self.client.is_reconciling() && !self.client.needs_recovery()})).map_err(crate::error)
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn identity_fetch(origin: String) -> Result<String, wasm_bindgen::JsValue> {
+    snap_react_bindings::oauth_fetch(&origin).await
+}

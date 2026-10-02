@@ -93,10 +93,14 @@ impl Authority for TestAuthority {
 }
 
 fn migrations() -> Vec<snap_store::migration::Migration> {
-    [snap_identity::MIGRATION, snap_oidc::MIGRATION]
-        .into_iter()
-        .map(|text| toml::from_str(text).unwrap())
-        .collect()
+    [
+        snap_identity::MIGRATION,
+        snap_oidc::MIGRATION,
+        snap_identity::SESSION_TIME_MIGRATION,
+    ]
+    .into_iter()
+    .map(|text| toml::from_str(text).unwrap())
+    .collect()
 }
 
 fn store() -> Store<snap_store_sqlite::Sqlite> {
@@ -164,9 +168,9 @@ fn enroll_as(
         .unwrap()
         .value;
     let session = BrowserSession {
-        subject: issued.session.identity.clone(),
+        subject: issued.principal.identity.clone(),
         session: crypto.digest(&issued.bearer),
-        auth_time: issued.session.expires - 30 * 24 * 60 * 60,
+        auth_time: issued.principal.authenticated_at,
     };
     (issued.bearer, session)
 }
@@ -703,7 +707,7 @@ fn stale_max_age_requires_fresh_login() {
     // A fresh login resumes into consent.
     let issued = store
         .run("login", |tx| {
-            snap_identity::Identity::default().login(
+            snap_identity::Identity::default().acquire(
                 tx,
                 &mut crypto,
                 "oidc@example.test",
@@ -714,9 +718,9 @@ fn stale_max_age_requires_fresh_login() {
         .unwrap()
         .value;
     let fresh = BrowserSession {
-        subject: issued.session.identity.clone(),
+        subject: issued.principal.identity.clone(),
         session: crypto.digest(&issued.bearer),
-        auth_time: issued.session.expires - 30 * 24 * 60 * 60,
+        auth_time: issued.principal.authenticated_at,
     };
     let outcome = store
         .run("resume", |tx| {
@@ -1137,7 +1141,7 @@ fn fresh_login_rejects_an_old_second_session_for_prompt_and_max_age() {
         let (_, first) = enroll(&mut store, &mut crypto);
         let old = store
             .run("old-login", |tx| {
-                snap_identity::Identity::default().login(
+                snap_identity::Identity::default().acquire(
                     tx,
                     &mut crypto,
                     "oidc@example.test",
@@ -1148,7 +1152,7 @@ fn fresh_login_rejects_an_old_second_session_for_prompt_and_max_age() {
             .unwrap()
             .value;
         let second = BrowserSession {
-            subject: old.session.identity,
+            subject: old.principal.identity,
             session: crypto.digest(&old.bearer),
             auth_time: NOW + 1,
         };
@@ -1196,7 +1200,7 @@ fn fresh_login_rejects_an_old_second_session_for_prompt_and_max_age() {
         assert!(matches!(outcome, ResumeOutcome::LoginRequired));
         let new = store
             .run("fresh-login", |tx| {
-                snap_identity::Identity::default().login(
+                snap_identity::Identity::default().acquire(
                     tx,
                     &mut crypto,
                     "oidc@example.test",
@@ -1207,7 +1211,7 @@ fn fresh_login_rejects_an_old_second_session_for_prompt_and_max_age() {
             .unwrap()
             .value;
         let fresh = BrowserSession {
-            subject: new.session.identity,
+            subject: new.principal.identity,
             session: crypto.digest(&new.bearer),
             auth_time: NOW + 100,
         };
@@ -1872,7 +1876,7 @@ fn logout_validates_targets_and_confirms() {
     assert!(matches!(outcome, LogoutConfirmOutcome::Forbidden));
     let issued = store
         .run("login2", |tx| {
-            snap_identity::Identity::default().login(
+            snap_identity::Identity::default().acquire(
                 tx,
                 &mut crypto,
                 "oidc@example.test",
@@ -1883,9 +1887,9 @@ fn logout_validates_targets_and_confirms() {
         .unwrap()
         .value;
     let other = BrowserSession {
-        subject: issued.session.identity.clone(),
+        subject: issued.principal.identity.clone(),
         session: crypto.digest(&issued.bearer),
-        auth_time: issued.session.expires - 30 * 24 * 60 * 60,
+        auth_time: issued.principal.authenticated_at,
     };
     let outcome = store
         .run("logout-wrong-session", |tx| {

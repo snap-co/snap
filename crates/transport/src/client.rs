@@ -6,13 +6,21 @@ use alloc::string::String;
 pub struct Client<C> {
     channel: C,
     sequence: u64,
+    bearer: Option<crate::bearer::Token>,
 }
 impl<C: Channel> Client<C> {
     pub fn new(channel: C) -> Self {
         Self {
             channel,
             sequence: 0,
+            bearer: None,
         }
+    }
+    pub fn bearer(&self) -> Option<&str> {
+        self.bearer.as_ref().map(crate::bearer::Token::expose)
+    }
+    pub fn use_bearer(&mut self, bearer: &str) {
+        self.bearer = Some(crate::bearer::Token::new(bearer.into()));
     }
     pub fn replace_channel(&mut self, channel: C) {
         self.channel = channel;
@@ -123,14 +131,31 @@ impl<C: Channel> Client<C> {
             Response::Events(events) => {
                 let mut trace = Trace::new(self.sequence, 0);
                 let mut result = None;
+                let mut bearer = None;
                 for event in events {
                     match trace.receive(event)? {
                         Observation::Completed(outcome) => result = Some(outcome),
                         Observation::Progress(value) => progress(value),
                         Observation::Accepted => {}
+                        Observation::Bearer(change) => {
+                            if bearer.is_some() {
+                                return Err(Error::Protocol);
+                            }
+                            bearer = Some(change);
+                        }
                     }
                 }
-                result.ok_or(Error::Protocol)?
+                let outcome = result.ok_or(Error::Protocol)?;
+                if let Some(change) = bearer {
+                    if outcome.is_err() {
+                        return Err(Error::Protocol);
+                    }
+                    self.bearer = match change {
+                        crate::bearer::Change::Set(token) => Some(token),
+                        crate::bearer::Change::Clear => None,
+                    };
+                }
+                outcome
             }
             Response::Failed(error) => Err(error),
             _ => Err(Error::Protocol),
@@ -153,6 +178,7 @@ pub enum Observation {
     Accepted,
     Progress(Value),
     Completed(Outcome),
+    Bearer(crate::bearer::Change),
 }
 
 impl Trace {
@@ -182,6 +208,9 @@ impl Trace {
                 self.accepted = true;
                 Ok(Observation::Accepted)
             }
+            Event::Bearer { id, change } if id == self.id && self.accepted => {
+                Ok(Observation::Bearer(change))
+            }
             Event::Progress { id, value } if id == self.id && self.accepted => {
                 Ok(Observation::Progress(value))
             }
@@ -194,4 +223,8 @@ impl Trace {
             _ => Err(Error::Protocol),
         }
     }
+}
+
+pub fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
+    serde_json::from_value(value).map_err(|_| Error::InvalidOutput)
 }

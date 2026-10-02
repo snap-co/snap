@@ -3,6 +3,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod bearer;
 pub mod binary;
 pub mod carrier;
 pub mod client;
@@ -74,9 +75,23 @@ pub enum Command {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    Accepted { id: u64 },
-    Progress { id: u64, value: Value },
-    Completed { id: u64, outcome: Outcome },
+    Accepted {
+        id: u64,
+    },
+    /// Carrier credential publication, distinct from module output. Sent only
+    /// after commit, never retained in invocation diagnostics or replay records.
+    Bearer {
+        id: u64,
+        change: bearer::Change,
+    },
+    Progress {
+        id: u64,
+        value: Value,
+    },
+    Completed {
+        id: u64,
+        outcome: Outcome,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Response {

@@ -1,7 +1,7 @@
 //! Domain-independent handoff between physical carriers and host dispatch.
 //! Hosts select synchronization and execution; this contract requires neither
 //! threads nor an async runtime. Drivers never run handlers or access Store.
-use crate::{Command, Error, Invocation, Outcome, Response};
+use crate::{Command, Error, Invocation, Response};
 use alloc::string::String;
 use core::future::Future;
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ pub trait Dispatch: Clone + Send + Sync + 'static {
         &self,
         invocation: Invocation,
         bearer: Option<String>,
-    ) -> impl Future<Output = Outcome> + Send;
+    ) -> impl Future<Output = crate::bearer::Reply> + Send;
 }
 
 /// Own physical teardown across EOF, errors, failed upgrades and task cancellation.
@@ -73,4 +73,17 @@ impl<C: Connection> Drop for Physical<C> {
     fn drop(&mut self) {
         self.0.disconnect();
     }
+}
+
+/// Portable route metadata owned by a module's contracts. Hosts choose physical
+/// HTTP libraries and cookie encoding, without redefining operation names.
+#[derive(Clone, Copy)]
+pub enum HttpMethod {
+    Get,
+    Post,
+}
+pub struct HttpRoute {
+    pub operation: &'static str,
+    pub method: HttpMethod,
+    pub read_bearer: bool,
 }

@@ -50,7 +50,7 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         error: |_| true,
         guards: vec![],
         inputs: &[],
-        tables: &[],
+        data: snap_store::Data::new(&[]),
         handler: snap_transport::operation::Handler::new(move |_, _, _, _, _| {
             Ok(json!(
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
@@ -161,4 +161,83 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     dispatch.abort();
     let _ = serving.await;
     let _ = dispatch.await;
+}
+
+#[tokio::test]
+async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
+    use snap_transport::bearer::{Change, Receiver, Token};
+    let migrations = [
+        snap_access::MIGRATION,
+        snap_document::server::MIGRATION,
+        snap_document::server::LIFECYCLE_MIGRATION,
+    ]
+    .map(|source| toml::from_str(source).unwrap());
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
+    let document =
+        snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
+    document.metadata().prepare(&mut store).unwrap();
+    let host = Host::new(
+        store,
+        document,
+        Arc::new(|_, _| Err(snap_store::Error::NotFound)),
+        Default::default(),
+        "bearer-boot".into(),
+    )
+    .with_preconnection_request(Request {
+        name: "fixture.acquire".into(),
+        identity_required: false,
+        input: |v| v.is_null(),
+        output: |v| v.is_null(),
+        progress: |_| false,
+        error: |_| true,
+        guards: vec![],
+        inputs: &[],
+        data: snap_store::Data::default(),
+        handler: snap_transport::operation::Handler::new(|_, _, _, _, context| {
+            context
+                .bearer_changed(Change::Set(Token::new("private-token".into())))
+                .unwrap();
+            Ok(json!(null))
+        }),
+    });
+    let shared = Shared::new(host, "http://localhost".into());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (server_tls, client_tls) = tls_support::pki(directory.path(), false);
+    let serving = tokio::spawn(snap_document_host::tcp::serve(listener, shared, server_tls));
+    for (operation, success) in [("fixture.acquire", true), ("fixture.unknown", false)] {
+        let mut socket = Client::open(&address.to_string(), &client_tls)
+            .await
+            .unwrap();
+        socket
+            .send(&Command::Request {
+                bearer: None,
+                invocation: Invocation {
+                    id: 7,
+                    operation: operation.into(),
+                    input: json!(null),
+                },
+            })
+            .await
+            .unwrap();
+        let (response, attachment) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), socket.receive())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(attachment.is_none());
+        if success {
+            assert!(
+                matches!(response, Response::Events(events) if matches!(events.as_slice(), [Event::Accepted { id: 7 }, Event::Bearer { id: 7, change: Change::Set(token) }, Event::Completed { id: 7, outcome: Ok(value) }] if token.expose() == "private-token" && value.is_null()))
+            );
+        } else {
+            assert_eq!(
+                response,
+                Response::Failed(snap_transport::Error::UnknownOperation)
+            );
+        }
+    }
+    serving.abort();
+    let _ = serving.await;
 }

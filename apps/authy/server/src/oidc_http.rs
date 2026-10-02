@@ -281,7 +281,7 @@ fn browser(
         Ok(session) => Ok(Some(oidc::BrowserSession {
             subject: session.identity,
             session: snap_crypto::Native.digest(&bearer),
-            auth_time: session.expires - authy::SESSION_LIFETIME_SECONDS,
+            auth_time: session.authenticated_at,
         })),
         Err(Error::NotFound) => Ok(None),
         Err(error) => Err(error),

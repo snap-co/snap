@@ -41,7 +41,7 @@ export class WebChannel {
           if (
             !Array.isArray(frame.Events) ||
             frame.Events.length !== 1 ||
-            pending.events.length >= 2
+            pending.events.length >= 3
           )
             throw new Error("Invalid event frame");
           const match = /^\{"Events":\[(.*)\]\}$/.exec(data);
@@ -69,8 +69,7 @@ export class WebChannel {
     if (this.pending || this.socket.readyState !== WebSocket.OPEN)
       throw new Error("Channel unavailable");
     const decoded = JSON.parse(command);
-    const secret = !!decoded.Connect || !!decoded.Request?.bearer ||
-      decoded.Request?.invocation?.operation?.startsWith("identity.");
+    const secret = !!decoded.Connect || !!decoded.Request;
     this.observe(secret ? "→ [authentication request redacted]" : `→ ${command}`);
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject, events: [], secret };

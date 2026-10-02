@@ -228,11 +228,18 @@ impl Host {
             .unwrap();
         assert_eq!(response.status(), 200);
         let cookie = cookie(&response);
-        (
-            cookie,
-            response.json::<Value>().await.unwrap()["Completed"]["outcome"]["Ok"]["account"]
-                .clone(),
+        let principal =
+            response.json::<Value>().await.unwrap()["Completed"]["outcome"]["Ok"].clone();
+        let account = value(
+            self.request("/authy/account", &cookie)
+                .send()
+                .await
+                .unwrap(),
         )
+        .await["Completed"]["outcome"]["Ok"]
+            .clone();
+        assert_eq!(principal["identity"], account["identity"]);
+        (cookie, account)
     }
 
     pub async fn invoke(

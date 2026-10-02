@@ -22,7 +22,7 @@ pub fn declarations(config: crate::Config, origin: String) -> crate::Application
 pub(crate) fn request(
     name: &str,
     output: Validator,
-    tables: &'static [&'static str],
+    data: snap_store::Data,
     guards: Vec<Guard>,
     handler: Handler,
 ) -> Definition {
@@ -33,7 +33,7 @@ pub(crate) fn request(
         output,
         progress: |_| false,
         error: |_| true,
-        tables,
+        data,
         inputs: &["clock"],
         guards,
         handler,

@@ -32,6 +32,7 @@ impl<C: Channel> Client<C> {
             return Err(Error::Occupied);
         }
         self.bearer = Some(bearer.into());
+        self.transport.use_bearer(bearer);
         Ok(())
     }
     pub async fn authenticate(
@@ -43,28 +44,19 @@ impl<C: Channel> Client<C> {
         if self.connected {
             return Err(Error::Occupied);
         }
-        let result = self
-            .transport
-            .request(
-                None,
-                if enroll {
-                    "identity.enroll"
-                } else {
-                    "identity.acquire"
-                },
-                json!({"email": email, "password": password}),
-            )
-            .await?;
-        let bearer = result["bearer"]
-            .as_str()
-            .ok_or(Error::InvalidOutput)?
-            .into();
+        let mut identity = snap_identity::client::Client::new(&mut self.transport);
+        if enroll {
+            identity.enroll(email, password).await?;
+        } else {
+            identity.acquire(email, password).await?;
+        }
+        let bearer: String = self.transport.bearer().ok_or(Error::InvalidOutput)?.into();
         self.bearer = Some(bearer);
         Ok(self.bearer.clone().unwrap())
     }
     pub async fn logout(&mut self) -> Result<(), Error> {
-        self.transport
-            .request(self.bearer.as_deref(), "identity.logout", Value::Null)
+        snap_identity::client::Client::new(&mut self.transport)
+            .release(snap_identity::ReleaseScope::Current)
             .await?;
         self.bearer = None;
         self.connected = false;

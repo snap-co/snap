@@ -114,6 +114,13 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn metadata(&self) -> snap_store::Data {
+        snap_store::Data::new(&[TABLES[1], TABLES[2]]).and(snap_access::data())
+    }
+    pub fn data(&self) -> snap_store::Data {
+        snap_store::Data::new(&TABLES).and(snap_access::data())
+    }
+
     pub fn access_guard(&self) -> crate::DocumentAccessGuard<'_> {
         crate::DocumentAccessGuard::new(self)
     }

@@ -81,3 +81,8 @@ impl FactorioClient {
             .map_err(error)
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn identity_fetch(origin: String) -> Result<String, wasm_bindgen::JsValue> {
+    snap_react_bindings::oauth_fetch(&origin).await
+}

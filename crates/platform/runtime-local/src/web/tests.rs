@@ -184,7 +184,7 @@ async fn socket_executor_progresses_while_host_preparation_holds_the_gate() {
                 let _ = entered.send(());
                 let _ = released.recv_timeout(Duration::from_secs(5));
                 finished.store(true, Ordering::Release);
-                Ok(Value::Null)
+                Ok(Value::Null).into()
             })))
         },
     );

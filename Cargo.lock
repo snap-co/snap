@@ -289,8 +289,11 @@ dependencies = [
  "serde",
  "serde_json",
  "snap-document",
+ "snap-react-bindings",
  "snap-transport",
+ "snap-wasm-browser",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -549,8 +552,10 @@ dependencies = [
  "chatty",
  "serde_json",
  "snap-document",
+ "snap-react-bindings",
  "snap-transport",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1022,8 +1027,10 @@ dependencies = [
  "factorio",
  "serde_json",
  "snap-document",
+ "snap-react-bindings",
  "snap-transport",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -3176,6 +3183,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap-react-bindings"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "snap-identity",
+ "snap-oidc",
+ "snap-transport",
+ "snap-wasm-browser",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "snap-runtime-local"
 version = "0.0.0"
 dependencies = [
@@ -3244,6 +3263,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "snap-wasm-browser"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "snap-transport",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -3380,6 +3410,7 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "snap-identity",
  "snap-store",
  "snap-transport",
 ]

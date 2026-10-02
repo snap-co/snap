@@ -7,7 +7,7 @@ mod pages;
 use axum::{
     Json, Router,
     extract::DefaultBodyLimit,
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -75,6 +75,7 @@ pub fn store_error(error: Error) -> Response {
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<_> = [
         snap_identity::MIGRATION,
+        snap_identity::SESSION_TIME_MIGRATION,
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
         snap_document::server::LIFECYCLE_MIGRATION,
@@ -148,9 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let origin = parsed.origin().ascii_serialization();
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
-    for table in snap_identity::TABLES
+    Identity::default().data().prepare(&mut store)?;
+    for table in snap_access::TABLES
         .iter()
-        .chain(snap_access::TABLES.iter())
         .chain(snap_document::server::TABLES.iter())
         .chain(authy::TABLES.iter())
         .chain(snap_oidc::TABLES.iter())
@@ -162,17 +163,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parsed.scheme() == "https",
         cookie_key.as_ref(),
     )?);
-    let host = Host::new(
+    let host = Host::new_with_provider(
         store,
         authy::document(),
-        Arc::new(|tx, bearer| {
-            Identity::default()
-                .resolve(tx, &snap_crypto::Native, bearer, now())
-                .map(|session| session.identity)
-        }),
+        Arc::new(Identity::default().provider(snap_crypto::Native)),
+        Arc::new(now),
         snap_transport::server::Config::default(),
         keys::random(),
-    );
+    )?;
     let host = operations::register(host);
     let cookie: ReadCookie = {
         let keys = keys.clone();
@@ -190,23 +188,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let identity_routes = snap_document_host::web::http_router(
         documents.clone(),
-        vec![
-            snap_document_host::web::HttpOperation {
-                name: "identity.acquire",
-                method: Method::POST,
-                session: snap_document_host::web::SessionProjection::Issue,
-            },
-            snap_document_host::web::HttpOperation {
-                name: "identity.enroll",
-                method: Method::POST,
-                session: snap_document_host::web::SessionProjection::Issue,
-            },
-            snap_document_host::web::HttpOperation {
-                name: "identity.fetch",
-                method: Method::GET,
-                session: snap_document_host::web::SessionProjection::Fetch,
-            },
-        ],
+        snap_identity::operation::http_routes()
+            .into_iter()
+            .chain(authy::operations::http_routes())
+            .map(Into::into)
+            .collect(),
         {
             let keys = app.keys.clone();
             Arc::new(move |bearer| keys.cookie(bearer))

@@ -98,6 +98,7 @@ impl Wire {
                                 messages.push(ServerMessage::Accepted { id: *id });
                             }
                         }
+                        Event::Bearer { .. } => return Err(Error::Protocol),
                         Event::Progress { id, value } => {
                             let pending = self.pending.get(&id).ok_or(Error::Protocol)?;
                             if !pending.accepted {

@@ -16,7 +16,7 @@ fn thread(name: &str, inputs: &'static [&'static str], handler: Handler) -> Defi
         output: Value::is_object,
         progress: |_| false,
         error: |_| true,
-        tables: &[],
+        data: snap_store::Data::new(&[]),
         inputs,
         guards: vec![Guard::policy(|tx, actor, input, _| {
             let snapshot = crate::document().read(tx, field(input, "thread_id")?, actor)?;
@@ -45,7 +45,7 @@ pub fn declarations() -> Vec<Definition> {
             error: |_| true,
             guards: vec![],
             inputs: &[],
-            tables: &[],
+            data: snap_store::Data::new(&[]),
             handler: Handler::new(|tx, invocation, owner, _, _| {
                 let input = serde_json::from_value::<crate::Create>(invocation.input.clone())
                     .map_err(|_| Error::Invalid)?;

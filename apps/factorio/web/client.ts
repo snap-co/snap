@@ -1,6 +1,6 @@
 import { BrowserRuntime, type Publication } from "../../../crates/platform/wasm-browser/runtime";
 import { wasmModule } from "../../../crates/platform/wasm-browser/wasm";
-import { OAuthIdentity } from "../../../crates/platform/identity/oauth";
+import { bindIdentityProjection } from "../../../kits/react/identity";
 export type Ticket = { id: string; created_at?: number | null; title: string; description: string; modules: string[]; status: "draft" | "ready" | "done" | "cancelled"; notes: string; parent: string | null; blockers: string[] };
 export type Candidate = { commit: string; target: string; evidence: string; findings: { text: string; disposition: string }[]; approval: { human: string; at: number; commit: string } | null };
 export type Session = { id: string; created_at?: number | null; owner: string; prompt: string; tickets: string[]; modules: string[]; phase: string; base: string; branch: string; worktree: string; data: string; port: number; conversation: string; candidate: Candidate | null; integration: string | null; error: string };
@@ -11,7 +11,7 @@ export type Identity = { identified: boolean; csrf?: string; owner?: string; hum
 type Binding = { connect(id: string): string; invoke(operation: string,input: string): string; receive(text: string): string; free(): void };
 type Snapshot = { id: string; kind: string; value: any };
 type Result = Publication & { documents: Record<string, Snapshot> };
-const bindings = wasmModule<{ default(options: { module_or_path: string }): Promise<void>; FactorioClient: new (actor: string) => Binding }>("factorio");
+const bindings = wasmModule<{ identity_fetch(origin: string): Promise<string>; default(options: { module_or_path: string }): Promise<void>; FactorioClient: new (actor: string) => Binding }>("factorio");
 type Update = (workspace: Workspace | null, error?: string) => void;
 export function randomID() { return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""); }
 
@@ -26,7 +26,7 @@ export class Factorio {
   readonly runtime: BrowserRuntime<Identity, Binding, Result>;
   constructor(readonly origin: string, private readonly transport: typeof fetch = globalThis.fetch.bind(globalThis)) {
     this.runtime = new BrowserRuntime({
-      identity: new OAuthIdentity<Identity>(origin, transport),
+      identity: bindIdentityProjection<Identity>(async () => (await bindings()).identity_fetch(origin)),
       key: identity => identity.owner!,
       create: async identity => new (await bindings()).FactorioClient(identity.owner!),
       decode: raw => JSON.parse(raw) as Result,

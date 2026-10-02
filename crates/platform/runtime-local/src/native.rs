@@ -139,7 +139,14 @@ async fn serve_peer<P: Program, R: Authority>(
             }
             while let Some(observation) = platform.step() {
                 match observation {
-                    Observation::Event { event, .. } => frames.push(Response::Events(vec![event])),
+                    Observation::Event { event, bearer, .. } => {
+                        if let Some(change) = bearer
+                            && let Event::Completed { id, .. } = &event
+                        {
+                            frames.push(Response::Events(vec![Event::Bearer { id: *id, change }]));
+                        }
+                        frames.push(Response::Events(vec![event]));
+                    }
                     Observation::Need { ticket, key } => {
                         // This native fixture selects immediate host inputs only.
                         // The portable scheduler also supports held/asynchronous
@@ -217,7 +224,7 @@ impl Connection {
                         .iter()
                         .any(|event| matches!(event, Event::Completed { .. }));
                     events.extend(batch);
-                    if events.len() > 2 {
+                    if events.len() > 3 {
                         return Err(Error::Protocol);
                     }
                     if complete {

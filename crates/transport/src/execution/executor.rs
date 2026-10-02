@@ -10,7 +10,7 @@ use alloc::{
 /// Platform-selected transactional capability. The portable executor owns its
 /// FIFO position, once-only preparation, acceptance and execution ordering. The
 /// adapter owns physical commit and keeps credential data out of JSON traces.
-pub type PreparedRequest = Result<Box<dyn FnOnce() -> crate::Outcome + Send>, Error>;
+pub type PreparedRequest = Result<Box<dyn FnOnce() -> crate::bearer::Reply + Send>, Error>;
 type Prepare = Box<dyn FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest> + Send>;
 struct Requests {
     recognizes: fn(&str) -> bool,
@@ -106,8 +106,9 @@ pub struct Executor<P: Program> {
     capacity: usize,
     requests: Option<Requests>,
     queued_requests: BTreeMap<Ticket, (crate::Invocation, Option<String>)>,
-    active_request: Option<(Ticket, Box<dyn FnOnce() -> crate::Outcome + Send>)>,
+    active_request: Option<(Ticket, Box<dyn FnOnce() -> crate::bearer::Reply + Send>)>,
     private_observation: Option<Ticket>,
+    private_bearer: Option<crate::bearer::Change>,
 }
 
 /// Data-only snapshot at an idle point. Transport, sockets, pending IO and clocks
@@ -135,6 +136,7 @@ impl<P: Program> Executor<P> {
             queued_requests: BTreeMap::new(),
             active_request: None,
             private_observation: None,
+            private_bearer: None,
         })
     }
     pub fn with_requests(
@@ -343,10 +345,19 @@ impl<P: Program> Executor<P> {
     }
     /// Performs one observable transition. None means idle or waiting on a read.
     /// Call again after Accepted to enter the handler, or after supply to retry.
+    pub fn take_bearer(&mut self) -> Option<crate::bearer::Change> {
+        self.private_bearer.take()
+    }
     pub fn step(&mut self) -> Option<Event> {
         self.private_observation = None;
         if let Some((ticket, run)) = self.active_request.take() {
-            let outcome = run();
+            let reply = run();
+            self.private_bearer = if reply.outcome.is_ok() {
+                reply.bearer
+            } else {
+                None
+            };
+            let outcome = reply.outcome;
             self.finish_reserved(ticket).expect("owned capability slot");
             self.private_observation = Some(ticket);
             return Some(Event::Completed { ticket, outcome });

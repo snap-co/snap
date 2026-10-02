@@ -20,6 +20,10 @@ use std::sync::{Arc, Mutex};
 pub type Authenticate =
     Arc<dyn Fn(&mut Transaction<'_>, &str) -> Result<String, snap_store::Error> + Send + Sync>;
 type Input = Box<dyn FnMut(&str) -> Result<Value, Error> + Send>;
+type BearerProvider = (
+    Arc<dyn snap_transport::bearer::Provider>,
+    Arc<dyn Fn() -> i64 + Send + Sync>,
+);
 struct StoreAuthority<B> {
     store: Arc<Mutex<Store<B>>>,
     authenticate: Authenticate,
@@ -169,6 +173,7 @@ pub struct Host<B: Backend> {
     document: Arc<Document>,
     transport: Server<StoreAuthority<B>>,
     authenticate: Authenticate,
+    provider: Option<BearerProvider>,
     requests: Runtime<Work>,
     input: Input,
     preconnection_requests: BTreeSet<Selection>,
@@ -204,6 +209,26 @@ impl<B: Backend> Host<B> {
         )
     }
 
+    /// Assemble generic bearer validation once for connection admission and
+    /// connectionless principal capture. Provider IO is limited to this Store.
+    pub fn new_with_provider(
+        store: Store<B>,
+        document: Document,
+        provider: Arc<dyn snap_transport::bearer::Provider>,
+        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+        config: Config,
+        boot: String,
+    ) -> Result<Self, snap_store::Error> {
+        let validation = provider.clone();
+        let time = clock.clone();
+        let authenticate: Authenticate = Arc::new(move |tx, bearer| {
+            validation
+                .identify(tx, bearer, time())
+                .map(|principal| principal.identity)
+        });
+        Self::new(store, document, authenticate, config, boot).with_bearer_provider(provider, clock)
+    }
+
     /// Separate renewable login lifetime from current access authority. Lifetime
     /// checks govern retained state only; connect, invocation admission and
     /// protected Document publication still use `authenticate`. Neither callback
@@ -234,6 +259,7 @@ impl<B: Backend> Host<B> {
             document,
             transport: Server::new(authority, config).with_live_authority(),
             authenticate,
+            provider: None,
             requests,
             input: Box::new(|_| Err(Error::Unavailable)),
             preconnection_requests: BTreeSet::new(),
@@ -248,6 +274,19 @@ impl<B: Backend> Host<B> {
             boot,
             retention_ms: config.reconnect_ms,
         }
+    }
+
+    /// Mount a bearer provider's data interface at assembly. Transport calls its
+    /// resident-only validation callback before admission and captures public facts.
+    fn with_bearer_provider(
+        mut self,
+        provider: Arc<dyn snap_transport::bearer::Provider>,
+        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Result<Self, snap_store::Error> {
+        assert!(self.peers.is_empty() && self.requests.idle());
+        provider.data().prepare(&mut self.store.lock().unwrap())?;
+        self.provider = Some((provider, clock));
+        Ok(self)
     }
 
     pub fn with_request(mut self, request: Definition) -> Self {
@@ -321,6 +360,21 @@ impl<B: Backend> Host<B> {
         invocation: Invocation,
         bearer: Option<String>,
     ) -> snap_transport::Outcome {
+        self.preconnection_reply(invocation, bearer).outcome
+    }
+    pub fn preconnection_reply(
+        &mut self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> snap_transport::bearer::Reply {
+        self.private_request(invocation, bearer)
+            .unwrap_or_else(|error| Err(error).into())
+    }
+    fn private_request(
+        &mut self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> Result<snap_transport::bearer::Reply, Error> {
         let selection = self.requests.definitions().resolve(&invocation.operation)?;
         if !self.preconnection_requests.contains(&selection) {
             return Err(Error::UnknownOperation);
@@ -336,6 +390,8 @@ impl<B: Backend> Host<B> {
         let output = self.output(peer)?;
         let id = invocation.id;
         let result = (|| {
+            let mut bearer_change = None;
+            let mut accepted = false;
             self.enqueue(Work {
                 peer,
                 connection: None,
@@ -349,13 +405,29 @@ impl<B: Backend> Host<B> {
                 while let Some(response) = output.pop_front() {
                     if let Response::Events(events) = response {
                         for event in events {
+                            if matches!(&event, Event::Accepted { id: admitted } if *admitted == id)
+                            {
+                                accepted = true;
+                            }
+                            if let Event::Bearer {
+                                id: changed,
+                                change,
+                            } = &event
+                                && *changed == id
+                            {
+                                bearer_change = Some(change.clone());
+                            }
                             if let Event::Completed {
                                 id: completed,
                                 outcome,
                             } = event
                                 && completed == id
                             {
-                                return outcome;
+                                return Ok(snap_transport::bearer::Reply {
+                                    accepted,
+                                    outcome,
+                                    bearer: bearer_change,
+                                });
                             }
                         }
                     }
@@ -421,8 +493,8 @@ impl<B: Backend> Host<B> {
         store.load_keys(snap_document::server::TABLES[0], &keys)?;
         if self
             .requests
-            .tables()
-            .contains(&snap_document::server::TABLES[0])
+            .data()
+            .contains(snap_document::server::TABLES[0])
         {
             Ok(())
         } else {
@@ -570,8 +642,8 @@ impl<B: Backend> Host<B> {
         if released
             && !self
                 .requests
-                .tables()
-                .contains(&snap_document::server::TABLES[0])
+                .data()
+                .contains(snap_document::server::TABLES[0])
         {
             let keys = self
                 .residency
@@ -836,7 +908,7 @@ impl<B: Backend> Host<B> {
             match &event {
                 Event::Accepted { .. } => call.accepted = true,
                 Event::Completed { outcome, .. } => call.outcome = Some(outcome.clone()),
-                Event::Progress { .. } => {}
+                Event::Progress { .. } | Event::Bearer { .. } => {}
             }
         }
         // A retry explicitly reattaches observation interest. Merely reconnecting
@@ -853,10 +925,8 @@ impl<B: Backend> Host<B> {
     fn admit_next(&mut self) {
         self.apply_carrier_controls();
         while let Some((mut work, invocation, selection)) = self.requests.acquire() {
-            let tables = self.requests.definitions().get(selection).tables;
-            let loaded = tables
-                .iter()
-                .try_for_each(|table| self.store.lock().unwrap().load(table));
+            let data = &self.requests.definitions().get(selection).data;
+            let loaded = data.prepare(&mut self.store.lock().unwrap());
             if let Err(error) = loaded {
                 self.respond(
                     &work,
@@ -879,19 +949,44 @@ impl<B: Backend> Host<B> {
                     {
                         return Err(snap_store::Error::NotFound);
                     }
-                    let actor = work
-                        .bearer
-                        .as_deref()
-                        .map(|bearer| (self.authenticate)(tx, bearer))
-                        .transpose()?;
+                    let principal = if let (Some((provider, clock)), Some(bearer)) =
+                        (&self.provider, &work.bearer)
+                    {
+                        match provider.identify(tx, bearer, clock()) {
+                            Ok(principal) => Some(principal),
+                            Err(snap_store::Error::NotFound)
+                                if !self
+                                    .requests
+                                    .definitions()
+                                    .get(selection)
+                                    .identity_required
+                                    && work.connection.is_none() =>
+                            {
+                                None
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    } else {
+                        None
+                    };
+                    let actor = if self.provider.is_some() {
+                        principal
+                            .as_ref()
+                            .map(|principal| principal.identity.clone())
+                    } else {
+                        work.bearer
+                            .as_deref()
+                            .map(|bearer| (self.authenticate)(tx, bearer))
+                            .transpose()?
+                    };
                     if work.connection.is_some() && actor != work.actor {
                         return Err(snap_store::Error::Invalid);
                     }
-                    Ok(actor)
+                    Ok((actor, principal))
                 })
                 .map_err(storage_error);
-            let actor = match authenticated {
-                Ok(actor) => actor,
+            let (actor, principal) = match authenticated {
+                Ok(facts) => facts,
                 Err(error) => {
                     self.respond(
                         &work,
@@ -920,6 +1015,7 @@ impl<B: Backend> Host<B> {
             }
             let mut context = Context {
                 actor,
+                principal,
                 bearer: work.bearer.clone(),
                 lifetime: work.connection.map(|id| self.lifetime(id)),
                 ..Context::default()
@@ -996,6 +1092,7 @@ impl<B: Backend> Host<B> {
             return false;
         };
         let work = completed.work;
+        let bearer_change = completed.context.bearer_change;
         let replication = serde_json::from_value::<Option<snap_document::Replication>>(
             completed.context.publication,
         )
@@ -1039,9 +1136,9 @@ impl<B: Backend> Host<B> {
             });
         let full_documents = self
             .requests
-            .tables()
-            .contains(&snap_document::server::TABLES[0]);
-        self.requests.release_tables();
+            .data()
+            .contains(snap_document::server::TABLES[0]);
+        self.requests.release_data();
         if full_documents {
             self.pinned.clear();
             // Restore the current extent after all accepted work and controllers
@@ -1065,6 +1162,17 @@ impl<B: Backend> Host<B> {
         self.tick(0);
         // All synchronous work and logical-resource finalization is done. Only
         // now expose the terminal frame to the independent carrier output queue.
+        if outcome.is_ok()
+            && let Some(change) = bearer_change
+        {
+            self.respond(
+                &work,
+                Event::Bearer {
+                    id: work.wire_id,
+                    change,
+                },
+            );
+        }
         self.respond(
             &work,
             Event::Completed {

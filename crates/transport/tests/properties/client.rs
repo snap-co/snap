@@ -39,6 +39,7 @@ impl Channel for Scripted {
 fn grammar(events: &[Event], expected_id: u64) -> Outcome {
     let mut accepted = false;
     let mut terminal = None;
+    let mut bearer = false;
     for event in events {
         if terminal.is_some() {
             return Err(Error::Protocol);
@@ -55,8 +56,17 @@ fn grammar(events: &[Event], expected_id: u64) -> Outcome {
                     return Err(Error::Protocol);
                 }
             }
+            Event::Bearer { id, .. } => {
+                if *id != expected_id || !accepted || bearer {
+                    return Err(Error::Protocol);
+                }
+                bearer = true;
+            }
             Event::Completed { id, outcome } => {
-                if *id != expected_id || (!accepted && outcome.is_ok()) {
+                if *id != expected_id
+                    || (!accepted && outcome.is_ok())
+                    || (bearer && outcome.is_err())
+                {
                     return Err(Error::Protocol);
                 }
                 terminal = Some(outcome.clone());

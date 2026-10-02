@@ -1,7 +1,6 @@
 import { BrowserRuntime, type Publication } from "../../../crates/platform/wasm-browser/runtime";
 import { wasmModule } from "../../../crates/platform/wasm-browser/wasm";
-import { Identity } from "../../../crates/platform/identity/client";
-import { Transport } from "../../../crates/platform/wasm-browser/transport";
+import { bindIdentity, type IdentityBinding } from "../../../kits/react/identity";
 
 export interface Account { identity: string; email: string; profile: string; authenticated_at: number }
 export interface ProfileView { name: string; bio: string; revision: string }
@@ -37,7 +36,7 @@ export interface WasmResult extends Publication {
     needs_recovery: boolean;
   };
 }
-const loadWasm = wasmModule<{ default(options: { module_or_path: string }): Promise<unknown>; AuthyClient: new (actor: string, profile: string) => AuthyBinding }>("authy");
+const loadWasm = wasmModule<IdentityBinding & { account_fetch(): Promise<string>; default(options: { module_or_path: string }): Promise<unknown>; AuthyClient: new (actor: string, profile: string) => AuthyBinding }>("authy");
 
 function safeContinue(value: string | null): string | null {
   if (!value || !value.startsWith("/oauth/")) return null;
@@ -48,7 +47,7 @@ function safeContinue(value: string | null): string | null {
 
 export class AuthyClient {
   private listeners = new Set<() => void>();
-  private identity = new Identity<Account>(new Transport());
+  private identity = bindIdentity(loadWasm, async module => JSON.parse(await module.account_fetch()) as Account);
   private reauth = new URLSearchParams(location.search).get("reauth") === "1";
   private busy = false;
   private closed = false;
@@ -89,10 +88,10 @@ export class AuthyClient {
     if (this.busy) throw new Error("Another sign-in action is still pending.");
     this.busy = true;
     try {
-      const value = await (enroll ? this.identity.enroll({ email, password }) : this.identity.acquire({ email, password }));
+      const account = await this.identity.acquire(email, password, enroll);
       if (this.closed) return;
       this.reauth = false;
-      await this.runtime.replace(value.account);
+      await this.runtime.replace(account);
       const next = safeContinue(new URLSearchParams(location.search).get("continue"));
       if (next) location.assign(next);
     } finally { this.busy = false; }
@@ -103,7 +102,7 @@ export class AuthyClient {
     if (this.busy) throw new Error("Another sign-in action is still pending.");
     this.busy = true;
     try {
-      await this.runtime.invoke("authy.logout", { scope });
+      await this.identity.release(scope);
       if (scope === "others") { await this.runtime.refresh(); await this.refreshSessions(); }
       else await this.runtime.replace(null);
     } finally { this.busy = false; }
@@ -111,10 +110,10 @@ export class AuthyClient {
   async refreshSessions() {
     const epoch = this.runtime.getSnapshot().epoch;
     const [sessions, credentials] = await Promise.all([
-      this.runtime.invoke<{ sessions: SessionSummary[] }>("authy.sessions", null),
-      this.runtime.invoke<{ credentials: CredentialSummary[] }>("authy.credentials", null),
+      this.identity.sessions<SessionSummary[]>(),
+      this.identity.credentials<CredentialSummary[]>(),
     ]);
-    if (epoch === this.runtime.getSnapshot().epoch) this.set({ sessions: sessions.sessions, credentials: credentials.credentials });
+    if (epoch === this.runtime.getSnapshot().epoch) this.set({ sessions, credentials });
   }
   saveProfile(name: string, bio: string) {
     try { this.runtime.mutate(binding => binding.enqueue_edit(name, bio)); }

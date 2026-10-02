@@ -2,7 +2,7 @@
 //! fixture only provides queues, so these tests need no Document/Store/Identity.
 use futures_util::{SinkExt, StreamExt};
 use snap_transport::{
-    Command, Error, Event, Invocation, Outcome, Response, binary,
+    Command, Error, Event, Invocation, Response, binary,
     carrier::{AttachmentInfo, Connection, Dispatch, Frame, Submission},
     json,
 };
@@ -88,8 +88,8 @@ impl Dispatch for Queues {
             retired: AtomicBool::new(false),
         })
     }
-    async fn request(&self, _: Invocation, _: Option<String>) -> Outcome {
-        Err(Error::Unavailable)
+    async fn request(&self, _: Invocation, _: Option<String>) -> snap_transport::bearer::Reply {
+        Err(Error::Unavailable).into()
     }
 }
 

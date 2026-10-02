@@ -395,3 +395,16 @@ impl AuthyClient {
         result_value(&self.client, &self.profile, send, error)
     }
 }
+
+// Identity's Rust SDK is exposed by the React binding kit.
+snap_react_bindings::export_identity!();
+#[wasm_bindgen]
+pub async fn account_fetch() -> Result<String, JsValue> {
+    let mut transport = snap_transport::client::Client::new(snap_wasm_browser::Http::new(
+        authy::operations::http_routes(),
+    ));
+    let account = authy::client::account(&mut transport)
+        .await
+        .map_err(|error| JsValue::from_str(&format!("{error:?}")))?;
+    serde_json::to_string(&account).map_err(|error| JsValue::from_str(&error.to_string()))
+}
