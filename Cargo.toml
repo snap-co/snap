@@ -33,6 +33,7 @@ members = [
     "crates/identity",
     "crates/platform/crypto",
     "tests/properties",
+    "tests/platform",
     "tests/browser",
     "tools/cli",
 ]
@@ -65,6 +66,7 @@ default-members = [
     "apps/testy",
     "apps/testy/server",
     "apps/testy/native",
+    "tests/platform",
 ]
 
 [workspace.package]

@@ -1,10 +1,10 @@
-//! One socket-level contract for both independently selectable drivers. The host
-//! fixture only provides queues, so these tests need no Document/Store/Identity.
+//! Native server-carrier fixtures. Queues supply dependency IO, never module
+//! outcomes. The conformance cases live in the portable library.
 use futures_util::{SinkExt, StreamExt};
+use snap_platform_tests::transport::{Duplex, Server};
 use snap_transport::{
-    Command, Error, Event, Invocation, Response, binary,
+    Command, Error, Invocation, Response, binary,
     carrier::{AttachmentInfo, Connection, Dispatch, Frame, Submission},
-    json,
 };
 use std::{
     sync::{
@@ -15,8 +15,8 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-#[path = "../../transport-tcp/tests/support/mod.rs"]
-mod tls_support;
+#[path = "../../../../crates/platform/transport-tcp/tests/support/mod.rs"]
+pub(super) mod tls_support;
 
 #[derive(Clone)]
 struct Queues(mpsc::UnboundedSender<HostPeer>);
@@ -94,7 +94,7 @@ impl Dispatch for Queues {
 }
 
 #[derive(Clone, Copy)]
-enum Driver {
+pub enum Driver {
     WebSocket,
     Tcp,
 }
@@ -123,17 +123,24 @@ impl Socket {
                 .unwrap(),
         }
     }
-    async fn receive(&mut self) -> (Response, Option<AttachmentInfo>) {
+    async fn receive(&mut self) -> Result<(Response, Option<AttachmentInfo>), String> {
         tokio::time::timeout(Duration::from_secs(2), async {
             match self {
                 Self::WebSocket(socket) => {
-                    let message = socket.next().await.unwrap().unwrap();
-                    (
-                        serde_json::from_str(message.to_text().unwrap()).unwrap(),
+                    let message = socket
+                        .next()
+                        .await
+                        .ok_or("WebSocket EOF")?
+                        .map_err(|e| e.to_string())?;
+                    Ok((
+                        serde_json::from_str(message.to_text().map_err(|e| e.to_string())?)
+                            .map_err(|e| e.to_string())?,
                         None,
-                    )
+                    ))
                 }
-                Self::Tcp(socket) => snap_transport_tcp::read_response(socket).await.unwrap(),
+                Self::Tcp(socket) => snap_transport_tcp::read_response(socket)
+                    .await
+                    .map_err(|e| e.to_string()),
             }
         })
         .await
@@ -146,13 +153,13 @@ impl Socket {
         }
     }
 }
-struct Server(tokio::task::JoinHandle<()>);
-impl Drop for Server {
+struct Task(tokio::task::JoinHandle<()>);
+impl Drop for Task {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
-async fn start(driver: Driver) -> (Server, Socket, HostPeer) {
+pub async fn start(driver: Driver) -> Setup {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (openings, mut peers) = mpsc::unbounded_channel();
@@ -165,7 +172,7 @@ async fn start(driver: Driver) -> (Server, Socket, HostPeer) {
                 cookie: None,
                 require_cookie: false,
             }));
-            let server = Server(tokio::spawn(async move {
+            let server = Task(tokio::spawn(async move {
                 axum::serve(listener, app).await.unwrap();
             }));
             let (socket, _) = connect_async(format!("ws://{address}/transport"))
@@ -176,7 +183,7 @@ async fn start(driver: Driver) -> (Server, Socket, HostPeer) {
         Driver::Tcp => {
             let temp = tempfile::tempdir().unwrap();
             let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
-            let server = Server(tokio::spawn(async move {
+            let server = Task(tokio::spawn(async move {
                 snap_transport_tcp::serve(listener, queues, server_tls)
                     .await
                     .unwrap();
@@ -189,122 +196,49 @@ async fn start(driver: Driver) -> (Server, Socket, HostPeer) {
         .await
         .unwrap()
         .unwrap();
-    (server, socket, peer)
-}
-
-#[tokio::test]
-async fn drivers_handoff_commands_and_write_observations_without_waiting_for_execution() {
-    for driver in [Driver::WebSocket, Driver::Tcp] {
-        let (_server, mut socket, mut host) = start(driver).await;
-        let connect = Command::Connect {
-            bearer: "private".into(),
-            client_id: "client".into(),
-        };
-        socket.send(&connect).await;
-        let command = tokio::time::timeout(Duration::from_secs(2), host.incoming.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(command).unwrap(),
-            serde_json::to_value(&connect).unwrap()
-        );
-        let attachment = AttachmentInfo {
-            retention_ms: 123,
-            lifetime: "boot:connection".into(),
-        };
-        host.outgoing
-            .send(Frame {
-                response: Response::Attached { resumed: false },
-                handshake: true,
-                attachment: Some(attachment.clone()),
-                terminal: false,
-            })
-            .unwrap();
-        let (response, info) = socket.receive().await;
-        assert_eq!(response, Response::Attached { resumed: false });
-        if matches!(driver, Driver::Tcp) {
-            assert_eq!(info, Some(attachment));
-        }
-        let invoke = Command::Invoke(Invocation {
-            id: 7,
-            operation: "probe.run".into(),
-            input: json!({"value":3}),
-        });
-        socket.send(&invoke).await;
-        let command = tokio::time::timeout(Duration::from_secs(2), host.incoming.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(command).unwrap(),
-            serde_json::to_value(invoke).unwrap()
-        );
-        // The application has not completed the invocation. Independent output
-        // still crosses an otherwise idle socket, including TCP's pinned read.
-        let progress = Response::Events(vec![Event::Progress {
-            id: 7,
-            value: json!("waiting"),
-        }]);
-        host.outgoing
-            .send(Frame {
-                response: progress.clone(),
-                handshake: false,
-                attachment: None,
-                terminal: false,
-            })
-            .unwrap();
-        assert_eq!(socket.receive().await.0, progress);
-        socket.send(&Command::Close).await;
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), host.teardown.recv())
-                .await
-                .unwrap(),
-            Some(true)
-        );
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), host.teardown.recv())
-                .await
-                .unwrap(),
-            Some(false)
-        );
+    Setup {
+        socket,
+        host: peer,
+        _server: server,
     }
 }
 
-#[tokio::test]
-async fn malformed_requests_disconnect_without_reaching_dispatch() {
-    for driver in [Driver::WebSocket, Driver::Tcp] {
-        let (_server, mut socket, mut host) = start(driver).await;
-        socket.malformed().await;
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), host.teardown.recv())
-                .await
-                .unwrap(),
-            Some(false)
-        );
-        assert!(host.incoming.try_recv().is_err());
+pub struct Setup {
+    socket: Socket,
+    host: HostPeer,
+    _server: Task,
+}
+impl Duplex for Setup {
+    async fn send(&mut self, command: &Command) {
+        self.socket.send(command).await;
+    }
+    async fn incoming(&mut self) -> Command {
+        tokio::time::timeout(Duration::from_secs(2), self.host.incoming.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    async fn publish(&mut self, frame: Frame) {
+        self.host.outgoing.send(frame).unwrap();
+    }
+    async fn receive(&mut self) -> Result<(Response, Option<AttachmentInfo>), String> {
+        self.socket.receive().await
     }
 }
-
-async fn final_reply_at_retirement(driver: Driver) {
-    let (_server, mut socket, host) = start(driver).await;
-    let response = Response::Events(vec![Event::Completed {
-        id: 9,
-        outcome: Ok(json!("committed")),
-    }]);
-    *host.late_reply.lock().unwrap() = Some(Frame {
-        response: response.clone(),
-        handshake: false,
-        attachment: None,
-        terminal: true,
-    });
-    assert_eq!(socket.receive().await.0, response);
-}
-#[tokio::test]
-async fn websocket_writes_reply_published_at_retirement() {
-    final_reply_at_retirement(Driver::WebSocket).await;
-}
-#[tokio::test]
-async fn tcp_writes_reply_published_at_retirement() {
-    final_reply_at_retirement(Driver::Tcp).await;
+impl Server for Setup {
+    async fn malformed(&mut self) {
+        self.socket.malformed().await;
+    }
+    async fn teardown(&mut self) -> bool {
+        tokio::time::timeout(Duration::from_secs(2), self.host.teardown.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    fn pending_command(&mut self) -> bool {
+        self.host.incoming.try_recv().is_ok()
+    }
+    fn retire_after_empty_receive(&mut self, frame: Frame) {
+        *self.host.late_reply.lock().unwrap() = Some(frame);
+    }
 }

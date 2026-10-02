@@ -11,13 +11,6 @@ axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["time"] }
 futures-util = "0.3"
 
-[dev-dependencies]
-snap-transport-tcp = { path = "../transport-tcp" }
-tokio = { version = "1", features = ["macros", "rt", "net", "sync"] }
-tokio-tungstenite = "0.29"
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
-tempfile = "3"
-
 [lints]
 workspace = true
 

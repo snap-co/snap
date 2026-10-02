@@ -3183,6 +3183,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap-platform-tests"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "rcgen",
+ "serde_json",
+ "snap-store",
+ "snap-store-sqlite",
+ "snap-transport",
+ "snap-transport-tcp",
+ "snap-transport-ws",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "snap-react-bindings"
 version = "0.0.0"
 dependencies = [
@@ -3241,13 +3259,9 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "futures-util",
- "rcgen",
  "serde_json",
  "snap-transport",
- "snap-transport-tcp",
- "tempfile",
  "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]
