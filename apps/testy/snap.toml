@@ -27,25 +27,25 @@ typescript = ["web/tsconfig.json"]
 manifest = "server/Cargo.toml"
 features = ["memory"]
 default_features = false
-allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-store"]
+allowed_local_dependencies = ["testy", "snap-transport", "snap-store", "snap-identity"]
 
 [[check.variants]]
 manifest = "server/Cargo.toml"
 features = ["native"]
 default_features = false
-allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
+allowed_local_dependencies = ["testy", "testy-native", "snap-transport", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
 
 [[check.variants]]
 manifest = "server/Cargo.toml"
 features = ["web"]
 default_features = false
-allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-transport-ws", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
+allowed_local_dependencies = ["testy", "snap-transport", "snap-transport-ws", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
 
 [[check.variants]]
 manifest = "server/Cargo.toml"
 features = ["store"]
 default_features = false
-allowed_local_dependencies = ["testy", "snap-transport", "snap-runtime-local", "snap-store", "snap-store-sqlite"]
+allowed_local_dependencies = ["testy", "snap-transport", "snap-store", "snap-store-sqlite", "snap-identity"]
 
 [[check.variants]]
 manifest = "server/Cargo.toml"
@@ -55,7 +55,7 @@ features = ["identity"]
 commands = [
   ["cargo", "test", "-p", "snap-transport", "--", "--include-ignored"],
   ["cargo", "test", "-p", "testy-server", "--features", "web", "--test", "memory", "--test", "development", "--test", "store", "--test", "identity", "--", "--include-ignored"],
-  ["cargo", "test", "-p", "snap-runtime-local", "--features", "web", "--lib", "--", "--include-ignored"],
+  ["cargo", "test", "-p", "testy-server", "--features", "web", "--lib", "--", "--include-ignored"],
 ]
 
 [test.native]

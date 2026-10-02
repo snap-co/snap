@@ -10,8 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 testy = { path = ".." }
-snap-runtime-local = { path = "../../../crates/platform/runtime-local", features = ["native"] }
-tokio = { version = "1", features = ["rt", "net"] }
+snap-transport = { path = "../../../crates/transport" }
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 
 [lints]
 workspace = true

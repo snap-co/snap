@@ -1,4 +1,4 @@
-//! Development execution controls shared by HTTP tools and the browser panel.
+//! Testy's development execution controls shared by HTTP tools and its browser panel.
 //! Manual mode stops host stepping, not submissions. A step is one executor
 //! observation, never a source-line breakpoint. Snapshots require an idle gate.
 use serde::Deserialize;

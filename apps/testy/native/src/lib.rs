@@ -1,5 +1,5 @@
-//! Native event-loop adapter. The executable owns Tokio and its LocalSet. This
-//! baseline uses length-delimited JSON over TCP; deployments supply secure IO.
+//! Testy's native JSON/TCP fixture and client channel. The executable owns Tokio
+//! and its LocalSet; this fixture is separate from Snap's TLS/CBOR TCP driver.
 use snap_transport::execution;
 use snap_transport::execution::{Call, Program};
 use snap_transport::execution::{Observation, Peer, Runtime, Submission};

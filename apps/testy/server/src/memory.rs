@@ -1,18 +1,204 @@
-fn main() {
-    let server = snap_transport::server::Server::new(testy::TestAuthority, Default::default());
-    let execution = snap_transport::execution::Executor::new(testy::App::default(), 1024).unwrap();
-    let platform = snap_runtime_local::memory::Memory::new(
-        snap_transport::execution::Runtime::new(server, execution),
-    );
-    let mut client = testy::Client::new(platform.channel());
-    client.use_session(testy::BEARER).unwrap(); // Explicit fixture authority; no credential issuance.
-    let result =
-        futures::executor::block_on(testy::journey(&mut client, "memory-program")).unwrap();
-    assert_eq!(result.accumulator, 6);
-    assert_eq!(result.history.len(), 4);
-    println!(
-        "Testy memory: {} after {} operations",
-        result.accumulator,
-        result.history.len()
-    );
+//! Testy's controlled in-memory execution harness over portable Transport.
+use snap_transport::execution;
+use snap_transport::execution::{Observation, Peer, Runtime, Submission};
+use snap_transport::execution::{Program, Ticket};
+use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+    task::{Poll, Waker},
+};
+
+struct Mailbox {
+    events: Vec<Event>,
+    done: bool,
+    waker: Option<Waker>,
+}
+struct Host<P: Program, R: Authority> {
+    platform: Runtime<P, R>,
+    now: u64,
+    trace: Vec<Event>,
+    mailboxes: BTreeMap<Ticket, Mailbox>,
+    waiting: Option<(Ticket, String)>,
+}
+impl<P: Program, R: Authority> Host<P, R> {
+    fn drive(&mut self) {
+        while let Some(observation) = self.platform.step() {
+            match observation {
+                Observation::Need { ticket, key } => {
+                    self.waiting = Some((ticket, key));
+                }
+                Observation::Event {
+                    ticket,
+                    event,
+                    private,
+                    bearer,
+                } => {
+                    if matches!(event, Event::Completed { .. })
+                        && self
+                            .waiting
+                            .as_ref()
+                            .is_some_and(|(waiting, _)| *waiting == ticket)
+                    {
+                        self.waiting = None;
+                    }
+                    if !private {
+                        self.trace.push(event.clone());
+                    }
+                    if let Some(mailbox) = self.mailboxes.get_mut(&ticket) {
+                        mailbox.done = matches!(event, Event::Completed { .. });
+                        if let Some(change) = bearer
+                            && let Event::Completed { id, .. } = &event
+                        {
+                            mailbox.events.push(Event::Bearer { id: *id, change });
+                        }
+                        mailbox.events.push(event);
+                        if let Some(waker) = mailbox.waker.take() {
+                            waker.wake();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Async value delivery with explicit, virtual dependency completion. `supply`
+/// resumes host-owned work even if its client future was dropped after submission.
+pub struct Memory<P: Program, R: Authority> {
+    host: Rc<RefCell<Host<P, R>>>,
+}
+impl<P: Program, R: Authority> Memory<P, R> {
+    pub fn new(platform: Runtime<P, R>) -> Self {
+        Self {
+            host: Rc::new(RefCell::new(Host {
+                platform,
+                now: 0,
+                trace: Vec::new(),
+                mailboxes: BTreeMap::new(),
+                waiting: None,
+            })),
+        }
+    }
+    pub fn channel(&self) -> Connection<P, R> {
+        Connection {
+            host: self.host.clone(),
+            peer: Peer::default(),
+        }
+    }
+    pub fn advance(&self, milliseconds: u64) {
+        let mut host = self.host.borrow_mut();
+        host.now = host.now.checked_add(milliseconds).expect("clock exhausted");
+        let now = host.now;
+        host.platform.tick(now);
+        host.drive();
+    }
+    pub fn residents(&self) -> usize {
+        self.host.borrow().platform.residents()
+    }
+    pub fn trace(&self) -> Vec<Event> {
+        self.host.borrow().trace.clone()
+    }
+    pub fn pending_read(&self) -> Option<(Ticket, String)> {
+        self.host.borrow().waiting.clone()
+    }
+    pub fn supply(
+        &self,
+        ticket: Ticket,
+        key: &str,
+        result: execution::Outcome,
+    ) -> Result<(), execution::Error> {
+        let mut host = self.host.borrow_mut();
+        host.platform.supply(ticket, key, result)?;
+        host.waiting = None;
+        host.drive();
+        Ok(())
+    }
+    /// Host administration only. Replacement is allowed at a drained execution
+    /// gate; no transport attachment or calculator data is reconstructed.
+    pub fn replace(&self, program: P) -> Result<(), execution::Error> {
+        let mut host = self.host.borrow_mut();
+        host.platform.pause();
+        let result = host.platform.replace(program);
+        host.platform.resume();
+        result
+    }
+}
+pub struct Connection<P: Program, R: Authority> {
+    host: Rc<RefCell<Host<P, R>>>,
+    peer: Peer,
+}
+// Own only observation interest. Dropping a caller never cancels submitted work.
+struct Interest<P: Program, R: Authority> {
+    host: Rc<RefCell<Host<P, R>>>,
+    ticket: Ticket,
+}
+impl<P: Program, R: Authority> Drop for Interest<P, R> {
+    fn drop(&mut self) {
+        self.host.borrow_mut().mailboxes.remove(&self.ticket);
+    }
+}
+impl<P: Program, R: Authority> Channel for Connection<P, R> {
+    async fn exchange(&mut self, command: Command) -> Result<Response, Error> {
+        // Cancellation before delivery prevents submission entirely.
+        let mut yielded = false;
+        core::future::poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+        let ticket = {
+            let mut host = self.host.borrow_mut();
+            let now = host.now;
+            match host.platform.submit(&mut self.peer, command, now) {
+                Submission::Ready(response) => {
+                    // Immediate host replies can contain issued credentials. The
+                    // execution trace only retains queued application observations.
+                    host.drive();
+                    return Ok(response);
+                }
+                Submission::Pending(ticket) => {
+                    host.mailboxes.insert(
+                        ticket,
+                        Mailbox {
+                            events: Vec::new(),
+                            done: false,
+                            waker: None,
+                        },
+                    );
+                    ticket
+                }
+            }
+        };
+        let _interest = Interest {
+            host: self.host.clone(),
+            ticket,
+        };
+        core::future::poll_fn(|cx| {
+            let mut host = self.host.borrow_mut();
+            host.drive();
+            let mailbox = host.mailboxes.get_mut(&ticket).unwrap();
+            if mailbox.done {
+                Poll::Ready(Ok(Response::Events(core::mem::take(&mut mailbox.events))))
+            } else {
+                mailbox.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+impl<P: Program, R: Authority> Drop for Connection<P, R> {
+    fn drop(&mut self) {
+        let mut host = self.host.borrow_mut();
+        let now = host.now;
+        host.platform.lost(&mut self.peer, now);
+        host.drive();
+    }
 }

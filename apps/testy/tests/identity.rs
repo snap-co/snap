@@ -1,13 +1,13 @@
 #[path = "../../../crates/identity/tests/support/mod.rs"]
 mod support;
 use futures::{FutureExt, executor::block_on, task::noop_waker};
-use snap_runtime_local::memory::Memory;
 use snap_transport::{Channel, Command, Error, Invocation, Response, json};
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
 };
 use testy_server::identity::{Sessions, platform};
+use testy_server::memory::Memory;
 
 #[test]
 fn session_logout_waits_for_accepted_work_and_then_retires_its_connections() {

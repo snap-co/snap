@@ -1,10 +1,10 @@
-use snap_runtime_local::development::{Control, Development};
 use snap_transport::{
     Command, Event, Invocation, Response,
     execution::Runtime,
     json,
     server::{Config, Server},
 };
+use testy_server::development::{Control, Development};
 
 #[test]
 fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {

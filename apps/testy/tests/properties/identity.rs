@@ -2,12 +2,12 @@
 mod support;
 use futures::{FutureExt, executor::block_on, task::noop_waker};
 use hegel::{TestCase, generators as gs};
-use snap_runtime_local::memory::Memory;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
 };
 use testy_server::identity::{Sessions, platform};
+use testy_server::memory::Memory;
 
 #[hegel::test]
 fn accepted_work_drains_before_queued_logout_across_expiry_and_dependency_failure(tc: TestCase) {
