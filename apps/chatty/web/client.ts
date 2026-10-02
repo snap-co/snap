@@ -1,5 +1,5 @@
-import { BrowserRuntime, type Publication } from "../../../crates/platform/wasm-browser/runtime";
-import { wasmModule } from "../../../crates/platform/wasm-browser/wasm";
+import { BrowserRuntime, type Publication } from "../../../kits/browser/runtime";
+import { wasmModule } from "../../../kits/browser/wasm";
 import { bindIdentityProjection } from "../../../kits/react/identity";
 export function randomID() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));

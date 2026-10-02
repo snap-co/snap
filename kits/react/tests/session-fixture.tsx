@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoute, createRouter } from "@tanstack/react-router";
-import type { SessionRuntime, SessionState } from "../../../crates/platform/wasm-browser/runtime";
+import type { SessionRuntime, SessionState } from "../../browser/runtime";
 import { sessionRoot, requireSignedIn } from "../router";
 import { mount } from "../host";
 

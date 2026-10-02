@@ -1,5 +1,5 @@
-import { BrowserRuntime, type Publication } from "../../../crates/platform/wasm-browser/runtime";
-import { wasmModule } from "../../../crates/platform/wasm-browser/wasm";
+import { BrowserRuntime, type Publication } from "../../../kits/browser/runtime";
+import { wasmModule } from "../../../kits/browser/wasm";
 import { bindIdentityProjection } from "../../../kits/react/identity";
 export type Ticket = { id: string; created_at?: number | null; title: string; description: string; modules: string[]; status: "draft" | "ready" | "done" | "cancelled"; notes: string; parent: string | null; blockers: string[] };
 export type Candidate = { commit: string; target: string; evidence: string; findings: { text: string; disposition: string }[]; approval: { human: string; at: number; commit: string } | null };

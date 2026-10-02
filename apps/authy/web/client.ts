@@ -1,5 +1,5 @@
-import { BrowserRuntime, type Publication } from "../../../crates/platform/wasm-browser/runtime";
-import { wasmModule } from "../../../crates/platform/wasm-browser/wasm";
+import { BrowserRuntime, type Publication } from "../../../kits/browser/runtime";
+import { wasmModule } from "../../../kits/browser/wasm";
 import { bindIdentity, type IdentityBinding } from "../../../kits/react/identity";
 
 export interface Account { identity: string; email: string; profile: string; authenticated_at: number }
