@@ -14,8 +14,8 @@ pub mod sessions;
 pub mod tickets;
 pub mod workspaces;
 
-/// Application Store declarations. Historical bytes and migration IDs remain
-/// unchanged, including retired intake keys, so existing databases reopen safely.
+/// Initial migration for Factorio-owned tables in fresh databases. Hosts combine
+/// it with their selected module and host-storage migrations.
 pub const MIGRATION: &str = include_str!("../migrations/0001_factorio.toml");
 
 /// Explicit portable declarations. Native or Wasm bootstrap chooses providers
