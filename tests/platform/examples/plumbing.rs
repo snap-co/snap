@@ -19,7 +19,7 @@ async fn main() -> setup::Result<()> {
         }
         Some(flag) if flag == "--help" || flag == "-h" => {
             println!(
-                "Usage: plumbing [--database NEW_PATH]\n\nRun the platform cartridge through native TCP/TLS and file-backed SQLite.\nWithout --database, retain the database in a fresh temporary directory.\nAn existing database is never overwritten.\nChecks commits, stale guards, rollback, invalid output, caught MISS, and\nreads after each change; then stops the server and reopens SQLite.\nThis is real IO, not deterministic simulation or power-loss testing."
+                "Usage: plumbing [--database NEW_PATH]\n\nRun the platform cartridge through native TCP/TLS and file-backed SQLite.\nWithout --database, retain the database in a fresh temporary directory.\nExisting databases and SQLite companion paths are rejected, including links.\nUse a directory not modified concurrently.\nChecks commits, stale guards, rollback, invalid output, caught MISS, and\nreads after each change; then stops the server and reopens SQLite.\nThis is real IO, not deterministic simulation or power-loss testing."
             );
             return Ok(());
         }

@@ -62,7 +62,28 @@ impl Drop for Server {
 }
 impl Server {
     async fn start(database: &Path) -> Result<Self> {
-        // Reserve a new path: never migrate, reset, or overwrite a user's database.
+        // SQLite may remove or modify companions even when its main file is new.
+        // Reject dangling links too. This local runner assumes its directory is
+        // not concurrently modified; these checks are not a filesystem sandbox.
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let mut companion = database.as_os_str().to_os_string();
+            companion.push(suffix);
+            match std::fs::symlink_metadata(&companion) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!(
+                            "refusing existing SQLite companion {}",
+                            Path::new(&companion).display()
+                        ),
+                    )
+                    .into());
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        // Reserve a new main path; never migrate or reset an existing database.
         drop(
             std::fs::OpenOptions::new()
                 .write(true)
@@ -121,8 +142,9 @@ impl Server {
     }
 }
 
-/// One fresh-database run. The outer deadline bounds all native IO. After the
-/// server stops, reopen SQLite and check persisted rows against the journey's
+/// A deadline bounds connection and journey execution, not synchronous startup
+/// or database reopening. Teardown has a separate ownership-release deadline.
+/// After stopping the server, reopen SQLite and check persisted rows against the
 /// independent model, not resident state. This is orderly reopen, not crash proof.
 pub async fn run(
     database: &Path,

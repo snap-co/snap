@@ -86,7 +86,10 @@ model, reads after each change or failure, then stops the server and reopens
 SQLite to verify persisted rows. The `plumbing` Cargo example uses that same
 setup and prints the exchange, retaining a fresh database for inspection. Native
 assembly lives in `tests/platform/support/{host,tcp_sqlite}.rs`; it supplies no
-operation results. Its outer deadline bounds real IO, not virtual time. The
+operation results. Its deadline bounds connection and journey execution in wall
+time, not virtual time; startup and reopening are synchronous. Setup regressions
+check that existing database files, SQLite companion paths and dangling companion
+links are rejected without changes, assuming no concurrent directory modification. The
 cartridge identity is a fixed fixture, not an authentication-flow test. Reopening
 after orderly teardown is not process-crash or power-loss durability proof.
 
