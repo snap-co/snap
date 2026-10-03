@@ -1,8 +1,8 @@
-//! Generated admission/lifetime histories through the actual Document host.
+//! Generated admission/lifetime histories through the portable Document runtime.
 use hegel::{TestCase, generators as gs};
 use snap_access::{Actor, Audience, ChangeSet, GrantChange, Resource, Role};
+use snap_document::runtime::Runtime as Host;
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot, server::Document};
-use snap_document_host::Host;
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
 use std::sync::{Arc, Mutex};
 
@@ -125,7 +125,9 @@ fn accepted_authority_dedup_and_draining_match_committed_effects(tc: TestCase) {
         host.submit(peer, command.clone(), step as u64 * 100)
             .unwrap();
         let first = host.drain(peer).unwrap();
-        let accepted = first.iter().any(|response| matches!(response, Response::Events(events) if events.iter().any(|event| matches!(event, Event::Accepted { id: 1 }))));
+        let accepted = first
+            .iter()
+            .any(|response| matches!(response, Response::Event(Event::Accepted { id: 1 })));
         assert_eq!(accepted, allowed);
         if duplicate {
             host.submit(peer, command, step as u64 * 100).unwrap();

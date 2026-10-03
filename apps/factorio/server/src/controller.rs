@@ -1,7 +1,7 @@
 //! One synchronous reconciliation step per pass. The shared host owns scheduling,
 //! the execution gate, blocked state and explicit retries.
 use factorio::{Config, Desired, Effect, Phase, Session, workspaces as graph};
-use snap_document_host::{ControllerContext, Host};
+use snap_document::runtime::{ControllerContext, Runtime};
 use snap_store::Error;
 
 type Context<'a> = ControllerContext<'a, snap_store_sqlite::Sqlite>;
@@ -48,17 +48,17 @@ impl Effects for Native {
 /// Native effects enter Tokio's blocking section while retaining the application
 /// gate. Never wait for an agent turn under this gate.
 pub fn register(
-    host: Host<snap_store_sqlite::Sqlite>,
+    host: Runtime<snap_store_sqlite::Sqlite>,
     runtime: tokio::runtime::Handle,
     tools: crate::config::Tools,
-) -> Host<snap_store_sqlite::Sqlite> {
+) -> Runtime<snap_store_sqlite::Sqlite> {
     with_effects(host, Native(runtime, tools))
 }
 
 fn with_effects(
-    host: Host<snap_store_sqlite::Sqlite>,
+    host: Runtime<snap_store_sqlite::Sqlite>,
     mut effects: impl Effects,
-) -> Host<snap_store_sqlite::Sqlite> {
+) -> Runtime<snap_store_sqlite::Sqlite> {
     host.with_controller(
         graph::SESSION_KIND,
         Box::new(move |ctx, snapshot| {
@@ -256,7 +256,7 @@ mod tests {
             self.call("cleanup")
         }
     }
-    fn fixture() -> (Host<snap_store_sqlite::Sqlite>, Arc<Mutex<Calls>>) {
+    fn fixture() -> (Runtime<snap_store_sqlite::Sqlite>, Arc<Mutex<Calls>>) {
         let mut migrations: Vec<snap_store::migration::Migration> = [
             snap_access::MIGRATION,
             snap_document::server::MIGRATION,
@@ -328,7 +328,7 @@ mod tests {
             })
             .unwrap();
         let calls = Arc::new(Mutex::new(Calls::default()));
-        let host = Host::new(
+        let host = Runtime::new(
             store,
             graph::document(),
             Arc::new(|_, bearer| Ok(bearer.into())),
@@ -337,13 +337,13 @@ mod tests {
         );
         (with_effects(host, Fake(calls.clone())), calls)
     }
-    fn command(host: &mut Host<snap_store_sqlite::Sqlite>, cmd: Command, human: bool) {
+    fn command(host: &mut Runtime<snap_store_sqlite::Sqlite>, cmd: Command, human: bool) {
         host.transact("command", |tx| {
             graph::command(tx, ROOT, "owner", human, 0, cmd)
         })
         .unwrap();
     }
-    fn retry(host: &mut Host<snap_store_sqlite::Sqlite>) {
+    fn retry(host: &mut Runtime<snap_store_sqlite::Sqlite>) {
         host.transact("retry", |tx| {
             let id = graph::child_id(ROOT, graph::SESSION_KIND, "work");
             let mut lifecycle = graph::document().lifecycle(tx, &id)?;

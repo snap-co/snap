@@ -325,13 +325,15 @@ impl AuthyClient {
                 Some(format!("{error:?}")),
             );
         }
+        // One frame carries at most one message now. Acceptance and progress
+        // produce none, so there is nothing to loop over.
         let messages = self
             .wire
             .receive(response)
             .map_err(|e| js_error(format!("{e:?}")))?;
         let mut error: Option<String> = None;
         let mut needs_manifest = false;
-        for message in messages {
+        if let Some(message) = messages {
             let is_reset = matches!(message, ServerMessage::Reset);
             let registry = std::mem::replace(&mut self.registry, authy::registry());
             let outcome = self.client.handle(&registry, message);

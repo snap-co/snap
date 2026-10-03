@@ -50,7 +50,6 @@
 #![no_std]
 extern crate alloc;
 pub mod client;
-pub mod relying_party;
 
 use alloc::{string::String, vec::Vec};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};

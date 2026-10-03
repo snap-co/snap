@@ -120,12 +120,12 @@ fn retirement_revokes_dispatch_while_owned_work_drains(tc: TestCase) {
         detached.push(action != 0);
         if action != 0 {
             match ready(&mut host, peer, invoke(2, 1), 0) {
-                Response::Events(events) => assert_eq!(
-                    events,
-                    vec![Event::Completed {
+                Response::Event(event) => assert_eq!(
+                    event,
+                    Event::Completed {
                         id: 2,
                         outcome: Err(Error::IdentityRequired)
-                    }]
+                    }
                 ),
                 other => panic!("detached peer dispatched: {other:?}"),
             }

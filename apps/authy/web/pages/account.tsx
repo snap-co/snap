@@ -139,6 +139,7 @@ function Sessions({ client }: { client: AuthyClient }) {
         </ul>
       )}
       <div className="actions">
+        {client.passkeysSupported() && <button className="secondary" disabled={busy} onClick={() => void act(() => client.passkey(true))}>Add a passkey</button>}
         <button
           className="secondary"
           disabled={busy}

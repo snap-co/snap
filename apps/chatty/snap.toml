@@ -22,4 +22,4 @@ commands = [["cargo", "test", "-p", "chatty"], ["cargo", "test", "-p", "chatty-s
 commands = [["../../bin/browser-tests", "chatty"]]
 
 [test.native]
-commands = [["cargo", "test", "-p", "chatty-server", "--", "--ignored"], ["cargo", "test", "-p", "snap-oauth-local", "--test", "crypto", "--", "--ignored"]]
+commands = [["cargo", "test", "-p", "chatty-server", "--", "--ignored"], ["cargo", "test", "-p", "snap-crypto", "--", "--ignored"]]

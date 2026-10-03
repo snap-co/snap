@@ -27,8 +27,8 @@ async fn verified_tls_carries_snap_and_rejects_untrusted_wrong_name_expired_and_
                 ));
                 snap_transport_tcp::write_response(
                     &mut socket,
-                    &Response::Notification {
-                        operation: "probe".into(),
+                    &Response::Global {
+                        kind: "probe".into(),
                         input: snap_transport::Value::Null,
                     },
                     false,
@@ -82,8 +82,8 @@ async fn verified_tls_carries_snap_and_rejects_untrusted_wrong_name_expired_and_
         client.send(&Command::Close).await.unwrap();
         assert_eq!(
             client.receive().await.unwrap().0,
-            Response::Notification {
-                operation: "probe".into(),
+            Response::Global {
+                kind: "probe".into(),
                 input: snap_transport::Value::Null
             }
         );

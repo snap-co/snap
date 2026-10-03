@@ -15,10 +15,12 @@ use axum::{
 };
 use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
-use snap_document_host::{Host, web::Shared};
-use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
-use snap_oidc::relying_party as rp;
+use snap_document::runtime::Runtime;
+use snap_identity::oauth as rp;
+use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
+use snap_transport_native::{Dispatcher, Shared};
+use snap_transport_ws::Service;
 use std::{path::PathBuf, sync::Arc};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -30,11 +32,7 @@ struct App {
     tcp_server_name: Option<String>,
 }
 impl App {
-    async fn actor(
-        &self,
-        headers: &HeaderMap,
-        mutation: bool,
-    ) -> Result<(rp::Session, bool), Error> {
+    async fn actor(&self, headers: &HeaderMap, mutation: bool) -> Result<(rp::Grant, bool), Error> {
         if let Some(header) = headers.get("authorization") {
             let bearer = header
                 .to_str()
@@ -78,7 +76,8 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_document::server::MIGRATION,
         snap_document::server::LIFECYCLE_MIGRATION,
         rp::MIGRATION,
-        snap_oauth_local::MIGRATION,
+        snap_identity_native::oauth::MIGRATION,
+        rp::IDENTITY_MIGRATION,
         factorio::MIGRATIONS[0],
         factorio::MIGRATIONS[1],
         factorio::MIGRATIONS[2],
@@ -204,7 +203,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let address = listener.local_addr()?;
     let tcp_listener = tokio::net::TcpListener::bind(startup.app.tcp.listen).await?;
     let tcp_address = tcp_listener.local_addr()?;
-    let origin = snap_oauth_local::origin(&startup.host.public_origin(address))?;
+    let origin = snap_identity_native::oauth::origin(&startup.host.public_origin(address))?;
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
@@ -216,8 +215,18 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     {
         store.load(table)?;
     }
+    store.run("identity.import-legacy-owners", |tx| {
+        let mut owners = Vec::new();
+        for row in tx.find("access.grants", "primary", &[])? {
+            let Some(snap_store::Value::Text(owner)) = row.get("identity") else {
+                return Err(Error::Invalid);
+            };
+            owners.push(owner.clone());
+        }
+        rp::import_legacy_owners(tx, &owners)
+    })?;
     let cookies = Cookies::load(&mut store, "factorio", origin.starts_with("https:"))?;
-    let host = Host::new_with_lifetime_authority(
+    let host = Runtime::new_with_lifetime_authority(
         store,
         graph::document(),
         Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -231,11 +240,17 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let host = operations::register(host, config, origin.clone());
     let mut host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
     tokio::task::block_in_place(|| host.recover_controllers())?;
-    let documents = Shared::with_cookie(host, origin.clone(), cookies.reader());
+    let documents = Shared::new(host);
+    let transport = Arc::new(Service {
+        dispatch: Dispatcher::web(documents.clone()),
+        origin: origin.clone(),
+        cookie: Some(cookies.reader()),
+        require_cookie: false,
+    });
     let oauth = OAuth::new(
         documents.clone(),
         cookies,
-        snap_oauth_local::Config {
+        snap_identity_native::oauth::Config {
             origin,
             ..oauth_config
         },
@@ -274,14 +289,14 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         )
         .with_state(app)
         .merge(oauth.routes())
-        .merge(snap_document_host::web::router(documents.clone()))
+        .merge(snap_transport_ws::router(transport))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Factorio http://{address}");
     println!("Factorio tls://{tcp_address}");
-    let prepare: snap_document_host::tcp::Prepare = Arc::new(move |command| {
+    let prepare: snap_transport_native::Prepare = Arc::new(move |command| {
         let oauth = oauth.clone();
         Box::pin(async move {
             login::prepare(&oauth, command)
@@ -292,6 +307,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
                 })
         })
     });
-    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_document_host::tcp::serve_prepared(tcp_listener,documents.clone(),tcp_tls,prepare)=>result?, _=snap_document_host::web::dispatch(documents)=>unreachable!() }
+    let tcp = Dispatcher::tcp(documents.clone(), Some(prepare));
+    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_transport_tcp::serve(tcp_listener,tcp,tcp_tls)=>result?, _=snap_transport_native::dispatch(documents)=>unreachable!() }
     Ok(())
 }

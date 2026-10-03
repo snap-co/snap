@@ -5,6 +5,21 @@ use snap_transport::{
 };
 use testy_server::memory::Memory;
 
+/// Send one command and return its terminal frame.
+///
+/// The channel is a stream, so acceptance may arrive ahead of completion; these
+/// cases expect it not to, and the helper would spin forever if it did.
+async fn round_trip<C: Channel>(channel: &mut C, command: Command) -> Response {
+    channel.send(command).await.unwrap();
+    loop {
+        if let Some(response @ (Response::Event(Event::Completed { .. }) | Response::Failed(_))) =
+            channel.receive().await.unwrap()
+        {
+            return response;
+        }
+    }
+}
+
 fn platform() -> Memory<testy::App, testy::TestAuthority> {
     Memory::new(snap_transport::execution::Runtime::new(
         Server::new(
@@ -100,18 +115,18 @@ fn schemas_identity_and_application_failures_have_distinct_admission() {
             },
         };
         assert_eq!(
-            channel.exchange(call(1, json!("bad"))).await.unwrap(),
-            Response::Events(vec![Event::Completed {
+            round_trip(&mut channel, call(1, json!("bad"))).await,
+            Response::Event(Event::Completed {
                 id: 1,
                 outcome: Err(Error::InvalidInput)
-            }])
+            })
         );
         assert_eq!(
-            channel.exchange(call(2, json!(2))).await.unwrap(),
-            Response::Events(vec![Event::Completed {
+            round_trip(&mut channel, call(2, json!(2))).await,
+            Response::Event(Event::Completed {
                 id: 2,
                 outcome: Err(Error::IdentityRequired)
-            }])
+            })
         );
         let mut client = fixture_client(channel);
         client.start("tab").await.unwrap();
@@ -141,7 +156,7 @@ fn memory_delivery_is_async_and_cancellable_before_admission() {
     use futures::{FutureExt, task::noop_waker};
     let platform = platform();
     let mut channel = platform.channel();
-    let mut pending = Box::pin(channel.exchange(Command::Connect {
+    let mut pending = Box::pin(channel.send(Command::Connect {
         bearer: testy::BEARER.into(),
         client_id: "cancelled".into(),
     }));

@@ -151,7 +151,7 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
                 .unwrap()
         )
         .await["Completed"]["outcome"]["Ok"],
-        json!([{"label":"account@example.test","kind":"password","removable":false}])
+        json!([{"locator":"account@example.test","label":"account@example.test","kind":"password","removable":false}])
     );
     assert_ne!(
         host.post("/api/logout", &json!({"scope":"all"}), &first, &host.base)
@@ -228,44 +228,97 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
 }
 
 #[tokio::test]
-#[ignore = "real HTTP, secure-cookie, storage and password hashing gate; prepare Authy web assets"]
-async fn canonical_https_origin_selects_secure_host_cookie_and_survives_restart() {
-    let mut host = Host::new("http://127.0.0.1:3850", Some("HTTPS://AUTHY.EXAMPLE:443")).await;
-    let discovery = value(
-        host.request("/.well-known/openid-configuration", "")
+#[ignore = "real HTTP, cookie, storage and password hashing gate; prepare Authy web assets"]
+async fn canonical_origins_preserve_password_issuer_and_cookie_behavior_after_restart() {
+    // Authy owns host compatibility: optional passkey eligibility must not decide
+    // whether an otherwise valid password/issuer development host can start.
+    for (configured, origin, secure) in [
+        ("HTTPS://AUTHY.EXAMPLE:443", "https://authy.example", true),
+        (
+            "http://authy.example.test:3846",
+            "http://authy.example.test:3846",
+            false,
+        ),
+    ] {
+        let mut host = Host::new("http://127.0.0.1:3850", Some(configured)).await;
+        let discovery = value(
+            host.request("/.well-known/openid-configuration", "")
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(discovery["issuer"], origin);
+        let created = host
+            .post(
+                "/identity/enroll",
+                &json!({"email":"secure@example.test","password":"secure fixture password"}),
+                "",
+                origin,
+            )
             .send()
             .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(discovery["issuer"], "https://authy.example");
-    let created = host
-        .post(
-            "/identity/enroll",
-            &json!({"email":"secure@example.test","password":"secure fixture password"}),
-            "",
-            "https://authy.example",
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status(), 200);
-    let header = created.headers()["set-cookie"].to_str().unwrap();
-    assert!(header.starts_with("__Host-authy_session="));
-    assert!(header.contains("; Secure"));
-    assert!(header.contains("; HttpOnly; SameSite=Lax;"));
-    let cookie = cookie(&created);
-    host.restart().await;
-    assert_eq!(
-        value(
-            host.request("/authy/account", &cookie)
+            .unwrap();
+        assert_eq!(created.status(), 200);
+        let header = created.headers()["set-cookie"].to_str().unwrap();
+        assert!(header.starts_with(if secure {
+            "__Host-authy_session="
+        } else {
+            "authy_session="
+        }));
+        assert_eq!(header.contains("; Secure"), secure);
+        assert!(header.contains("; HttpOnly; SameSite=Lax;"));
+        let cookie = cookie(&created);
+        if !secure {
+            // An unmounted operation reaches the read-only frontend fallback,
+            // which rejects POST rather than accepting a passkey ceremony.
+            assert_eq!(
+                host.post(
+                    "/identity/passkey-authenticate",
+                    &json!({"locator":null,"binding":"binding-with-at-least-32-characters"}),
+                    "",
+                    origin
+                )
                 .send()
                 .await
                 .unwrap()
-        )
-        .await["Completed"]["outcome"]["Ok"]["email"],
-        "secure@example.test"
-    );
+                .status(),
+                405
+            );
+        }
+        host.restart().await;
+        assert_eq!(
+            value(
+                host.request("/authy/account", &cookie)
+                    .send()
+                    .await
+                    .unwrap()
+            )
+            .await["Completed"]["outcome"]["Ok"]["email"],
+            "secure@example.test"
+        );
+        let acquired = host
+            .post(
+                "/identity/acquire",
+                &json!({"email":"secure@example.test","password":"secure fixture password"}),
+                "",
+                origin,
+            )
+            .send()
+            .await;
+        let acquired = acquired.unwrap();
+        assert_eq!(acquired.status(), 200);
+        assert_eq!(
+            value(
+                host.request("/authy/account", &support::cookie(&acquired))
+                    .send()
+                    .await
+                    .unwrap()
+            )
+            .await["Completed"]["outcome"]["Ok"]["email"],
+            "secure@example.test"
+        );
+    }
 }
 
 fn authorize_url(host: &Host, state: &str, extra: &[(&str, &str)]) -> String {

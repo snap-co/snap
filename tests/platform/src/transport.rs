@@ -2,7 +2,7 @@
 //! A host adapter must exercise the selected production carrier, not implement
 //! its codec or return the expected response. Published frames are dependency
 //! inputs here; these cases do not prove operation acceptance or execution.
-use alloc::{string::String, vec};
+use alloc::string::String;
 use snap_transport::{
     Command, Event, Invocation, Response,
     carrier::{AttachmentInfo, Frame},
@@ -76,10 +76,12 @@ pub async fn commands_and_observations<T: Duplex>(transport: &mut T, metadata_on
         serde_json::to_value(invoke).unwrap()
     );
     // No handler has completed. Output must still cross an otherwise idle socket.
-    let progress = Response::Events(vec![Event::Progress {
+    // One event per frame: a carrier that wants to batch does so below this layer
+    // and reassembles here, so a slow operation can publish progress as it goes.
+    let progress = Response::Event(Event::Progress {
         id: 7,
         value: json!("waiting"),
-    }]);
+    });
     transport
         .publish(Frame {
             response: progress.clone(),
@@ -116,10 +118,10 @@ pub async fn malformed_input_never_reaches_dispatch<T: Server>(transport: &mut T
 }
 
 pub async fn final_reply_at_retirement<T: Server>(transport: &mut T) {
-    let response = Response::Events(vec![Event::Completed {
+    let response = Response::Event(Event::Completed {
         id: 9,
         outcome: Ok(json!("committed")),
-    }]);
+    });
     transport.retire_after_empty_receive(Frame {
         response: response.clone(),
         handshake: false,

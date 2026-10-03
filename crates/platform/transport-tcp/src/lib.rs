@@ -5,6 +5,9 @@ use std::{io, time::Duration};
 mod server;
 pub mod tls;
 pub use server::serve;
+// Re-exported so a TCP composition names one inbox type, the same one a WebSocket
+// composition names. The carrier performs socket IO; the inbox is the handoff.
+pub use snap_transport::inbox::Inbox;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 fn protocol(error: snap_transport::Error) -> io::Error {

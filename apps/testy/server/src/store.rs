@@ -17,25 +17,30 @@ impl<B: Backend> Host<B> {
             transport: Server::new(testy::TestAuthority, Config::default()),
         }
     }
-    pub fn exchange(&mut self, command: Command) -> Response {
+    /// Every frame one command produced, in order.
+    ///
+    /// The wire carries one event per frame, so a caller on a real channel sees
+    /// these arrive separately. This fixture exists to assert on a whole exchange
+    /// at once, which is why it collects them rather than yielding one at a time.
+    pub fn exchange(&mut self, command: Command) -> Vec<Response> {
         let Command::Request { bearer, invocation } = command else {
-            return Response::Failed(Error::Protocol);
+            return vec![Response::Failed(Error::Protocol)];
         };
         let id = invocation.id;
         let result = self.transport.request(bearer.as_deref(), invocation);
         let dispatch = match result {
             Ok(dispatch) => dispatch,
-            Err(error) => return Response::Failed(error),
+            Err(error) => return vec![Response::Failed(error)],
         };
         if dispatch.identity.is_none() {
-            return Response::Failed(Error::IdentityRequired);
+            return vec![Response::Failed(Error::IdentityRequired)];
         }
         if dispatch.invocation.operation != "accounts.create" {
-            return Response::Failed(Error::UnknownOperation);
+            return vec![Response::Failed(Error::UnknownOperation)];
         }
         let input = dispatch.invocation.input;
         let (Some(account), Some(email)) = (input["id"].as_i64(), input["email"].as_str()) else {
-            return Response::Failed(Error::InvalidInput);
+            return vec![Response::Failed(Error::InvalidInput)];
         };
         let outcome = self
             .store
@@ -49,10 +54,10 @@ impl<B: Backend> Host<B> {
                 ),
                 other => Error::Application(json!({"code": format!("{other:?}")})),
             });
-        Response::Events(vec![
-            Event::Accepted { id },
-            Event::Completed { id, outcome },
-        ])
+        vec![
+            Response::Event(Event::Accepted { id }),
+            Response::Event(Event::Completed { id, outcome }),
+        ]
     }
 }
 

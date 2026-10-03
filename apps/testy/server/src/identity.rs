@@ -38,6 +38,16 @@ impl<C: Crypto> Crypto for CryptoHandle<C> {
     fn digest(&self, secret: &str) -> Vec<u8> {
         self.0.lock().expect("crypto lock").digest(secret)
     }
+    fn verify_token(
+        &self,
+        token: &str,
+        jwks: &snap_transport::Value,
+    ) -> Result<snap_transport::Value, snap_store::Error> {
+        self.0
+            .lock()
+            .map_err(|_| snap_store::Error::Unavailable)?
+            .verify_token(token, jwks)
+    }
 }
 struct State<B, C> {
     store: Store<B>,

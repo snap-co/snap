@@ -10,6 +10,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+snap-identity-native = { path = "../../../crates/platform/identity-native", features = ["passkey"] }
 snap-config.workspace = true
 authy.workspace = true
 snap-store.workspace = true
@@ -18,7 +19,8 @@ snap-access.workspace = true
 snap-document.workspace = true
 snap-oidc.workspace = true
 snap-transport = { path = "../../../crates/transport" }
-snap-document-host = { path = "../../../crates/platform/document-host" }
+snap-transport-native = { path = "../../../crates/platform/transport-native" }
+snap-transport-ws = { path = "../../../crates/platform/transport-ws" }
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-crypto = { path = "../../../crates/platform/crypto" }
 serde.workspace = true
@@ -46,4 +48,4 @@ nix = { version = "0.30", features = ["signal", "process"] }
 workspace = true
 
 [package.metadata.snap]
-role = "composition"
+role = "host"

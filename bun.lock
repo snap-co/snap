@@ -5,6 +5,7 @@
     "": {
       "name": "snap-rust-spike",
       "dependencies": {
+        "@simplewebauthn/browser": "^14.0.0",
         "@tanstack/react-router": "^1.170.40",
         "react": "19.2.8",
         "react-dom": "19.2.8",
@@ -22,6 +23,7 @@
     "apps/authy/web": {
       "name": "@snap/authy-web",
       "dependencies": {
+        "@simplewebauthn/browser": "^14.0.0",
         "@tanstack/react-router": "^1.170.40",
         "react": "19.2.8",
         "react-dom": "19.2.8",
@@ -110,6 +112,8 @@
     "@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.11", "", { "os": "win32", "cpu": "x64" }, "sha512-/PzKqzAJ03i19oy2ItPvyvaVjOjBCNnfaJs8yvUdGBKmiESgnrJSQ2awd81QzFbbnAmu7YO9ZnJrDCb9VSJPRA=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
+
+    "@simplewebauthn/browser": ["@simplewebauthn/browser@14.0.0", "", {}, "sha512-1odWVqeEBTl7lJ9zMKLEsmTlnyrDO5iRcTvfMKKk1WThUnp/i8JJdffdj2icP+tty159s4PgwE3BiMoEW9NFow=="],
 
     "@snap/authy-web": ["@snap/authy-web@workspace:apps/authy/web"],
 

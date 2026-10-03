@@ -4,8 +4,8 @@ use snap_transport::{Command, Invocation, Response, binary, json};
 
 #[tokio::test]
 async fn segmented_envelopes_preserve_order_and_reject_invalid_continuations() {
-    let response = Response::Notification {
-        operation: "large".into(),
+    let response = Response::Global {
+        kind: "large".into(),
         input: json!({"text":"x".repeat(200000),"exact":u64::MAX}),
     };
     let encoded = binary::response(&response, false, None).unwrap();

@@ -20,4 +20,4 @@ serde_json.workspace = true
 workspace = true
 
 [package.metadata.snap]
-role = "composition"
+role = "host"

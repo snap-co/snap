@@ -132,3 +132,87 @@ fill = ""
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn identity_directory_migrates_fresh_and_pre_flow_password_histories() {
+    let directory = tempfile::tempdir().unwrap();
+    let migrations =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/identity/migrations");
+    let legacy = directory.path().join("legacy");
+    fs::create_dir(&legacy).unwrap();
+    for name in ["0001_identity.toml", "0006_identity_session_time.toml"] {
+        fs::copy(migrations.join(name), legacy.join(name)).unwrap();
+    }
+    let apply = |database: &std::path::Path, sources: &std::path::Path| {
+        let output = Command::new(env!("CARGO_BIN_EXE_snap"))
+            .current_dir(directory.path())
+            .arg("migrate")
+            .arg("--database")
+            .arg(database)
+            .arg("--migrations")
+            .arg(sources)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    for upgrade in [false, true] {
+        let database = directory.path().join(if upgrade {
+            "upgrade.sqlite"
+        } else {
+            "fresh.sqlite"
+        });
+        if upgrade {
+            apply(&database, &legacy);
+            let mut store = snap_store_sqlite::Sqlite::open(&database).unwrap();
+            store.load("identity.identities").unwrap();
+            store.load("identity.credentials").unwrap();
+            store
+                .run("legacy credential", |tx| {
+                    tx.insert(
+                        "identity.identities",
+                        [("id".into(), "legacy-owner".into())].into_iter().collect(),
+                    )?;
+                    tx.insert(
+                        "identity.credentials",
+                        [
+                            ("email".into(), "person@example.test".into()),
+                            ("identity".into(), "legacy-owner".into()),
+                            ("hash".into(), "legacy-hash".into()),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    )
+                })
+                .unwrap();
+        }
+        apply(&database, &migrations);
+        apply(&database, &migrations);
+        let mut store = snap_store_sqlite::Sqlite::open(&database).unwrap();
+        store.load("identity.attempts").unwrap();
+        store.load("identity.credentials").unwrap();
+        let credential = store
+            .run("upgraded credential", |tx| {
+                tx.get("identity.credentials", &["person@example.test".into()])
+            })
+            .unwrap()
+            .value;
+        if upgrade {
+            let row = credential.unwrap();
+            assert_eq!(
+                row["identity"],
+                snap_store::Value::Text("legacy-owner".into())
+            );
+            assert_eq!(
+                row["material"],
+                snap_store::Value::Text("legacy-hash".into())
+            );
+            assert_eq!(row["kind"], snap_store::Value::Text("password".into()));
+        } else {
+            assert!(credential.is_none());
+        }
+    }
+}

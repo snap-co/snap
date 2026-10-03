@@ -17,6 +17,24 @@ A reusable domain capability built on Snap interfaces rather than specific to an
 **Access**:
 Snap's framework-level ACL module for granting identities roles on registered resources and relating resources through access links. It determines eligibility without owning residency or client synchronization; framework and module code can use that eligibility for guards, prefetching, fetches or subscriptions.
 
+**Identity**:
+The principal to which credentials belong and under which authenticated sessions act. An identity is independent of the credential kind used to authenticate it.
+
+**Credential**:
+A registered authentication method belonging to an identity. Passwords, passkeys and OAuth logins are credential kinds, managed under Identity's rules.
+
+**Authentication flow**:
+The exchanges required to prove a credential and acquire a session. A credential kind can support multiple flows, such as browser callback and device authorization, without creating a different identity or a separate session model.
+
+**Authentication attempt**:
+An unfinished authentication flow with temporary proof and correlation state. Its challenge or callback identifier correlates the flow; it is not a session identifier or authenticated authority.
+
+**Session**:
+An authenticated relationship with an identity acquired by proving a credential. Operations use the session associated with their active connection rather than selecting a session by id; session storage is private.
+
+**OAuth grant**:
+Private upstream tokens and provider metadata retained after OAuth authentication. A grant can require refresh before accepting new work, but cannot authorize anything without its backing Identity session. Refreshing an upstream grant does not create a new principal or extend the local session.
+
 **Access eligibility**:
 An identity's effective permission to read or invoke guarded operations on a resource. Eligibility can inform a residency manifest but does not itself load or transmit the resource.
 

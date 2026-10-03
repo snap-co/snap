@@ -5,13 +5,13 @@ use snap_transport::execution::{Program, Ticket};
 use snap_transport::{Channel, Command, Error, Event, Response, server::Authority};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     rc::Rc,
     task::{Poll, Waker},
 };
 
 struct Mailbox {
-    events: Vec<Event>,
+    events: VecDeque<Event>,
     done: bool,
     waker: Option<Waker>,
 }
@@ -51,9 +51,9 @@ impl<P: Program, R: Authority> Host<P, R> {
                         if let Some(change) = bearer
                             && let Event::Completed { id, .. } = &event
                         {
-                            mailbox.events.push(Event::Bearer { id: *id, change });
+                            mailbox.events.push_back(Event::Bearer { id: *id, change });
                         }
-                        mailbox.events.push(event);
+                        mailbox.events.push_back(event);
                         if let Some(waker) = mailbox.waker.take() {
                             waker.wake();
                         }
@@ -85,6 +85,8 @@ impl<P: Program, R: Authority> Memory<P, R> {
         Connection {
             host: self.host.clone(),
             peer: Peer::default(),
+            tickets: VecDeque::new(),
+            ready: VecDeque::new(),
         }
     }
     pub fn advance(&self, milliseconds: u64) {
@@ -128,19 +130,18 @@ impl<P: Program, R: Authority> Memory<P, R> {
 pub struct Connection<P: Program, R: Authority> {
     host: Rc<RefCell<Host<P, R>>>,
     peer: Peer,
-}
-// Own only observation interest. Dropping a caller never cancels submitted work.
-struct Interest<P: Program, R: Authority> {
-    host: Rc<RefCell<Host<P, R>>>,
-    ticket: Ticket,
-}
-impl<P: Program, R: Authority> Drop for Interest<P, R> {
-    fn drop(&mut self) {
-        self.host.borrow_mut().mailboxes.remove(&self.ticket);
-    }
+    /// Invocations this logical connection has outstanding, in submission order.
+    /// A channel is a stream, so more than one may be running at once.
+    tickets: VecDeque<Ticket>,
+    /// Frames the host answered without queueing: attachment, detachment, refusal,
+    /// or a preconnection credential issue. These are observations like any
+    /// other, so they are queued for `receive` rather than returned from `send`.
+    ready: VecDeque<Response>,
 }
 impl<P: Program, R: Authority> Channel for Connection<P, R> {
-    async fn exchange(&mut self, command: Command) -> Result<Response, Error> {
+    /// Submits and returns. Acceptance and progress reach the caller as later
+    /// frames, which is what lets a slow operation publish before it finishes.
+    async fn send(&mut self, command: Command) -> Result<(), Error> {
         // Cancellation before delivery prevents submission entirely.
         let mut yielded = false;
         core::future::poll_fn(|cx| {
@@ -153,43 +154,63 @@ impl<P: Program, R: Authority> Channel for Connection<P, R> {
             }
         })
         .await;
-        let ticket = {
-            let mut host = self.host.borrow_mut();
-            let now = host.now;
-            match host.platform.submit(&mut self.peer, command, now) {
-                Submission::Ready(response) => {
-                    // Immediate host replies can contain issued credentials. The
-                    // execution trace only retains queued application observations.
-                    host.drive();
-                    return Ok(response);
-                }
-                Submission::Pending(ticket) => {
-                    host.mailboxes.insert(
-                        ticket,
-                        Mailbox {
-                            events: Vec::new(),
-                            done: false,
-                            waker: None,
-                        },
-                    );
-                    ticket
-                }
+        let mut host = self.host.borrow_mut();
+        let now = host.now;
+        match host.platform.submit(&mut self.peer, command, now) {
+            Submission::Ready(response) => {
+                // Immediate host replies can contain issued credentials. The
+                // execution trace only retains queued application observations.
+                host.drive();
+                self.ready.push_back(response);
             }
-        };
-        let _interest = Interest {
-            host: self.host.clone(),
-            ticket,
-        };
+            Submission::Pending(ticket) => {
+                host.mailboxes.insert(
+                    ticket,
+                    Mailbox {
+                        events: VecDeque::new(),
+                        done: false,
+                        waker: None,
+                    },
+                );
+                self.tickets.push_back(ticket);
+            }
+        }
+        Ok(())
+    }
+
+    /// Yields the next observation, oldest invocation first. `None` only when no
+    /// invocation is outstanding, because then nothing further can arrive.
+    async fn receive(&mut self) -> Result<Option<Response>, Error> {
         core::future::poll_fn(|cx| {
             let mut host = self.host.borrow_mut();
             host.drive();
-            let mailbox = host.mailboxes.get_mut(&ticket).unwrap();
-            if mailbox.done {
-                Poll::Ready(Ok(Response::Events(core::mem::take(&mut mailbox.events))))
-            } else {
-                mailbox.waker = Some(cx.waker().clone());
-                Poll::Pending
+            if let Some(response) = self.ready.pop_front() {
+                return Poll::Ready(Ok(Some(response)));
             }
+            let mut index = 0;
+            while index < self.tickets.len() {
+                let ticket = self.tickets[index];
+                let mailbox = host.mailboxes.get_mut(&ticket).unwrap();
+                if let Some(event) = mailbox.events.pop_front() {
+                    // A completed mailbox retires once its last frame is handed
+                    // out. Submission order is preserved for the rest.
+                    if mailbox.events.is_empty() && mailbox.done {
+                        host.mailboxes.remove(&ticket);
+                        self.tickets.remove(index);
+                    }
+                    return Poll::Ready(Ok(Some(Response::Event(event))));
+                }
+                index += 1;
+            }
+            if self.tickets.is_empty() {
+                return Poll::Ready(Ok(None));
+            }
+            for ticket in self.tickets.clone() {
+                if let Some(mailbox) = host.mailboxes.get_mut(&ticket) {
+                    mailbox.waker = Some(cx.waker().clone());
+                }
+            }
+            Poll::Pending
         })
         .await
     }
@@ -198,6 +219,11 @@ impl<P: Program, R: Authority> Drop for Connection<P, R> {
     fn drop(&mut self) {
         let mut host = self.host.borrow_mut();
         let now = host.now;
+        // Submitted work is not cancelled, but this channel's observation
+        // interest dies with it, so its frames have nowhere to go.
+        for ticket in self.tickets.drain(..) {
+            host.mailboxes.remove(&ticket);
+        }
         host.platform.lost(&mut self.peer, now);
         host.drive();
     }

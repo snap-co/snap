@@ -39,8 +39,8 @@ fn serde_cbor_connect() -> Vec<u8> {
 
 #[test]
 fn exact_numbers_and_connect_reply_metadata() {
-    let response = Response::Notification {
-        operation: "probe".into(),
+    let response = Response::Global {
+        kind: "probe".into(),
         input: json!({"signed":i64::MIN,"unsigned":u64::MAX,"bytes":"x".repeat(4096)}),
     };
     let frame = binary::response(&response, false, None).unwrap();

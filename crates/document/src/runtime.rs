@@ -1,18 +1,26 @@
-//! Store-backed, globally serialized document host. Network adapters only submit
+//! Store-backed document execution and replication. Network adapters only submit
 //! commands and drain observations; acceptance and execution are separate steps.
-mod carrier;
 mod controller;
-pub mod tcp;
-pub mod web;
 pub use controller::{Controller, ControllerContext};
 
-use snap_document::{Completion, Manifest, ServerMessage, Snapshot, server::Document};
+use crate::{Completion, Manifest, ServerMessage, Snapshot, server::Document};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
 use snap_store::{Backend, Store, Transaction};
-use snap_transport::operation::{Context, Definition, Runtime, Selection, storage_error};
+use snap_transport::operation::{
+    Context, Definition, Runtime as Operations, Selection, storage_error,
+};
+use snap_transport::runtime::{CarrierControl, Output};
 use snap_transport::server::{Attachment, Authority, Config, ConnectionId, Server};
 use snap_transport::{Command, Error, Event, Invocation, Response, Value, json};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use spin::Mutex;
 
 /// Runs against resident Store state for identification and admission, never
 /// external IO. Accepted work retains the actor instead of rerunning this callback
@@ -34,7 +42,6 @@ impl<B: Backend> Authority for StoreAuthority<B> {
     fn identify(&self, bearer: &str) -> Result<String, Error> {
         self.store
             .lock()
-            .unwrap()
             .inspect("document.authenticate", |tx| {
                 (self.authenticate)(tx, bearer)
             })
@@ -43,7 +50,6 @@ impl<B: Backend> Authority for StoreAuthority<B> {
     fn retained(&self, bearer: &str) -> Result<String, Error> {
         self.store
             .lock()
-            .unwrap()
             .inspect("document.lifetime", |tx| (self.lifetime)(tx, bearer))
             .map_err(storage_error)
     }
@@ -56,98 +62,6 @@ struct Peer {
     held: BTreeMap<String, Snapshot>,
     output: Output,
     control: CarrierControl,
-}
-
-/// Physical teardown can be requested while controller IO holds the host gate.
-/// The host consumes it before another protected admission. Accepted work drains.
-#[derive(Clone, Default)]
-pub struct CarrierControl(Arc<Mutex<Option<(bool, u64)>>>);
-
-impl CarrierControl {
-    pub fn detach(&self, now: u64) {
-        self.0.lock().unwrap().get_or_insert((false, now));
-    }
-
-    pub fn close(&self, now: u64) {
-        *self.0.lock().unwrap() = Some((true, now));
-    }
-}
-
-/// Carrier-owned handle. Socket writes and progress draining never acquire the
-/// execution gate, including while a synchronous controller is doing host IO.
-#[derive(Clone, Default)]
-pub struct Output(Arc<Mutex<Outbox>>);
-
-#[derive(Default)]
-struct Outbox {
-    frames: VecDeque<snap_transport::carrier::Frame>,
-    sealed: bool,
-}
-
-impl Output {
-    pub fn pop_front(&self) -> Option<Response> {
-        self.pop_frame().map(|frame| frame.response)
-    }
-    fn pop_frame(&self) -> Option<snap_transport::carrier::Frame> {
-        self.0.lock().unwrap().frames.pop_front()
-    }
-    fn push_frame(&self, frame: snap_transport::carrier::Frame) {
-        let mut outbox = self.0.lock().unwrap();
-        if !outbox.sealed {
-            outbox.frames.push_back(frame);
-        }
-    }
-    /// Append any final frame and stop physical publication under one lock.
-    /// Already queued frames remain drainable. Accepted work may still complete
-    /// and update retained replay state through Host::respond after sealing.
-    fn seal(&self, final_frame: Option<snap_transport::carrier::Frame>) {
-        let mut outbox = self.0.lock().unwrap();
-        if !outbox.sealed {
-            if let Some(frame) = final_frame {
-                outbox.frames.push_back(frame);
-            }
-            outbox.sealed = true;
-        }
-    }
-    fn push_back(&self, response: Response) {
-        self.push_frame(snap_transport::carrier::Frame {
-            response,
-            handshake: false,
-            attachment: None,
-            terminal: false,
-        });
-    }
-    fn is_empty(&self) -> bool {
-        self.0.lock().unwrap().frames.is_empty()
-    }
-    fn front(&self) -> Option<Response> {
-        self.0
-            .lock()
-            .unwrap()
-            .frames
-            .front()
-            .map(|frame| frame.response.clone())
-    }
-    fn retain(&self, mut keep: impl FnMut(&Response) -> bool) {
-        self.0
-            .lock()
-            .unwrap()
-            .frames
-            .retain(|frame| keep(&frame.response));
-    }
-    fn authorize(&self, allowed: &BTreeSet<String>) {
-        self.0.lock().unwrap().frames.retain_mut(|frame| {
-            if let Response::Notification { input, .. } = &mut frame.response
-                && let Ok(mut message) = serde_json::from_value::<ServerMessage>(input.clone())
-            {
-                if !filter_message(&mut message, Some(allowed)) {
-                    return false;
-                }
-                *input = serde_json::to_value(message).unwrap();
-            }
-            true
-        });
-    }
 }
 
 struct Call {
@@ -168,13 +82,20 @@ struct Work {
     selection: Selection,
 }
 
-pub struct Host<B: Backend> {
+/// Coordinates Document's operations, replication and controller definitions
+/// through Transport's transactional FIFO. Hosts supply Store drivers, clocks,
+/// authentication and controller IO, then drive `tick` and `step`.
+///
+/// This module does not open listeners or own an application entrypoint. A
+/// native host may mount it through Transport's `Loop` contract, or drive it
+/// directly in another execution environment.
+pub struct Runtime<B: Backend> {
     store: Arc<Mutex<Store<B>>>,
     document: Arc<Document>,
     transport: Server<StoreAuthority<B>>,
     authenticate: Authenticate,
     provider: Option<BearerProvider>,
-    requests: Runtime<Work>,
+    requests: Operations<Work>,
     input: Input,
     preconnection_requests: BTreeSet<Selection>,
     peers: BTreeMap<u64, Peer>,
@@ -189,7 +110,7 @@ pub struct Host<B: Backend> {
     retention_ms: u64,
 }
 
-impl<B: Backend> Host<B> {
+impl<B: Backend> Runtime<B> {
     /// `boot` must be a new random namespace each host start. Logical connections
     /// are ephemeral across process loss; old receipts must not identify new work.
     pub fn new(
@@ -250,8 +171,8 @@ impl<B: Backend> Host<B> {
             lifetime,
         };
         let document = Arc::new(document);
-        let mut requests = Runtime::default();
-        for definition in snap_document::operations::definitions(document.clone()) {
+        let mut requests = Operations::default();
+        for definition in crate::operations::definitions(document.clone()) {
             requests.register(definition).expect("document operation");
         }
         Self {
@@ -284,7 +205,7 @@ impl<B: Backend> Host<B> {
         clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Result<Self, snap_store::Error> {
         assert!(self.peers.is_empty() && self.requests.idle());
-        provider.data().prepare(&mut self.store.lock().unwrap())?;
+        provider.data().prepare(&mut self.store.lock())?;
         self.provider = Some((provider, clock));
         Ok(self)
     }
@@ -345,7 +266,6 @@ impl<B: Backend> Host<B> {
     pub fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error> {
         self.store
             .lock()
-            .unwrap()
             .inspect("transport.upgrade", |tx| {
                 (self.authenticate)(tx, bearer).map(|_| ())
             })
@@ -403,32 +323,32 @@ impl<B: Backend> Host<B> {
             })?;
             loop {
                 while let Some(response) = output.pop_front() {
-                    if let Response::Events(events) = response {
-                        for event in events {
-                            if matches!(&event, Event::Accepted { id: admitted } if *admitted == id)
-                            {
-                                accepted = true;
-                            }
-                            if let Event::Bearer {
-                                id: changed,
-                                change,
-                            } = &event
-                                && *changed == id
-                            {
-                                bearer_change = Some(change.clone());
-                            }
-                            if let Event::Completed {
-                                id: completed,
+                    // One event per frame now. A preconnection request still
+                    // spans several — acceptance, an issued credential, then
+                    // completion — so it drains them one at a time.
+                    if let Response::Event(event) = response {
+                        if matches!(&event, Event::Accepted { id: admitted } if *admitted == id) {
+                            accepted = true;
+                        }
+                        if let Event::Bearer {
+                            id: changed,
+                            change,
+                        } = &event
+                            && *changed == id
+                        {
+                            bearer_change = Some(change.clone());
+                        }
+                        if let Event::Completed {
+                            id: completed,
+                            outcome,
+                        } = event
+                            && completed == id
+                        {
+                            return Ok(snap_transport::bearer::Reply {
+                                accepted,
                                 outcome,
-                            } = event
-                                && completed == id
-                            {
-                                return Ok(snap_transport::bearer::Reply {
-                                    accepted,
-                                    outcome,
-                                    bearer: bearer_change,
-                                });
-                            }
+                                bearer: bearer_change,
+                            });
                         }
                     }
                 }
@@ -454,7 +374,6 @@ impl<B: Backend> Host<B> {
             let snapshot = self
                 .store
                 .lock()
-                .unwrap()
                 .inspect("controller.change", |tx| self.document.changed(tx, change))?;
             if let Some(snapshot) = snapshot
                 && self.controllers.contains_key(&snapshot.kind)
@@ -468,14 +387,14 @@ impl<B: Backend> Host<B> {
     /// Union of logical-connection requirements and currently owned work. Socket
     /// loss leaves these references intact until transport reports actual closure.
     fn reconcile_residency(&mut self) -> Result<(), snap_store::Error> {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock();
         for (connection, (actor, ids)) in &mut self.residency {
             if self.transport.state(ConnectionId(*connection))
                 == snap_transport::server::ConnectionState::Open
             {
                 *ids = store
                     .run("residency.authorized", |tx| {
-                        snap_document::DocumentAccessGuard::new(&self.document).extent(tx, actor)
+                        crate::DocumentAccessGuard::new(&self.document).extent(tx, actor)
                     })?
                     .value;
             }
@@ -490,15 +409,11 @@ impl<B: Backend> Host<B> {
             .chain(self.reconcile.keys())
             .map(|id| vec![snap_store::Value::Text(id.clone())])
             .collect();
-        store.load_keys(snap_document::server::TABLES[0], &keys)?;
-        if self
-            .requests
-            .data()
-            .contains(snap_document::server::TABLES[0])
-        {
+        store.load_keys(crate::server::TABLES[0], &keys)?;
+        if self.requests.data().contains(crate::server::TABLES[0]) {
             Ok(())
         } else {
-            store.retain_keys(snap_document::server::TABLES[0], &keys)
+            store.retain_keys(crate::server::TABLES[0], &keys)
         }
     }
 
@@ -513,13 +428,9 @@ impl<B: Backend> Host<B> {
         let mut failure = None;
         while let Some((_, snapshot)) = self.reconcile.pop_first() {
             self.pinned.insert(snapshot.id.clone());
-            let lifecycle = self
-                .store
-                .lock()
-                .unwrap()
-                .inspect("controller.state", |tx| {
-                    self.document.lifecycle(tx, &snapshot.id)
-                })?;
+            let lifecycle = self.store.lock().inspect("controller.state", |tx| {
+                self.document.lifecycle(tx, &snapshot.id)
+            })?;
             if lifecycle.blocked.is_some() {
                 if work.is_some() {
                     failure.get_or_insert(snap_store::Error::Unavailable);
@@ -541,7 +452,7 @@ impl<B: Backend> Host<B> {
             );
             self.controllers.insert(kind, controller);
             if let Err(error) = result {
-                self.store.lock().unwrap().run("controller.blocked", |tx| {
+                self.store.lock().run("controller.blocked", |tx| {
                     let mut lifecycle = self.document.lifecycle(tx, &id)?;
                     lifecycle.blocked = Some(error.to_string());
                     self.document.set_lifecycle(tx, &id, &lifecycle)
@@ -558,14 +469,10 @@ impl<B: Backend> Host<B> {
     /// Controllers inspect actual resources and leave explicitly blocked state alone.
     pub fn recover_controllers(&mut self) -> Result<(), snap_store::Error> {
         while self.step() {}
-        self.store
-            .lock()
-            .unwrap()
-            .load(snap_document::server::TABLES[0])?;
+        self.store.lock().load(crate::server::TABLES[0])?;
         let snapshots = self
             .store
             .lock()
-            .unwrap()
             .run("controller.scan", |tx| self.document.snapshots(tx))?
             .value;
         for snapshot in snapshots {
@@ -624,7 +531,6 @@ impl<B: Backend> Host<B> {
             let _ = self
                 .store
                 .lock()
-                .unwrap()
                 .run("document.expire", |tx| self.document.expire(tx, &lifetime));
             for peer in self.peers.values_mut() {
                 if peer
@@ -634,17 +540,12 @@ impl<B: Backend> Host<B> {
                 {
                     peer.held.clear();
                     peer.output
-                        .retain(|response| matches!(response, Response::Events(_)));
+                        .retain(|response| matches!(response, Response::Event(_)));
                     peer.output.push_back(notification(ServerMessage::Reset));
                 }
             }
         }
-        if released
-            && !self
-                .requests
-                .data()
-                .contains(snap_document::server::TABLES[0])
-        {
+        if released && !self.requests.data().contains(crate::server::TABLES[0]) {
             let keys = self
                 .residency
                 .values()
@@ -658,8 +559,7 @@ impl<B: Backend> Host<B> {
             let _ = self
                 .store
                 .lock()
-                .unwrap()
-                .retain_keys(snap_document::server::TABLES[0], &keys);
+                .retain_keys(crate::server::TABLES[0], &keys);
         }
     }
 
@@ -674,14 +574,7 @@ impl<B: Backend> Host<B> {
         let controls: Vec<_> = self
             .peers
             .iter()
-            .filter_map(|(id, peer)| {
-                peer.control
-                    .0
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .map(|signal| (*id, signal))
-            })
+            .filter_map(|(id, peer)| peer.control.take().map(|signal| (*id, signal)))
             .collect();
         for (id, (close, now)) in controls {
             if let Some(peer) = self.peers.remove(&id)
@@ -925,7 +818,7 @@ impl<B: Backend> Host<B> {
             .get(&Self::call_key(work))
             .map_or(work.peer, |call| call.peer);
         if let Some(peer) = self.peers.get_mut(&target) {
-            peer.output.push_back(Response::Events(vec![event]));
+            peer.output.push_back(Response::Event(event));
         }
     }
 
@@ -933,7 +826,7 @@ impl<B: Backend> Host<B> {
         self.apply_carrier_controls();
         while let Some((mut work, invocation, selection)) = self.requests.acquire() {
             let data = &self.requests.definitions().get(selection).data;
-            let loaded = data.prepare(&mut self.store.lock().unwrap());
+            let loaded = data.prepare(&mut self.store.lock());
             if let Err(error) = loaded {
                 self.respond(
                     &work,
@@ -948,7 +841,6 @@ impl<B: Backend> Host<B> {
             let authenticated = self
                 .store
                 .lock()
-                .unwrap()
                 .inspect("document.admit", |tx| {
                     if let Some(connection) = work.connection
                         && self.transport.state(ConnectionId(connection))
@@ -1054,7 +946,7 @@ impl<B: Backend> Host<B> {
                 continue;
             }
             let result = self.requests.accept(
-                &mut self.store.lock().unwrap(),
+                &mut self.store.lock(),
                 work.clone(),
                 invocation,
                 selection,
@@ -1095,15 +987,14 @@ impl<B: Backend> Host<B> {
     /// slot is the gate, including the gap between admission and execution.
     pub fn step(&mut self) -> bool {
         self.admit_next();
-        let Some(completed) = self.requests.execute(&mut self.store.lock().unwrap()) else {
+        let Some(completed) = self.requests.execute(&mut self.store.lock()) else {
             return false;
         };
         let work = completed.work;
         let bearer_change = completed.context.bearer_change;
-        let replication = serde_json::from_value::<Option<snap_document::Replication>>(
-            completed.context.publication,
-        )
-        .unwrap_or(None);
+        let replication =
+            serde_json::from_value::<Option<crate::Replication>>(completed.context.publication)
+                .unwrap_or(None);
         let changes = completed.changes;
         let outcome = if self.preconnection_requests.contains(&work.selection)
             && let Some(error) = completed.storage_failure
@@ -1141,10 +1032,7 @@ impl<B: Backend> Host<B> {
                 self.synchronize(replication.as_ref(), work.connection);
                 self.reconcile(Some(&work))
             });
-        let full_documents = self
-            .requests
-            .data()
-            .contains(snap_document::server::TABLES[0]);
+        let full_documents = self.requests.data().contains(crate::server::TABLES[0]);
         self.requests.release_data();
         if full_documents {
             self.pinned.clear();
@@ -1199,28 +1087,21 @@ impl<B: Backend> Host<B> {
             .ok_or(snap_store::Error::Invalid)?
             .connection()
             .0;
-        self.store
-            .lock()
-            .unwrap()
-            .inspect("document.delivery", |tx| {
-                // A retained renewable login is not current read authority.
-                // Do not publish new holdings while its access is unavailable.
-                let bearer = peer.bearer.as_deref().ok_or(snap_store::Error::NotFound)?;
-                if (self.authenticate)(tx, bearer)? != actor {
-                    return Err(snap_store::Error::NotFound);
-                }
-                self.document
-                    .access_guard()
-                    .manifest(tx, &self.lifetime(connection), actor, &Manifest::default())
-                    .map(|m| m.documents)
-            })
+        self.store.lock().inspect("document.delivery", |tx| {
+            // A retained renewable login is not current read authority.
+            // Do not publish new holdings while its access is unavailable.
+            let bearer = peer.bearer.as_deref().ok_or(snap_store::Error::NotFound)?;
+            if (self.authenticate)(tx, bearer)? != actor {
+                return Err(snap_store::Error::NotFound);
+            }
+            self.document
+                .access_guard()
+                .manifest(tx, &self.lifetime(connection), actor, &Manifest::default())
+                .map(|m| m.documents)
+        })
     }
 
-    fn synchronize(
-        &mut self,
-        replication: Option<&snap_document::Replication>,
-        origin: Option<u64>,
-    ) {
+    fn synchronize(&mut self, replication: Option<&crate::Replication>, origin: Option<u64>) {
         let peers: Vec<u64> = self.peers.keys().copied().collect();
         for id in peers {
             if self.peers[&id].attachment.is_none() || self.retired(id) {
@@ -1234,7 +1115,7 @@ impl<B: Backend> Host<B> {
                 .iter()
                 .map(|s| (s.id.clone(), s.clone()))
                 .collect();
-            peer.output.authorize(&desired.keys().cloned().collect());
+            authorize_output(&peer.output, &desired.keys().cloned().collect());
             let removed: Vec<_> = peer
                 .held
                 .keys()
@@ -1277,11 +1158,8 @@ impl<B: Backend> Host<B> {
         while self.step() {}
         // Explicit bootstrap/internal host IO. Client synchronization never calls
         // this escape hatch; application operations use guarded dispatch.
-        self.store
-            .lock()
-            .unwrap()
-            .load(snap_document::server::TABLES[0])?;
-        let committed = self.store.lock().unwrap().run(operation, handler)?;
+        self.store.lock().load(crate::server::TABLES[0])?;
+        let committed = self.store.lock().run(operation, handler)?;
         self.committed(&committed.changes)?;
         self.reconcile_residency()?;
         self.synchronize(None, None);
@@ -1304,7 +1182,7 @@ impl<B: Backend> Host<B> {
         if peer.output.is_empty() {
             return Ok(None);
         }
-        if matches!(peer.output.front(), Some(Response::Events(_))) {
+        if matches!(peer.output.front(), Some(Response::Event(_))) {
             return Ok(self.peers.get_mut(&peer_id).unwrap().output.pop_front());
         }
         let allowed: Option<BTreeSet<String>> =
@@ -1323,7 +1201,7 @@ impl<B: Backend> Host<B> {
         while let Some(mut response) = peer.output.pop_front() {
             let allowed = allowed.as_ref();
             match &mut response {
-                Response::Notification { input, .. } => {
+                Response::Global { input, .. } => {
                     if let Ok(mut message) = serde_json::from_value::<ServerMessage>(input.clone())
                     {
                         if !filter_message(&mut message, allowed) {
@@ -1334,7 +1212,7 @@ impl<B: Backend> Host<B> {
                 }
                 // Invocation results retain their accepted authority. Only
                 // ongoing Document synchronization uses current authorization.
-                Response::Events(_) => {}
+                Response::Event(_) => {}
                 _ => {}
             }
             return Ok(Some(response));
@@ -1351,6 +1229,58 @@ impl<B: Backend> Host<B> {
         }
         self.tick(now);
     }
+}
+
+impl<B: Backend> snap_transport::runtime::Loop for Runtime<B> {
+    fn open(&mut self) -> Result<u64, Error> {
+        Runtime::open(self)
+    }
+    fn output(&self, peer: u64) -> Result<Output, Error> {
+        Runtime::output(self, peer)
+    }
+    fn carrier_control(&self, peer: u64) -> Result<CarrierControl, Error> {
+        Runtime::carrier_control(self, peer)
+    }
+    fn tick(&mut self, now: u64) {
+        Runtime::tick(self, now);
+    }
+    fn step(&mut self) -> bool {
+        Runtime::step(self)
+    }
+    fn submit(&mut self, peer: u64, command: Command, now: u64) -> Result<(), Error> {
+        Runtime::submit(self, peer, command, now)
+    }
+    fn retired(&self, peer: u64) -> bool {
+        Runtime::retired(self, peer)
+    }
+    fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error> {
+        Runtime::authorize_upgrade(self, bearer)
+    }
+    fn is_preconnection_request(&self, name: &str) -> bool {
+        Runtime::is_preconnection_request(self, name)
+    }
+    fn preconnection_reply(
+        &mut self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> snap_transport::bearer::Reply {
+        Runtime::preconnection_reply(self, invocation, bearer)
+    }
+}
+
+fn authorize_output(output: &Output, allowed: &BTreeSet<String>) {
+    output.retain_mut(|response| {
+        if let Response::Global { kind, input } = response
+            && kind == crate::wire::KIND
+            && let Ok(mut message) = serde_json::from_value::<ServerMessage>(input.clone())
+        {
+            if !filter_message(&mut message, Some(allowed)) {
+                return false;
+            }
+            *input = serde_json::to_value(message).unwrap();
+        }
+        true
+    });
 }
 
 fn filter_completion(completion: &mut Completion, allowed: Option<&BTreeSet<String>>) {
@@ -1385,8 +1315,8 @@ fn filter_message(message: &mut ServerMessage, allowed: Option<&BTreeSet<String>
 }
 
 fn notification(message: ServerMessage) -> Response {
-    Response::Notification {
-        operation: "document".into(),
+    Response::Global {
+        kind: crate::wire::KIND.into(),
         input: serde_json::to_value(message).unwrap(),
     }
 }

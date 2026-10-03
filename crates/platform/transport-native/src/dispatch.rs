@@ -1,7 +1,7 @@
-//! Document composition adapts the portable carrier contract to this host.
+//! Native workers adapt the portable Transport loop to socket drivers.
 //! Only these workers touch the execution gate. Drivers hold queue handles.
-use crate::{CarrierControl, Output, web::Shared};
-use snap_store::Backend;
+use crate::Shared;
+use snap_transport::runtime::{CarrierControl, Loop, Output};
 use snap_transport::{
     Command, Error, Event, Invocation, Response,
     carrier::{Connection, Dispatch, Frame, Submission},
@@ -19,16 +19,16 @@ use tokio::sync::mpsc;
 
 /// Host IO before admission and periodically during an attachment. No invocation
 /// is replayed. The host must durably fence uncertain refresh IO; owned callbacks
-/// may finish after detach. This is composition policy, not TCP driver behavior.
+/// may finish after detach. This is host policy, not TCP driver behavior.
 pub type Prepare =
     Arc<dyn Fn(Command) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> + Send + Sync>;
 
-pub struct Dispatcher<B: Backend> {
-    shared: Arc<Shared<B>>,
+pub struct Dispatcher<L: Loop> {
+    shared: Arc<Shared<L>>,
     prepare: Option<Prepare>,
     one_shot: bool,
 }
-impl<B: Backend> Clone for Dispatcher<B> {
+impl<L: Loop> Clone for Dispatcher<L> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
@@ -37,15 +37,15 @@ impl<B: Backend> Clone for Dispatcher<B> {
         }
     }
 }
-impl<B: Backend> Dispatcher<B> {
-    pub(crate) fn web(shared: Arc<Shared<B>>) -> Self {
+impl<L: Loop> Dispatcher<L> {
+    pub fn web(shared: Arc<Shared<L>>) -> Self {
         Self {
             shared,
             prepare: None,
             one_shot: false,
         }
     }
-    pub(crate) fn tcp(shared: Arc<Shared<B>>, prepare: Option<Prepare>) -> Self {
+    pub fn tcp(shared: Arc<Shared<L>>, prepare: Option<Prepare>) -> Self {
         Self {
             shared,
             prepare,
@@ -54,12 +54,12 @@ impl<B: Backend> Dispatcher<B> {
     }
 }
 
-pub struct Endpoint<B: Backend> {
-    state: Arc<State<B>>,
-    sender: mpsc::Sender<(Command, Reservation<B>)>,
+pub struct Endpoint<L: Loop> {
+    state: Arc<State<L>>,
+    sender: mpsc::Sender<(Command, Reservation<L>)>,
 }
-struct State<B: Backend> {
-    shared: Arc<Shared<B>>,
+struct State<L: Loop> {
+    shared: Arc<Shared<L>>,
     output: Output,
     control: CarrierControl,
     retired: AtomicBool,
@@ -69,18 +69,18 @@ struct State<B: Backend> {
 }
 // Reservations follow commands through the queue and a blocked worker. They are
 // released only at the host admission boundary or when a command is discarded.
-struct Reservation<B: Backend> {
-    state: Arc<State<B>>,
+struct Reservation<L: Loop> {
+    state: Arc<State<L>>,
     bytes: usize,
 }
-impl<B: Backend> Drop for Reservation<B> {
+impl<L: Loop> Drop for Reservation<L> {
     fn drop(&mut self) {
         let mut pending = self.state.pending.lock().unwrap();
         pending.0 -= 1;
         pending.1 -= self.bytes;
     }
 }
-impl<B: Backend> State<B> {
+impl<L: Loop> State<L> {
     fn disconnect(&self) {
         self.control.detach(self.shared.now());
     }
@@ -102,12 +102,12 @@ impl<B: Backend> State<B> {
         }
     }
 }
-impl<B: Backend> Drop for Endpoint<B> {
+impl<L: Loop> Drop for Endpoint<L> {
     fn drop(&mut self) {
         self.state.disconnect();
     }
 }
-impl<B: Backend + Send + 'static> Connection for Endpoint<B> {
+impl<L: Loop + Send + 'static> Connection for Endpoint<L> {
     fn submit(&self, command: Command, bytes: usize) -> Result<Submission, Error> {
         if matches!(command, Command::Close | Command::Disconnect) {
             if matches!(command, Command::Close) {
@@ -159,13 +159,13 @@ impl<B: Backend + Send + 'static> Connection for Endpoint<B> {
     }
 }
 
-impl<B: Backend + Send + 'static> Dispatch for Dispatcher<B> {
-    type Connection = Endpoint<B>;
+impl<L: Loop + Send + 'static> Dispatch for Dispatcher<L> {
+    type Connection = Endpoint<L>;
     async fn open(
         &self,
         credential: Option<String>,
         max_pending_bytes: usize,
-    ) -> Result<Endpoint<B>, Error> {
+    ) -> Result<Endpoint<L>, Error> {
         let shared = self.shared.clone();
         let one_shot = self.one_shot;
         let (channel, receiver, peer) = tokio::task::spawn_blocking(move || {
@@ -241,9 +241,9 @@ impl Maintenance {
     }
 }
 
-async fn run<B: Backend + Send + 'static>(
-    state: Arc<State<B>>,
-    mut receiver: mpsc::Receiver<(Command, Reservation<B>)>,
+async fn run<L: Loop + Send + 'static>(
+    state: Arc<State<L>>,
+    mut receiver: mpsc::Receiver<(Command, Reservation<L>)>,
     peer: u64,
     prepare: Option<Prepare>,
 ) {
@@ -259,7 +259,7 @@ async fn run<B: Backend + Send + 'static>(
                     && let Some(prepare) = &prepare {
                     if let Err(error) = prepared(prepare, command.clone()).await {
                         let response = match &command {
-                            Command::Request { invocation, .. } => Response::Events(vec![Event::Completed { id: invocation.id, outcome: Err(error) }]),
+                            Command::Request { invocation, .. } => Response::Event(Event::Completed { id: invocation.id, outcome: Err(error) }),
                             _ => Response::Failed(error),
                         };
                         state.retire(Some(Frame { response, handshake, attachment: None, terminal: true }));
@@ -281,11 +281,35 @@ async fn run<B: Backend + Send + 'static>(
                         && processing.one_shot && host.is_preconnection_request(&invocation.operation) {
                         if fresh {
                             let reply = host.preconnection_reply(invocation.clone(), bearer.clone());
-                            let mut events = Vec::new();
-                            if reply.accepted { events.push(Event::Accepted { id: invocation.id }); }
-                            if let Some(change) = reply.bearer { events.push(Event::Bearer { id: invocation.id, change }); }
-                            events.push(Event::Completed { id: invocation.id, outcome: reply.outcome });
-                            processing.retire(Some(Frame { response: Response::Events(events), handshake: false, attachment: None, terminal: true }));
+                            let id = invocation.id;
+                            let snap_transport::bearer::Reply { accepted, bearer: change, outcome } = reply;
+                            // Transport carries one event per frame, so a
+                            // preconnection reply that issues a credential is
+                            // three frames. Publish the non-terminal
+                            // observations first, then seal with the completion,
+                            // which is what retirement means for this socket.
+                            if accepted {
+                                processing.output.push_frame(Frame {
+                                    response: Response::Event(Event::Accepted { id }),
+                                    handshake: false,
+                                    attachment: None,
+                                    terminal: false,
+                                });
+                            }
+                            if let Some(change) = change {
+                                processing.output.push_frame(Frame {
+                                    response: Response::Event(Event::Bearer { id, change }),
+                                    handshake: false,
+                                    attachment: None,
+                                    terminal: false,
+                                });
+                            }
+                            processing.retire(Some(Frame {
+                                response: Response::Event(Event::Completed { id, outcome }),
+                                handshake: false,
+                                attachment: None,
+                                terminal: true,
+                            }));
                         }
                         return true;
                     }
@@ -315,20 +339,16 @@ async fn run<B: Backend + Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snap_document::runtime::Runtime as Host;
     use std::sync::atomic::AtomicUsize;
 
-    fn fixture() -> Arc<Shared<snap_store_sqlite::Sqlite>> {
-        Shared::new(
-            host_fixture(snap_document::server::Document::new(
-                snap_document::Registry::new(vec![]).unwrap(),
-            )),
-            "http://localhost".into(),
-        )
+    fn fixture() -> Arc<Shared<Host<snap_store_sqlite::Sqlite>>> {
+        Shared::new(host_fixture(snap_document::server::Document::new(
+            snap_document::Registry::new(vec![]).unwrap(),
+        )))
     }
 
-    fn host_fixture(
-        document: snap_document::server::Document,
-    ) -> crate::Host<snap_store_sqlite::Sqlite> {
+    fn host_fixture(document: snap_document::server::Document) -> Host<snap_store_sqlite::Sqlite> {
         let migrations = [
             snap_access::MIGRATION,
             snap_document::server::MIGRATION,
@@ -342,7 +362,7 @@ mod tests {
         {
             store.load(table).unwrap();
         }
-        crate::Host::new(
+        Host::new(
             store,
             document,
             Arc::new(|_, _| Ok("actor".into())),
@@ -411,7 +431,7 @@ mod tests {
                 Ok(())
             }),
         );
-        let shared = Shared::new(host, "http://localhost".into());
+        let shared = Shared::new(host);
         let preparation = Arc::new(AtomicUsize::new(0));
         let prepare: Prepare = Arc::new(move |_| {
             let first = preparation.fetch_add(1, Ordering::SeqCst) == 0;
@@ -453,7 +473,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             next_frame(&channel).await.response,
-            Response::Events(vec![Event::Accepted { id: 1 }])
+            Response::Event(Event::Accepted { id: 1 })
         );
         let executing = shared.clone();
         let worker = std::thread::spawn(move || executing.host.lock().unwrap().step());
@@ -487,10 +507,10 @@ mod tests {
             "retired physical outbox published late controller output: {late:?}"
         );
         assert!(final_frames.iter().any(|frame| frame.response
-            == Response::Events(vec![Event::Progress {
+            == Response::Event(Event::Progress {
                 id: 1,
                 value: json!("before retirement")
-            }])));
+            })));
         let final_frame = final_frames.last().unwrap();
         assert_eq!(final_frame.response, Response::Failed(Error::InvalidBearer));
         assert!(final_frame.terminal);
@@ -522,19 +542,15 @@ mod tests {
         reopened.submit(Command::Invoke(invocation), 1).unwrap();
         assert_eq!(
             next_frame(&reopened).await.response,
-            Response::Events(vec![Event::Accepted { id: 1 }])
+            Response::Event(Event::Accepted { id: 1 })
         );
-        let Response::Events(events) = next_frame(&reopened).await.response else {
-            panic!("missing completion replay");
-        };
-        let [
-            Event::Completed {
-                id: 1,
-                outcome: Ok(value),
-            },
-        ] = events.as_slice()
+        // The replay is one frame, like every other observation.
+        let Response::Event(Event::Completed {
+            id: 1,
+            outcome: Ok(value),
+        }) = next_frame(&reopened).await.response
         else {
-            panic!("unexpected replay: {events:?}");
+            panic!("missing completion replay");
         };
         let ServerMessage::Completed(completion) = serde_json::from_value(value.clone()).unwrap()
         else {
@@ -545,7 +561,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    async fn next_frame(channel: &Endpoint<snap_store_sqlite::Sqlite>) -> Frame {
+    async fn next_frame(channel: &Endpoint<Host<snap_store_sqlite::Sqlite>>) -> Frame {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Some(frame) = channel.receive() {

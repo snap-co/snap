@@ -9,7 +9,7 @@ snap-store.workspace = true
 snap-access.workspace = true
 snap-document.workspace = true
 snap-transport = { path = "../../crates/transport" }
-snap-oidc = { path = "../../crates/oidc" }
+snap-identity.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = { version = "0.10", default-features = false }

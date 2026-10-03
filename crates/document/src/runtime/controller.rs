@@ -1,5 +1,6 @@
-use crate::{Host, Work};
-use snap_document::Snapshot;
+use super::{Runtime, Work};
+use crate::Snapshot;
+use alloc::{boxed::Box, vec};
 use snap_store::{Backend, Error, Transaction};
 use snap_transport::{Event, Value};
 
@@ -12,7 +13,7 @@ pub type Controller<B> =
 /// Restricted controller access: transactions and progress, without dispatch
 /// re-entry. Controllers may do host IO between these calls.
 pub struct ControllerContext<'a, B: Backend> {
-    pub(super) host: &'a mut Host<B>,
+    pub(super) host: &'a mut Runtime<B>,
     pub(super) work: Option<&'a Work>,
     pub(super) kind: &'a str,
 }
@@ -22,9 +23,9 @@ impl<B: Backend> ControllerContext<'_, B> {
     /// pinned through this invocation's controllers, then normal residency resumes.
     /// Unlike `inspect`, this is host IO and may read storage on a cold key.
     pub fn document(&mut self, id: &str) -> Result<Snapshot, Error> {
-        let mut store = self.host.store.lock().unwrap();
+        let mut store = self.host.store.lock();
         store.load_keys(
-            snap_document::server::TABLES[0],
+            crate::server::TABLES[0],
             &[vec![snap_store::Value::Text(id.into())]]
                 .into_iter()
                 .collect(),
@@ -35,27 +36,18 @@ impl<B: Backend> ControllerContext<'_, B> {
         self.host.pinned.insert(id.into());
         Ok(snapshot)
     }
-    pub fn lifecycle(&mut self, id: &str) -> Result<snap_document::lifecycle::Lifecycle, Error> {
-        self.host
-            .store
-            .lock()
-            .unwrap()
-            .inspect("controller.state", |tx| {
-                self.host.document.lifecycle(tx, id)
-            })
+    pub fn lifecycle(&mut self, id: &str) -> Result<crate::lifecycle::Lifecycle, Error> {
+        self.host.store.lock().inspect("controller.state", |tx| {
+            self.host.document.lifecycle(tx, id)
+        })
     }
 
     pub fn finalize(&mut self, id: &str, key: &str) -> Result<(), Error> {
-        let committed = self
-            .host
-            .store
-            .lock()
-            .unwrap()
-            .run("controller.finalize", |tx| {
-                let mut lifecycle = self.host.document.lifecycle(tx, id)?;
-                lifecycle.finalizers.remove(key);
-                self.host.document.set_lifecycle(tx, id, &lifecycle)
-            })?;
+        let committed = self.host.store.lock().run("controller.finalize", |tx| {
+            let mut lifecycle = self.host.document.lifecycle(tx, id)?;
+            lifecycle.finalizers.remove(key);
+            self.host.document.set_lifecycle(tx, id, &lifecycle)
+        })?;
         self.host.committed(&committed.changes)?;
         Ok(())
     }
@@ -64,25 +56,20 @@ impl<B: Backend> ControllerContext<'_, B> {
         operation: &str,
         read: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        self.host.store.lock().unwrap().inspect(operation, read)
+        self.host.store.lock().inspect(operation, read)
     }
     pub fn transact<T>(
         &mut self,
         operation: &str,
         handler: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let committed = self.host.store.lock().unwrap().run(operation, handler)?;
+        let committed = self.host.store.lock().run(operation, handler)?;
         // The running controller is temporarily removed from the registry to
         // borrow its callback. Its own meaningful writes still request a pass.
         for change in &committed.changes {
-            let snapshot = self
-                .host
-                .store
-                .lock()
-                .unwrap()
-                .inspect("controller.change", |tx| {
-                    self.host.document.changed(tx, change)
-                })?;
+            let snapshot = self.host.store.lock().inspect("controller.change", |tx| {
+                self.host.document.changed(tx, change)
+            })?;
             if let Some(snapshot) = snapshot
                 && (snapshot.kind == self.kind
                     || self.host.controllers.contains_key(&snapshot.kind))

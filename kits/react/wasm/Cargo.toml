@@ -16,4 +16,4 @@ wasm-bindgen.workspace = true
 workspace = true
 
 [package.metadata.snap]
-role = "binding"
+role = "platform"

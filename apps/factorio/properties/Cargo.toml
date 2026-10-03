@@ -19,7 +19,7 @@ name = "document-claims"
 path = "../tests/properties/documents.rs"
 
 [package.metadata.snap]
-role = "composition"
+role = "host"
 
 [lints]
 workspace = true

@@ -98,7 +98,8 @@ impl AuthyHost {
     /// `FACTORIO_ORIGIN`, `FACTORIO_CLIENT_SECRET`, `SNAP_DEV_CLIENT_ORIGINS`
     /// (object, array, bare string, or JSON-encoded string),
     /// `AUTHY_AUTO_APPROVE_DOMAIN` (empty disables auto-approval),
-    /// `AUTHY_APP_DOMAIN`, and `SNAP_ORIGIN` (public host origin).
+    /// `AUTHY_APP_DOMAIN`, `SNAP_ORIGIN` (public host origin), and `SNAP_LISTEN`
+    /// (explicit listener for ceremonies that require a matching DNS RP origin).
     pub async fn start(rp: &str, overrides: Value) -> Result<Self> {
         let root = support::root();
         let web_dir = root.join("apps/authy/dist/development/clients/web");
@@ -131,7 +132,7 @@ impl AuthyHost {
         }
         let mut host = json!({
             "mode": "development",
-            "listen": format!("127.0.0.1:{port}"),
+            "listen": override_string(&overrides, "SNAP_LISTEN").unwrap_or_else(|| format!("127.0.0.1:{port}")),
             "data_dir": directory.path().to_string_lossy(),
             "database": "authy.sqlite",
             "web_dir": web_dir.to_string_lossy(),

@@ -11,6 +11,16 @@ export function SignInPage({ client }: { client: AuthyClient }) {
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [visible, setVisible] = useState(false);
+  const passkey = async () => {
+    if (submitting.current) return;
+    if (mode === "signup" && !/^[^\s@]+@[^\s@]+$/.test(email)) { setError("Enter your email before creating a passkey account."); return; }
+    submitting.current = true;
+    setBusy(true);
+    setError(null);
+    try { await client.passkey(mode === "signup", email); setPassword(""); }
+    catch (e) { setError(e instanceof Error ? e.message : "Passkey sign-in failed. Try again or use your password."); }
+    finally { submitting.current = false; setBusy(false); }
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -88,6 +98,7 @@ export function SignInPage({ client }: { client: AuthyClient }) {
             {mode === "signup" ? "Have an account? Sign in" : "New here? Create account"}
           </AuthButton>
         </AuthActions>
+        {client.passkeysSupported() && <AuthActions><AuthButton type="button" secondary disabled={busy} onClick={() => void passkey()}>{mode === "signup" ? "Create account with a passkey" : "Sign in with a passkey"}</AuthButton></AuthActions>}
       </form>
       <p className="submission-status" role="status">{busy ? (mode === "signup" ? "Creating your account…" : "Checking your sign-in details…") : ""}</p>
       {error && <p role="alert">{error}</p>}

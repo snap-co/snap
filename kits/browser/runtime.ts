@@ -1,4 +1,4 @@
-import { Invocations } from "../../crates/platform/document-host/client";
+import { Invocations } from "./invocations";
 import { Transport } from "./transport";
 
 export interface Binding {

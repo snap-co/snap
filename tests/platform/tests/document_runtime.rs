@@ -1,12 +1,13 @@
 use snap_access::{
     Access, Actor, Audience, ChangeSet, GrantChange, KindDefinition, Resource, Role,
 };
+use snap_document::runtime::Runtime as Host;
 use snap_document::{
     Definition, Intent, Manifest, Mutation, Registry, ServerMessage, Snapshot, server::Document,
 };
-use snap_document_host::Host;
 use snap_transport::operation::{Definition as Request, Guard};
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
+use snap_transport_native::{Dispatcher, Shared};
 use std::sync::Arc;
 
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
@@ -53,22 +54,24 @@ fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution
         .unwrap();
         let admission = host.drain(peer).unwrap();
         if let Some(index) = rejected {
-            assert!(matches!(admission.as_slice(), [Response::Events(events)]
-                if matches!(events.as_slice(), [Event::Completed { outcome: Err(_), .. }])));
+            assert!(matches!(
+                admission.as_slice(),
+                [Response::Event(Event::Completed {
+                    outcome: Err(_),
+                    ..
+                })]
+            ));
             assert!(!host.step());
             assert_eq!(
                 ADMISSION.with(|trace| trace.borrow().clone()),
                 (0..=index).collect::<Vec<_>>()
             );
         } else {
-            assert_eq!(
-                admission,
-                vec![Response::Events(vec![Event::Accepted { id: 1 }])]
-            );
+            assert_eq!(admission, vec![Response::Event(Event::Accepted { id: 1 })]);
             assert!(host.step());
             assert!(host.drain(peer).unwrap().iter().any(|response|
-                matches!(response, Response::Events(events)
-                    if matches!(events.as_slice(), [Event::Completed { outcome: Ok(value), .. }] if value == &json!(1)))));
+                matches!(response, Response::Event(Event::Completed { outcome: Ok(value), .. })
+                    if value == &json!(1))));
             assert_eq!(
                 ADMISSION.with(|trace| trace.borrow().clone()),
                 vec![0, 1, 2]
@@ -136,25 +139,25 @@ fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
         submit(&mut host, peer, 2, intent(1, 1));
         assert_eq!(
             host.drain(peer).unwrap(),
-            vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+            vec![Response::Event(Event::Accepted { id: 1 })]
         );
         assert!(host.step());
         let terminal: Vec<_> = host
             .drain(peer)
             .unwrap()
             .into_iter()
-            .filter(|response| matches!(response, Response::Events(_)))
+            .filter(|response| matches!(response, Response::Event(_)))
             .collect();
         assert_eq!(
             terminal,
-            vec![Response::Events(vec![Event::Completed {
+            vec![Response::Event(Event::Completed {
                 id: 1,
                 outcome: Err(match failure {
                     "cold" => snap_transport::Error::Application(json!({"code":"StoreMiss"})),
                     "invalid" => snap_transport::Error::Application(json!({"code":"Rejected"})),
                     _ => snap_transport::Error::InvalidOutput,
                 }),
-            }])]
+            })]
         );
         assert!(host.step());
         let committed = host
@@ -210,7 +213,7 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
         .unwrap();
         assert_eq!(
             host.drain(peer).unwrap(),
-            vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+            vec![Response::Event(Event::Accepted { id: 1 })]
         );
         match housekeeping {
             "connect" => {
@@ -227,14 +230,14 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
             .drain(peer)
             .unwrap()
             .into_iter()
-            .filter(|response| matches!(response, Response::Events(_)))
+            .filter(|response| matches!(response, Response::Event(_)))
             .collect();
         assert_eq!(
             terminal,
-            vec![Response::Events(vec![Event::Completed {
+            vec![Response::Event(Event::Completed {
                 id: 1,
                 outcome: Ok(json!(1))
-            }])],
+            })],
             "{housekeeping}"
         );
     }
@@ -504,16 +507,10 @@ fn messages(responses: Vec<Response>) -> Vec<ServerMessage> {
     responses
         .into_iter()
         .flat_map(|response| match response {
-            Response::Events(events) => events
-                .into_iter()
-                .filter_map(|event| match event {
-                    Event::Completed {
-                        outcome: Ok(value), ..
-                    } => Some(serde_json::from_value(value).unwrap()),
-                    _ => None,
-                })
-                .collect(),
-            Response::Notification { input, .. } => match serde_json::from_value(input).unwrap() {
+            Response::Event(Event::Completed {
+                outcome: Ok(value), ..
+            }) => vec![serde_json::from_value(value).unwrap()],
+            Response::Global { input, .. } => match serde_json::from_value(input).unwrap() {
                 ServerMessage::Committed(_) => vec![],
                 message => vec![message],
             },
@@ -532,7 +529,7 @@ fn later_submissions_wait_for_the_accepted_operation_before_ack() {
     host.drain(alice).unwrap();
     submit(&mut host, alice, 2, intent(1, 1));
     assert!(
-        matches!(host.drain(alice).unwrap().as_slice(), [Response::Events(events)] if events == &vec![Event::Accepted{id:2}])
+        matches!(host.drain(alice).unwrap().as_slice(), [Response::Event(event)] if matches!(event, Event::Accepted { id: 2 }))
     );
     submit(&mut host, alice, 3, intent(2, 2));
     assert!(host.drain(alice).unwrap().is_empty());
@@ -649,26 +646,19 @@ async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_polici
     ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let read: snap_document_host::web::ReadCookie = Arc::new(|headers| {
+        let read: snap_transport_ws::ReadCookie = Arc::new(|headers| {
             headers
                 .get("cookie")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         });
-        let shared = if required {
-            snap_document_host::web::Shared::with_required_cookie(
-                fixture(),
-                format!("http://{address}"),
-                read,
-            )
-        } else {
-            snap_document_host::web::Shared::with_cookie(
-                fixture(),
-                format!("http://{address}"),
-                read,
-            )
-        };
-        let router = snap_document_host::web::router(shared);
+        let shared = Shared::new(fixture());
+        let router = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
+            dispatch: Dispatcher::web(shared),
+            origin: format!("http://{address}"),
+            cookie: Some(read),
+            require_cookie: required,
+        }));
         let _stop = Stop(tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         }));
@@ -723,8 +713,13 @@ async fn websocket_delivers_ack_before_execution_and_serializes_following_accept
     use tokio_tungstenite::{connect_async, tungstenite::Message};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let shared = snap_document_host::web::Shared::new(fixture(), format!("http://{address}"));
-    let router = snap_document_host::web::router(shared.clone());
+    let shared = Shared::new(fixture());
+    let router = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
+        dispatch: Dispatcher::web(shared.clone()),
+        origin: format!("http://{address}"),
+        cookie: None,
+        require_cookie: false,
+    }));
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
@@ -781,13 +776,13 @@ async fn websocket_delivers_ack_before_execution_and_serializes_following_accept
             .unwrap();
         assert_eq!(
             serde_json::from_str::<Response>(message.to_text().unwrap()).unwrap(),
-            Response::Events(vec![Event::Accepted { id }])
+            Response::Event(Event::Accepted { id })
         );
     }
     // The first ACK crossed the socket before any handler ran. Drive the first
     // completion; the second command may still be waiting in the carrier reader.
     assert!(shared.host.lock().unwrap().step());
-    let _dispatch = Stop(tokio::spawn(snap_document_host::web::dispatch(
+    let _dispatch = Stop(tokio::spawn(snap_transport_native::dispatch(
         shared.clone(),
     )));
     let mut values = vec![];
@@ -858,8 +853,13 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let shared = snap_document_host::web::Shared::new(host, format!("http://{address}"));
-    let router = snap_document_host::web::router(shared.clone());
+    let shared = Shared::new(host);
+    let router = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
+        dispatch: Dispatcher::web(shared.clone()),
+        origin: format!("http://{address}"),
+        cookie: None,
+        require_cookie: false,
+    }));
     struct Stop(tokio::task::JoinHandle<()>);
     impl Drop for Stop {
         fn drop(&mut self) {
@@ -912,7 +912,7 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
         .unwrap();
     assert_eq!(
         serde_json::from_str::<Response>(ack.to_text().unwrap()).unwrap(),
-        Response::Events(vec![Event::Accepted { id: 1 }])
+        Response::Event(Event::Accepted { id: 1 })
     );
     let worker_host = shared.clone();
     let worker = tokio::task::spawn_blocking(move || worker_host.host.lock().unwrap().step());
@@ -973,7 +973,7 @@ fn controller_commits_progress_and_converges_before_the_next_acceptance() {
     submit(&mut host, peer, 2, intent(2, 10));
     assert_eq!(
         host.drain(peer).unwrap(),
-        vec![Response::Events(vec![Event::Accepted { id: 1 }])]
+        vec![Response::Event(Event::Accepted { id: 1 })]
     );
     host.step();
     assert_eq!(*observations.lock().unwrap(), vec![json!(1), json!(2)]);
@@ -982,7 +982,7 @@ fn controller_commits_progress_and_converges_before_the_next_acceptance() {
         .unwrap()
         .into_iter()
         .flat_map(|response| match response {
-            Response::Events(events) => events,
+            Response::Event(event) => vec![event],
             _ => vec![],
         })
         .collect();
@@ -1028,7 +1028,8 @@ fn controller_io_does_not_hold_the_carrier_output_lock() {
         .unwrap();
     let mut events = Vec::new();
     while let Some(response) = output.pop_front() {
-        if let Response::Events(batch) = response {
+        if let Response::Event(event) = response {
+            let batch = vec![event];
             events.extend(batch);
         }
     }
@@ -1039,9 +1040,10 @@ fn controller_io_does_not_hold_the_carrier_output_lock() {
         &events[..],
         [Event::Accepted { id: 1 }, Event::Progress { id: 1, .. }]
     ));
-    assert!(
-        matches!(output.pop_front(), Some(Response::Events(events)) if matches!(&events[..], [Event::Completed { id: 1, .. }]))
-    );
+    assert!(matches!(
+        output.pop_front(),
+        Some(Response::Event(Event::Completed { id: 1, .. }))
+    ));
 }
 
 #[test]
@@ -1062,7 +1064,7 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
     submit(&mut host, peer, 1, intent(1, 1));
     host.step();
     let output = host.drain(peer).unwrap();
-    assert!(output.iter().any(|r| matches!(r, Response::Events(events) if events.iter().any(|event| matches!(event, Event::Completed { outcome: Err(snap_transport::Error::Application(value)), .. } if value["committed"] == true)))));
+    assert!(output.iter().any(|r| matches!(r, Response::Event(Event::Completed { outcome: Err(snap_transport::Error::Application(value)), .. }) if value["committed"] == true)));
     host.recover_controllers().unwrap();
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     let state = host
@@ -1118,7 +1120,7 @@ fn carrier_close_during_controller_io_drains_only_accepted_work() {
     assert_eq!(host.residency_references(ID), 0);
     let events: Vec<_> = std::iter::from_fn(|| output.pop_front())
         .filter_map(|r| match r {
-            Response::Events(events) => Some(events),
+            Response::Event(event) => Some(vec![event]),
             _ => None,
         })
         .flatten()
@@ -1172,7 +1174,9 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
         client: &mut Client,
     ) {
         for response in host.drain(peer).unwrap() {
-            for message in wire.receive(response).unwrap() {
+            // One frame carries at most one message now, so there is no inner
+            // loop. Acceptance and progress produce none.
+            if let Some(message) = wire.receive(response).unwrap() {
                 let outcome = client.handle(&registry(), message).unwrap();
                 assert!(
                     !matches!(outcome, Outcome::NeedManifest { .. }),

@@ -193,34 +193,33 @@ async fn receive_outcome(tcp: &mut Tcp, id: u64) -> Result<snap_transport::Outco
         // arrive for ten minutes; never replay an unknown result.
         let (response, _) = tokio::time::timeout(Duration::from_secs(600), tcp.receive()).await??;
         match response {
-            Response::Events(events) => {
-                for event in events {
-                    match event {
-                        Event::Accepted { id: received } => {
-                            ensure!(received == id, "Unexpected invocation");
-                            accepted = true;
-                        }
-                        Event::Progress {
-                            id: received,
-                            value,
-                        } => {
-                            ensure!(received == id && accepted, "Unaccepted progress");
-                            eprintln!("{value}");
-                        }
-                        Event::Bearer { .. } => {
-                            bail!("Unexpected bearer update on an attached operation")
-                        }
-                        Event::Completed {
-                            id: received,
-                            outcome,
-                        } => {
-                            ensure!(received == id, "Unexpected completion");
-                            return Ok(outcome);
-                        }
-                    }
-                }
+            // One event per frame. Acceptance and progress arrive as their own
+            // frames while the operation is still running, which is what keeps a
+            // long controller from looking hung.
+            Response::Event(Event::Accepted { id: received }) => {
+                ensure!(received == id, "Unexpected invocation");
+                accepted = true;
             }
-            Response::Notification { .. } => {}
+            Response::Event(Event::Progress {
+                id: received,
+                value,
+            }) => {
+                ensure!(received == id && accepted, "Unaccepted progress");
+                eprintln!("{value}");
+            }
+            Response::Event(Event::Bearer { .. }) => {
+                bail!("Unexpected bearer update on an attached operation")
+            }
+            Response::Event(Event::Completed {
+                id: received,
+                outcome,
+            }) => {
+                ensure!(received == id, "Unexpected completion");
+                return Ok(outcome);
+            }
+            // Uncorrelated push. This CLI drives one operation at a time and
+            // has no handler registered, so it is dropped rather than fatal.
+            Response::Global { .. } => {}
             Response::Failed(error) => bail!("Transport rejected: {error:?}"),
             _ => bail!("Logical connection ended; outstanding outcome is unknown"),
         }

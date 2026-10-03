@@ -21,7 +21,7 @@ name = "identity-calculator"
 path = "../tests/properties/identity.rs"
 
 [package.metadata.snap]
-role = "composition"
+role = "host"
 
 [lints]
 workspace = true

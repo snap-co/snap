@@ -36,7 +36,13 @@ fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
     )
     .unwrap();
     assert!(
-        matches!(&host.drain(peer).unwrap()[1], Response::Events(events) if events == &vec![Event::Completed { id: 1, outcome: Ok(json!({"status":"OK"})) }])
+        matches!(
+            &host.drain(peer).unwrap()[1],
+            Response::Event(Event::Completed {
+                id: 1,
+                outcome: Ok(value),
+            }) if value == &json!({"status":"OK"})
+        )
     );
     host.send(
         peer,
@@ -69,7 +75,7 @@ fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
     assert_eq!(host.inspect()["manual"], true);
     assert_eq!(
         host.drain(peer).unwrap(),
-        vec![Response::Events(vec![Event::Accepted { id: 4 }])]
+        vec![Response::Event(Event::Accepted { id: 4 })]
     );
     assert!(host.control(Control::Restore, 0).is_err());
     assert!(

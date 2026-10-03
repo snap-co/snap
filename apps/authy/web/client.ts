@@ -1,13 +1,14 @@
 import { BrowserRuntime, type Publication } from "../../../kits/browser/runtime";
 import { wasmModule } from "../../../kits/browser/wasm";
 import { bindIdentity, type IdentityBinding } from "../../../kits/react/identity";
+import { bindPasskeys, type PasskeyBinding } from "../../../kits/browser/passkey";
 
 export interface Account { identity: string; email: string; profile: string; authenticated_at: number }
 export interface ProfileView { name: string; bio: string; revision: string }
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 export type LogoutScope = "current" | "others" | "all";
 export interface SessionSummary { id: string; expires: number; current: boolean }
-export interface CredentialSummary { label: string; kind: "password"; removable: boolean }
+export interface CredentialSummary { locator: string; label: string; kind: "password" | "passkey" | "oauth"; removable: boolean }
 export interface AuthySnapshot {
   phase: "loading" | "anonymous" | "signed-in" | "error";
   account: Account | null;
@@ -36,7 +37,7 @@ export interface WasmResult extends Publication {
     needs_recovery: boolean;
   };
 }
-const loadWasm = wasmModule<IdentityBinding & { account_fetch(): Promise<string>; default(options: { module_or_path: string }): Promise<unknown>; AuthyClient: new (actor: string, profile: string) => AuthyBinding }>("authy");
+const loadWasm = wasmModule<IdentityBinding & PasskeyBinding & { account_fetch(): Promise<string>; default(options: { module_or_path: string }): Promise<unknown>; AuthyClient: new (actor: string, profile: string) => AuthyBinding }>("authy");
 
 function safeContinue(value: string | null): string | null {
   if (!value || !value.startsWith("/oauth/")) return null;
@@ -48,6 +49,7 @@ function safeContinue(value: string | null): string | null {
 export class AuthyClient {
   private listeners = new Set<() => void>();
   private identity = bindIdentity(loadWasm, async module => JSON.parse(await module.account_fetch()) as Account);
+  private passkeys = bindPasskeys(loadWasm, async module => JSON.parse(await module.account_fetch()) as Account);
   private reauth = new URLSearchParams(location.search).get("reauth") === "1";
   private busy = false;
   private closed = false;
@@ -98,6 +100,23 @@ export class AuthyClient {
   }
   signup(email: string, password: string) { return this.acquire(true, email, password); }
   login(email: string, password: string) { return this.acquire(false, email, password); }
+  passkeysSupported() { return this.passkeys.supported(); }
+  async passkey(register: boolean, label?: string) {
+    if (this.busy) throw new Error("Another sign-in action is still pending.");
+    this.busy = true;
+    try {
+      if (register && this.snapshot.account && Date.now() / 1000 - this.snapshot.account.authenticated_at >= 300) throw new Error("Sign out and sign in again before adding a passkey.");
+      const account = register ? await this.passkeys.register(label ?? this.snapshot.account?.email ?? "") : await this.passkeys.authenticate(label);
+      if (this.closed) return;
+      this.reauth = false;
+      await this.runtime.replace(account);
+      const next = safeContinue(new URLSearchParams(location.search).get("continue"));
+      if (next) location.assign(next);
+    } catch (error) {
+      if (error instanceof Error) throw error;
+      throw new Error(String(error));
+    } finally { this.busy = false; }
+  }
   async logout(scope: LogoutScope = "current") {
     if (this.busy) throw new Error("Another sign-in action is still pending.");
     this.busy = true;
@@ -120,6 +139,6 @@ export class AuthyClient {
     catch (error) { this.set({ error: String(error) }); }
   }
   retryConnection() { void this.runtime.refresh(); }
-  close() { this.closed = true; this.runtime.close(); this.listeners.clear(); }
+  close() { this.closed = true; this.passkeys.cancel(); this.runtime.close(); this.listeners.clear(); }
 }
 export async function startAuthy() { const client = new AuthyClient(); await client.runtime.resolve(); return client; }

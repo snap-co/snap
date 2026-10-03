@@ -13,6 +13,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 pub use http::{HttpOperation, WriteCookie, http_router};
+pub use snap_transport::inbox::Inbox;
 use snap_transport::carrier::{Connection, Dispatch, Physical, Submission};
 use std::{sync::Arc, time::Duration};
 

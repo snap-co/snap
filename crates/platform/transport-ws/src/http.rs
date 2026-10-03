@@ -16,6 +16,24 @@ pub struct HttpOperation {
     pub write_cookie: WriteCookie,
 }
 
+impl HttpOperation {
+    pub fn from_route(
+        route: snap_transport::carrier::HttpRoute,
+        write_cookie: WriteCookie,
+    ) -> Self {
+        use snap_transport::carrier::HttpMethod;
+        Self {
+            name: route.operation,
+            method: match route.method {
+                HttpMethod::Get => Method::GET,
+                HttpMethod::Post => Method::POST,
+            },
+            read_cookie: route.read_bearer,
+            write_cookie,
+        }
+    }
+}
+
 pub fn http_router<D: Dispatch>(
     service: Arc<Service<D>>,
     operations: Vec<HttpOperation>,

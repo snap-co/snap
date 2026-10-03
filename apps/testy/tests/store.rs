@@ -22,20 +22,16 @@ fn signup_returns_a_miss_then_a_separate_request_commits_all_modules() {
             input: json!({"id": 7, "email": "alice@example.test"}),
         },
     };
-    let reply = host.exchange(command(1));
-    let Response::Events(events) = reply else {
-        panic!("expected events")
-    };
     assert_eq!(
-        events,
+        host.exchange(command(1)),
         vec![
-            Event::Accepted { id: 1 },
-            Event::Completed {
+            Response::Event(Event::Accepted { id: 1 }),
+            Response::Event(Event::Completed {
                 id: 1,
                 outcome: Err(Error::Application(
                     json!({"code": "StoreMiss", "table": "signup.policy", "index": "primary"})
                 ))
-            }
+            })
         ]
     );
     for table in [
@@ -56,13 +52,13 @@ fn signup_returns_a_miss_then_a_separate_request_commits_all_modules() {
     host.store.load("signup.policy").unwrap();
     assert_eq!(
         host.exchange(command(2)),
-        Response::Events(vec![
-            Event::Accepted { id: 2 },
-            Event::Completed {
+        vec![
+            Response::Event(Event::Accepted { id: 2 }),
+            Response::Event(Event::Completed {
                 id: 2,
                 outcome: Err(Error::Application(json!({"code": "NotFound"})))
-            },
-        ])
+            }),
+        ]
     );
     assert_eq!(
         host.store.misses().count,
@@ -79,13 +75,13 @@ fn signup_returns_a_miss_then_a_separate_request_commits_all_modules() {
         .unwrap();
     assert_eq!(
         host.exchange(command(3)),
-        Response::Events(vec![
-            Event::Accepted { id: 3 },
-            Event::Completed {
+        vec![
+            Response::Event(Event::Accepted { id: 3 }),
+            Response::Event(Event::Completed {
                 id: 3,
                 outcome: Ok(json!({"created": 7}))
-            }
-        ])
+            })
+        ]
     );
     for table in [
         "signup.accounts",

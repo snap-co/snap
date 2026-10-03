@@ -63,7 +63,7 @@ fn error(message: impl ToString) -> Response {
 }
 fn owned(
     app: &App,
-    s: &rp::Session,
+    s: &rp::Grant,
     workspace: &str,
     id: &str,
 ) -> Result<(Workspace, Intake), Error> {
@@ -86,7 +86,7 @@ fn credentials(w: &Workspace, owner: &str) -> PathBuf {
 }
 async fn configure(
     app: &App,
-    s: &rp::Session,
+    s: &rp::Grant,
     workspace: &str,
     w: &Workspace,
     item: &Intake,

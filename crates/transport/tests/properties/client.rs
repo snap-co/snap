@@ -3,6 +3,7 @@ use hegel::{TestCase, generators as gs};
 use snap_transport::{Channel, Command, Error, Event, Outcome, Response, client::Client, json};
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     future::Future,
     pin::pin,
     rc::Rc,
@@ -18,7 +19,9 @@ fn ready<F: Future>(future: F) -> F::Output {
 
 #[derive(Default)]
 struct Script {
-    response: Option<Result<Response, Error>>,
+    /// Scripted frames, oldest first. A channel is a stream, so a scripted
+    /// history is a sequence of single-frame responses rather than one batch.
+    frames: VecDeque<Result<Response, Error>>,
     commands: Vec<Command>,
 }
 
@@ -26,17 +29,28 @@ struct Script {
 struct Scripted(Rc<RefCell<Script>>);
 
 impl Channel for Scripted {
-    async fn exchange(&mut self, command: Command) -> Result<Response, Error> {
-        let mut script = self.0.borrow_mut();
-        script.commands.push(command);
-        script
-            .response
-            .take()
-            .expect("client attempted an unsolicited exchange or replay")
+    async fn send(&mut self, command: Command) -> Result<(), Error> {
+        self.0.borrow_mut().commands.push(command);
+        Ok(())
+    }
+    async fn receive(&mut self) -> Result<Option<Response>, Error> {
+        match self.0.borrow_mut().frames.pop_front() {
+            Some(Ok(response)) => Ok(Some(response)),
+            Some(Err(error)) => Err(error),
+            // The script ran dry: the channel closed.
+            None => Ok(None),
+        }
     }
 }
 
-fn grammar(events: &[Event], expected_id: u64) -> Outcome {
+/// Judge a correlated event sequence.
+///
+/// `Err` means the sequence broke its ordering contract, so the client's trace
+/// is abandoned and that invocation can never resolve. `Ok(None)` means the
+/// sequence is well formed but unfinished: the stream simply ran dry, leaving
+/// the outcome unknown. `Ok(Some(_))` is a resolved outcome. The last two must
+/// stay distinct — an unfinished call is never a definite rejection.
+fn grammar(events: &[Event], expected_id: u64) -> Result<Option<Outcome>, Error> {
     let mut accepted = false;
     let mut terminal = None;
     let mut bearer = false;
@@ -73,10 +87,10 @@ fn grammar(events: &[Event], expected_id: u64) -> Outcome {
             }
         }
     }
-    terminal.unwrap_or(Err(Error::Protocol))
+    Ok(terminal)
 }
 
-fn response(tc: &TestCase, id: u64) -> Response {
+fn frames(tc: &TestCase, id: u64) -> Vec<Response> {
     let outcome = if tc.draw(gs::booleans()) {
         Ok(json!(tc.draw(gs::integers::<i64>())))
     } else {
@@ -85,28 +99,29 @@ fn response(tc: &TestCase, id: u64) -> Response {
     // Include valid messages explicitly, so random garbage cannot make the test
     // pass by accepting Protocol for almost every example.
     match tc.draw(gs::integers::<u8>().max_value(7)) {
-        0 => Response::Events(vec![
-            Event::Accepted { id },
-            Event::Completed { id, outcome },
-        ]),
-        1 => Response::Events(vec![Event::Completed {
+        0 => vec![
+            Response::Event(Event::Accepted { id }),
+            Response::Event(Event::Completed { id, outcome }),
+        ],
+        1 => vec![Response::Event(Event::Completed {
             id,
             outcome: Err(Error::Unavailable),
-        }]),
-        2 => Response::Failed(Error::Capacity),
-        3 => Response::Attached {
+        })],
+        2 => vec![Response::Failed(Error::Capacity)],
+        3 => vec![Response::Attached {
             resumed: tc.draw(gs::booleans()),
-        },
-        4 => Response::Detached,
-        5 => Response::Events(vec![
-            Event::Accepted { id },
-            Event::Progress {
+        }],
+        4 => vec![Response::Detached],
+        5 => vec![
+            Response::Event(Event::Accepted { id }),
+            Response::Event(Event::Progress {
                 id,
                 value: json!("working"),
-            },
-            Event::Accepted { id },
-            Event::Completed { id, outcome },
-        ]),
+            }),
+            // A repeated acceptance is a duplicate frame, not new work.
+            Response::Event(Event::Accepted { id }),
+            Response::Event(Event::Completed { id, outcome }),
+        ],
         _ => {
             let len = tc.draw(gs::integers::<usize>().max_value(6));
             let mut events = Vec::new();
@@ -125,9 +140,38 @@ fn response(tc: &TestCase, id: u64) -> Response {
                     },
                 });
             }
-            Response::Events(events)
+            events.into_iter().map(Response::Event).collect()
         }
     }
+}
+
+/// The events in a scripted history addressed to `expected_id`.
+///
+/// A frame naming some other invocation is routed before it reaches any trace,
+/// so it is noise here: the client drops it and its own trace is untouched.
+/// Folding those in would make `grammar` reject sequences the client accepts.
+///
+/// The sequence also stops at the terminal frame. A completion retires the
+/// invocation, so anything after it can no longer resolve anything and the
+/// client never even reads it.
+fn events(frames: &[Response], expected_id: u64) -> Vec<Event> {
+    let mut seen = Vec::new();
+    for frame in frames {
+        let Response::Event(event) = frame else { continue };
+        match event {
+            Event::Accepted { id }
+            | Event::Progress { id, .. }
+            | Event::Bearer { id, .. }
+            | Event::Completed { id, .. } if *id == expected_id => {}
+            _ => continue,
+        }
+        let terminal = matches!(event, Event::Completed { .. });
+        seen.push(event.clone());
+        if terminal {
+            break;
+        }
+    }
+    seen
 }
 
 #[hegel::test]
@@ -136,11 +180,22 @@ fn response_histories_obey_correlation_and_acceptance_grammar(tc: TestCase) {
     let mut client = Client::new(script.clone());
     let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(40));
     for id in 1..=count {
-        let reply = response(&tc, id);
-        let expected = match &reply {
-            Response::Events(events) => grammar(events, id),
-            Response::Failed(error) => Err(error.clone()),
-            _ => Err(Error::Protocol),
+        let reply = frames(&tc, id);
+        let correlated = events(&reply, id);
+        let expected = match reply.as_slice() {
+            [Response::Failed(error)] => Err(error.clone()),
+            [Response::Event(_), ..] => match grammar(&correlated, id) {
+                // A broken ordering contract abandons the trace, so no later
+                // frame can resolve this invocation.
+                Err(error) => Err(error),
+                // Well formed so far, but the stream ran dry. The outcome is
+                // genuinely unknown, never a definite rejection.
+                Ok(None) => Err(Error::Unavailable),
+                Ok(Some(outcome)) => outcome,
+            },
+            // A handshake frame cannot answer an invocation; it is discarded
+            // and the outcome stays unknown.
+            _ => Err(Error::Unavailable),
         };
         tc.note(&format!("id={id} reply={reply:?}"));
         tc.event(match &expected {
@@ -148,7 +203,7 @@ fn response_histories_obey_correlation_and_acceptance_grammar(tc: TestCase) {
             Err(Error::Protocol) => "malformed response rejected",
             Err(_) => "explicit error propagated",
         });
-        script.0.borrow_mut().response = Some(Ok(reply));
+        script.0.borrow_mut().frames = reply.into_iter().map(Ok).collect();
         let request = tc.draw(gs::booleans());
         let actual = if request {
             ready(client.request(Some("bearer"), "operation", json!(id)))
@@ -183,17 +238,18 @@ fn unknown_io_outcomes_are_never_replayed_on_replacement(tc: TestCase) {
     let failures = tc.draw(gs::vecs(gs::booleans()).min_size(1).max_size(80));
     for (index, fail) in failures.into_iter().enumerate() {
         let id = index as u64 + 1;
-        script.0.borrow_mut().response = Some(if fail {
-            Err(Error::Unavailable)
+        script.0.borrow_mut().frames = if fail {
+            vec![Err(Error::Unavailable)]
         } else {
-            Ok(Response::Events(vec![
-                Event::Accepted { id },
-                Event::Completed {
+            vec![
+                Ok(Response::Event(Event::Accepted { id })),
+                Ok(Response::Event(Event::Completed {
                     id,
                     outcome: Ok(json!(id)),
-                },
-            ]))
-        });
+                })),
+            ]
+        }
+        .into();
         assert_eq!(
             ready(client.invoke("mutate", json!(id))),
             if fail {
@@ -222,14 +278,16 @@ fn lifecycle_commands_require_their_own_response_kind(tc: TestCase) {
     let rounds = tc.draw(gs::integers::<usize>().min_value(1).max_value(30));
     for _ in 0..rounds {
         let command = tc.draw(gs::integers::<u8>().max_value(2));
-        let reply = response(&tc, 1);
-        let expected = match &reply {
-            Response::Failed(error) => Err(error.clone()),
-            Response::Attached { resumed } if command == 0 => Ok(*resumed),
-            Response::Detached if command != 0 => Ok(false),
+        let reply = frames(&tc, 1);
+        let expected = match reply.as_slice() {
+            // Nothing scripted: the channel closed without answering.
+            [] => Err(Error::Unavailable),
+            [Response::Failed(error)] => Err(error.clone()),
+            [Response::Attached { resumed }] if command == 0 => Ok(*resumed),
+            [Response::Detached] if command != 0 => Ok(false),
             _ => Err(Error::Protocol),
         };
-        script.0.borrow_mut().response = Some(Ok(reply));
+        script.0.borrow_mut().frames = reply.into_iter().map(Ok).collect();
         let result = match command {
             0 => ready(client.connect("credential", "tab")),
             1 => ready(client.disconnect()).map(|()| false),

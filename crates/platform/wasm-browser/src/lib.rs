@@ -1,19 +1,29 @@
 //! Browser HTTP IO for the Rust Transport SDK. Cookies remain browser-managed.
-//! Each exchange sends once; cancellation or IO failure never replays a mutation.
+//! Each command is sent once; cancellation or IO failure never replays a mutation.
 use snap_transport::{Channel, Command, Error, Event, Response, Value};
+use std::collections::VecDeque;
 
 pub struct Http {
     routes: Vec<snap_transport::carrier::HttpRoute>,
+    /// Observations already fetched from the wire, waiting to be handed out one
+    /// per `receive`. HTTP answers a request with the whole exchange, so the
+    /// platform reassembles it into the single-event frames Transport carries.
+    buffered: VecDeque<Response>,
 }
 impl Http {
     pub fn new(routes: impl IntoIterator<Item = snap_transport::carrier::HttpRoute>) -> Self {
         Self {
             routes: routes.into_iter().collect(),
+            buffered: VecDeque::new(),
         }
     }
 }
+
 impl Channel for Http {
-    async fn exchange(&mut self, command: Command) -> Result<Response, Error> {
+    /// Performs the round trip. Plain HTTP cannot pipeline, so acceptance cannot
+    /// be published before the handler runs: a slow operation is dead air here.
+    /// WebSocket carriers do not have this limit.
+    async fn send(&mut self, command: Command) -> Result<(), Error> {
         let Command::Request { invocation, .. } = command else {
             return Err(Error::Protocol);
         };
@@ -37,13 +47,21 @@ impl Channel for Http {
             return Err(Error::Protocol);
         }
         // HTTP exposes only completion; a successful terminal result proves that
-        // admission happened. Preserve Transport's observation contract in Rust.
-        let mut events = Vec::new();
+        // admission happened. Synthesize the acceptance Transport's ordering
+        // contract requires, then hand out one event per receive.
         if outcome.is_ok() {
-            events.push(Event::Accepted { id });
+            self.buffered.push_back(Response::Event(Event::Accepted { id }));
         }
-        events.push(Event::Completed { id, outcome });
-        Ok(Response::Events(events))
+        self.buffered
+            .push_back(Response::Event(Event::Completed { id, outcome }));
+        Ok(())
+    }
+
+    /// Yields the next buffered observation, or `None` once the exchange is
+    /// exhausted. A connectionless request has no logical connection, so it
+    /// never receives a `Global` push.
+    async fn receive(&mut self) -> Result<Option<Response>, Error> {
+        Ok(self.buffered.pop_front())
     }
 }
 pub async fn get_json(path: &str) -> Result<Value, Error> {

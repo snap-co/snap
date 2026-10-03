@@ -97,6 +97,8 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_identity::MIGRATION,
         snap_oidc::MIGRATION,
         snap_identity::SESSION_TIME_MIGRATION,
+        snap_identity::CREDENTIAL_KIND_MIGRATION,
+        snap_identity::FLOW_MIGRATION,
     ]
     .into_iter()
     .map(|text| toml::from_str(text).unwrap())

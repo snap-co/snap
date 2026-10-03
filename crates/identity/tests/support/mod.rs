@@ -25,6 +25,8 @@ pub fn migrations() -> Vec<snap_store::migration::Migration> {
     [
         snap_identity::MIGRATION,
         snap_identity::SESSION_TIME_MIGRATION,
+        snap_identity::CREDENTIAL_KIND_MIGRATION,
+        snap_identity::FLOW_MIGRATION,
     ]
     .into_iter()
     .map(|source| toml::from_str(source).unwrap())

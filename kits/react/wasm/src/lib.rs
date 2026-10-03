@@ -51,6 +51,45 @@ pub async fn credentials() -> Result<String, JsValue> {
         .map_err(error)?;
     serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid identity output"))
 }
+pub async fn passkey_begin_registration(label: &str, binding: &str) -> Result<String, JsValue> {
+    let mut transport = Client::new(Http::new(snap_identity::operation::passkey_http_routes()));
+    let value = snap_identity::client::Client::new(&mut transport)
+        .begin_passkey_registration(label, binding)
+        .await
+        .map_err(error)?;
+    serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid passkey challenge"))
+}
+pub async fn passkey_begin_authentication(
+    locator: Option<&str>,
+    name: Option<&str>,
+    binding: &str,
+) -> Result<String, JsValue> {
+    let mut transport = Client::new(Http::new(snap_identity::operation::passkey_http_routes()));
+    let mut client = snap_identity::client::Client::new(&mut transport);
+    let value = match name {
+        Some(name) => {
+            client
+                .begin_named_passkey_authentication(name, binding)
+                .await
+        }
+        None => client.begin_passkey_authentication(locator, binding).await,
+    }
+    .map_err(error)?;
+    serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid passkey challenge"))
+}
+pub async fn passkey_finish(proof: &str, registration: bool) -> Result<String, JsValue> {
+    let proof =
+        serde_json::from_str(proof).map_err(|_| JsValue::from_str("Invalid passkey response"))?;
+    let mut transport = Client::new(Http::new(snap_identity::operation::passkey_http_routes()));
+    let mut client = snap_identity::client::Client::new(&mut transport);
+    let value = if registration {
+        client.finish_passkey_registration(&proof).await
+    } else {
+        client.finish_passkey_authentication(&proof).await
+    }
+    .map_err(error)?;
+    serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid identity output"))
+}
 pub async fn oauth_fetch(origin: &str) -> Result<String, JsValue> {
     let value = snap_wasm_browser::get_json(&format!("{origin}/api/session"))
         .await
@@ -94,6 +133,34 @@ macro_rules! export_identity {
         #[wasm_bindgen::prelude::wasm_bindgen]
         pub async fn identity_credentials() -> Result<String, wasm_bindgen::JsValue> {
             $crate::credentials().await
+        }
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub async fn identity_passkey_register(
+            label: String,
+            binding: String,
+        ) -> Result<String, wasm_bindgen::JsValue> {
+            $crate::passkey_begin_registration(&label, &binding).await
+        }
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub async fn identity_passkey_authenticate(
+            locator: Option<String>,
+            name: Option<String>,
+            binding: String,
+        ) -> Result<String, wasm_bindgen::JsValue> {
+            $crate::passkey_begin_authentication(locator.as_deref(), name.as_deref(), &binding)
+                .await
+        }
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub async fn identity_passkey_registered(
+            proof: String,
+        ) -> Result<String, wasm_bindgen::JsValue> {
+            $crate::passkey_finish(&proof, true).await
+        }
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub async fn identity_passkey_authenticated(
+            proof: String,
+        ) -> Result<String, wasm_bindgen::JsValue> {
+            $crate::passkey_finish(&proof, false).await
         }
     };
 }

@@ -1,9 +1,11 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::json;
-use snap_document_host::{Host, web::Shared};
-use snap_oauth_local::{Cookies, OAuth, failure, no_store, now, random};
-use snap_oidc::relying_party as rp;
+use snap_document::runtime::Runtime;
+use snap_identity::oauth as rp;
+use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
+use snap_transport_native::{Dispatcher, Shared};
+use snap_transport_ws::Service;
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -17,7 +19,7 @@ async fn session(State(oauth): State<Arc<OAuth>>, headers: HeaderMap) -> Respons
     }
 }
 
-fn operations(mut host: Host<snap_store_sqlite::Sqlite>) -> Host<snap_store_sqlite::Sqlite> {
+fn operations(mut host: Runtime<snap_store_sqlite::Sqlite>) -> Runtime<snap_store_sqlite::Sqlite> {
     host = host.with_inputs(|key| match key {
         "clock" => Ok(json!(now())),
         _ => Err(snap_transport::Error::Unavailable),
@@ -31,7 +33,7 @@ fn operations(mut host: Host<snap_store_sqlite::Sqlite>) -> Host<snap_store_sqli
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
-    oauth: snap_oauth_local::Settings,
+    oauth: snap_identity_native::oauth::Settings,
 }
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut values: Vec<snap_store::migration::Migration> = [
@@ -39,7 +41,8 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_document::server::MIGRATION,
         snap_document::server::LIFECYCLE_MIGRATION,
         rp::MIGRATION,
-        snap_oauth_local::MIGRATION,
+        snap_identity_native::oauth::MIGRATION,
+        rp::IDENTITY_MIGRATION,
         chatty::MIGRATION,
     ]
     .into_iter()
@@ -75,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
     let address = listener.local_addr()?;
-    let origin = snap_oauth_local::origin(&config.host.public_origin(address))?;
+    let origin = snap_identity_native::oauth::origin(&config.host.public_origin(address))?;
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
@@ -85,19 +88,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         store.load(table)?;
     }
+    store.run("identity.import-legacy-owners", |tx| {
+        let mut owners = Vec::new();
+        for (table, field) in [("access.grants", "identity"), ("chatty.threads", "owner")] {
+            for row in tx.find(table, "primary", &[])? {
+                let Some(snap_store::Value::Text(owner)) = row.get(field) else {
+                    return Err(Error::Invalid);
+                };
+                owners.push(owner.clone());
+            }
+        }
+        rp::import_legacy_owners(tx, &owners)
+    })?;
     let cookies = Cookies::load(&mut store, "chatty", origin.starts_with("https:"))?;
-    let host = operations(Host::new(
+    let host = operations(Runtime::new(
         store,
         chatty::document(),
         Arc::new(|tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner)),
         snap_transport::server::Config::default(),
         random(),
     ));
-    let documents = Shared::with_cookie(host, origin.clone(), cookies.reader());
+    let documents = Shared::new(host);
+    let transport = Arc::new(Service {
+        dispatch: Dispatcher::web(documents.clone()),
+        origin: origin.clone(),
+        cookie: Some(cookies.reader()),
+        require_cookie: false,
+    });
     let oauth = OAuth::new(
         documents.clone(),
         cookies,
-        snap_oauth_local::Config {
+        snap_identity_native::oauth::Config {
             origin,
             ..oauth_config
         },
@@ -108,11 +129,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/session", get(session))
         .with_state(oauth.clone())
         .merge(oauth.routes())
-        .merge(snap_document_host::web::router(documents.clone()))
+        .merge(snap_transport_ws::router(transport))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Chatty http://{address}");
-    tokio::select! {result=axum::serve(listener,router).with_graceful_shutdown(async{let _=tokio::signal::ctrl_c().await;})=>result?,_=snap_document_host::web::dispatch(documents)=>unreachable!()}
+    tokio::select! {result=axum::serve(listener,router).with_graceful_shutdown(async{let _=tokio::signal::ctrl_c().await;})=>result?,_=snap_transport_native::dispatch(documents)=>unreachable!()}
     Ok(())
 }

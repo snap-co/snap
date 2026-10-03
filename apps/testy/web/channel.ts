@@ -1,13 +1,23 @@
 // The carrier handles IO only. Rust owns command construction, correlation,
 // bootstrap and calculator contracts. Frames remain text to preserve i64 values.
+//
+// The channel is a stream, not a request/response exchange: `send` writes one
+// command and returns, `receive` yields the next frame whenever it arrives.
+// Transport carries a single event per frame, so an operation spanning
+// acceptance, progress and completion crosses the socket as three frames and a
+// slow operation publishes as it runs instead of holding its whole answer.
 export class WebChannel {
   private socket: WebSocket;
-  private pending?: {
+  // Frames that arrived with no one waiting. Dropping them would lose a push
+  // that lands between calls, so they wait here for the next `receive`.
+  private queue: string[] = [];
+  private waiter?: {
     resolve: (value: string) => void;
     reject: (error: Error) => void;
-    events: string[];
-    secret: boolean;
   };
+  // Connect and Request carry credentials. Each produces exactly one response
+  // frame, so a count is enough to keep the development log from printing them.
+  private redacted = 0;
   readonly ready: Promise<void>;
   constructor(
     private observe: (frame: string) => void,
@@ -21,61 +31,71 @@ export class WebChannel {
       this.socket.onerror = () => reject(new Error("Cannot connect to Testy"));
     });
     this.socket.onclose = () => {
-      this.pending?.reject(
-        new Error("Connection lost; request outcome may be unknown"),
+      this.waiter?.reject(
+        new Error("Connection lost; outstanding outcome is unknown"),
       );
-      this.pending = undefined;
+      this.waiter = undefined;
+      this.queue.length = 0;
       this.lost();
     };
     this.socket.onmessage = ({ data }) => {
-      const pending = this.pending;
-      this.observe(pending?.secret ? "← [authentication response redacted]" : data);
-      if (!pending) {
-        this.socket.close();
-        return;
+      if (this.redacted > 0) {
+        this.redacted -= 1;
+        this.observe("← [authentication response redacted]");
+      } else {
+        this.observe(data);
       }
       try {
-        const frame = JSON.parse(data);
-        if (frame.Events) {
-          // Server sends one observation per frame. Preserve its original numeric text.
-          if (
-            !Array.isArray(frame.Events) ||
-            frame.Events.length !== 1 ||
-            pending.events.length >= 3
-          )
-            throw new Error("Invalid event frame");
-          const match = /^\{"Events":\[(.*)\]\}$/.exec(data);
-          if (!match) throw new Error("Invalid event encoding");
-          pending.events.push(match[1]);
-          if (!frame.Events[0].Completed) return;
-          pending.resolve(`{"Events":[${pending.events.join(",")}]}`);
-        } else {
-          if (pending.events.length)
-            throw new Error("Interrupted event sequence");
-          pending.resolve(data);
-        }
-        this.pending = undefined;
+        JSON.parse(data);
       } catch (error) {
-        pending.reject(
-          error instanceof Error ? error : new Error(String(error)),
-        );
-        this.pending = undefined;
-        this.socket.close();
+        this.fail(error instanceof Error ? error : new Error(String(error)));
+        return;
       }
+      const waiter = this.waiter;
+      if (!waiter) {
+        this.queue.push(data);
+        return;
+      }
+      this.waiter = undefined;
+      waiter.resolve(data);
     };
   }
-  async exchange(command: string): Promise<string> {
+
+  // Writes one command. Returns once it is on the socket, not once the operation
+  // is accepted or finished.
+  async send(command: string): Promise<void> {
     await this.ready;
-    if (this.pending || this.socket.readyState !== WebSocket.OPEN)
+    if (this.socket.readyState !== WebSocket.OPEN)
       throw new Error("Channel unavailable");
     const decoded = JSON.parse(command);
-    const secret = !!decoded.Connect || !!decoded.Request;
-    this.observe(secret ? "→ [authentication request redacted]" : `→ ${command}`);
+    if (decoded.Connect || decoded.Request) this.redacted += 1;
+    this.observe(
+      this.redacted > 0 ? "→ [authentication request redacted]" : `→ ${command}`,
+    );
+    this.socket.send(command);
+  }
+
+  // The next frame, whenever it arrives. Rejects if the socket closes, because
+  // an unknown outcome must not be reported as a completed call.
+  receive(): Promise<string> {
+    const buffered = this.queue.shift();
+    if (buffered !== undefined) return Promise.resolve(buffered);
     return new Promise((resolve, reject) => {
-      this.pending = { resolve, reject, events: [], secret };
-      this.socket.send(command);
+      if (this.socket.readyState !== WebSocket.OPEN) {
+        reject(new Error("Channel unavailable"));
+        return;
+      }
+      this.waiter = { resolve, reject };
     });
   }
+
+  private fail(error: Error) {
+    this.waiter?.reject(error);
+    this.waiter = undefined;
+    this.queue.length = 0;
+    this.socket.close();
+  }
+
   dispose() {
     this.socket.close();
   }

@@ -15,7 +15,6 @@ snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-identity = { path = "../../crates/identity" }
 snap-access = { path = "../../crates/access" }
 snap-document = { path = "../../crates/document" }
-snap-document-host = { path = "../../crates/platform/document-host" }
 snap-platform-tests = { path = "../platform" }
 tempfile = "3"
 serde_json.workspace = true
@@ -45,16 +44,16 @@ name = "store-properties"
 path = "../../crates/store/tests/properties/resident.rs"
 
 [package.metadata.snap]
-role = "tool"
+role = "host"
 
 [[test]]
 name = "identity-properties"
 path = "../../crates/identity/tests/properties/identity.rs"
 
 [[test]]
-name = "document-host-properties"
-path = "../../crates/platform/document-host/tests/properties/lifecycle.rs"
-
-[[test]]
 name = "platform-dispatch"
 path = "../platform/tests/properties/dispatch.rs"
+
+[[test]]
+name = "document-runtime"
+path = "../../crates/document/tests/properties/runtime.rs"

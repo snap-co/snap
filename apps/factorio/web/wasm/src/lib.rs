@@ -56,7 +56,8 @@ impl FactorioClient {
             snap_transport::Response::Failed(failure) => return Err(error(failure)),
             snap_transport::Response::Detached => return Err(error("Disconnected")),
             response => {
-                for message in self.wire.receive(response).map_err(error)? {
+                // One frame carries at most one message now.
+                if let Some(message) = self.wire.receive(response).map_err(error)? {
                     manifest |= matches!(
                         self.client.handle(&registry, message).map_err(error)?,
                         Outcome::NeedManifest { .. }

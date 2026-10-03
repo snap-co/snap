@@ -58,15 +58,7 @@ impl Sessions {
         }
         let expires = now.checked_add(lifetime).ok_or(Error::Invalid)?;
         let bearer = hex(&crypto.random()?);
-        tx.insert(
-            TABLES[2],
-            row([
-                ("digest", Value::Bytes(crypto.digest(&bearer))),
-                ("identity", identity.into()),
-                ("expires", expires.into()),
-                ("issued", now.into()),
-            ]),
-        )?;
+        Self::insert(tx, crypto.digest(&bearer), identity, now, expires)?;
         Ok(Issued {
             bearer,
             principal: Principal {
@@ -74,6 +66,26 @@ impl Sessions {
                 authenticated_at: now,
             },
         })
+    }
+    pub(crate) fn insert(
+        tx: &mut Transaction<'_>,
+        digest: Vec<u8>,
+        identity: &str,
+        now: i64,
+        expires: i64,
+    ) -> Result<(), Error> {
+        if now < 0 || expires <= now {
+            return Err(Error::Invalid);
+        }
+        tx.insert(
+            TABLES[2],
+            row([
+                ("digest", Value::Bytes(digest)),
+                ("identity", identity.into()),
+                ("expires", expires.into()),
+                ("issued", now.into()),
+            ]),
+        )
     }
     pub fn resolve(
         tx: &mut Transaction<'_>,
@@ -84,7 +96,12 @@ impl Sessions {
         if now < 0 {
             return Err(Error::Invalid);
         }
-        if bearer.len() != 64 || !bearer.bytes().all(|c| c.is_ascii_hexdigit()) {
+        if !(bearer.len() == 64 && bearer.bytes().all(|c| c.is_ascii_hexdigit()))
+            && !(bearer.len() == 43
+                && bearer
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c)))
+        {
             return Err(Error::NotFound);
         }
         Self::resolve_digest(tx, &crypto.digest(bearer), now)

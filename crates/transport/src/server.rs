@@ -70,9 +70,13 @@ struct Resident {
     accepted: usize,
 }
 
-/// Verified input for the host dispatcher. The wire has no asserted identity,
+/// A verified call handed to the application. The wire has no asserted identity,
 /// connection ID or server attachment. Request calls have no resident scope.
-pub struct Dispatch {
+///
+/// Named for the connection state it carries, not for what runs it: this is what
+/// the application receives, whereas [`crate::carrier::Dispatch`] is the carrier
+/// side that delivers it and [`crate::lane::Lane`] is the serialized gate.
+pub struct Verified {
     pub identity: Option<String>,
     pub connection: Option<ConnectionId>,
     pub invocation: Invocation,
@@ -255,7 +259,7 @@ impl<R: Authority> Server<R> {
     }
     /// Non-connection requests resolve credentials on every invocation. Their
     /// execution state is temporary and must not become a resident connection.
-    pub fn request(&self, bearer: Option<&str>, invocation: Invocation) -> Result<Dispatch, Error> {
+    pub fn request(&self, bearer: Option<&str>, invocation: Invocation) -> Result<Verified, Error> {
         let identity = bearer
             .map(|token| {
                 let identity = self.authority.identify(token)?;
@@ -266,7 +270,7 @@ impl<R: Authority> Server<R> {
                 }
             })
             .transpose()?;
-        Ok(Dispatch {
+        Ok(Verified {
             identity,
             connection: None,
             invocation,
@@ -276,7 +280,7 @@ impl<R: Authority> Server<R> {
         &mut self,
         attachment: &Attachment,
         invocation: Invocation,
-    ) -> Result<Dispatch, Error> {
+    ) -> Result<Verified, Error> {
         if self.live_authority {
             let bearer = self.resident(attachment)?.bearer.clone();
             let validation = match self.authority.identify(&bearer) {
@@ -294,7 +298,7 @@ impl<R: Authority> Server<R> {
             return Err(Error::Protocol);
         }
         entry.sequence = invocation.id;
-        Ok(Dispatch {
+        Ok(Verified {
             identity: Some(attachment.key.0.clone()),
             connection: Some(entry.id),
             invocation,

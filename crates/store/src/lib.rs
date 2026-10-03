@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod data;
+pub mod inbox;
 pub mod migration;
 pub use data::Data;
 mod schema;

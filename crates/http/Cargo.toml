@@ -8,4 +8,4 @@ publish.workspace = true
 workspace = true
 
 [package.metadata.snap]
-role = "contract"
+role = "platform"

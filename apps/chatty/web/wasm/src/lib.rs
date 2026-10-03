@@ -73,7 +73,9 @@ impl ChattyClient {
         }
         let mut manifest = false;
         let mut failure = None;
-        for message in self.wire.receive(response).map_err(error)? {
+        // One frame carries at most one message now. Acceptance and progress
+        // produce none, so there is nothing to loop over.
+        if let Some(message) = self.wire.receive(response).map_err(error)? {
             manifest |= matches!(message, ServerMessage::Reset);
             match self.client.handle(&self.registry, message).map_err(error)? {
                 Outcome::NeedManifest { error, .. } => {

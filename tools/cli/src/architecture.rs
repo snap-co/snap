@@ -12,24 +12,31 @@ use tokio::process::Command;
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum Role {
-    Contract,
+    /// Store and Transport: the barrier application and platform code cross.
+    /// Nothing above them may construct a driver or name a table directly.
+    Interface,
+    /// Snap modules built on the barrier, exposing server SDKs and, where a
+    /// Transport operation exists, a client SDK alongside it.
     Core,
     Application,
+    /// Drivers and platform capabilities implementing the barrier.
     Platform,
-    Binding,
-    Composition,
+    /// The application's entrypoint: selects platform drivers and connects them
+    /// to the definitions the application plugs into core modules with. Owned by
+    /// the application, never by snap.
+    Host,
     Tool,
 }
 
 impl Role {
     fn portable(self) -> bool {
-        matches!(self, Self::Contract | Self::Core | Self::Application)
+        matches!(self, Self::Interface | Self::Core | Self::Application)
     }
     fn allows(self, target: Self, kind: &str) -> bool {
         use Role::*;
         // Reusable code never selects an app, including through tests/build scripts.
-        if matches!(self, Contract | Core | Platform | Binding | Tool)
-            && matches!(target, Application | Composition)
+        if matches!(self, Interface | Core | Platform | Tool)
+            && matches!(target, Application | Host)
         {
             return false;
         }
@@ -38,13 +45,12 @@ impl Role {
             return true;
         }
         match self {
-            Contract => target == Contract,
-            Core => matches!(target, Contract | Core),
-            Application => matches!(target, Contract | Core | Application),
-            Platform => matches!(target, Contract | Core | Platform),
-            Binding => matches!(target, Contract | Core | Platform | Binding),
-            Tool => matches!(target, Contract | Core | Platform | Binding | Tool),
-            Composition => true,
+            Interface => target == Interface,
+            Core => matches!(target, Interface | Core),
+            Application => matches!(target, Interface | Core | Application),
+            Platform => matches!(target, Interface | Core | Platform),
+            Tool => matches!(target, Interface | Core | Platform | Tool),
+            Host => true,
         }
     }
 }
@@ -56,7 +62,7 @@ fn role(package: &Value) -> Result<Option<Role>> {
     let name = package["name"].as_str().unwrap_or("unknown package");
     serde_json::from_value(package["metadata"]["snap"]["role"].clone())
         .map(Some)
-        .with_context(|| format!("{name}: declare package.metadata.snap.role as contract, core, application, platform, binding, composition, or tool in {}", package["manifest_path"]))
+        .with_context(|| format!("{name}: declare package.metadata.snap.role as interface, core, application, platform, host, or tool in {}", package["manifest_path"]))
 }
 
 pub async fn check(
@@ -150,7 +156,7 @@ pub async fn check(
                                     Some("lib" | "rlib" | "dylib" | "staticlib" | "cdylib")
                                 )
                             ))),
-                        "{}: portable packages need a library target; move host binaries into composition packages",
+                        "{}: portable packages need a library target; move host binaries into host packages",
                         package["name"]
                     );
                     let portable_manifest = PathBuf::from(
@@ -180,7 +186,7 @@ pub async fn check(
                         {
                             let kind = kind["kind"].as_str().unwrap_or("normal");
                             if !source_role.allows(target_role, kind) {
-                                violations.insert(format!("{} ({source_role:?}) -> {} ({target_role:?}), {kind} dependency on {target}: keep contracts independent of providers; move app/platform selection to an app-owned composition package or move portable behavior into core. Declared in {}",
+                                violations.insert(format!("{} ({source_role:?}) -> {} ({target_role:?}), {kind} dependency on {target}: modules and platforms reach the platform only through the Store/Transport barrier and module SDKs; move driver selection and host assembly to an app-owned host package, or move the behavior into core. Declared in {}",
                                     package["name"], dependency["name"], package["manifest_path"]));
                             }
                         }

@@ -496,7 +496,7 @@ async fn run(mut args: Args) -> Result<()> {
                     _ = tokio::signal::ctrl_c() => {let _=client.tcp.send(&snap_transport::Command::Close).await;return Ok(());},
                     response = client.tcp.receive() => {
                         match response?.0 {
-                            snap_transport::Response::Notification { operation, input } if operation == "document" => {
+                            snap_transport::Response::Global { kind, input } if kind == snap_document::wire::KIND => {
                                 let outcome = documents.handle(&registry,serde_json::from_value(input)?).map_err(|e| anyhow::anyhow!("Document: {e:?}"))?;
                                 if matches!(outcome, snap_document::client::Outcome::NeedManifest { .. }) {
                                     let response = client.invoke("document.manifest",serde_json::to_value(documents.manifest())?).await?;

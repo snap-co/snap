@@ -59,11 +59,14 @@ regression where applicable to the selected role.
 
 Store and carrier cases are independently selectable. The IO-free cartridge in
 `tests/platform/src/cartridge.rs` also exercises actual Transport-to-Store
-execution through the current production Document host. Shared properties and a
+execution through Document's portable runtime and Transport's transactional
+executor. Shared properties and a
 scalar reference model live in `tests/platform/src/dispatch.rs`. The controlled
 native server-role adapter drives public commands, output and execution steps
 against memory, ephemeral SQLite and file-backed SQLite. It does not replace the
-dispatcher or supply acceptance/completion events. Cartridge tables start cold;
+dispatcher or supply acceptance/completion events. Transport carries one event
+per frame, so a `drain` is already flat and a fixture that wants a whole exchange
+at once collects the frames. Cartridge tables start cold;
 verification reads declare their data again so backend reloads can detect writes
 that reached resident memory only.
 
@@ -74,7 +77,7 @@ adapters; it keeps Hegel out of the default-member build. The memory-only fault
 setup rejects the next nonempty backend commit before writing. SQLite fault
 injection and unknown-commit recovery are not covered by that setup.
 
-These controlled command tests do not prove a socket-to-host composition or
+These controlled command tests do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
 carriers, client-side durable module recovery and a full Transport/Store matrix
 remain unsupported here. SQLite reopening/locking, migrations, process crashes
@@ -93,11 +96,14 @@ that every input and schedule was checked.
 
 | Rule | Primary proof |
 | --- | --- |
-| Trusted composition resolves identity; stale attachments cannot acquire a replacement's authority. | Existing Transport lifetime model in `crates/transport/tests/properties/lifecycle.rs` |
+| Trusted host resolves identity; stale attachments cannot acquire a replacement's authority. | Existing Transport lifetime model in `crates/transport/tests/properties/lifecycle.rs` |
 | Hosts load declared data before admission. One FIFO owner holds the lane through admission, execution and publication; later guards see prior committed state. | Cartridge batch model, with cold tables and backend-loaded reads |
 | Accepted means admission, not success. Application errors, invalid output and caught Store failures discard staged writes. Confirmed commit rejection must not become success or an automatic retry. | Cartridge batch model and the controlled commit-rejection case |
 | Exact invocation retries observe the same result without another mutation within a retained logical lifetime. Different input under that key is Protocol. | Cartridge retry model, including pending retries and replay after a later mutation |
-| Reconnect alone must not inject an old completion into a fresh exchange. Explicit retry reattaches observation interest. | Cartridge retry model |
+| Reconnect alone must not inject an old completion into a fresh call. Explicit retry reattaches observation interest. | Cartridge retry model |
+| One invocation spans several frames. Acceptance reaches the client before the handler finishes, progress arrives while it still runs, and completion terminates it. A channel is a stream: sending never waits for a reply. | `crates/transport/tests/client.rs` routing cases and the `transport-client` property model |
+| Correlation is judged per frame. A frame naming another invocation is dropped without touching this one; a frame that breaks this invocation's ordering contract abandons its trace and is reported immediately, not left to wait. | `transport-client` property model, which distinguishes a broken sequence from an unfinished one |
+| Unhandled global pushes are dropped silently and never fail a client, because any server can publish a topic nobody subscribed to. | `crates/transport/tests/client.rs` |
 | Observer loss does not cancel accepted work. Disconnect can retain retry state; Close and expiry end that scope after accepted work drains. | Cartridge draining model; core lifetime model separately checks retention boundaries and stale handles |
 | Carriers deliver commands and published output independently of execution, including final output at retirement. Malformed input never enters dispatch. Physical IO loss is not a successful empty response. | Shared fixed carrier cases in `tests/platform/src/transport.rs` |
 
@@ -138,7 +144,7 @@ platform actually controls; strict deterministic simulation remains deferred.
 
 Test a public server-side module interface directly when it has a contract that
 client operation dispatch cannot exercise. Snap owns reusable module cases;
-apps own their server-specific composition and policy. Use the real module and
+apps own their server-specific host and policy. Use the real module and
 its transaction interface, with the authority required by that interface.
 
 Direct calls do not prove dispatch admission, credential handling or wire
@@ -157,7 +163,7 @@ accessible controls, navigation, rendered state, loading and error presentation,
 and correct connection to the SDK. Domain mutation correctness primarily belongs
 in SDK tests, not repeated across UI journeys.
 
-Keep end-to-end coverage when it protects a distinct composition risk, such as
+Keep end-to-end coverage when it protects a distinct host risk, such as
 real credential delivery, host startup, reload, binding disposal or account data
 remaining visible after an identity change. Move an existing domain assertion
 only after equivalent owner-seam coverage exists. A failing journey may expose a
@@ -175,6 +181,8 @@ transfer ownership of an app scenario to Snap.
 | --- | --- |
 | Snap platform conformance and controlled storage | Shared portable cases and memory backend in `tests/platform/src/`; native setup adapters and default-run coverage in `tests/platform/tests/` |
 | Snap interfaces, modules and adapter-specific guarantees | `crates/*/tests/` and `crates/platform/*/tests/`; shared Store and carrier conformance lives in `tests/platform/` rather than provider-local copies |
+| Identity credential flows and private session policy | `crates/identity/tests/{identity,oauth,operations}.rs`; native WebAuthn signatures, origin/counter policy and durable ceremony state in `crates/platform/identity-native/tests/passkey.rs`, selected by the `passkey` feature; Authy's `passkey browser ceremony` journey uses a CDP authenticator to cover browser/Wasm conversion and cookie delivery; OAuth refresh/socket integration remains app-owned in Factorio |
+| Document runtime and native execution integration | Controlled document lifecycle and socket cases in `tests/platform/tests/document_{runtime,tcp}.rs`; generated document histories in `crates/document/tests/properties/runtime.rs` via the `document-runtime` property target; independent execution/output-lock regressions in `crates/platform/transport-native/src/dispatch.rs` |
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
 | Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
 | App controlled execution | `apps/testy/server/src/memory.rs` and `apps/testy/tests/` contain app examples, not the owner of Snap platform conformance |
@@ -182,9 +190,13 @@ transfer ownership of an app scenario to Snap.
 | App SDK scenarios and properties | `apps/*/tests/` and app-owned `apps/*/properties/Cargo.toml` consumers |
 | App end-to-end scenarios | `apps/*/tests/browser/journeys.rs`, executed by the shared Rust/CDP runner in `tests/browser/` |
 | Snap tooling | `tools/cli/tests/` and `tests/cli/browser/journeys.rs` protect the real CLI and development workflow, not app domain behavior |
-| Shared browser fixture support | `tests/browser/src/support.rs` owns processes, source copies and bundle hosting; app host composition is in `tests/browser/src/hosts.rs` |
+| Shared browser fixture support | `tests/browser/src/support.rs` owns processes, source copies and bundle hosting; app hosts are in `tests/browser/src/hosts.rs` |
 
 Read manifests, suite declarations and runner code to determine actual selection.
+Identity's top-level migration directory is the password-history chain consumed
+by the CLI and Testy. Alternative OAuth-only history lives in its `oauth/`
+subdirectory and is explicitly selected by OAuth hosts. The CLI migration gate
+checks both a fresh directory application and upgrade from the pre-flow history.
 File location, `cargo test` success and an app's `full` selector do not establish
 repository-wide coverage. Keep fast controlled tests distinct from real-IO gates
 without treating speed as a test's ownership or value.

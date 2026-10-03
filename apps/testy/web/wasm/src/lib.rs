@@ -1,5 +1,7 @@
 //! Browser binding for the same Testy SDK used by memory and native clients.
-//! JavaScript owns socket lifetime. Each exchange returns complete ordered events.
+//! JavaScript owns socket lifetime. The channel is a stream: `send` writes one
+//! command and returns, `receive` yields the next frame whenever it arrives, so
+//! acceptance and progress reach the client while the operation is still running.
 use snap_transport::{Channel, Command, Error, Response, json};
 use wasm_bindgen::prelude::*;
 
@@ -7,19 +9,20 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     pub type BrowserChannel;
     #[wasm_bindgen(method, catch)]
-    async fn exchange(this: &BrowserChannel, command: String) -> Result<JsValue, JsValue>;
+    async fn send(this: &BrowserChannel, command: String) -> Result<(), JsValue>;
+    #[wasm_bindgen(method, catch)]
+    async fn receive(this: &BrowserChannel) -> Result<JsValue, JsValue>;
 }
 struct Connection(BrowserChannel);
 impl Channel for Connection {
-    async fn exchange(&mut self, command: Command) -> Result<Response, Error> {
+    async fn send(&mut self, command: Command) -> Result<(), Error> {
         let encoded = serde_json::to_string(&command).map_err(|_| Error::Protocol)?;
-        let value = self
-            .0
-            .exchange(encoded)
-            .await
-            .map_err(|_| Error::Unavailable)?;
-        serde_json::from_str(&value.as_string().ok_or(Error::Protocol)?)
-            .map_err(|_| Error::Protocol)
+        self.0.send(encoded).await.map_err(|_| Error::Unavailable)
+    }
+    async fn receive(&mut self) -> Result<Option<Response>, Error> {
+        let value = self.0.receive().await.map_err(|_| Error::Unavailable)?;
+        let frame = value.as_string().ok_or(Error::Protocol)?;
+        serde_json::from_str(&frame).map_err(|_| Error::Protocol)
     }
 }
 fn error(error: Error) -> JsValue {

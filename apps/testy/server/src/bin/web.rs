@@ -18,6 +18,9 @@ async fn main() -> std::io::Result<()> {
                 toml::from_str(snap_identity::MIGRATION).map_err(std::io::Error::other)?,
                 toml::from_str(snap_identity::SESSION_TIME_MIGRATION)
                     .map_err(std::io::Error::other)?,
+                toml::from_str(snap_identity::CREDENTIAL_KIND_MIGRATION)
+                    .map_err(std::io::Error::other)?,
+                toml::from_str(snap_identity::FLOW_MIGRATION).map_err(std::io::Error::other)?,
             ],
         )
         .map_err(std::io::Error::other)?;

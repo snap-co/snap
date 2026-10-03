@@ -18,4 +18,4 @@ tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "ma
 workspace = true
 
 [package.metadata.snap]
-role = "composition"
+role = "host"

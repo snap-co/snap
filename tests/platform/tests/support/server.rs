@@ -1,16 +1,20 @@
 //! Native server-carrier fixtures. Queues supply dependency IO, never module
 //! outcomes. The conformance cases live in the portable library.
+//!
+//! The connection here is the production [`snap_transport::inbox::Inbox`], so a
+//! WebSocket and a TLS socket are proven to feed the same handoff rather than two
+//! lookalikes. The only thing this file adds is the retirement race hook, which
+//! must sit between the carrier's own observations and so cannot live inside the
+//! queue.
 use futures_util::{SinkExt, StreamExt};
 use snap_platform_tests::transport::{Duplex, Server};
 use snap_transport::{
     Command, Error, Invocation, Response, binary,
     carrier::{AttachmentInfo, Connection, Dispatch, Frame, Submission},
+    inbox::Inbox,
 };
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{io::AsyncWriteExt, sync::mpsc};
@@ -19,74 +23,70 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 pub(super) mod tls_support;
 
 #[derive(Clone)]
-struct Queues(mpsc::UnboundedSender<HostPeer>);
-struct HostPeer {
-    incoming: mpsc::UnboundedReceiver<Command>,
-    outgoing: mpsc::UnboundedSender<Frame>,
-    teardown: mpsc::UnboundedReceiver<bool>,
+struct Queues(mpsc::UnboundedSender<Peer>);
+
+/// Everything both sides of one connection observe. Splitting it this way keeps
+/// a single [`Inbox`] per connection: the carrier half and the application half
+/// hold the same one, rather than the fixture keeping its own copy of the queue.
+#[derive(Clone)]
+struct Peer {
+    inbox: Arc<Inbox>,
+    /// Set when a logical `Close` was handed off, so teardown can report which
+    /// of the two events the caller is waiting for.
+    closed: Arc<Mutex<bool>>,
+    /// Armed by `retire_after_empty_receive`.
     late_reply: Arc<Mutex<Option<Frame>>>,
 }
-struct Endpoint {
-    incoming: mpsc::UnboundedSender<Command>,
-    outgoing: Mutex<mpsc::UnboundedReceiver<Frame>>,
-    teardown: mpsc::UnboundedSender<bool>,
-    publish: mpsc::UnboundedSender<Frame>,
-    late_reply: Arc<Mutex<Option<Frame>>>,
-    retired: AtomicBool,
+
+struct Endpoint(Peer);
+impl std::ops::Deref for Endpoint {
+    type Target = Peer;
+    fn deref(&self) -> &Peer {
+        &self.0
+    }
 }
 impl Connection for Endpoint {
-    fn submit(&self, command: Command, _: usize) -> Result<Submission, Error> {
+    fn submit(&self, command: Command, bytes: usize) -> Result<Submission, Error> {
         if matches!(command, Command::Close) {
-            let _ = self.teardown.send(true);
+            *self.closed.lock().unwrap() = true;
+            // A logical Close asks for physical teardown rather than entering the
+            // queue: it is the host's policy decision, not work to execute, and the
+            // carrier must still drop the socket afterwards.
             return Ok(Submission::CloseSocket);
         }
-        self.incoming
-            .send(command)
-            .map(|_| Submission::Queued)
-            .map_err(|_| Error::Unavailable)
+        self.inbox.submit(command, bytes)
     }
     fn receive(&self) -> Option<Frame> {
-        let response = self.outgoing.lock().unwrap().try_recv().ok();
-        if response.is_none()
-            && let Some(frame) = self.late_reply.lock().unwrap().take()
-        {
-            // Reproduce the legal interleaving: an empty receive, publication,
-            // then retirement before the driver makes its next observation.
-            self.publish.send(frame).unwrap();
-            self.retired.store(true, Ordering::Release);
+        if let Some(frame) = self.inbox.receive() {
+            return Some(frame);
         }
-        response
+        // Reproduce the legal interleaving: an empty receive, publication, then
+        // retirement before the carrier makes its next observation.
+        if let Some(frame) = self.late_reply.lock().unwrap().take() {
+            self.inbox.publish_frame(frame, 1);
+            self.inbox.retire();
+        }
+        None
     }
     fn retired(&self) -> bool {
-        self.retired.load(Ordering::Acquire)
+        self.inbox.retired()
     }
     fn disconnect(&self) {
-        let _ = self.teardown.send(false);
+        self.inbox.disconnect()
     }
 }
 impl Dispatch for Queues {
     type Connection = Endpoint;
-    async fn open(&self, _: Option<String>, _: usize) -> Result<Endpoint, Error> {
-        let (incoming, requests) = mpsc::unbounded_channel();
-        let (replies, outgoing) = mpsc::unbounded_channel();
-        let (teardown, signals) = mpsc::unbounded_channel();
-        let late_reply = Arc::new(Mutex::new(None));
+    async fn open(&self, _: Option<String>, budget: usize) -> Result<Endpoint, Error> {
+        let peer = Peer {
+            inbox: Arc::new(Inbox::new(budget)),
+            closed: Arc::new(Mutex::new(false)),
+            late_reply: Arc::new(Mutex::new(None)),
+        };
         self.0
-            .send(HostPeer {
-                incoming: requests,
-                outgoing: replies.clone(),
-                teardown: signals,
-                late_reply: late_reply.clone(),
-            })
+            .send(peer.clone())
             .map_err(|_| Error::Unavailable)?;
-        Ok(Endpoint {
-            incoming,
-            outgoing: Mutex::new(outgoing),
-            teardown,
-            publish: replies,
-            late_reply,
-            retired: AtomicBool::new(false),
-        })
+        Ok(Endpoint(peer))
     }
     async fn request(&self, _: Invocation, _: Option<String>) -> snap_transport::bearer::Reply {
         Err(Error::Unavailable).into()
@@ -198,28 +198,41 @@ pub async fn start(driver: Driver) -> Setup {
         .unwrap();
     Setup {
         socket,
-        host: peer,
+        application: peer,
         _server: server,
     }
 }
 
 pub struct Setup {
     socket: Socket,
-    host: HostPeer,
+    application: Peer,
     _server: Task,
+}
+impl Setup {
+    /// Next queued command, waiting out the carrier's flush interval.
+    async fn next_command(&mut self) -> Command {
+        loop {
+            if let Some(command) = self.application.inbox.next_command() {
+                return command;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
 }
 impl Duplex for Setup {
     async fn send(&mut self, command: &Command) {
         self.socket.send(command).await;
     }
     async fn incoming(&mut self) -> Command {
-        tokio::time::timeout(Duration::from_secs(2), self.host.incoming.recv())
+        tokio::time::timeout(Duration::from_secs(2), self.next_command())
             .await
-            .unwrap()
-            .unwrap()
+            .expect("carrier failed to hand off a decoded command")
     }
     async fn publish(&mut self, frame: Frame) {
-        self.host.outgoing.send(frame).unwrap();
+        assert!(
+            self.application.inbox.publish_frame(frame, 1),
+            "an empty reply direction must accept the frame"
+        );
     }
     async fn receive(&mut self) -> Result<(Response, Option<AttachmentInfo>), String> {
         self.socket.receive().await
@@ -230,15 +243,25 @@ impl Server for Setup {
         self.socket.malformed().await;
     }
     async fn teardown(&mut self) -> bool {
-        tokio::time::timeout(Duration::from_secs(2), self.host.teardown.recv())
-            .await
-            .unwrap()
-            .unwrap()
+        let inbox = self.application.inbox.clone();
+        loop {
+            // A logical Close is reported once, then the physical disconnect that
+            // follows it, matching the carrier's teardown order. The flag is taken
+            // rather than read, so a second call waits for the socket to drop
+            // instead of re-reporting the same Close.
+            if std::mem::replace(&mut *self.application.closed.lock().unwrap(), false) {
+                return true;
+            }
+            if inbox.is_detached() {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
     fn pending_command(&mut self) -> bool {
-        self.host.incoming.try_recv().is_ok()
+        self.application.inbox.queued() > 0
     }
     fn retire_after_empty_receive(&mut self, frame: Frame) {
-        *self.host.late_reply.lock().unwrap() = Some(frame);
+        *self.application.late_reply.lock().unwrap() = Some(frame);
     }
 }

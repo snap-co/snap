@@ -24,6 +24,10 @@ use crate::ui::{Session, Ui};
 
 pub async fn run(browser: &Browser, filter: &str) -> Result<()> {
     let mut ran = 0;
+    if matches(filter, "passkey browser ceremony") {
+        passkey_ceremony(browser).await?;
+        ran += 1;
+    }
     if matches(filter, "identity failure retry and deep link") {
         identity_failure_retry(browser).await?;
         ran += 1;
@@ -46,6 +50,72 @@ pub async fn run(browser: &Browser, filter: &str) -> Result<()> {
     }
     ensure!(ran > 0, "no authy cases match filter {filter:?}");
     Ok(())
+}
+
+// The native verifier tests own signature/counter policy. This journey owns the
+// browser's JSON conversion, cookie delivery, Wasm SDK wiring and account UI.
+async fn passkey_ceremony(browser: &Browser) -> Result<()> {
+    use chromiumoxide::cdp::browser_protocol::web_authn::{
+        AddVirtualAuthenticatorParams, AuthenticatorProtocol, AuthenticatorTransport, EnableParams,
+        VirtualAuthenticatorOptions,
+    };
+    let port = support::reserve_port()?;
+    let origin = format!("http://localhost:{port}");
+    let mut authy = AuthyHost::start(
+        "http://127.0.0.1:1",
+        json!({"SNAP_ORIGIN": origin, "SNAP_LISTEN": format!("127.0.0.1:{port}")}),
+    )
+    .await?;
+    let session = Session::new(browser).await?;
+    let result = async {
+        let ui = &session.ui;
+        ui.page.execute(EnableParams::default()).await?;
+        let options = VirtualAuthenticatorOptions::builder()
+            .protocol(AuthenticatorProtocol::Ctap2)
+            .transport(AuthenticatorTransport::Usb)
+            .has_resident_key(false)
+            .has_user_verification(true)
+            .is_user_verified(true)
+            .automatic_presence_simulation(true)
+            .build()
+            .map_err(anyhow::Error::msg)?;
+        ui.page
+            .execute(AddVirtualAuthenticatorParams::new(options))
+            .await?;
+        ui.goto(&format!("{origin}/sign-in")).await?;
+        ui.button("Sign in with a passkey").visible().await?;
+        screenshot(&ui.page, "authy-passkey-desktop", 1280, 720, false).await?;
+        screenshot(&ui.page, "authy-passkey-mobile", 390, 844, false).await?;
+        ui.button("New here? Create account").click().await?;
+        let email = unique("passkey");
+        ui.label("Email").fill(&email).await?;
+        ui.button("Create account with a passkey").click().await?;
+        ui.heading("You're signed in").visible().await?;
+        contains_text(ui, &email).await?;
+        contains_text(ui, "passkey").await?;
+        ui.button("Sign out").click().await?;
+        ui.heading("Sign in").visible().await?;
+        // Nonresident hardware must be recoverable by server-side account lookup,
+        // even after this browser loses all local hints.
+        ui.page.evaluate("localStorage.clear()").await?;
+        authy.restart().await?;
+        ui.label("Email").fill(&email).await?;
+        ui.button("Sign in with a passkey").click().await?;
+        ui.heading("You're signed in").visible().await?;
+        contains_text(ui, &email).await?;
+        ui.reload().await?;
+        ui.heading("You're signed in").visible().await?;
+        ensure!(
+            cookies(&ui.page, &origin)
+                .await?
+                .iter()
+                .any(|cookie| cookie.name == "authy_session" && cookie.http_only),
+            "passkey login publishes a browser-managed session cookie"
+        );
+        Ok(())
+    }
+    .await;
+    session.finish(result).await
 }
 
 async fn create_account(ui: &Ui, email: &str, password: &str) -> Result<()> {

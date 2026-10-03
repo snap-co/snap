@@ -96,6 +96,7 @@ fn session_management_is_owner_scoped_and_summaries_are_not_credentials() {
             .unwrap()
             .value,
         vec![snap_identity::CredentialSummary {
+            locator: "a@example.test".into(),
             label: "a@example.test".into(),
             kind: snap_identity::CredentialKind::Password,
             removable: false
@@ -357,10 +358,109 @@ fn additive_session_migration_preserves_existing_authority_without_inventing_fre
     std::fs::remove_file(path).unwrap();
 }
 fn tempfile_path() -> std::path::PathBuf {
+    named_path("session")
+}
+/// Migration tests rewrite the same file, so each claims its own path rather
+/// than serializing on a shared one.
+fn named_path(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
-        "snap-identity-migration-{}.sqlite",
+        "snap-identity-migration-{label}-{}.sqlite",
         std::process::id()
     ))
+}
+
+/// Credentials written before the kind column existed must still read back as
+/// password credentials, and the recorded kind must be the row's own value
+/// rather than an assumption about the locator.
+#[test]
+fn additive_credential_kind_migration_classifies_existing_rows_as_passwords() {
+    use snap_identity::{Credential, CredentialKind};
+    let migrations = support::migrations();
+    let path = named_path("kind");
+    let _ = std::fs::remove_file(&path);
+    snap_store_sqlite::migrate(&path, &migrations[..2]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
+    store.load(snap_identity::TABLES[0]).unwrap();
+    store.load(snap_identity::TABLES[1]).unwrap();
+    store
+        .run("legacy", |tx| {
+            tx.insert(
+                snap_identity::TABLES[0],
+                [("id".into(), "legacy".into())].into_iter().collect(),
+            )?;
+            tx.insert(
+                snap_identity::TABLES[1],
+                [
+                    ("email".into(), "legacy@example.test".into()),
+                    ("identity".into(), "legacy".into()),
+                    ("hash".into(), "legacy-hash".into()),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .unwrap();
+    drop(store);
+    snap_store_sqlite::migrate(&path, &migrations).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
+    Credential::data().prepare(&mut store).unwrap();
+    let kind = store
+        .run("read-kind", |tx| {
+            Ok(Credential::find(tx, "legacy@example.test")?
+                .expect("migrated credential")
+                .kind())
+        })
+        .unwrap()
+        .value;
+    assert_eq!(kind, CredentialKind::Password);
+    assert_eq!(CredentialKind::Password.as_str(), "password");
+    assert!(matches!(
+        CredentialKind::parse("unknown"),
+        Err(Error::Invalid)
+    ));
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A freshly enrolled credential records its kind in the row, and the summary a
+/// principal reads is derived from the stored column.
+#[test]
+fn enrollment_records_kind_and_summaries_report_it() {
+    use snap_identity::{Credential, CredentialKind, CredentialSummary};
+    let mut store = store(true);
+    let identity = Identity::default();
+    let mut crypto = Fake::default();
+    let issued = store
+        .run("enroll", |tx| {
+            identity.enroll(tx, &mut crypto, "kind@example.test", "password1", 0)
+        })
+        .unwrap()
+        .value;
+    let recorded = store
+        .run("read", |tx| {
+            Ok(Credential::find(tx, "kind@example.test")?
+                .expect("enrolled credential")
+                .kind())
+        })
+        .unwrap()
+        .value;
+    assert_eq!(recorded, CredentialKind::Password);
+    let summaries = store
+        .run("summaries", |tx| {
+            identity.credentials(tx, &crypto, &issued.bearer, 1)
+        })
+        .unwrap()
+        .value;
+    assert_eq!(
+        summaries,
+        vec![CredentialSummary {
+            locator: "kind@example.test".into(),
+            label: "kind@example.test".into(),
+            kind: CredentialKind::Password,
+            removable: false,
+        }]
+    );
+    drop(store);
 }
 
 #[test]

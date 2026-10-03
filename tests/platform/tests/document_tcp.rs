@@ -1,11 +1,12 @@
 //! Socket ownership tests, not repeats of Host's controlled-clock lifecycle suite.
-use snap_document_host::{Host, web::Shared};
+use snap_document::runtime::Runtime as Host;
 use snap_transport::operation::Definition as Request;
 use snap_transport::{Command, Event, Invocation, Response, binary, json};
+use snap_transport_native::{Dispatcher, Shared};
 use snap_transport_tcp::Client;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-#[path = "../../transport-tcp/tests/support/mod.rs"]
+#[path = "../../../crates/platform/transport-tcp/tests/support/mod.rs"]
 mod tls_support;
 
 #[tokio::test]
@@ -57,18 +58,18 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
             ))
         }),
     });
-    let shared = Shared::new(host, "http://localhost".into());
+    let shared = Shared::new(host);
     // TLS permits a wildcard listener; peers still verify the concrete address.
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], listener.local_addr().unwrap().port()));
     let temp = tempfile::tempdir().unwrap();
     let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
-    let serving = tokio::spawn(snap_document_host::tcp::serve(
+    let serving = tokio::spawn(snap_transport_tcp::serve(
         listener,
-        shared.clone(),
+        Dispatcher::tcp(shared.clone(), None),
         server_tls,
     ));
-    let dispatch = tokio::spawn(snap_document_host::web::dispatch(shared.clone()));
+    let dispatch = tokio::spawn(snap_transport_native::dispatch(shared.clone()));
     let make = || {
         Command::Invoke(Invocation {
             id: 1,
@@ -98,8 +99,9 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         let mut accepted = false;
         loop {
             let (reply, _) = snap_transport_tcp::read_response(socket).await.unwrap();
-            if let Response::Events(events) = reply {
-                for event in events {
+            // One event per frame now, so each read is a single observation.
+            if let Response::Event(event) = reply {
+                {
                     match event {
                         Event::Accepted { id: 1 } => accepted = true,
                         Event::Completed { id: 1, outcome } => {
@@ -136,11 +138,10 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     resumed.send(&make()).await.unwrap();
     loop {
         let (response, _) = resumed.receive().await.unwrap();
-        if let Response::Events(events) = response
-            && events
-                .iter()
-                .any(|e| matches!(e,Event::Completed {outcome:Ok(v),..} if v==&json!(1)))
-        {
+        if matches!(
+            response,
+            Response::Event(Event::Completed { outcome: Ok(v), .. }) if v == json!(1)
+        ) {
             break;
         }
     }
@@ -200,12 +201,16 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
             Ok(json!(null))
         }),
     });
-    let shared = Shared::new(host, "http://localhost".into());
+    let shared = Shared::new(host);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (server_tls, client_tls) = tls_support::pki(directory.path(), false);
-    let serving = tokio::spawn(snap_document_host::tcp::serve(listener, shared, server_tls));
+    let serving = tokio::spawn(snap_transport_tcp::serve(
+        listener,
+        Dispatcher::tcp(shared, None),
+        server_tls,
+    ));
     for (operation, success) in [("fixture.acquire", true), ("fixture.unknown", false)] {
         let mut socket = Client::open(&address.to_string(), &client_tls)
             .await
@@ -228,8 +233,42 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
                 .unwrap();
         assert!(attachment.is_none());
         if success {
+            // A preconnection credential issue is three frames now instead of one
+            // batch, published in order and sealed by the completion. The issued
+            // token is never observable to the connection's later frames.
             assert!(
-                matches!(response, Response::Events(events) if matches!(events.as_slice(), [Event::Accepted { id: 7 }, Event::Bearer { id: 7, change: Change::Set(token) }, Event::Completed { id: 7, outcome: Ok(value) }] if token.expose() == "private-token" && value.is_null()))
+                matches!(response, Response::Event(Event::Accepted { id: 7 })),
+                "acceptance is published first: {response:?}"
+            );
+            let (response, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), socket.receive())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let Response::Event(Event::Bearer {
+                id: 7,
+                change: Change::Set(token),
+            }) = response
+            else {
+                panic!("credential must be its own frame: {response:?}");
+            };
+            assert_eq!(token.expose(), "private-token");
+            let (response, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), socket.receive())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                response,
+                Response::Event(Event::Completed {
+                    id: 7,
+                    outcome: Ok(snap_transport::Value::Null),
+                })
+            );
+            // Retirement closed the channel, so nothing further crosses it.
+            assert!(
+                socket.receive().await.is_err(),
+                "retirement must close the channel"
             );
         } else {
             assert_eq!(

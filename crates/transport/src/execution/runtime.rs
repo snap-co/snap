@@ -4,12 +4,12 @@ use crate::execution;
 use crate::execution::{Call, Executor, PreparedRequest, Program, Scope, Ticket};
 use crate::{
     Command, Error, Event, Response,
-    server::{Attachment, Authority, ConnectionId, Dispatch, Server},
+    server::{Attachment, Authority, ConnectionId, Server, Verified},
 };
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,
-    vec,
+
 };
 
 #[derive(Default)]
@@ -123,10 +123,10 @@ impl<P: Program, R: Authority> Runtime<P, R> {
                             self.invocations.insert(ticket, id);
                             Submission::Pending(ticket)
                         }
-                        Err(error) => Submission::Ready(Response::Events(vec![Event::Completed {
+                        Err(error) => Submission::Ready(Response::Event(Event::Completed {
                             id,
                             outcome: Err(transport_error(error)),
-                        }])),
+                        })),
                     };
                 }
                 return self.enqueue(id, self.transport.request(bearer.as_deref(), invocation));
@@ -162,7 +162,7 @@ impl<P: Program, R: Authority> Runtime<P, R> {
         };
         Submission::Ready(response)
     }
-    fn enqueue(&mut self, id: u64, dispatch: Result<Dispatch, Error>) -> Submission {
+    fn enqueue(&mut self, id: u64, dispatch: Result<Verified, Error>) -> Submission {
         let result = dispatch.and_then(|dispatch| {
             let connection = dispatch.connection;
             self.execution
@@ -186,10 +186,10 @@ impl<P: Program, R: Authority> Runtime<P, R> {
                 self.invocations.insert(ticket, id);
                 Submission::Pending(ticket)
             }
-            Err(error) => Submission::Ready(Response::Events(vec![Event::Completed {
+            Err(error) => Submission::Ready(Response::Event(Event::Completed {
                 id,
                 outcome: Err(error),
-            }])),
+            })),
         }
     }
     pub fn step(&mut self) -> Option<Observation> {

@@ -147,12 +147,8 @@ impl<P: Program, R: Authority> Development<P, R> {
             _ => None,
         };
         match self.platform.submit(&mut connection.peer, command, now) {
-            Submission::Ready(Response::Events(events)) => {
-                for event in events {
-                    connection
-                        .responses
-                        .push_back(Response::Events(vec![event]));
-                }
+            Submission::Ready(Response::Event(event)) => {
+                connection.responses.push_back(Response::Event(event));
             }
             Submission::Ready(response) => connection.responses.push_back(response),
             Submission::Pending(ticket) => {
@@ -214,11 +210,9 @@ impl<P: Program, R: Authority> Development<P, R> {
                     {
                         connection
                             .responses
-                            .push_back(Response::Events(vec![Event::Bearer { id: *id, change }]));
+                            .push_back(Response::Event(Event::Bearer { id: *id, change }));
                     }
-                    connection
-                        .responses
-                        .push_back(Response::Events(vec![event]));
+                    connection.responses.push_back(Response::Event(event));
                     if completed {
                         connection.pending = false;
                     }

@@ -2,7 +2,7 @@
 use crate::operations::{entropy, now, request, text};
 use alloc::{format, string::String, vec, vec::Vec};
 use serde_json::{Value, json};
-use snap_oidc::relying_party as rp;
+use snap_identity::oauth as rp;
 use snap_store::{Error, Transaction};
 use snap_transport::{
     Invocation,
@@ -49,7 +49,7 @@ pub fn session(
     tx: &mut Transaction<'_>,
     bearer: &str,
     now: i64,
-) -> Result<(rp::Session, bool), Error> {
+) -> Result<(rp::Grant, bool), Error> {
     let (id, human) = session_id(tx, bearer, now)?;
     Ok((rp::lease(tx, &id, now)?, human))
 }

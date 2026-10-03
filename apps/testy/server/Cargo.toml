@@ -75,7 +75,7 @@ path = "../tests/native.rs"
 required-features = ["native"]
 
 [package.metadata.snap]
-role = "composition"
+role = "host"
 
 [[test]]
 name = "development"

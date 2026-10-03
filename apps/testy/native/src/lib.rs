@@ -143,9 +143,9 @@ async fn serve_peer<P: Program, R: Authority>(
                         if let Some(change) = bearer
                             && let Event::Completed { id, .. } = &event
                         {
-                            frames.push(Response::Events(vec![Event::Bearer { id: *id, change }]));
+                            frames.push(Response::Event(Event::Bearer { id: *id, change }));
                         }
-                        frames.push(Response::Events(vec![event]));
+                        frames.push(Response::Event(event));
                     }
                     Observation::Need { ticket, key } => {
                         // This native fixture selects immediate host inputs only.
@@ -188,52 +188,40 @@ impl Connection {
     }
 }
 impl Channel for Connection {
-    async fn exchange(&mut self, command: Command) -> Result<Response, Error> {
-        // A cancelled/failed exchange may leave partial frames on this stream.
-        // Never reuse it or silently replay; the caller supplies a fresh channel.
+    /// Writes one command and returns. Its observations arrive later, one frame
+    /// per `receive`.
+    async fn send(&mut self, command: Command) -> Result<(), Error> {
+        // A failed send may leave partial bytes on this stream. Never reuse it or
+        // silently replay; the caller supplies a fresh channel.
         if !self.usable {
             return Err(Error::Unavailable);
         }
-        self.usable = false;
-        let result = self.round_trip(command).await;
-        if result.is_ok() {
-            self.usable = true;
-        }
-        result
-    }
-}
-impl Connection {
-    async fn round_trip(&mut self, command: Command) -> Result<Response, Error> {
         let bytes = serde_json::to_vec(&command).map_err(|_| Error::Protocol)?;
-        write(&mut self.stream, &bytes)
-            .await
-            .map_err(|_| Error::Unavailable)?;
-        let mut events = Vec::new();
-        loop {
-            let bytes = tokio::time::timeout(
-                std::time::Duration::from_secs(IO_SECONDS),
-                read(&mut self.stream),
-            )
-            .await
-            .map_err(|_| Error::Unavailable)?
-            .map_err(|_| Error::Unavailable)?;
-            let response: Response = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
-            match response {
-                Response::Events(batch) => {
-                    let complete = batch
-                        .iter()
-                        .any(|event| matches!(event, Event::Completed { .. }));
-                    events.extend(batch);
-                    if events.len() > 3 {
-                        return Err(Error::Protocol);
-                    }
-                    if complete {
-                        return Ok(Response::Events(events));
-                    }
-                }
-                other if events.is_empty() => return Ok(other),
-                _ => return Err(Error::Protocol),
-            }
+        write(&mut self.stream, &bytes).await.map_err(|_| {
+            self.usable = false;
+            Error::Unavailable
+        })?;
+        Ok(())
+    }
+
+    async fn receive(&mut self) -> Result<Option<Response>, Error> {
+        if !self.usable {
+            return Err(Error::Unavailable);
         }
+        // One frame per read. Transport carries a single event per frame, so an
+        // operation spanning acceptance, progress and completion crosses the
+        // socket as three reads — a slow operation publishes as it runs instead
+        // of holding its whole answer until it finishes.
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(IO_SECONDS),
+            read(&mut self.stream),
+        )
+        .await
+        .map_err(|_| Error::Unavailable)?
+        .map_err(|_| {
+            self.usable = false;
+            Error::Unavailable
+        })?;
+        serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)
     }
 }

@@ -2,9 +2,12 @@
 //! in the caller's Store transaction; Transport publishes credentials after commit.
 #![no_std]
 extern crate alloc;
+mod attempt;
 pub mod client;
 pub mod credential;
+pub mod oauth;
 pub mod operation;
+pub mod passkey;
 mod session;
 
 use alloc::{format, string::String, vec::Vec};
@@ -17,10 +20,22 @@ pub const MIGRATION: &str = include_str!("../migrations/0001_identity.toml");
 /// Their recorded expiry remains authoritative; fresh authentication is explicit.
 pub const SESSION_TIME_MIGRATION: &str =
     include_str!("../migrations/0006_identity_session_time.toml");
-pub const TABLES: [&str; 3] = [
+/// Credentials gain an explicit kind so locator families share one filterable
+/// table. Existing rows are password credentials.
+pub const CREDENTIAL_KIND_MIGRATION: &str =
+    include_str!("../migrations/0007_identity_credential_kind.toml");
+pub const FLOW_MIGRATION: &str = include_str!("../migrations/0008_identity_flows.toml");
+pub const MIGRATIONS: [&str; 4] = [
+    MIGRATION,
+    SESSION_TIME_MIGRATION,
+    CREDENTIAL_KIND_MIGRATION,
+    FLOW_MIGRATION,
+];
+pub const TABLES: [&str; 4] = [
     "identity.identities",
     "identity.credentials",
     "identity.sessions",
+    "identity.attempts",
 ];
 
 /// Hosts supply secure entropy and password hashing. Test providers may be
@@ -29,7 +44,22 @@ pub trait Crypto {
     fn random(&mut self) -> Result<[u8; 32], Error>;
     fn hash_password(&mut self, password: &str) -> Result<String, Error>;
     fn verify_password(&self, password: &str, hash: &str) -> Result<bool, Error>;
+    /// Session key derivation. Hosts combining Identity sessions with OAuth must
+    /// return the raw 32-byte SHA-256 digest of the secret's UTF-8 bytes, matching
+    /// OAuth's private grant keys. Isolated test providers may use another digest.
     fn digest(&self, secret: &str) -> Vec<u8>;
+    /// Verify an RS256 token's signature against a JWKS the caller already
+    /// pinned to an issuer, and return its claims. Hosts own key material and
+    /// signature checking; callers own claim policy. Reports `Unavailable`
+    /// rather than accepting a token this host cannot check.
+    fn verify_token(
+        &self,
+        token: &str,
+        jwks: &serde_json::Value,
+    ) -> Result<serde_json::Value, Error> {
+        let _ = (token, jwks);
+        Err(Error::Unavailable)
+    }
 }
 /// Trusted composition result; no Debug/Serialize. Release its bearer only after
 /// the enclosing transaction commits. It contains no persisted session record.
@@ -56,7 +86,9 @@ impl Identity {
         Ok(Self { lifetime_seconds })
     }
     pub fn data(&self) -> Data {
-        Credential::data().and(session::Sessions::data())
+        Credential::data()
+            .and(session::Sessions::data())
+            .and(attempt::data())
     }
     pub fn enroll(
         &self,
@@ -185,6 +217,68 @@ impl Identity {
     ) -> Result<(), Error> {
         let principal = self.resolve(tx, crypto, bearer, now)?;
         session::Sessions::release_one(tx, crypto, &principal.identity, id)
+    }
+    /// Credential management requires a current session and authentication within
+    /// five minutes. Removing a credential never revokes existing sessions.
+    pub fn remove_credential(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        locator: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        let principal = self.fresh(tx, crypto, bearer, now)?;
+        Credential::remove(tx, &principal.identity, locator)
+    }
+    pub fn rename_credential(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        locator: &str,
+        label: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        let principal = self.resolve(tx, crypto, bearer, now)?;
+        Credential::rename(tx, &principal.identity, locator, label)
+    }
+    pub fn link_password(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &mut impl Crypto,
+        bearer: &str,
+        email: &str,
+        password: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        let principal = self.fresh(tx, crypto, bearer, now)?;
+        credential::password_input(password)?;
+        let locator = email_key(email)?;
+        Credential::insert(
+            tx,
+            &locator,
+            &principal.identity,
+            CredentialKind::Password,
+            &crypto.hash_password(password)?,
+            &locator,
+        )
+    }
+    pub(crate) fn fresh(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &impl Crypto,
+        bearer: &str,
+        now: i64,
+    ) -> Result<Principal, Error> {
+        let principal = self.resolve(tx, crypto, bearer, now)?;
+        if principal.authenticated_at <= 0
+            || principal.authenticated_at > now
+            || now.saturating_sub(principal.authenticated_at) >= 300
+        {
+            return Err(Error::NotFound);
+        }
+        Ok(principal)
     }
     pub fn provider<C: Crypto + Send + Sync + 'static>(
         self,

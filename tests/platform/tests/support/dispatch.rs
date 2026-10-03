@@ -1,7 +1,7 @@
 //! Controlled server-role command adapter around the production host. No fake
 //! dispatch, acceptance, completion or retry cache lives in this adapter.
 use snap_document::{Registry, server::Document};
-use snap_document_host::Host;
+use snap_document::runtime::Runtime as Host;
 use snap_platform_tests::dispatch::{CommitFault, Loss, Platform};
 use snap_platform_tests::memory::{CommitRejection, RejectOnce};
 use snap_platform_tests::{cartridge, memory::Memory};
@@ -149,15 +149,15 @@ impl<B: Backend> Platform for Setup<B> {
             .submit(self.peer, Command::Invoke(invocation), self.now)
     }
     fn events(&mut self) -> Vec<Event> {
+        // One event per frame now, so a drain is already flat. Anything else is
+        // a handshake or refusal, which this fixture never queues mid-assertion.
         self.host
             .drain(self.peer)
             .unwrap()
             .into_iter()
-            .flat_map(|response| {
-                let Response::Events(events) = response else {
-                    panic!("unexpected response: {response:?}");
-                };
-                events
+            .map(|response| match response {
+                Response::Event(event) => event,
+                other => panic!("unexpected response: {other:?}"),
             })
             .collect()
     }

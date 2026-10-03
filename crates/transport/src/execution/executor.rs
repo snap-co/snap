@@ -1,5 +1,5 @@
 use super::{Admission, Attempt, Call, Error, Inputs, Outcome, Program, Value, View, WorkingSet};
-use crate::dispatch::Queue;
+use crate::lane::Lane;
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
@@ -98,7 +98,7 @@ pub struct Executor<P: Program> {
     program: P,
     states: BTreeMap<Scope, Value>,
     closing: BTreeSet<Scope>,
-    queue: Queue<Queued>,
+    queue: Lane<Queued>,
     active: Option<Job>,
     reserved: Option<Ticket>,
     sequence: u64,
@@ -126,7 +126,7 @@ impl<P: Program> Executor<P> {
             program,
             states: BTreeMap::new(),
             closing: BTreeSet::new(),
-            queue: Queue::default(),
+            queue: Lane::default(),
             active: None,
             reserved: None,
             sequence: 0,

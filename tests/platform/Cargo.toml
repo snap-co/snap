@@ -13,7 +13,7 @@ serde_json.workspace = true
 [dev-dependencies]
 snap-access.workspace = true
 snap-document.workspace = true
-snap-document-host = { path = "../../crates/platform/document-host" }
+snap-transport-native = { path = "../../crates/platform/transport-native" }
 toml = "0.9"
 snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-transport-tcp = { path = "../../crates/platform/transport-tcp" }
@@ -29,4 +29,4 @@ tempfile = "3"
 workspace = true
 
 [package.metadata.snap]
-role = "tool"
+role = "host"

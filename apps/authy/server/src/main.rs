@@ -12,12 +12,11 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-use snap_document_host::{
-    Host,
-    web::{ReadCookie, Shared},
-};
+use snap_document::runtime::Runtime;
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
+use snap_transport_native::{Dispatcher, Shared};
+use snap_transport_ws::{ReadCookie, Service};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,7 +24,7 @@ use std::{
 use tower_http::services::{ServeDir, ServeFile};
 
 pub struct App {
-    pub documents: Arc<Shared<snap_store_sqlite::Sqlite>>,
+    pub documents: Arc<Shared<Runtime<snap_store_sqlite::Sqlite>>>,
     pub keys: Arc<keys::Keys>,
     pub origin: String,
     pub issuer: oidc_http::Issuer,
@@ -76,6 +75,8 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<_> = [
         snap_identity::MIGRATION,
         snap_identity::SESSION_TIME_MIGRATION,
+        snap_identity::CREDENTIAL_KIND_MIGRATION,
+        snap_identity::FLOW_MIGRATION,
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
         snap_document::server::LIFECYCLE_MIGRATION,
@@ -163,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parsed.scheme() == "https",
         cookie_key.as_ref(),
     )?);
-    let host = Host::new_with_provider(
+    let host = Runtime::new_with_provider(
         store,
         authy::document(),
         Arc::new(Identity::default().provider(snap_crypto::Native)),
@@ -171,12 +172,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         snap_transport::server::Config::default(),
         keys::random(),
     )?;
-    let host = operations::register(host);
+    // WebAuthn requires a secure DNS origin (or HTTP localhost). Other valid
+    // development origins retain password/issuer behavior without passkeys.
+    let webauthn = parsed
+        .domain()
+        .filter(|domain| parsed.scheme() == "https" || *domain == "localhost")
+        .map(|rp| snap_identity_native::passkey::Native::new(rp, &origin))
+        .transpose()?;
+    let passkeys_enabled = webauthn.is_some();
+    let host = operations::register(host, webauthn);
     let cookie: ReadCookie = {
         let keys = keys.clone();
         Arc::new(move |headers| keys.read_cookie(headers))
     };
-    let documents = Shared::with_required_cookie(host, origin.clone(), cookie);
+    let documents = Shared::new(host);
+    let transport = Arc::new(Service {
+        dispatch: Dispatcher::web(documents.clone()),
+        origin: origin.clone(),
+        cookie: Some(cookie),
+        require_cookie: true,
+    });
     issuer.config.issuer = origin.clone();
     let assets = config.assets().to_string_lossy().into_owned();
     let app = Arc::new(App {
@@ -186,17 +201,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         issuer,
         pages: pages::Pages::load(&assets)?,
     });
-    let identity_routes = snap_document_host::web::http_router(
-        documents.clone(),
+    let write_cookie: snap_transport_ws::WriteCookie = {
+        let keys = app.keys.clone();
+        Arc::new(move |bearer| keys.cookie(bearer))
+    };
+    let identity_routes = snap_transport_ws::http_router(
+        transport.clone(),
         snap_identity::operation::http_routes()
             .into_iter()
+            .chain(if passkeys_enabled {
+                snap_identity::operation::passkey_http_routes()
+            } else {
+                Vec::new()
+            })
             .chain(authy::operations::http_routes())
-            .map(Into::into)
+            .map(|route| snap_transport_ws::HttpOperation::from_route(route, write_cookie.clone()))
             .collect(),
-        {
-            let keys = app.keys.clone();
-            Arc::new(move |bearer| keys.cookie(bearer))
-        },
     );
     let router = Router::new()
         .route("/health", get(|| async { "OK" }))
@@ -207,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(oidc_http::routes(app.clone()))
         .with_state(app)
         .merge(identity_routes)
-        .merge(snap_document_host::web::router(documents.clone()))
+        .merge(snap_transport_ws::router(transport))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
@@ -215,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Authy http://{address}");
     tokio::select! {
         result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;})=>result?,
-        _=snap_document_host::web::dispatch(documents)=>unreachable!(),
+        _=snap_transport_native::dispatch(documents)=>unreachable!(),
     }
     Ok(())
 }

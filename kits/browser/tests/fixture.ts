@@ -1,7 +1,7 @@
 // Dependency stimuli for the Rust-owned browser/client contracts. The classes
 // under test are the production TypeScript implementations, not Rust replicas.
 import { BrowserRuntime, type Binding, type Publication } from "../runtime";
-import { Invocations } from "../../../crates/platform/document-host/client";
+import { Invocations } from "../invocations";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

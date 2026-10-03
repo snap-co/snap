@@ -7,8 +7,12 @@ publish.workspace = true
 [dependencies]
 serde = { workspace = true, default-features = false, features = ["derive", "alloc"] }
 
-[lints]
-workspace = true
+[lints.rust]
+# The inbox is a hand-rolled single-producer ring. Slot reuse cannot be expressed
+# to the borrow checker, so it is asserted here: each slot is written by the
+# producer alone and read by the consumer alone, never concurrently. The public
+# surface stays safe, so no other crate needs this exemption.
+unsafe_code = "allow"
 
 [package.metadata.snap]
-role = "contract"
+role = "interface"

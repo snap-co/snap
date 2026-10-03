@@ -9,6 +9,7 @@ snap-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ciborium = { version = "0.2.2", default-features = false }
+spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [dev-dependencies]
 snap-store-sqlite = { path = "../platform/store-sqlite" }
@@ -18,4 +19,4 @@ toml = "0.9"
 workspace = true
 
 [package.metadata.snap]
-role = "core"
+role = "interface"

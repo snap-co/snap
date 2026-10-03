@@ -13,12 +13,15 @@ use base64::{
 };
 use hmac::{Hmac, Mac};
 use rand::RngCore;
-use rsa::{BigUint, RsaPublicKey, signature::Verifier};
 use serde_json::{Value, json};
 use sha2::Sha256;
-use snap_document_host::web::{ReadCookie, Shared};
-use snap_oidc::relying_party as rp;
+use snap_crypto::Native;
+use snap_document::runtime::Runtime;
+use snap_identity::Crypto;
+use snap_identity::oauth as rp;
 use snap_store::{Error, Store, Transaction};
+use snap_transport_native::Shared;
+use snap_transport_ws::ReadCookie;
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -148,7 +151,7 @@ impl Cookies {
                     return None;
                 }
                 let (bearer, signature) = value.split_once('.')?;
-                if bearer.len() != 43
+                if !matches!(bearer.len(), 43 | 64)
                     || !bearer
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
@@ -214,7 +217,7 @@ pub struct Config {
     pub dev_origins: Vec<String>,
 }
 pub struct OAuth {
-    pub documents: Arc<Shared<snap_store_sqlite::Sqlite>>,
+    pub documents: Arc<Shared<Runtime<snap_store_sqlite::Sqlite>>>,
     pub cookies: Cookies,
     pub config: Config,
     http: reqwest::Client,
@@ -223,7 +226,7 @@ pub struct OAuth {
 }
 impl OAuth {
     pub fn new(
-        documents: Arc<Shared<snap_store_sqlite::Sqlite>>,
+        documents: Arc<Shared<Runtime<snap_store_sqlite::Sqlite>>>,
         cookies: Cookies,
         mut config: Config,
     ) -> Result<Arc<Self>, Error> {
@@ -346,7 +349,7 @@ impl OAuth {
         metadata: &Value,
         form: &[(&str, &str)],
         nonce: Option<&str>,
-        previous: Option<&rp::Session>,
+        previous: Option<&rp::Grant>,
     ) -> Result<(rp::Tokens, Value), Error> {
         let response = self
             .json(
@@ -375,7 +378,7 @@ impl OAuth {
     }
     /// Refresh IO is serialized separately from Store. Mutation authority is still
     /// rechecked in the application's own transaction immediately before its write.
-    pub async fn session(self: &Arc<Self>, headers: &HeaderMap) -> Result<rp::Session, Error> {
+    pub async fn session(self: &Arc<Self>, headers: &HeaderMap) -> Result<rp::Grant, Error> {
         let bearer = self.cookies.read(headers, false).ok_or(Error::NotFound)?;
         self.session_id(&rp::digest(&bearer)).await
     }
@@ -385,14 +388,14 @@ impl OAuth {
     /// accepted controller work, without blocking Tokio. The owned rotation task
     /// settles even if the requesting stream times out or disconnects. Uncertain
     /// IO is fenced and never replayed, including after a host restart.
-    pub async fn session_id(self: &Arc<Self>, id: &str) -> Result<rp::Session, Error> {
+    pub async fn session_id(self: &Arc<Self>, id: &str) -> Result<rp::Grant, Error> {
         let oauth = self.clone();
         let id = id.to_owned();
         tokio::spawn(async move { oauth.refresh_session(id).await })
             .await
             .map_err(|_| Error::Unavailable)?
     }
-    async fn refresh_session(self: &Arc<Self>, id: String) -> Result<rp::Session, Error> {
+    async fn refresh_session(self: &Arc<Self>, id: String) -> Result<rp::Grant, Error> {
         let _refresh = self.refresh.lock().await;
         let selected = id.clone();
         let previous = self
@@ -431,7 +434,7 @@ impl OAuth {
                 .await
         }
     }
-    pub fn csrf(&self, headers: &HeaderMap, session: &rp::Session) -> Result<(), Error> {
+    pub fn csrf(&self, headers: &HeaderMap, session: &rp::Grant) -> Result<(), Error> {
         if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(&self.config.origin)
             || headers
                 .get("x-snap-csrf")
@@ -459,12 +462,13 @@ impl OAuth {
                 .ok_or(Error::Invalid),
         }
     }
-    async fn login(&self, headers: &HeaderMap) -> Result<Response, Error> {
+    async fn login(&self, headers: &HeaderMap, link: bool) -> Result<Response, Error> {
         let origin = self.browser_origin(headers)?;
         let metadata = self.discovery().await?;
         let state = random();
         let binding = random();
         let attempt = rp::Attempt {
+            target: None,
             binding: rp::digest(&binding),
             nonce: random(),
             verifier: random(),
@@ -478,7 +482,15 @@ impl OAuth {
         let old = self.cookies.read(headers, true);
         self.run("oauth.login", |tx| {
             rp::clear_attempts(tx, old.as_deref(), now())?;
-            rp::start(tx, &state, &attempt)
+            if link {
+                if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(origin) {
+                    return Err(Error::Invalid);
+                }
+                let bearer = self.cookies.read(headers, false).ok_or(Error::NotFound)?;
+                rp::start_link(tx, &Native, &bearer, &state, &attempt, now())
+            } else {
+                rp::start(tx, &state, &attempt)
+            }
         })?;
         let mut target = url::Url::parse(&self.endpoint(&metadata, "authorization_endpoint")?)
             .map_err(|_| Error::Invalid)?;
@@ -543,7 +555,7 @@ impl OAuth {
         }
         let bearer = random();
         let subject = claims["sub"].as_str().ok_or(Error::Invalid)?;
-        let session = rp::Session {
+        let session = rp::Grant {
             id: rp::digest(&bearer),
             owner: rp::owner(&self.config.issuer, subject),
             subject: subject.into(),
@@ -579,6 +591,7 @@ impl OAuth {
                 tx,
                 &state,
                 &rp::Attempt {
+                    target: None,
                     binding: rp::digest(&binding),
                     nonce: String::new(),
                     verifier: String::new(),
@@ -625,6 +638,7 @@ impl OAuth {
     pub fn routes(self: &Arc<Self>) -> Router {
         Router::new()
             .route("/auth/login", get(login))
+            .route("/auth/link", post(link))
             .route("/auth/callback", get(callback))
             .route("/auth/logout", post(logout))
             .route("/auth/logged-out", get(logged_out))
@@ -634,50 +648,9 @@ impl OAuth {
 
 /// Verify only a unique RSA signing key selected by kid. Token-controlled jku/x5u
 /// are ignored; the caller fetches keys from the pinned issuer discovery document.
+/// Signature verification belongs to the Identity crypto host.
 pub fn verify(token: &str, jwks: &Value) -> Result<Value, Error> {
-    let parts: Vec<_> = token.split('.').collect();
-    if parts.len() != 3 {
-        return Err(Error::Invalid);
-    }
-    let decode = |part: &str| URL_SAFE_NO_PAD.decode(part).map_err(|_| Error::Invalid);
-    let header: Value = serde_json::from_slice(&decode(parts[0])?).map_err(|_| Error::Invalid)?;
-    if header["alg"] != "RS256" || header.get("crit").is_some() {
-        return Err(Error::Invalid);
-    }
-    let kid = header["kid"].as_str().ok_or(Error::Invalid)?;
-    let keys: Vec<_> = jwks["keys"]
-        .as_array()
-        .ok_or(Error::Invalid)?
-        .iter()
-        .filter(|key| key["kid"].as_str() == Some(kid))
-        .collect();
-    if keys.len() != 1 {
-        return Err(Error::Invalid);
-    }
-    let key = keys[0];
-    if key["kty"] != "RSA"
-        || key.get("alg").is_some_and(|v| v != "RS256")
-        || key.get("use").is_some_and(|v| v != "sig")
-        || key.get("key_ops").is_some_and(|v| {
-            v.as_array()
-                .is_none_or(|ops| !ops.iter().any(|op| op == "verify"))
-        })
-    {
-        return Err(Error::Invalid);
-    }
-    let n = BigUint::from_bytes_be(&decode(key["n"].as_str().ok_or(Error::Invalid)?)?);
-    let e = BigUint::from_bytes_be(&decode(key["e"].as_str().ok_or(Error::Invalid)?)?);
-    if n.bits() < 2048 {
-        return Err(Error::Invalid);
-    }
-    let public = RsaPublicKey::new(n, e).map_err(|_| Error::Invalid)?;
-    let signature = decode(parts[2])?;
-    let signature =
-        rsa::pkcs1v15::Signature::try_from(signature.as_slice()).map_err(|_| Error::Invalid)?;
-    rsa::pkcs1v15::VerifyingKey::<Sha256>::new(public)
-        .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
-        .map_err(|_| Error::Invalid)?;
-    serde_json::from_slice(&decode(parts[1])?).map_err(|_| Error::Invalid)
+    Native.verify_token(token, jwks)
 }
 pub fn no_store(value: Value) -> Response {
     ([("cache-control", "no-store")], Json(value)).into_response()
@@ -725,7 +698,10 @@ fn params(query: Option<String>) -> Result<BTreeMap<String, String>, Error> {
     Ok(result)
 }
 async fn login(State(app): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
-    app.login(&headers).await.unwrap_or_else(failure)
+    app.login(&headers, false).await.unwrap_or_else(failure)
+}
+async fn link(State(app): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
+    app.login(&headers, true).await.unwrap_or_else(failure)
 }
 async fn callback(
     State(app): State<Arc<OAuth>>,

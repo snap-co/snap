@@ -7,12 +7,14 @@ pub mod bearer;
 pub mod binary;
 pub mod carrier;
 pub mod client;
-pub mod dispatch;
 pub mod execution;
+pub mod inbox;
+pub mod lane;
 pub mod operation;
 pub mod server;
+pub mod runtime;
 
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
 use serde::{Deserialize, Serialize};
 pub use serde_json::{Value, json};
 
@@ -32,6 +34,24 @@ pub enum Error {
     Application(Value),
 }
 pub type Outcome = Result<Value, Error>;
+
+/// A subscription key. Transport routes `Global` payloads on this alone and never
+/// inspects them; `kind` namespaces a capability's events and may be empty when an
+/// identifier is already globally unique, as document IDs are.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Topic {
+    pub kind: String,
+    pub id: String,
+}
+
+impl Topic {
+    pub fn new(kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            id: id.into(),
+        }
+    }
+}
 
 /// SDK operation contract. Progress is independent of terminal output/error and
 /// may be a shared message type across operations.
@@ -73,8 +93,11 @@ pub enum Command {
     Close,
 }
 
+/// One server-to-client observation. Every variant carries the invocation it
+/// belongs to, and only that invocation's originator ever receives it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    /// Admission. Not acceptance of the operation's effect.
     Accepted {
         id: u64,
     },
@@ -84,10 +107,13 @@ pub enum Event {
         id: u64,
         change: bearer::Change,
     },
+    /// Transient work update. Originates after durable commit, from platform
+    /// controllers rather than operation handlers.
     Progress {
         id: u64,
         value: Value,
     },
+    /// Terminal. Transport consumes this and returns the invocation's output.
     Completed {
         id: u64,
         outcome: Outcome,
@@ -99,21 +125,42 @@ pub enum Response {
         resumed: bool,
     },
     Detached,
-    Events(Vec<Event>),
+    /// Exactly one observation. Batching, if a platform wants it, is negotiated
+    /// below this layer and must be reassembled into single events on arrival.
+    Event(Event),
+    /// The invocation never began: refused admission, unknown operation, or a
+    /// carrier that could not deliver it. Distinct from `Event::Completed` with
+    /// a failed outcome, which means the operation ran and its effect is known.
     Failed(Error),
-    /// Capability-owned server push. It is not an invocation completion.
-    Notification {
-        operation: String,
+    /// Uncorrelated server push, routed by subscription rather than by
+    /// invocation. Reaches every logical connection subscribed to `kind`, not
+    /// only an originator. The payload is opaque to Transport.
+    Global {
+        kind: String,
         input: Value,
     },
 }
 
-/// Host IO boundary. An exchange delivers one command's ordered observations.
-/// IO failure has unknown mutation outcome: callers must never replay mutations
-/// automatically. Replacement channels may reconnect using the same client ID.
+/// Host IO boundary: a bidirectional event stream over one already-established
+/// channel, not a request/response exchange.
+///
+/// [`Self::send`] and [`Self::receive`] are independent. A command returns as
+/// soon as it is queued, and its observations arrive later as separate frames,
+/// correlated to the invocation that produced them. Acceptance must therefore be
+/// publishable before the handler runs, or a slow operation — several seconds of
+/// model round trips, minutes of tool calls — would sit in dead air with the
+/// client unable to distinguish "working" from "hung".
+///
+/// `receive` yields `None` once the channel is closed. IO failure has unknown
+/// mutation outcome: callers must never replay mutations automatically.
+/// Replacement channels may reconnect using the same client ID, and stable
+/// invocation ids let a resumed connection recover its outstanding calls.
 pub trait Channel {
-    fn exchange(
+    fn send(
         &mut self,
         command: Command,
-    ) -> impl core::future::Future<Output = Result<Response, Error>>;
+    ) -> impl core::future::Future<Output = Result<(), Error>>;
+    fn receive(
+        &mut self,
+    ) -> impl core::future::Future<Output = Result<Option<Response>, Error>>;
 }

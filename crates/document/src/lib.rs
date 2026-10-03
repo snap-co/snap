@@ -5,6 +5,7 @@ extern crate alloc;
 pub mod access;
 pub mod lifecycle;
 pub mod operations;
+pub mod runtime;
 pub use access::DocumentAccessGuard;
 
 pub mod client;

@@ -18,7 +18,7 @@ serde_json.workspace = true
 workspace = true
 
 [package.metadata.snap]
-role = "composition"
+role = "host"
 
 [package.metadata.cargo-machete]
 ignored = ["wasm-bindgen-futures"]

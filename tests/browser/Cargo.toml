@@ -32,7 +32,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 sha2 = "0.10"
 
 [package.metadata.snap]
-role = "composition"
+role = "host"
 
 [lints]
 workspace = true

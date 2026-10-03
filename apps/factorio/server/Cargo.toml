@@ -14,11 +14,12 @@ factorio-cli = { path = "../cli" }
 snap-config.workspace = true
 factorio = { path = ".." }
 snap-document.workspace = true
-snap-document-host = { path = "../../../crates/platform/document-host" }
-snap-oauth-local = { path = "../../../crates/platform/oauth" }
+snap-transport-native = { path = "../../../crates/platform/transport-native" }
+snap-transport-ws = { path = "../../../crates/platform/transport-ws" }
+snap-identity-native = { path = "../../../crates/platform/identity-native", features = ["oauth"] }
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-access.workspace = true
-snap-oidc.workspace = true
+snap-identity.workspace = true
 snap-store.workspace = true
 snap-transport = { path = "../../../crates/transport" }
 snap-transport-tcp = { path = "../../../crates/platform/transport-tcp" }
@@ -41,4 +42,4 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 workspace = true
 
 [package.metadata.snap]
-role = "composition"
+role = "host"

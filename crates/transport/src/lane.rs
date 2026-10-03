@@ -1,17 +1,22 @@
 //! Application-wide scheduling. Carriers enqueue work; only the current FIFO
-//! owner may prepare, admit and execute it. Output buffers are not operation queues.
+//! owner may prepare, admit and execute it. Output buffers are not operation
+//! queues.
+//!
+//! Distinct from a per-connection inbox: an inbox carries one client's frames
+//! between a carrier and the application, while this lane is the single gate
+//! every admitted operation passes through regardless of which client sent it.
 use alloc::collections::{VecDeque, vec_deque};
 
 /// One serialized operation lane. Acquiring a slot holds the gate even while
 /// residency or acceptance is being prepared, and after the work has been moved
 /// into its handler. The owner releases it only after completion or rejection.
 /// The host must drive the lane under exclusion; this type creates no threads.
-pub struct Queue<T> {
+pub struct Lane<T> {
     pending: VecDeque<T>,
     busy: bool,
 }
 
-impl<T> Default for Queue<T> {
+impl<T> Default for Lane<T> {
     fn default() -> Self {
         Self {
             pending: VecDeque::new(),
@@ -20,7 +25,7 @@ impl<T> Default for Queue<T> {
     }
 }
 
-impl<T> Queue<T> {
+impl<T> Lane<T> {
     pub fn push_back(&mut self, work: T) {
         self.pending.push_back(work);
     }
