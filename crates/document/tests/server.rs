@@ -75,14 +75,12 @@ columns = [{ name = "id", kind = "text" }, { name = "body", kind = "text" }]
 
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut all = vec![access_migration(), doc_migration()];
-    all.push(toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap());
     all.sort_by(|a, b| a.id.cmp(&b.id));
     all
 }
 
 fn migrations_with_notes() -> Vec<snap_store::migration::Migration> {
     let mut all = vec![access_migration(), doc_migration(), notes_migration()];
-    all.push(toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap());
     all.sort_by(|a, b| a.id.cmp(&b.id));
     all
 }
@@ -1162,15 +1160,13 @@ fn unknown_documents_and_malformed_intents_report_cleanly() {
 fn document_migration_applies_cleanly() {
     let parsed: snap_store::migration::Migration =
         toml::from_str(snap_document::server::MIGRATION).unwrap();
-    assert_eq!(parsed.id, "0001_document");
-    assert_eq!(parsed.changes.len(), 2);
-    let lifecycle = toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap();
-    let mut store = snap_store_sqlite::Sqlite::memory(&[parsed, lifecycle]).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&[parsed]).unwrap();
     for table in TABLES {
         store.load(table).unwrap();
     }
     assert!(store.catalog().table("document.documents").is_ok());
     assert!(store.catalog().table("document.receipts").is_ok());
+    assert!(store.catalog().table("document.lifecycle").is_ok());
 }
 
 #[test]

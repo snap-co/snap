@@ -193,10 +193,10 @@ transfer ownership of an app scenario to Snap.
 | Shared browser fixture support | `tests/browser/src/support.rs` owns processes, source copies and bundle hosting; app hosts are in `tests/browser/src/hosts.rs` |
 
 Read manifests, suite declarations and runner code to determine actual selection.
-Identity's top-level migration directory is the password-history chain consumed
-by the CLI and Testy. Alternative OAuth-only history lives in its `oauth/`
-subdirectory and is explicitly selected by OAuth hosts. The CLI migration gate
-checks both a fresh directory application and upgrade from the pre-flow history.
+Each module and host storage component owns one initial migration. Identity's
+single schema supports password, OAuth and passkey flows; hosts select it without
+an alternative OAuth history. The CLI migration gate applies Identity's directory
+to a fresh database and verifies credential/session persistence after reopening.
 File location, `cargo test` success and an app's `full` selector do not establish
 repository-wide coverage. Keep fast controlled tests distinct from real-IO gates
 without treating speed as a test's ownership or value.

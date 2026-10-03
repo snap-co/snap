@@ -12,20 +12,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use snap_store::{Error, Transaction};
 
-pub const MIGRATION: &str = include_str!("../migrations/oauth/0001_oidc_rp.toml");
-/// Append Identity to an existing OAuth-only host history. Use this OR Identity's
-/// password migration chain, never both. Old grants lack local session proof and
-/// require a new login; issuer/subject principal IDs and application data survive.
-pub const IDENTITY_MIGRATION: &str = include_str!("../migrations/oauth/0008_identity_oauth.toml");
-// Historical table names remain stable on disk. The grant table is not session
-// authority: every read also resolves Identity's private session.
-pub const TABLES: [&str; 6] = [
+// The grant table is not session authority: every read also resolves Identity's
+// private session. Identity's initial migration installs all of these tables.
+pub const TABLES: [&str; 5] = [
     "identity.attempts",
-    "oidc_rp.sessions",
+    "identity.oauth_grants",
     "identity.identities",
     "identity.credentials",
     "identity.sessions",
-    "identity.legacy_owners",
 ];
 /// Store residency of the relying-party data interface.
 pub fn data() -> snap_store::Data {
@@ -33,36 +27,6 @@ pub fn data() -> snap_store::Data {
 }
 const ATTEMPTS: &str = TABLES[0];
 const SESSIONS: &str = TABLES[1];
-const LEGACY: &str = TABLES[5];
-const IMPORTED: &str = "imported";
-
-/// One-time ownership import, before listeners or recovery. Hosts supply every
-/// principal retained by their application/ACL data, including logged-out owners.
-/// Existing grants supply their historical principals too. This reserves names,
-/// never issues sessions, and is not repeated after credential deletion.
-pub fn import_legacy_owners(tx: &mut Transaction<'_>, owners: &[String]) -> Result<(), Error> {
-    if tx.get(LEGACY, &[IMPORTED.into()])?.is_some() {
-        return Ok(());
-    }
-    let mut owners = owners.to_vec();
-    for row in tx.find(SESSIONS, "primary", &[])? {
-        let grant: Grant =
-            serde_json::from_str(crate::text(&row, "data")?).map_err(|_| Error::Invalid)?;
-        if grant.owner != owner(&grant.issuer, &grant.subject) {
-            return Err(Error::Invalid);
-        }
-        owners.push(grant.owner);
-    }
-    for identity in owners {
-        if identity == IMPORTED || identity.is_empty() {
-            return Err(Error::Invalid);
-        }
-        if tx.get(LEGACY, &[identity.clone().into()])?.is_none() {
-            tx.insert(LEGACY, crate::row([("identity", identity.into())]))?;
-        }
-    }
-    tx.insert(LEGACY, crate::row([("identity", IMPORTED.into())]))
-}
 
 pub fn digest(value: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
@@ -134,7 +98,6 @@ pub fn start(tx: &mut Transaction<'_>, state: &str, attempt: &Attempt) -> Result
     {
         return Err(Error::Invalid);
     }
-    import_legacy_owners(tx, &[])?;
     write(tx, ATTEMPTS, &attempt_id(state), attempt, true)
 }
 
@@ -239,9 +202,6 @@ pub fn issue(
         return Err(Error::Invalid);
     }
     let owner = if let Some(target) = &attempt.target {
-        if tx.get(LEGACY, &[session.owner.clone().into()])?.is_some() && target != &session.owner {
-            return Err(Error::Constraint);
-        }
         let old = attempt.old_session.as_deref().ok_or(Error::NotFound)?;
         let principal = authority(tx, old, now)?;
         if &principal.identity != target
@@ -280,7 +240,6 @@ pub fn issue(
             &material,
             &session.issuer,
         )?;
-        tx.delete(LEGACY, &[session.owner.clone().into()])?;
     }
     if attempt.target.is_none() {
         if let Some(old) = attempt.old_session {
@@ -290,7 +249,7 @@ pub fn issue(
     let mut session = session.clone();
     session.owner = owner;
     // Silent upstream authorization cannot invent fresh user authentication.
-    // Missing auth_time records unknown freshness, like migrated sessions.
+    // Missing auth_time records unknown freshness.
     let authenticated_at = session.tokens.auth_time.unwrap_or(0);
     if authenticated_at < 0 || authenticated_at > now {
         return Err(Error::Invalid);
@@ -346,7 +305,6 @@ pub fn retained(tx: &mut Transaction<'_>, id: &str, now: i64) -> Result<Grant, E
 /// Run once before opening listeners. Lost exchanges are not replayed and cannot
 /// retain authority through an old access token after restart.
 pub fn recover(tx: &mut Transaction<'_>, now: i64) -> Result<(), Error> {
-    import_legacy_owners(tx, &[])?;
     for row in tx.find(SESSIONS, "primary", &[])? {
         let Some(snap_store::Value::Text(id)) = row.get("id") else {
             return Err(Error::Invalid);

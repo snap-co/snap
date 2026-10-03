@@ -1,7 +1,0 @@
-id = "0006_identity_session_time"
-
-[[changes]]
-action = "add_column"
-table = "identity.sessions"
-column = { name = "issued", kind = "integer" }
-fill = 0

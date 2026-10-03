@@ -14,7 +14,7 @@ fn store() -> Store<snap_store_sqlite::Sqlite> {
     store
 }
 fn migrations() -> Vec<snap_store::migration::Migration> {
-    snap_identity::MIGRATIONS
+    [snap_identity::MIGRATION]
         .into_iter()
         .map(|s| toml::from_str(s).unwrap())
         .collect()

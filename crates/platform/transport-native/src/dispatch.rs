@@ -349,12 +349,8 @@ mod tests {
     }
 
     fn host_fixture(document: snap_document::server::Document) -> Host<snap_store_sqlite::Sqlite> {
-        let migrations = [
-            snap_access::MIGRATION,
-            snap_document::server::MIGRATION,
-            snap_document::server::LIFECYCLE_MIGRATION,
-        ]
-        .map(|source| toml::from_str(source).unwrap());
+        let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
+            .map(|source| toml::from_str(source).unwrap());
         let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
         for table in snap_access::TABLES
             .iter()

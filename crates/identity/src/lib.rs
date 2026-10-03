@@ -16,21 +16,6 @@ pub use session::{ReleaseScope, SessionSummary};
 use snap_store::{Data, Error, Row, Transaction, Value};
 pub use snap_transport::bearer::Principal;
 pub const MIGRATION: &str = include_str!("../migrations/0001_identity.toml");
-/// Existing sessions retain authentication with an unknown (zero) issue time.
-/// Their recorded expiry remains authoritative; fresh authentication is explicit.
-pub const SESSION_TIME_MIGRATION: &str =
-    include_str!("../migrations/0006_identity_session_time.toml");
-/// Credentials gain an explicit kind so locator families share one filterable
-/// table. Existing rows are password credentials.
-pub const CREDENTIAL_KIND_MIGRATION: &str =
-    include_str!("../migrations/0007_identity_credential_kind.toml");
-pub const FLOW_MIGRATION: &str = include_str!("../migrations/0008_identity_flows.toml");
-pub const MIGRATIONS: [&str; 4] = [
-    MIGRATION,
-    SESSION_TIME_MIGRATION,
-    CREDENTIAL_KIND_MIGRATION,
-    FLOW_MIGRATION,
-];
 pub const TABLES: [&str; 4] = [
     "identity.identities",
     "identity.credentials",

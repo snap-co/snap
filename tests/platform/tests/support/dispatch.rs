@@ -1,7 +1,7 @@
 //! Controlled server-role command adapter around the production host. No fake
 //! dispatch, acceptance, completion or retry cache lives in this adapter.
-use snap_document::{Registry, server::Document};
 use snap_document::runtime::Runtime as Host;
+use snap_document::{Registry, server::Document};
 use snap_platform_tests::dispatch::{CommitFault, Loss, Platform};
 use snap_platform_tests::memory::{CommitRejection, RejectOnce};
 use snap_platform_tests::{cartridge, memory::Memory};
@@ -19,14 +19,10 @@ pub struct Setup<B: Backend> {
 }
 
 fn migrations() -> Vec<Migration> {
-    let mut migrations: Vec<Migration> = [
-        snap_access::MIGRATION,
-        snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
-    ]
-    .into_iter()
-    .map(|text| toml::from_str(text).unwrap())
-    .collect();
+    let mut migrations: Vec<Migration> = [snap_access::MIGRATION, snap_document::server::MIGRATION]
+        .into_iter()
+        .map(|text| toml::from_str(text).unwrap())
+        .collect();
     migrations.push(cartridge::migration());
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     migrations

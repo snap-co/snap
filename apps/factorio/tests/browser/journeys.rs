@@ -2197,7 +2197,7 @@ async fn authority(setup: &mut FactorioSetup, owner: &str, action: &str) -> Resu
     }
     let result=async {
         let db=Connection::open(setup.dir.join("factorio.sqlite"))?;
-        let mut rows=db.prepare("SELECT id,data FROM \"oidc_rp.sessions\"")?;
+        let mut rows=db.prepare("SELECT id,data FROM \"identity.oauth_grants\"")?;
         let entries=rows.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         drop(rows);
         let mut found=None;
@@ -2206,7 +2206,7 @@ async fn authority(setup: &mut FactorioSetup, owner: &str, action: &str) -> Resu
         if action != "state" {
             if action == "expire-login" { ensure!(db.execute("UPDATE \"factorio.cli\" SET expires=0 WHERE session=?",[&id])? == 1,"missing CLI lifetime"); }
             data["tokens"]["access_expires"]=json!(now()-1);
-            db.execute("UPDATE \"oidc_rp.sessions\" SET data=? WHERE id=?",params![data.to_string(),id])?;
+            db.execute("UPDATE \"identity.oauth_grants\" SET data=? WHERE id=?",params![data.to_string(),id])?;
             if action == "revoke-grant" {
                 setup.authy.stop()?;
                 let issuer=Connection::open(setup.authy.database())?;

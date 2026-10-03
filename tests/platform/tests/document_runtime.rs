@@ -385,7 +385,6 @@ fn fixture() -> Host<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = vec![
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
-        toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap(),
     ];
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();

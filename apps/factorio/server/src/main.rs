@@ -70,17 +70,12 @@ async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
 }
 fn migrations() -> Vec<snap_store::migration::Migration> {
-    // Historical migrations stay immutable. Intake keys are no longer used.
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
-        rp::MIGRATION,
+        snap_identity::MIGRATION,
         snap_identity_native::oauth::MIGRATION,
-        rp::IDENTITY_MIGRATION,
-        factorio::MIGRATIONS[0],
-        factorio::MIGRATIONS[1],
-        factorio::MIGRATIONS[2],
+        factorio::MIGRATION,
     ]
     .into_iter()
     .map(|s| toml::from_str(s).unwrap())
@@ -215,16 +210,6 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     {
         store.load(table)?;
     }
-    store.run("identity.import-legacy-owners", |tx| {
-        let mut owners = Vec::new();
-        for row in tx.find("access.grants", "primary", &[])? {
-            let Some(snap_store::Value::Text(owner)) = row.get("identity") else {
-                return Err(Error::Invalid);
-            };
-            owners.push(owner.clone());
-        }
-        rp::import_legacy_owners(tx, &owners)
-    })?;
     let cookies = Cookies::load(&mut store, "factorio", origin.starts_with("https:"))?;
     let host = Runtime::new_with_lifetime_authority(
         store,

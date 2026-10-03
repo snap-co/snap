@@ -12,12 +12,8 @@ mod tls_support;
 #[tokio::test]
 #[ignore = "real TCP adapter"]
 async fn adjacent_handshake_streamed_observations_and_detached_replay() {
-    let migrations = [
-        snap_access::MIGRATION,
-        snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
-    ]
-    .map(|s| toml::from_str(s).unwrap());
+    let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
+        .map(|s| toml::from_str(s).unwrap());
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
@@ -167,12 +163,8 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
 #[tokio::test]
 async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
     use snap_transport::bearer::{Change, Receiver, Token};
-    let migrations = [
-        snap_access::MIGRATION,
-        snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
-    ]
-    .map(|source| toml::from_str(source).unwrap());
+    let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
+        .map(|source| toml::from_str(source).unwrap());
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     let document =
         snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());

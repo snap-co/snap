@@ -25,13 +25,8 @@ impl CryptoTrait for Crypto {
 
 const STATE: &str = "fixture-state-with-at-least-32-characters";
 fn store() -> Store<snap_store_sqlite::Sqlite> {
-    let mut migrations = snap_identity::MIGRATIONS
-        .into_iter()
-        .chain([rp::MIGRATION])
-        .map(|s| toml::from_str::<snap_store::migration::Migration>(s).unwrap())
-        .collect::<Vec<_>>();
-    migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
+    let migration = toml::from_str(snap_identity::MIGRATION).unwrap();
+    let mut store = snap_store_sqlite::Sqlite::memory(&[migration]).unwrap();
     for table in rp::TABLES {
         store.load(table).unwrap();
     }
@@ -493,6 +488,9 @@ fn removed_oauth_cannot_recreate_authority_for_its_old_account() {
         })
         .unwrap();
     oauth.id = rp::digest(&"n".repeat(43));
+    store
+        .run("restart recovery", |tx| rp::recover(tx, 103))
+        .unwrap();
     assert!(matches!(
         store.run("removed proof", |tx| {
             rp::start(tx, STATE, &attempt())?;
@@ -511,44 +509,38 @@ fn removed_oauth_cannot_recreate_authority_for_its_old_account() {
 }
 
 #[test]
-fn oauth_only_history_appends_identity_without_rewriting_migrations() {
-    let path =
-        std::env::temp_dir().join(format!("snap-oauth-upgrade-{}.sqlite", std::process::id()));
-    let legacy = toml::from_str::<snap_store::migration::Migration>(rp::MIGRATION).unwrap();
-    snap_store_sqlite::migrate(&path, core::slice::from_ref(&legacy)).unwrap();
-    let mut old = snap_store_sqlite::Sqlite::open(&path).unwrap();
-    old.load("oidc_rp.sessions").unwrap();
+fn grant_metadata_without_a_backing_identity_session_has_no_authority() {
+    let mut store = store();
     let mut oauth = session();
     let bearer = "o".repeat(43);
     oauth.id = rp::digest(&bearer);
-    old.run("old grant", |tx| {
-        tx.insert(
-            "oidc_rp.sessions",
-            [
-                ("id".into(), oauth.id.clone().into()),
-                ("data".into(), serde_json::to_string(&oauth).unwrap().into()),
-            ]
-            .into_iter()
-            .collect(),
-        )
-    })
-    .unwrap();
-    drop(old);
-    snap_store_sqlite::migrate(
-        &path,
-        &[legacy, toml::from_str(rp::IDENTITY_MIGRATION).unwrap()],
-    )
-    .unwrap();
-    let mut upgraded = snap_store_sqlite::Sqlite::open(&path).unwrap();
-    rp::data().prepare(&mut upgraded).unwrap();
+    store
+        .run("orphan grant", |tx| {
+            tx.insert(
+                "identity.oauth_grants",
+                [
+                    ("id".into(), oauth.id.clone().into()),
+                    ("data".into(), serde_json::to_string(&oauth).unwrap().into()),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .unwrap();
     assert!(matches!(
-        upgraded.run("old grant is not a new session", |tx| rp::resolve(
-            tx, &bearer, 100
-        )),
+        store.run("grant is not a session", |tx| rp::resolve(tx, &bearer, 100)),
         Err(Error::NotFound)
     ));
-    upgraded.run("recover", |tx| rp::recover(tx, 100)).unwrap();
-    let issued = upgraded
+    store.run("recover", |tx| rp::recover(tx, 100)).unwrap();
+    assert!(
+        store
+            .run("orphan discarded", |tx| tx
+                .get("identity.oauth_grants", &[oauth.id.clone().into()]))
+            .unwrap()
+            .value
+            .is_none()
+    );
+    let issued = store
         .run("login again", |tx| {
             rp::start(tx, STATE, &attempt())?;
             rp::consume(tx, STATE, "browser", false, 100)?;
@@ -556,11 +548,8 @@ fn oauth_only_history_appends_identity_without_rewriting_migrations() {
         })
         .unwrap()
         .value;
-    assert_eq!(
-        issued.owner, oauth.owner,
-        "existing application ownership survives the upgrade"
-    );
-    upgraded
+    assert_eq!(issued.owner, oauth.owner);
+    store
         .run("link another kind", |tx| {
             Identity::default().link_password(
                 tx,
@@ -572,115 +561,4 @@ fn oauth_only_history_appends_identity_without_rewriting_migrations() {
             )
         })
         .unwrap();
-    drop(upgraded);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
-fn legacy_owners_survive_link_first_with_or_without_a_retained_grant() {
-    for retained_grant in [false, true] {
-        let mut store = store();
-        let mut crypto = Crypto::default();
-        let identity = Identity::default();
-        let mut legacy = session();
-        legacy.subject = "legacy-person".into();
-        legacy.owner = rp::owner(&legacy.issuer, &legacy.subject);
-        let legacy_owner = legacy.owner.clone();
-        if retained_grant {
-            store
-                .run("legacy grant", |tx| {
-                    tx.insert(
-                        "oidc_rp.sessions",
-                        [
-                            ("id".into(), legacy.id.clone().into()),
-                            (
-                                "data".into(),
-                                serde_json::to_string(&legacy).unwrap().into(),
-                            ),
-                        ]
-                        .into_iter()
-                        .collect(),
-                    )
-                })
-                .unwrap();
-        }
-        // The host supplies ownership retained by ACL/application data, even when
-        // the person has no session. Recovery is not an account deletion.
-        store
-            .run("upgrade ownership", |tx| {
-                rp::import_legacy_owners(tx, core::slice::from_ref(&legacy_owner))?;
-                rp::recover(tx, 100)
-            })
-            .unwrap();
-        let current = store
-            .run("another account", |tx| {
-                identity.enroll(tx, &mut crypto, "current@example.test", "password1", 100)
-            })
-            .unwrap()
-            .value;
-        legacy.id = rp::digest(&"b".repeat(43));
-        assert!(matches!(
-            store.run("link first", |tx| {
-                rp::start_link(tx, &crypto, &current.bearer, STATE, &attempt(), 101)?;
-                rp::consume(tx, STATE, "browser", false, 101)?;
-                rp::issue(tx, STATE, &legacy, 101)
-            }),
-            Err(Error::Constraint)
-        ));
-        let acquired = store
-            .run("legacy standalone login", |tx| {
-                rp::start(tx, STATE, &attempt())?;
-                rp::consume(tx, STATE, "browser", false, 102)?;
-                rp::issue(tx, STATE, &legacy, 102)
-            })
-            .unwrap()
-            .value;
-        assert_eq!(acquired.owner, legacy_owner);
-        assert_ne!(acquired.owner, current.principal.identity);
-        store
-            .run("add recovery password", |tx| {
-                identity.link_password(
-                    tx,
-                    &mut crypto,
-                    &"b".repeat(43),
-                    "legacy@example.test",
-                    "password2",
-                    103,
-                )
-            })
-            .unwrap();
-        let credentials = store
-            .run("credentials", |tx| {
-                identity.credentials(tx, &crypto, &"b".repeat(43), 103)
-            })
-            .unwrap()
-            .value;
-        let locator = &credentials
-            .iter()
-            .find(|c| c.kind == CredentialKind::OAuth)
-            .unwrap()
-            .locator;
-        store
-            .run("remove OAuth", |tx| {
-                identity.remove_credential(tx, &crypto, &"b".repeat(43), locator, 103)
-            })
-            .unwrap();
-        // A subsequent startup must not import the owner's unchanged app records
-        // again and restore a deliberately removed credential.
-        store
-            .run("restart ownership import", |tx| {
-                rp::import_legacy_owners(tx, core::slice::from_ref(&legacy_owner))?;
-                rp::recover(tx, 104)
-            })
-            .unwrap();
-        legacy.id = rp::digest(&"c".repeat(43));
-        assert!(matches!(
-            store.run("removed proof after restart", |tx| {
-                rp::start(tx, STATE, &attempt())?;
-                rp::consume(tx, STATE, "browser", false, 104)?;
-                rp::issue(tx, STATE, &legacy, 104)
-            }),
-            Err(Error::Constraint)
-        ));
-    }
 }

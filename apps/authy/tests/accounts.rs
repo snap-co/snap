@@ -32,12 +32,8 @@ impl Crypto for Fake {
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut all = vec![
         toml::from_str(snap_identity::MIGRATION).unwrap(),
-        toml::from_str(snap_identity::SESSION_TIME_MIGRATION).unwrap(),
-        toml::from_str(snap_identity::CREDENTIAL_KIND_MIGRATION).unwrap(),
-        toml::from_str(snap_identity::FLOW_MIGRATION).unwrap(),
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
-        toml::from_str(snap_document::server::LIFECYCLE_MIGRATION).unwrap(),
         toml::from_str(authy::MIGRATION).unwrap(),
     ];
     all.sort_by(|a: &snap_store::migration::Migration, b| a.id.cmp(&b.id));

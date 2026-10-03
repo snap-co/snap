@@ -65,9 +65,8 @@ use crate::{Completion, Intent, Manifest, Reconciliation, Replication, Snapshot,
 use crate::{Error as DomainError, Registry};
 use snap_store::Error as StoreError;
 
-/// Ordered migration declarations for the Document tables.
+/// Initial migration for all Document tables.
 pub const MIGRATION: &str = include_str!("../migrations/0001_document.toml");
-pub const LIFECYCLE_MIGRATION: &str = include_str!("../migrations/0005_document_lifecycle.toml");
 /// Store tables owned by this module. Hosts load these to arrange residency.
 pub const TABLES: [&str; 3] = [
     "document.documents",

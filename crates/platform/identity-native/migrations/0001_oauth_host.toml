@@ -1,4 +1,4 @@
-id = "0002_oauth_host"
+id = "0001_oauth_host"
 
 [[changes]]
 action = "create_table"

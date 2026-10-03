@@ -39,10 +39,8 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut values: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
-        rp::MIGRATION,
+        snap_identity::MIGRATION,
         snap_identity_native::oauth::MIGRATION,
-        rp::IDENTITY_MIGRATION,
         chatty::MIGRATION,
     ]
     .into_iter()
@@ -88,18 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         store.load(table)?;
     }
-    store.run("identity.import-legacy-owners", |tx| {
-        let mut owners = Vec::new();
-        for (table, field) in [("access.grants", "identity"), ("chatty.threads", "owner")] {
-            for row in tx.find(table, "primary", &[])? {
-                let Some(snap_store::Value::Text(owner)) = row.get(field) else {
-                    return Err(Error::Invalid);
-                };
-                owners.push(owner.clone());
-            }
-        }
-        rp::import_legacy_owners(tx, &owners)
-    })?;
     let cookies = Cookies::load(&mut store, "chatty", origin.starts_with("https:"))?;
     let host = operations(Runtime::new(
         store,

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use snap_store::{Error, Store, Value as Cell};
 
-pub const MIGRATION: &str = include_str!("../migrations/0002_authy_host.toml");
+pub const MIGRATION: &str = include_str!("../migrations/0001_authy_host.toml");
 pub const TABLE: &str = "authy.host_keys";
 
 pub struct Keys {

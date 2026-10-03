@@ -257,14 +257,11 @@ mod tests {
         }
     }
     fn fixture() -> (Runtime<snap_store_sqlite::Sqlite>, Arc<Mutex<Calls>>) {
-        let mut migrations: Vec<snap_store::migration::Migration> = [
-            snap_access::MIGRATION,
-            snap_document::server::MIGRATION,
-            snap_document::server::LIFECYCLE_MIGRATION,
-        ]
-        .into_iter()
-        .map(|s| toml::from_str(s).unwrap())
-        .collect();
+        let mut migrations: Vec<snap_store::migration::Migration> =
+            [snap_access::MIGRATION, snap_document::server::MIGRATION]
+                .into_iter()
+                .map(|s| toml::from_str(s).unwrap())
+                .collect();
         migrations.sort_by(|a, b| a.id.cmp(&b.id));
         let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
         for table in snap_access::TABLES

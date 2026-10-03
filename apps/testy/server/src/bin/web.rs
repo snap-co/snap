@@ -14,14 +14,7 @@ async fn main() -> std::io::Result<()> {
         std::fs::create_dir_all(database.parent().unwrap())?;
         snap_store_sqlite::migrate(
             &database,
-            &[
-                toml::from_str(snap_identity::MIGRATION).map_err(std::io::Error::other)?,
-                toml::from_str(snap_identity::SESSION_TIME_MIGRATION)
-                    .map_err(std::io::Error::other)?,
-                toml::from_str(snap_identity::CREDENTIAL_KIND_MIGRATION)
-                    .map_err(std::io::Error::other)?,
-                toml::from_str(snap_identity::FLOW_MIGRATION).map_err(std::io::Error::other)?,
-            ],
+            &[toml::from_str(snap_identity::MIGRATION).map_err(std::io::Error::other)?],
         )
         .map_err(std::io::Error::other)?;
         return Ok(());

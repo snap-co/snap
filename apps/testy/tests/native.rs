@@ -9,10 +9,7 @@ fn authenticated_sdk_over_real_tcp_discards_connection_state() {
         .unwrap()
         .block_on(tokio::task::LocalSet::new().run_until(async {
             let migration = toml::from_str(snap_identity::MIGRATION).unwrap();
-            let time = toml::from_str(snap_identity::SESSION_TIME_MIGRATION).unwrap();
-            let kind = toml::from_str(snap_identity::CREDENTIAL_KIND_MIGRATION).unwrap();
-            let flows = toml::from_str(snap_identity::FLOW_MIGRATION).unwrap();
-            let mut store = snap_store_sqlite::Sqlite::memory(&[migration, time, kind, flows]).unwrap();
+            let mut store = snap_store_sqlite::Sqlite::memory(&[migration]).unwrap();
             for table in snap_identity::TABLES {
                 store.load(table).unwrap();
             }

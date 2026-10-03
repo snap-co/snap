@@ -7,7 +7,6 @@ fn fixture() -> Store<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
         chatty::MIGRATION,
     ]
     .into_iter()

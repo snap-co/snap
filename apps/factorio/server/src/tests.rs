@@ -170,7 +170,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
                     session.tokens.access_expires = 0;
                 }
                 tx.update(
-                    "oidc_rp.sessions",
+                    "identity.oauth_grants",
                     &[session.id.clone().into()],
                     [(
                         "data".into(),
@@ -300,7 +300,7 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
             session.tokens.access_expires = 0;
             session.refreshing = loss == "refreshing";
             tx.update(
-                "oidc_rp.sessions",
+                "identity.oauth_grants",
                 &[session.id.clone().into()],
                 [(
                     "data".into(),
@@ -321,7 +321,7 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
                 session.tokens.access_expires = crate::now() + 600;
                 session.refreshing = false;
                 tx.update(
-                    "oidc_rp.sessions",
+                    "identity.oauth_grants",
                     &[session.id.clone().into()],
                     [(
                         "data".into(),
@@ -405,7 +405,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
     session.tokens.access_expires = 0;
     host.transact("expire access and change watched state", |tx| {
         tx.update(
-            "oidc_rp.sessions",
+            "identity.oauth_grants",
             &[session.id.clone().into()],
             [(
                 "data".into(),
@@ -433,7 +433,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
     session.tokens.access_expires = crate::now() + 600;
     host.transact("access renewed", |tx| {
         tx.update(
-            "oidc_rp.sessions",
+            "identity.oauth_grants",
             &[session.id.clone().into()],
             [(
                 "data".into(),
@@ -623,7 +623,7 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
     store
         .run("expire access", |tx| {
             tx.update(
-                "oidc_rp.sessions",
+                "identity.oauth_grants",
                 &[session.id.clone().into()],
                 [(
                     "data".into(),

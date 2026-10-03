@@ -1,4 +1,11 @@
-id = "0005_factorio_cli"
+id = "0001_factorio"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "factorio.agents"
+columns = [{ name = "id", kind = "text" }, { name = "session", kind = "text" }]
+primary = ["id"]
 
 [[changes]]
 action = "create_table"

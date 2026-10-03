@@ -1,8 +1,0 @@
-id = "0003_factorio_agents"
-
-[[changes]]
-action = "create_table"
-[changes.table]
-name = "factorio.agents"
-columns = [{ name = "id", kind = "text" }, { name = "session", kind = "text" }]
-primary = ["id"]

@@ -8,14 +8,11 @@ const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 fn linked_claims_and_cleanup_match_committed_resource_ownership(tc: TestCase) {
     let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     let actions = tc.draw(gs::vecs(gs::integers::<u8>()).min_size(1).max_size(40));
-    let mut migrations: Vec<snap_store::migration::Migration> = [
-        snap_access::MIGRATION,
-        snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
-    ]
-    .into_iter()
-    .map(|s| toml::from_str(s).unwrap())
-    .collect();
+    let mut migrations: Vec<snap_store::migration::Migration> =
+        [snap_access::MIGRATION, snap_document::server::MIGRATION]
+            .into_iter()
+            .map(|s| toml::from_str(s).unwrap())
+            .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES

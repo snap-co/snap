@@ -16,11 +16,7 @@ pub mod workspaces;
 
 /// Application Store declarations. Historical bytes and migration IDs remain
 /// unchanged, including retired intake keys, so existing databases reopen safely.
-pub const MIGRATIONS: [&str; 3] = [
-    include_str!("../migrations/0003_factorio_agents.toml"),
-    include_str!("../migrations/0004_factorio_intake.toml"),
-    include_str!("../migrations/0005_factorio_cli.toml"),
-];
+pub const MIGRATION: &str = include_str!("../migrations/0001_factorio.toml");
 
 /// Explicit portable declarations. Native or Wasm bootstrap chooses providers
 /// for the declared clock/entropy inputs and Store backend, never feature policy.

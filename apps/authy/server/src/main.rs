@@ -74,12 +74,8 @@ pub fn store_error(error: Error) -> Response {
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<_> = [
         snap_identity::MIGRATION,
-        snap_identity::SESSION_TIME_MIGRATION,
-        snap_identity::CREDENTIAL_KIND_MIGRATION,
-        snap_identity::FLOW_MIGRATION,
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
-        snap_document::server::LIFECYCLE_MIGRATION,
         authy::MIGRATION,
         snap_oidc::MIGRATION,
         keys::MIGRATION,

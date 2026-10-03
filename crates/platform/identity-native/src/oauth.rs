@@ -28,7 +28,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const MIGRATION: &str = include_str!("../migrations/0002_oauth_host.toml");
+pub const MIGRATION: &str = include_str!("../migrations/0001_oauth_host.toml");
 pub const KEY_TABLE: &str = "oauth_host.keys";
 pub fn now() -> i64 {
     SystemTime::now()
