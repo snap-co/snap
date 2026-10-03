@@ -1,13 +1,14 @@
 //! Controlled server-role command adapter around the production host. No fake
 //! dispatch, acceptance, completion or retry cache lives in this adapter.
 use snap_document::runtime::Runtime as Host;
-use snap_document::{Registry, server::Document};
 use snap_platform_tests::dispatch::{CommitFault, Loss, Platform};
+use snap_platform_tests::memory::Memory;
 use snap_platform_tests::memory::{CommitRejection, RejectOnce};
-use snap_platform_tests::{cartridge, memory::Memory};
-use snap_store::{Backend, Catalog, Row, Store, migration::Migration};
+use snap_store::{Backend, Catalog, Store};
 use snap_transport::{Command, Event, Invocation, Response, server::Config};
-use std::sync::Arc;
+#[path = "../../support/host.rs"]
+mod assembly;
+use assembly::migrations;
 
 pub struct Setup<B: Backend> {
     host: Host<B>,
@@ -16,16 +17,6 @@ pub struct Setup<B: Backend> {
     rejection: Option<CommitRejection>,
     // Store and its connection must drop before the directory.
     _directory: Option<tempfile::TempDir>,
-}
-
-fn migrations() -> Vec<Migration> {
-    let mut migrations: Vec<Migration> = [snap_access::MIGRATION, snap_document::server::MIGRATION]
-        .into_iter()
-        .map(|text| toml::from_str(text).unwrap())
-        .collect();
-    migrations.push(cartridge::migration());
-    migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    migrations
 }
 
 pub fn memory() -> Setup<Memory> {
@@ -68,48 +59,16 @@ pub fn sqlite_file() -> Setup<snap_store_sqlite::Sqlite> {
         Some(directory),
     )
 }
-fn setup<B: Backend>(mut store: Store<B>, directory: Option<tempfile::TempDir>) -> Setup<B> {
-    for table in snap_access::TABLES
-        .iter()
-        .chain(snap_document::server::TABLES.iter())
-    {
-        store.load(table).unwrap();
-    }
-    store
-        .run("probe.seed", |tx| {
-            for table in cartridge::TABLES {
-                tx.insert(
-                    table,
-                    Row::from([("id".into(), 1.into()), ("value".into(), 0.into())]),
-                )?;
-            }
-            Ok(())
-        })
-        .unwrap();
-    // Leave cartridge tables cold so only the production host's declared-data
-    // preparation can make admission and execution reads succeed.
-    for table in cartridge::TABLES {
-        store.retain_keys(table, &Default::default()).unwrap();
-    }
-    let mut host = Host::new(
+fn setup<B: Backend>(store: Store<B>, directory: Option<tempfile::TempDir>) -> Setup<B> {
+    let mut host = assembly::mount(
         store,
-        Document::new(Registry::new(vec![]).unwrap()),
-        Arc::new(|_, bearer| {
-            if bearer == "alice" {
-                Ok("alice".into())
-            } else {
-                Err(snap_store::Error::NotFound)
-            }
-        }),
         Config {
             reconnect_ms: 10,
             capacity: 8,
         },
         "platform-properties".into(),
-    );
-    for definition in cartridge::definitions() {
-        host = host.with_request(definition);
-    }
+    )
+    .unwrap();
     let peer = host.open().unwrap();
     host.submit(
         peer,

@@ -38,7 +38,7 @@ pub fn invocation(id: u64, edit: &Edit) -> Invocation {
 /// Cartridge specification: a stale compare rejects admission; a successful
 /// change moves both rows by `amount`. Every other outcome preserves both rows.
 /// The error literals below are independent expectations, not `storage_error`.
-fn predict(value: &mut i64, edit: &Edit) -> (bool, Outcome) {
+pub(crate) fn predict(value: &mut i64, edit: &Edit) -> (bool, Outcome) {
     if edit.expected != *value {
         return (false, Err(Error::Application(json!("stale"))));
     }

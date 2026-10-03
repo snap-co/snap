@@ -59,6 +59,43 @@ pub struct Edit {
     pub stop: Stop,
 }
 
+/// A bounded example starting at zero. Both fixed host tests and the SDK journey
+/// use these inputs; expected outcomes come from the independent dispatch model.
+pub fn example() -> [Edit; 6] {
+    [
+        Edit {
+            expected: 0,
+            amount: 3,
+            stop: Stop::Commit,
+        },
+        Edit {
+            expected: 0,
+            amount: 99,
+            stop: Stop::Commit,
+        },
+        Edit {
+            expected: 3,
+            amount: 99,
+            stop: Stop::Application,
+        },
+        Edit {
+            expected: 3,
+            amount: 99,
+            stop: Stop::InvalidOutput,
+        },
+        Edit {
+            expected: 3,
+            amount: 99,
+            stop: Stop::CaughtMiss,
+        },
+        Edit {
+            expected: 3,
+            amount: 2,
+            stop: Stop::Commit,
+        },
+    ]
+}
+
 pub struct Change;
 impl Operation for Change {
     const NAME: &'static str = "probe.change";

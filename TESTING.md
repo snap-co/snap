@@ -45,7 +45,8 @@ in a replacement implementation of the module being tested.
 ### Current shared suite
 
 `tests/platform/` is the first shared conformance consumer. Its library is
-`no_std` with `alloc`; host adapters live in its native integration target.
+`no_std` with `alloc`; host adapters live in native integration targets and shared
+support used by the native example runner.
 The native target runs shared Store cases against the reusable controlled memory
 backend, ephemeral SQLite and file-backed SQLite. SQLite in memory is still the
 SQLite driver, not the controlled memory driver.
@@ -77,7 +78,19 @@ adapters; it keeps Hegel out of the default-member build. The memory-only fault
 setup rejects the next nonempty backend commit before writing. SQLite fault
 injection and unknown-commit recovery are not covered by that setup.
 
-These controlled command tests do not prove a socket-to-host path or
+The paired `cartridge_tcp` integration target additionally runs the portable
+client journey in `tests/platform/src/journey.rs` through the real Transport
+client SDK, production TCP/TLS driver and native dispatcher into file-backed
+SQLite. It checks acceptance and completion against the same independent scalar
+model, reads after each change or failure, then stops the server and reopens
+SQLite to verify persisted rows. The `plumbing` Cargo example uses that same
+setup and prints the exchange, retaining a fresh database for inspection. Native
+assembly lives in `tests/platform/support/{host,tcp_sqlite}.rs`; it supplies no
+operation results. Its outer deadline bounds real IO, not virtual time. The
+cartridge identity is a fixed fixture, not an authentication-flow test. Reopening
+after orderly teardown is not process-crash or power-loss durability proof.
+
+The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
 carriers, client-side durable module recovery and a full Transport/Store matrix
 remain unsupported here. SQLite reopening/locking, migrations, process crashes
@@ -185,6 +198,7 @@ transfer ownership of an app scenario to Snap.
 | Document runtime and native execution integration | Controlled document lifecycle and socket cases in `tests/platform/tests/document_{runtime,tcp}.rs`; generated document histories in `crates/document/tests/properties/runtime.rs` via the `document-runtime` property target; independent execution/output-lock regressions in `crates/platform/transport-native/src/dispatch.rs` |
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
 | Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
+| Paired cartridge client and physical IO | Portable SDK journey in `tests/platform/src/journey.rs`; shared native assembly in `tests/platform/support/{host,tcp_sqlite}.rs`; default-run integration in `tests/platform/tests/cartridge_tcp.rs` and visible runner in `tests/platform/examples/plumbing.rs` |
 | App controlled execution | `apps/testy/server/src/memory.rs` and `apps/testy/tests/` contain app examples, not the owner of Snap platform conformance |
 | Snap browser and React adapters | Fixtures in `kits/browser/tests/` and `kits/react/tests/`; Rust assertions in `tests/browser/src/client.rs` and `kits/react/tests/router.rs` |
 | App SDK scenarios and properties | `apps/*/tests/` and app-owned `apps/*/properties/Cargo.toml` consumers |
