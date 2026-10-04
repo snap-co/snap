@@ -1,8 +1,8 @@
 //! Factorio native browser journey, owned beside the application tests.
 //!
 //! Real CLI/UI, Git and OpenCode journeys. It is compiled by the host-only
-//! `snap-browser-tests` crate (via `#[path]` from
-//! `tests/browser/src/factorio.rs`), never by Cargo's auto-discovered
+//! app-owned browser consumer (via `#[path]` from
+//! `apps/testing/browser/src/factorio.rs`), never by Cargo's auto-discovered
 //! `tests/*.rs` fast gates: this file lives under `tests/browser/`, not as a
 //! top-level `tests/*.rs` target.
 //!

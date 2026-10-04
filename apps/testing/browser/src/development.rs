@@ -13,8 +13,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-#[path = "../../../kits/react/tests/router.rs"]
-mod react_router;
+use snap_browser_tests::react as react_router;
 
 const DEV_TIMEOUT: u64 = 60;
 

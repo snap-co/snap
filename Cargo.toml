@@ -36,6 +36,7 @@ members = [
     "tests/properties",
     "tests/platform",
     "tests/browser",
+    "apps/testing/browser",
     "tools/cli",
 ]
 resolver = "3"

@@ -1,4 +1,4 @@
-//! Disposable OpenCode executable contract fixture, launched by the real CLI.
+//! App-owned OpenCode executable contract fixture, launched by the real CLI.
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{env, fs, path::PathBuf};

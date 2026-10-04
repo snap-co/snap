@@ -45,7 +45,7 @@ name = "store-properties"
 path = "../../crates/store/tests/properties/resident.rs"
 
 [package.metadata.snap]
-role = "host"
+role = "tool"
 
 [[test]]
 name = "identity-properties"

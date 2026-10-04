@@ -1,7 +1,7 @@
 //! Native Authy account, OAuth and scriptless protocol-page journeys.
 //!
-//! Owned by the host-only `snap-browser-tests` runner through
-//! `tests/browser/src/apps.rs`; Cargo never builds this file standalone.
+//! Selected by the app-owned browser consumer in `apps/testing/browser/`.
+//! Cargo never builds this file standalone.
 //! Every case uses real CDP input, real HTTP fault injection at the carrier
 //! boundary, and `Session::finish` for exception capture plus disposal.
 

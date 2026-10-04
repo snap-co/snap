@@ -3,16 +3,16 @@
 //! Each journey file lives beside its application at
 //! `apps/<app>/tests/browser/journeys.rs` so Cargo never discovers it as an
 //! integration-test target; it is pulled in here with `#[path]` and stays
-//! owned by the host-only `snap-browser-tests` runner, outside the fast
+//! owned by the app-side `snap-app-browser-tests` consumer, outside the fast
 //! portable gates. `run` delegates `authy`/`chatty` suites (honoring
 //! `--filter`) to those app cases.
 
 use anyhow::{Context, Result, ensure};
 use chromiumoxide::{Browser, Page};
 
-#[path = "../../../apps/authy/tests/browser/journeys.rs"]
+#[path = "../../../authy/tests/browser/journeys.rs"]
 mod authy;
-#[path = "../../../apps/chatty/tests/browser/journeys.rs"]
+#[path = "../../../chatty/tests/browser/journeys.rs"]
 mod chatty;
 
 /// Runs the `authy` or `chatty` app journeys whose case names contain

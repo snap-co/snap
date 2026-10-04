@@ -3,20 +3,25 @@ use std::fs;
 
 #[test]
 #[ignore = "compiler/filesystem contract"]
-fn contracts_cannot_select_even_portable_providers() {
-    let project = Project::new(Some("contract"));
+fn interfaces_depend_only_on_other_interfaces() {
+    let project = Project::new(Some("interface"));
     project.dependency("provider", "core", "#![no_std]\n");
-    fs::write(project.root.join("Cargo.toml"), format!("{MANIFEST}[package.metadata.snap]\nrole='contract'\n[dependencies]\nprovider={{path='provider'}}\n")).unwrap();
+    fs::write(project.root.join("Cargo.toml"), format!("{MANIFEST}[package.metadata.snap]\nrole='interface'\n[dependencies]\nprovider={{path='provider'}}\n")).unwrap();
     failed(
         &project.run(&["check", "--structure-only"]),
-        &["keep contracts independent of providers", "normal"],
+        &[
+            "Dependency direction violations",
+            "Interface",
+            "Core",
+            "normal",
+        ],
     );
     let path = project.root.join("provider/Cargo.toml");
     fs::write(
         &path,
         fs::read_to_string(&path)
             .unwrap()
-            .replace("role='core'", "role='contract'"),
+            .replace("role='core'", "role='interface'"),
     )
     .unwrap();
     passed(&project.run(&["check", "--structure-only"]));
@@ -53,7 +58,7 @@ fn portable_path_dependency_features_are_validated_in_its_workspace() {
         fs::write(project.root.join("external/Cargo.toml"), format!("[package]\nname='external'\nversion='0.0.0'\nedition='2024'\n[package.metadata.snap]\nrole='core'\n[workspace]\n[features]\nhost=['dep:fixture-platform']\n[{header}]\nfixture-platform={{path='platform',optional=true}}\n")).unwrap();
         failed(
             &project.run(&["check", "--structure-only"]),
-            &["fixture-platform", "normal", "composition"],
+            &["fixture-platform", "normal", "host package"],
         );
     }
 }
@@ -71,7 +76,7 @@ fn portable_platform_edge_reports_target_kind_and_remedy() {
             "fixture-platform",
             "normal",
             "wasm32",
-            "composition",
+            "host package",
         ],
     );
 }

@@ -30,4 +30,4 @@ tempfile = "3"
 workspace = true
 
 [package.metadata.snap]
-role = "host"
+role = "tool"

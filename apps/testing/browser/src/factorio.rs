@@ -1,7 +1,7 @@
 //! Factorio browser adapter. The journey lives beside the application tests
 //! and is compiled here so it stays out of the portable fast gates.
 
-#[path = "../../../apps/factorio/tests/browser/journeys.rs"]
+#[path = "../../../factorio/tests/browser/journeys.rs"]
 mod journeys;
 
 pub async fn run(

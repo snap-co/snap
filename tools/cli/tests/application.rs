@@ -1,4 +1,6 @@
 use std::{fs, process::Command};
+#[path = "support/package.rs"]
+mod package;
 
 #[test]
 fn build_selects_the_named_environment_without_development_fallback() {
@@ -113,29 +115,13 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let root = tempfile::tempdir().unwrap();
-    for name in ["server", "web"] {
-        std::os::unix::fs::symlink(
-            repository.join("apps/chatty").join(name),
-            root.path().join(name),
-        )
-        .unwrap();
-    }
-    std::os::unix::fs::symlink(
-        repository.join("node_modules"),
-        root.path().join("node_modules"),
-    )
-    .unwrap();
-    fs::copy(
-        repository.join("apps/chatty/Cargo.toml"),
-        root.path().join("Cargo.toml"),
-    )
-    .unwrap();
-    let settings = fs::read_to_string(repository.join("apps/chatty/snap.toml")).unwrap();
-    fs::write(root.path().join("snap.toml"), format!("{settings}\n[build.clients.preview]\nkind='web'\nsource='web'\nwasm='web/wasm/Cargo.toml'\n[build.servers.replica]\nmanifest='server/Cargo.toml'\ntargets=['host']\n")).unwrap();
-    let input = root.path().join(".deployment/development");
+    let project = package::project();
+    let root = project.path();
+    let settings = fs::read_to_string(root.join("snap.toml")).unwrap();
+    fs::write(root.join("snap.toml"), format!("{settings}\n[build.clients.preview]\nkind='web'\nsource='web'\nwasm='web/wasm/Cargo.toml'\n[build.servers.replica]\nmanifest='server/Cargo.toml'\nbinary='fixture-server'\ntargets=['host']\n")).unwrap();
+    let input = root.join(".deployment/development");
     fs::create_dir_all(&input).unwrap();
-    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='{}'\n[app.oauth]\nissuer='http://127.0.0.1:3846'\nclient_id='chatty'\nclient_secret_ref='oauth.client_secret'\n", root.path().join("data").display())).unwrap();
+    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='{}'\n[app.oauth]\nclient_secret_ref='oauth.client_secret'\n", root.join("data").display())).unwrap();
     let identity = age::x25519::Identity::generate();
     let secret = "packaging-test-client-credential-at-least-32-bytes";
     fs::write(
@@ -143,6 +129,8 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         identity.to_string().expose_secret(),
     )
     .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(input.join("secrets.key"), fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(input.join("secrets.toml"), secret).unwrap();
     fs::write(input.join("private-notes.txt"), "not packaged").unwrap();
     fs::write(
@@ -155,7 +143,8 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     )
     .unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_snap"))
-        .current_dir(root.path())
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", root.join("target"))
         .arg("build")
         .env_remove("SNAP_MASTER_KEY")
         .output()
@@ -165,7 +154,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let package = root.path().join("dist/development");
+    let package = root.join("dist/development");
     for name in [
         "secrets.key",
         "secrets.toml",
@@ -177,7 +166,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     assert!(package.join("clients/web/index.html").is_file());
     assert!(
         package
-            .join("clients/web/bindings/chatty_wasm_bg.wasm")
+            .join("clients/web/bindings/fixture_wasm_bg.wasm")
             .is_file()
     );
     assert!(package.join("clients/web/client.js").is_file());
@@ -203,7 +192,8 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         ),
     ] {
         let rejected = Command::new(env!("CARGO_BIN_EXE_snap"))
-            .current_dir(root.path())
+            .current_dir(root)
+            .env("CARGO_TARGET_DIR", root.join("target"))
             .arg("build")
             .args(targets)
             .output()
@@ -216,7 +206,8 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         );
     }
     let selected = Command::new(env!("CARGO_BIN_EXE_snap"))
-        .current_dir(root.path())
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", root.join("target"))
         .args([
             "build",
             "--server",
@@ -237,7 +228,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     assert_eq!(artifacts.servers[0].name, "native");
     assert!(!package.join("servers/replica").exists());
     let executable = &artifacts.servers[0].executable;
-    let relocated = root.path().join("relocated");
+    let relocated = root.join("relocated");
     fs::rename(package, &relocated).unwrap();
     let migrate = Command::new(relocated.join(executable))
         .current_dir(&repository)
@@ -277,7 +268,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         .unwrap();
     let address = line
         .trim()
-        .strip_prefix("Chatty http://")
+        .strip_prefix("Fixture http://")
         .expect("server readiness");
     let mut stream = TcpStream::connect(address).unwrap();
     stream
@@ -291,137 +282,6 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 200"));
-}
-
-#[test]
-#[ignore = "native production packaging"]
-fn production_package_serves_without_publishing_testy_debugger_controls() {
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpStream,
-        process::Stdio,
-    };
-    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap();
-    let root = tempfile::tempdir().unwrap();
-    for name in ["server", "native", "web"] {
-        std::os::unix::fs::symlink(
-            repository.join("apps/testy").join(name),
-            root.path().join(name),
-        )
-        .unwrap();
-    }
-    std::os::unix::fs::symlink(
-        repository.join("node_modules"),
-        root.path().join("node_modules"),
-    )
-    .unwrap();
-    fs::copy(
-        repository.join("apps/testy/Cargo.toml"),
-        root.path().join("Cargo.toml"),
-    )
-    .unwrap();
-    fs::copy(
-        repository.join("apps/testy/snap.toml"),
-        root.path().join("snap.toml"),
-    )
-    .unwrap();
-    let input = root.path().join(".deployment/production");
-    fs::create_dir_all(&input).unwrap();
-    fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='production'\nlisten='0.0.0.0:0'\norigin='https://testy.example.test:443/'\ndata_dir='{}'\n[app]\n", root.path().join("data").display())).unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_snap"))
-        .current_dir(root.path())
-        .args(["build", "production"])
-        .env_remove("SNAP_MASTER_KEY")
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let package = root.path().join("dist/production");
-    assert!(!package.join("clients/web/app.js.map").exists());
-    assert!(package.join("clients/web/app.js").is_file());
-    assert!(
-        package
-            .join("clients/web/bindings/testy_wasm.d.ts")
-            .is_file()
-    );
-    let artifacts: snap_config::Artifacts =
-        toml::from_str(&fs::read_to_string(package.join("artifacts.toml")).unwrap()).unwrap();
-    assert_eq!(artifacts.native_clients.len(), 1);
-    assert!(
-        package
-            .join(&artifacts.native_clients[0].executable)
-            .is_file()
-    );
-    let executable = package.join(&artifacts.servers[0].executable);
-    assert!(
-        Command::new(&executable)
-            .arg("--migrate")
-            .status()
-            .unwrap()
-            .success()
-    );
-    let mut server = Command::new(&executable)
-        .env_remove("SNAP_MASTER_KEY")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    struct Stop<'a>(&'a mut std::process::Child);
-    impl Drop for Stop<'_> {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let guard = Stop(&mut server);
-    let stdout = guard.0.stdout.take().unwrap();
-    let (send, receive) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = send.send(BufReader::new(stdout).read_line(&mut line).map(|_| line));
-    });
-    let line = receive
-        .recv_timeout(std::time::Duration::from_secs(15))
-        .unwrap()
-        .unwrap();
-    let address: std::net::SocketAddr = line
-        .trim()
-        .strip_prefix("Testy http://")
-        .expect("server readiness")
-        .parse()
-        .unwrap();
-    for (origin, status) in [
-        ("https://testy.example.test", "101"),
-        ("https://foreign.example.test", "403"),
-    ] {
-        let mut stream = TcpStream::connect(("127.0.0.1", address.port())).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        write!(stream, "GET /transport HTTP/1.1\r\nHost: testy.example.test\r\nOrigin: {origin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
-        let mut response = String::new();
-        BufReader::new(stream).read_line(&mut response).unwrap();
-        assert!(
-            response.starts_with(&format!("HTTP/1.1 {status}")),
-            "{response}"
-        );
-    }
-    for path in ["/__dev", "/__dev/ws"] {
-        let mut stream = TcpStream::connect(("127.0.0.1", address.port())).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        write!(stream, "GET {path} HTTP/1.1\r\nHost: testy.example.test\r\nOrigin: https://testy.example.test\r\nConnection: close\r\n\r\n").unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
-    }
 }
 
 #[test]

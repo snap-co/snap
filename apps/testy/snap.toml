@@ -60,6 +60,8 @@ commands = [
 
 [test.native]
 commands = [
+  ["cargo", "build", "-p", "snap-cli"],
+  ["cargo", "test", "-p", "snap-app-browser-tests", "--test", "packaging", "--", "--ignored"],
   ["cargo", "test", "-p", "testy-server", "--features", "native", "--test", "native", "--test", "startup", "--", "--include-ignored"],
   ["cargo", "test", "-p", "snap-crypto", "--test", "native", "--", "--ignored"],
 ]

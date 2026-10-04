@@ -1,10 +1,6 @@
-pub mod apps;
 pub mod client;
-#[path = "../../../tests/cli/browser/journeys.rs"]
-pub mod development;
-pub mod factorio;
-pub mod hosts;
+#[path = "../../../kits/react/tests/router.rs"]
+pub mod react;
+pub mod runner;
 pub mod support;
-#[path = "../../../apps/testy/tests/browser/journeys.rs"]
-pub mod testy;
 pub mod ui;

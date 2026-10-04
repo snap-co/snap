@@ -1,12 +1,21 @@
 [package]
-name = "snap-browser-tests"
+name = "snap-app-browser-tests"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 autotests = false
-default-run = "snap-browser-tests"
+default-run = "snap-app-browser-tests"
+
+[[bin]]
+name = "snap-opencode-fixture"
+path = "src/opencode.rs"
+
+[[bin]]
+name = "snap-opencode-bridge-fixture"
+path = "src/opencode_bridge.rs"
 
 [dependencies]
+snap-browser-tests = { path = "../../../tests/browser" }
 anyhow = "1"
 chromiumoxide = { version = "=0.9.1", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
@@ -18,10 +27,20 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "proces
 toml = "0.9"
 nix = { version = "0.30", features = ["signal", "process", "net"] }
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
 tokio-tungstenite = "0.29"
+rusqlite = { version = "0.38", features = ["bundled"] }
+sha2 = "0.10"
 
 [package.metadata.snap]
-role = "tool"
+role = "host"
+
+[dev-dependencies]
+snap-config.workspace = true
+
+[[test]]
+name = "packaging"
+path = "tests/packaging.rs"
 
 [lints]
 workspace = true

@@ -7,7 +7,7 @@ use std::{
 
 fn manifest(name: &str) -> String {
     format!(
-        "[package]\nname='{name}'\nversion='0.0.0'\nedition='2024'\n[package.metadata.snap]\nrole='composition'\n"
+        "[package]\nname='{name}'\nversion='0.0.0'\nedition='2024'\n[package.metadata.snap]\nrole='host'\n"
     )
 }
 fn scratch() -> tempfile::TempDir {

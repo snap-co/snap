@@ -6,7 +6,7 @@ use chromiumoxide::Browser;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
-/// Run the held-loader journey. Called by `development::run` for suite `react`.
+/// Run the held-loader journey through the framework browser consumer.
 pub async fn run(browser: &Browser) -> Result<()> {
     let fixture = crate::support::root().join("kits/react/tests/session-fixture.tsx");
     let host = crate::support::BundleHost::start(&fixture).await?;

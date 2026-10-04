@@ -5,6 +5,29 @@ checks. These are the agreed testing seams and ownership rules. The common
 platform suite described below is the target design, not an assertion that every
 setup already plugs into one harness. Use [CONTEXT.md](CONTEXT.md) for domain terms.
 
+## Framework and application ownership
+
+Framework code, test consumers and verification must work without `apps/`.
+They must not declare normal, development or build dependencies on applications,
+import application test source or use an app's host as a required framework fixture.
+Apps consume Snap, supply definitions and own their host assembly. App-specific
+scenarios and paired-app integration fixtures stay under `apps/`.
+
+Framework verification uses Cargo and Snap's existing native/browser runners.
+Application `snap check`, `snap test` and future `snap ci` commands are app workflows,
+not evidence of complete framework verification. The framework gate's executable
+selection lives in `tools/verification/framework.py`; it verifies a source copy
+with application workspace members and aliases removed and no `apps/` directory.
+Reusable framework test consumers declare the `tool` role, not the app-owned
+`host` role, so Cargo dependency checks retain the application isolation rule.
+
+Interface contract cases run through host-selected platform setups. Drivers do not
+own separate copies of those expectations. Core module scenarios use the same
+interfaces, usually with memory or controlled simulation rather than physical IO.
+An application's client SDK is its headless application; client-to-host journeys
+can be end-to-end in memory. Browser and other clients add presentation and adapter
+guarantees, not another implementation of application behavior.
+
 ## Platform conformance
 
 Snap owns one reusable set of platform contract tests. A setup supplies an
@@ -273,9 +296,10 @@ transfer ownership of an app scenario to Snap.
 | App controlled execution | `apps/testy/server/src/memory.rs` and `apps/testy/tests/` contain app examples, not the owner of Snap platform conformance |
 | Snap browser and React adapters | Fixtures in `kits/browser/tests/` and `kits/react/tests/`; Rust assertions in `tests/browser/src/client.rs` and `kits/react/tests/router.rs` |
 | App SDK scenarios and properties | `apps/*/tests/` and app-owned `apps/*/properties/Cargo.toml` consumers |
-| App end-to-end scenarios | `apps/*/tests/browser/journeys.rs`, executed by the shared Rust/CDP runner in `tests/browser/` |
-| Snap tooling | `tools/cli/tests/` and `tests/cli/browser/journeys.rs` protect the real CLI and development workflow, not app domain behavior |
-| Shared browser fixture support | `tests/browser/src/support.rs` owns processes, source copies and bundle hosting; app hosts are in `tests/browser/src/hosts.rs` |
+| App end-to-end scenarios | `apps/*/tests/browser/journeys.rs`, selected by the app-owned consumer in `apps/testing/browser/`; it consumes the shared Rust/CDP lifecycle in `tests/browser/src/runner.rs` |
+| Snap tooling | `tools/cli/tests/` protects the real CLI; `tools/cli/tests/support/package.rs` supplies a tooling-owned packaging input without app sources. App-backed development journeys remain in `apps/testing/browser/src/development.rs` |
+| Shared browser fixture support | `tests/browser/src/{runner,support,ui}.rs` owns Chromium, process teardown and bundle hosting without app discovery; app hosts and app source copies are in `apps/testing/browser/src/{hosts,support}.rs` |
+| App production host policy | Testy's production origin/debugger assertions live in `apps/testing/browser/tests/packaging.rs`, selected by Testy's native suite |
 
 Read manifests, suite declarations and runner code to determine actual selection.
 Each module and host storage component owns one initial migration. Identity's

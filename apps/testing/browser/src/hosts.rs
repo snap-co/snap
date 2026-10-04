@@ -1,4 +1,4 @@
-//! Real native Authy and Chatty process fixtures for app browser journeys.
+//! App-owned Authy and Chatty process fixtures for app browser journeys.
 //!
 //! Both hosts run the production binaries against disposable data directories
 //! with explicitly migrated databases and ephemeral loopback listeners. The
@@ -174,11 +174,6 @@ impl AuthyHost {
         self.process.stop()
     }
 
-    /// Fixture data directory, retained for the host lifetime.
-    pub fn directory(&self) -> &Path {
-        self.directory.path()
-    }
-
     /// Restarts the host against the preserved database and base URL.
     pub async fn restart(&mut self) -> Result<()> {
         self.process.stop()?;
@@ -203,7 +198,7 @@ pub struct ChattyHost {
     pub base: String,
     pub process: Process,
     pub authy: AuthyHost,
-    directory: tempfile::TempDir,
+    _directory: tempfile::TempDir,
     deployment: Deployment,
     dev: bool,
     source_root: PathBuf,
@@ -312,7 +307,7 @@ impl ChattyHost {
             base,
             process,
             authy,
-            directory,
+            _directory: directory,
             deployment,
             dev,
             source_root: source_root.to_owned(),
@@ -321,11 +316,6 @@ impl ChattyHost {
 
     pub fn stop(&mut self) -> Result<()> {
         self.process.stop()
-    }
-
-    /// Fixture data directory, retained for the host lifetime.
-    pub fn directory(&self) -> &Path {
-        self.directory.path()
     }
 
     /// Restarts Chatty against the preserved database and base URL. The paired

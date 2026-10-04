@@ -1,4 +1,4 @@
-//! Pipe-protocol dependency double for the owned disposable OpenCode service.
+//! App-owned pipe-protocol dependency double for the disposable OpenCode service.
 //! Receives the production adapter's stdin and forwards actual fixture traffic.
 use anyhow::{Context, Result};
 use serde_json::Value;
