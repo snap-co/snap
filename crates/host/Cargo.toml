@@ -5,9 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-snap-store.workspace = true
 snap-transport = { path = "../transport" }
-spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [lints]
 workspace = true

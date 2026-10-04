@@ -1,4 +1,4 @@
-use crate::blocking::Peer;
+use super::blocking::Peer;
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use snap_store::{Backend, Data, Error, RowChange, Store, Transaction, residency::Residency};
 use snap_transport::{

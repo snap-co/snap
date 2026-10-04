@@ -2,8 +2,8 @@
 //! the execution gate, blocked state and explicit retries.
 use crate::Host;
 use factorio::{Config, Desired, Effect, Phase, Session, workspaces as graph};
-use snap_host::ControllerContext;
 use snap_store::Error;
+use snap_transport::host::ControllerContext;
 
 type Context<'a, 'host> = ControllerContext<'a, 'host, snap_store_sqlite::Sqlite>;
 
@@ -61,7 +61,7 @@ fn with_effects(
     mut effects: impl Effects,
 ) -> Host<snap_store_sqlite::Sqlite> {
     host.map_participant(|documents| {
-        documents.with_controller(snap_host::Controller::new(
+        documents.with_controller(snap_transport::host::Controller::new(
             "factorio.sessions",
             snap_document::server::TABLES[0],
             |row| row.get("kind") == Some(&graph::SESSION_KIND.into()),

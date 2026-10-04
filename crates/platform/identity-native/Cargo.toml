@@ -6,7 +6,7 @@ publish.workspace = true
 
 [features]
 default = []
-oauth = ["dep:snap-config", "dep:snap-store-sqlite", "dep:snap-transport", "dep:snap-transport-native", "dep:snap-transport-ws", "dep:snap-crypto", "dep:axum", "dep:tokio", "dep:reqwest", "dep:sha2", "dep:hmac", "dep:rand"]
+oauth = ["dep:snap-config", "dep:snap-store-sqlite", "dep:snap-transport", "dep:snap-crypto", "dep:axum", "dep:tokio", "dep:reqwest", "dep:sha2", "dep:hmac", "dep:rand"]
 passkey = ["dep:webauthn-rs"]
 
 [dependencies]
@@ -14,9 +14,7 @@ snap-config = { workspace = true, optional = true }
 serde.workspace = true
 snap-store.workspace = true
 snap-store-sqlite = { path = "../store-sqlite", optional = true }
-snap-transport-native = { path = "../transport-native", optional = true }
-snap-transport-ws = { path = "../transport-ws", optional = true }
-snap-transport = { path = "../../transport", optional = true }
+snap-transport = { path = "../../transport", optional = true, features = ["native-server"] }
 snap-identity = { path = "../../identity" }
 snap-crypto = { path = "../crypto", optional = true }
 axum = { version = "0.8", optional = true }

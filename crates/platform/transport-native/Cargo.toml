@@ -5,18 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-snap-transport = { path = "../../transport" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-
-[dev-dependencies]
-snap-host.workspace = true
-snap-document.workspace = true
-snap-access.workspace = true
-snap-store.workspace = true
-snap-store-sqlite = { path = "../store-sqlite" }
-serde_json.workspace = true
-toml = "0.9"
-tokio = { version = "1", features = ["test-util"] }
+snap-transport = { path = "../../transport", features = ["native-legacy"] }
 
 [lints]
 workspace = true

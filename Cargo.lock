@@ -1046,7 +1046,6 @@ dependencies = [
  "snap-config",
  "snap-document",
  "snap-transport",
- "snap-transport-tcp",
  "tempfile",
  "tokio",
  "uuid",
@@ -1089,7 +1088,6 @@ dependencies = [
  "snap-transport",
  "snap-transport-native",
  "snap-transport-tcp",
- "snap-transport-ws",
  "tempfile",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -3299,9 +3297,7 @@ dependencies = [
 name = "snap-host"
 version = "0.0.0"
 dependencies = [
- "snap-store",
  "snap-transport",
- "spin 0.10.1",
 ]
 
 [[package]]
@@ -3340,8 +3336,6 @@ dependencies = [
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
- "snap-transport-ws",
  "tempfile",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -3422,28 +3416,28 @@ dependencies = [
 name = "snap-transport"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "ciborium",
+ "futures-util",
+ "rustls-pemfile",
  "serde",
  "serde_json",
+ "snap-access",
+ "snap-document",
  "snap-store",
  "snap-store-sqlite",
  "spin 0.10.1",
+ "tokio",
+ "tokio-rustls",
  "toml 0.9.12+spec-1.1.0",
+ "webpki-roots",
 ]
 
 [[package]]
 name = "snap-transport-native"
 version = "0.0.0"
 dependencies = [
- "serde_json",
- "snap-access",
- "snap-document",
- "snap-host",
- "snap-store",
- "snap-store-sqlite",
  "snap-transport",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -3451,23 +3445,17 @@ name = "snap-transport-tcp"
 version = "0.0.0"
 dependencies = [
  "rcgen",
- "rustls-pemfile",
  "snap-transport",
  "tempfile",
  "tokio",
  "tokio-rustls",
- "webpki-roots",
 ]
 
 [[package]]
 name = "snap-transport-ws"
 version = "0.0.0"
 dependencies = [
- "axum",
- "futures-util",
- "serde_json",
  "snap-transport",
- "tokio",
 ]
 
 [[package]]

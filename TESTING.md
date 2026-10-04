@@ -60,7 +60,7 @@ regression where applicable to the selected role.
 
 Store and carrier cases are independently selectable. The IO-free cartridge in
 `tests/platform/src/cartridge.rs` also exercises actual Transport-to-Store
-execution through the portable `snap-host::Blocking` engine and Transport's
+execution through the portable `snap-transport::host::Blocking` engine and Transport's
 transactional executor, without a Document instance or migration. Shared properties and a
 scalar reference model live in `tests/platform/src/dispatch.rs`. The controlled
 native server-role adapter drives public commands, output and execution steps
@@ -174,15 +174,24 @@ its transaction interface, with the authority required by that interface.
 
 Module and application operation definitions register in Transport's registry,
 including the private connectionless classification. Application assembly passes
-that registry to the blocking execution host. Module subscription bindings declare
-their topics, authorized Store-key extents and replication encodings through
+that registry to Transport's blocking execution engine. Module subscription bindings
+declare their topics, authorized Store-key extents and replication encodings through
 Transport. Host assembly selects those bindings explicitly. The host owns physical
 observers, queue authorization and logical references; Store owns residency unions.
-Document has no execution-host dependency or execution participant, and the generic
-host has no Document dependency. Neither registers modules implicitly.
+Document has no execution-host dependency or execution participant, and Transport's
+engine has no Document dependency. Neither registers modules implicitly.
 Identity's native OAuth adapter consumes Store's host transaction contract and
-Transport's loop contract, without a Document dependency. Existing host cases
-retain the serialized transaction and controller-ordering guarantees.
+Transport's serialized transaction handle, without a Document dependency. Existing
+host cases retain the serialized transaction and controller-ordering guarantees.
+
+Factorio's native assembly uses Transport's `native::Server` for controller recovery,
+WebSocket routes, TCP serving and execution pumping. Its OAuth routes use the server's
+transaction handle, not a dispatcher or execution mutex. The existing real CLI gate
+uses this composition; app browser journeys exercise the production entrypoint and
+browser-Wasm over WebSocket. Other hosts and controlled setups retain compatibility
+exports until migrated. `native-client` selects TCP client IO; `native-server` adds
+the native server. Both are excluded on Wasm even when all features are enabled, so
+the existing `wasm32v1-none` architecture check remains unchanged.
 
 Credential resolution is supplied by host assembly through Transport's bearer
 authority interface. Identity owns its provider-backed resolution and optional
@@ -257,7 +266,7 @@ transfer ownership of an app scenario to Snap.
 | Identity credential flows and private session policy | `crates/identity/tests/{identity,oauth,operations}.rs`; native WebAuthn signatures, origin/counter policy and durable ceremony state in `crates/platform/identity-native/tests/passkey.rs`, selected by the `passkey` feature; Authy's `passkey browser ceremony` journey uses a CDP authenticator to cover browser/Wasm conversion and cookie delivery; OAuth refresh/socket integration remains app-owned in Factorio |
 | Generic blocking execution and native integration | Document-free cartridge assembly in `tests/platform/support/host.rs`; commit/controller sequencing in `tests/platform/tests/host.rs`; physical TCP cases in `tests/platform/tests/host_tcp.rs` |
 | Store resources and generic host composition | Lifecycle/residency over controlled memory and SQLite, composite-key cleanup, independent controllers and two non-Document subscription topics in `tests/platform/tests/resources.rs` |
-| Document synchronization bindings | Controlled replication, extent, visibility and receipt-recovery cases in `tests/platform/tests/document_sync.rs`; generated histories in `crates/document/tests/properties/sync.rs` via the `document-sync` property target; independent execution/output-lock regressions in `crates/platform/transport-native/src/dispatch.rs` |
+| Document synchronization bindings | Controlled replication, extent, visibility and receipt-recovery cases in `tests/platform/tests/document_sync.rs`; generated histories in `crates/document/tests/properties/sync.rs` via the `document-sync` property target; independent execution/output-lock regressions in `crates/transport/tests/native_dispatch.rs`, selected with `native-legacy` |
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
 | Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
 | Paired cartridge client and physical IO | Portable SDK journey in `tests/platform/src/journey.rs`; shared native assembly in `tests/platform/support/{host,tcp_sqlite}.rs`; default-run integration in `tests/platform/tests/cartridge_tcp.rs` and visible runner in `tests/platform/examples/plumbing.rs` |

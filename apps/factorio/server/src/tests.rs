@@ -865,7 +865,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     use crate::Host;
     use serde_json::json;
     use snap_identity::oauth as rp;
-    use snap_transport_native::{Dispatcher, Shared};
+    use snap_transport::native::Server;
     let (temp, config, _) = fixture().await;
     let mut store = snap_store_sqlite::Sqlite::memory(&crate::migrations()).unwrap();
     for table in snap_access::TABLES
@@ -906,16 +906,12 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
         "cli-test".into(),
     )
     .with_inputs(crate::operations::inputs);
-    let shared = Shared::new(host);
+    let transport = Server::new(host).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
-    let tcp = tokio::spawn(snap_transport_tcp::serve(
-        listener,
-        Dispatcher::tcp(shared.clone(), None),
-        server_tls.clone(),
-    ));
-    let dispatch = tokio::spawn(snap_transport_native::dispatch(shared.clone()));
+    let tcp =
+        tokio::spawn(transport.run(listener, server_tls.clone(), None, std::future::pending()));
     let binary = std::env::current_exe()
         .unwrap()
         .parent()
@@ -1196,11 +1192,9 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let (ok, _, _) = call(&binary, &credentials, &["status"], None).await;
     assert!(!ok);
     tcp.abort();
-    dispatch.abort();
     proxy.abort();
     let _ = proxy.await;
     let _ = tcp.await;
-    let _ = dispatch.await;
 }
 
 #[tokio::test]

@@ -19,9 +19,8 @@ use snap_crypto::Native;
 use snap_identity::Crypto;
 use snap_identity::oauth as rp;
 use snap_store::{Error, Host, Store, Transaction};
+use snap_transport::native::{ReadCookie, Transactions};
 use snap_transport::runtime::Loop;
-use snap_transport_native::Shared;
-use snap_transport_ws::ReadCookie;
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -217,7 +216,7 @@ pub struct Config {
     pub dev_origins: Vec<String>,
 }
 pub struct OAuth<H: Loop> {
-    pub host: Arc<Shared<H>>,
+    pub host: Transactions<H>,
     pub cookies: Cookies,
     pub config: Config,
     http: reqwest::Client,
@@ -226,10 +225,11 @@ pub struct OAuth<H: Loop> {
 }
 impl<H: Loop + Host + Send + 'static> OAuth<H> {
     pub fn new(
-        host: Arc<Shared<H>>,
+        host: impl Into<Transactions<H>>,
         cookies: Cookies,
         mut config: Config,
     ) -> Result<Arc<Self>, Error> {
+        let host = host.into();
         config.origin = origin(&config.origin)?;
         config.issuer = origin(&config.issuer)?;
         if config.secret.expose().len() < 32 || config.client.is_empty() {
@@ -247,10 +247,7 @@ impl<H: Loop + Host + Send + 'static> OAuth<H> {
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|_| Error::Unavailable)?;
-        host.host
-            .lock()
-            .unwrap()
-            .transact("oauth.recover", |tx| rp::recover(tx, now()))?;
+        host.run("oauth.recover", |tx| rp::recover(tx, now()))?;
         Ok(Arc::new(Self {
             host,
             cookies,
@@ -265,7 +262,7 @@ impl<H: Loop + Host + Send + 'static> OAuth<H> {
         name: &str,
         f: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        self.host.host.lock().unwrap().transact(name, f)
+        self.host.run(name, f)
     }
     /// A transaction may wait behind controller IO. Keep that wait off Tokio's
     /// async workers; cancellation of the waiter does not cancel the owned task.

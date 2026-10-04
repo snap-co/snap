@@ -360,18 +360,19 @@ async fn run(mut args: Args) -> Result<()> {
             "Cannot change endpoint while an invocation has an unknown outcome. Inspect application state before login starts a fresh lifetime without replay"
         );
     }
-    let tls = snap_transport_tcp::tls::ClientTls::new(ca_file.as_deref(), server_name.as_deref())?;
+    let tls =
+        snap_transport::native::tls::ClientTls::new(ca_file.as_deref(), server_name.as_deref())?;
     if login {
         // Proposed login settings remain local until issuance succeeds. A failed
         // login must leave the original pending invocation and its trust intact.
         async fn exchange(
             addr: &str,
-            tls: &snap_transport_tcp::tls::ClientTls,
+            tls: &snap_transport::native::tls::ClientTls,
             operation: &str,
             input: Value,
             bearer: Option<String>,
         ) -> Result<Value> {
-            let mut tcp = snap_transport_tcp::Client::open(addr, tls).await?;
+            let mut tcp = snap_transport::native::TcpClient::open(addr, tls).await?;
             tcp.send(&snap_transport::Command::Request {
                 bearer,
                 invocation: snap_transport::Invocation {

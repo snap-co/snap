@@ -1,4 +1,4 @@
-use crate::{CommitContext, Participant};
+use super::{CommitContext, Participant};
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use snap_store::{Backend, Error, RowChange};
 use snap_transport::{

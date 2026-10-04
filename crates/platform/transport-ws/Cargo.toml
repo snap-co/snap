@@ -5,11 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-snap-transport = { path = "../../transport" }
-serde_json.workspace = true
-axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["time"] }
-futures-util = "0.3"
+snap-transport = { path = "../../transport", features = ["native-legacy"] }
 
 [lints]
 workspace = true

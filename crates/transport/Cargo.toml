@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+native-client = ["dep:tokio", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"]
+native-server = ["native-client", "dep:axum", "dep:futures-util"]
+# Temporary compatibility for unmigrated hosts and carrier conformance consumers.
+native-legacy = ["native-server"]
+
 [dependencies]
 snap-store.workspace = true
 serde.workspace = true
@@ -11,9 +18,24 @@ serde_json.workspace = true
 ciborium = { version = "0.2.2", default-features = false }
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"], optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+futures-util = { version = "0.3", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
+webpki-roots = { version = "1", optional = true }
+
 [dev-dependencies]
 snap-store-sqlite = { path = "../platform/store-sqlite" }
 toml = "0.9"
+snap-document.workspace = true
+snap-access.workspace = true
+tokio = { version = "1", features = ["test-util"] }
+
+[[test]]
+name = "native_dispatch"
+required-features = ["native-legacy"]
 
 [lints]
 workspace = true

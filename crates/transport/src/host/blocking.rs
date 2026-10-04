@@ -1,4 +1,4 @@
-use crate::{CommitContext, Connection, InvocationScope, Participant, Progress};
+use super::{CommitContext, Connection, InvocationScope, Participant, Progress};
 use alloc::{
     boxed::Box,
     collections::BTreeMap,

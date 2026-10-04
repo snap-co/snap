@@ -14,16 +14,12 @@ factorio-cli = { path = "../cli" }
 snap-config.workspace = true
 factorio = { path = ".." }
 snap-document.workspace = true
-snap-transport-native = { path = "../../../crates/platform/transport-native" }
-snap-transport-ws = { path = "../../../crates/platform/transport-ws" }
 snap-identity-native = { path = "../../../crates/platform/identity-native", features = ["oauth"] }
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-access.workspace = true
 snap-identity.workspace = true
 snap-store.workspace = true
-snap-host.workspace = true
-snap-transport = { path = "../../../crates/transport" }
-snap-transport-tcp = { path = "../../../crates/platform/transport-tcp" }
+snap-transport = { path = "../../../crates/transport", features = ["native-server"] }
 serde_json.workspace = true
 serde.workspace = true
 axum = "0.8"
@@ -35,6 +31,9 @@ uuid = { version = "1", features = ["v4"] }
 nix = { version = "0.30", features = ["signal", "process"] }
 
 [dev-dependencies]
+snap-host.workspace = true
+snap-transport-native = { path = "../../../crates/platform/transport-native" }
+snap-transport-tcp = { path = "../../../crates/platform/transport-tcp" }
 age = { version = "0.11", default-features = false }
 tempfile = "3"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }

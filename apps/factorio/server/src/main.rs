@@ -15,12 +15,11 @@ use axum::{
 };
 use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
-type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
-use snap_transport_native::{Dispatcher, Shared};
-use snap_transport_ws::Service;
+use snap_transport::native::{Prepare, Server, WebSocket, tls};
 use std::{path::PathBuf, sync::Arc};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -116,7 +115,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let secrets = startup.load_secrets()?;
     // Check-config is schema-only for deployment packaging. Serving loads and
     // validates mounted TLS material before either listener can bind.
-    let tcp_tls = snap_transport_tcp::tls::ServerTls::new(
+    let tcp_tls = tls::ServerTls::new(
         &startup.path(&startup.app.tcp.cert_file),
         &startup.path(&startup.app.tcp.key_file),
     )?;
@@ -127,7 +126,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         .as_deref()
         .map(|path| startup.path(path));
     let tcp_ca_file = tcp_ca_file.map(std::fs::canonicalize).transpose()?;
-    snap_transport_tcp::tls::ClientTls::new(
+    tls::ClientTls::new(
         tcp_ca_file.as_deref(),
         startup.app.tcp.server_name.as_deref(),
     )?;
@@ -221,7 +220,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let registry = operations::register(registry, config, origin.clone());
     let host = Host::new(
         store,
-        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
+        snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
         registry,
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -234,17 +233,15 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         random(),
     )
     .with_inputs(operations::inputs);
-    let mut host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
-    tokio::task::block_in_place(|| host.recover())?;
-    let documents = Shared::new(host);
-    let transport = Arc::new(Service {
-        dispatch: Dispatcher::web(documents.clone()),
+    let host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
+    let transport = Server::new(host).await?;
+    let websocket = transport.websocket(WebSocket {
         origin: origin.clone(),
         cookie: Some(cookies.reader()),
         require_cookie: false,
     });
     let oauth = OAuth::new(
-        documents.clone(),
+        transport.transactions(),
         cookies,
         snap_identity_native::oauth::Config {
             origin,
@@ -285,14 +282,14 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         )
         .with_state(app)
         .merge(oauth.routes())
-        .merge(snap_transport_ws::router(transport))
+        .merge(websocket)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Factorio http://{address}");
     println!("Factorio tls://{tcp_address}");
-    let prepare: snap_transport_native::Prepare = Arc::new(move |command| {
+    let prepare: Prepare = Arc::new(move |command| {
         let oauth = oauth.clone();
         Box::pin(async move {
             login::prepare(&oauth, command)
@@ -303,7 +300,15 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
                 })
         })
     });
-    let tcp = Dispatcher::tcp(documents.clone(), Some(prepare));
-    tokio::select! { result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;}) => result?, result=snap_transport_tcp::serve(tcp_listener,tcp,tcp_tls)=>result?, _=snap_transport_native::dispatch(documents)=>unreachable!() }
+    transport
+        .run(
+            tcp_listener,
+            tcp_tls,
+            Some(prepare),
+            axum::serve(listener, router).with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            }),
+        )
+        .await?;
     Ok(())
 }

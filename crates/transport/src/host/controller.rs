@@ -1,5 +1,5 @@
 //! Blocking reconciliation over Store resources, independent of any domain module.
-use crate::{CommitContext, Participant, Subscriptions};
+use super::{CommitContext, Participant, Subscriptions};
 use alloc::{
     boxed::Box,
     collections::BTreeMap,

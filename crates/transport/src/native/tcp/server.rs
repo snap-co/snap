@@ -1,6 +1,6 @@
 //! TLS socket ownership and binary framing only. Commands queue into the same
 //! portable dispatch contract as WebSocket; no Store or credential-refresh IO.
-use crate::{read_command_sized, tls, write_response};
+use super::{read_command_sized, tls, write_response};
 use snap_transport::{
     Command, binary,
     carrier::{Connection, Dispatch, Physical, Submission},

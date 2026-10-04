@@ -1,15 +1,36 @@
 //! Portable transport. Authority supplies identities; sessions remain private to it.
 //! Applications own entry points. Platforms own IO, clocks and connection handles.
-#![no_std]
+#![cfg_attr(
+    not(all(
+        not(target_family = "wasm"),
+        any(
+            feature = "native-server",
+            feature = "native-client",
+            feature = "native-legacy"
+        )
+    )),
+    no_std
+)]
 extern crate alloc;
+extern crate self as snap_transport;
 
 pub mod bearer;
 pub mod binary;
 pub mod carrier;
 pub mod client;
 pub mod execution;
+pub mod host;
 pub mod inbox;
 pub mod lane;
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(
+        feature = "native-server",
+        feature = "native-client",
+        feature = "native-legacy"
+    )
+))]
+pub mod native;
 pub mod operation;
 pub mod runtime;
 pub mod server;
