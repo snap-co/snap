@@ -1,5 +1,7 @@
 # Owned values and read-miss resolution
 
+This decision remains accepted. Terminal NX without handler-visible absence is an open implementation requirement.
+
 Store initially returns owned copies rather than mutable references or opaque access handles, keeping application code independent of borrowed-record lifetimes. Changing a returned copy does not change Store; writes use explicit Store operations. Copy-on-write and other return-value optimizations are deferred until needed.
 
 Operation-facing primary-key reads return an owned value on HIT or invalidate the current attempt on MISS. Read resolution distinguishes LOAD, which makes the requested value resident and permits an explicit fresh attempt, from NX, which terminates the whole operation without re-entering the handler. NX means the requested record does not exist; it is not a status attached to a nonexistent record or a handler-visible value that application code must branch on. A loading failure is never evidence of NX. MISS handling is defined in [Desired-state residency and explicit retry](0004-desired-state-residency-and-explicit-retry.md).

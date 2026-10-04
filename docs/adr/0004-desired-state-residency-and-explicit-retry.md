@@ -1,5 +1,7 @@
 # Desired-state residency and explicit retry
 
+This decision remains accepted. MISS-driven residency resolution, explicit fresh attempts after LOAD, and admission without operation-specific residency preflight are open implementation requirements.
+
 Every read MISS ends the current attempt, discards its staged application writes and updates a residency manifest to request the missing record. The Store driver resolves that desired state through loading outside application execution. If the requested record does not exist, resolution terminates the operation with NX without re-entering the handler. Multiple connections reference one shared resident copy of each record; operations receive their own copies rather than a connection owning a duplicate resident data set.
 
 Residency requests are platform control state, separate from the application transaction that failed. Loading does not resume the failed stack or automatically rerun the operation; execution requires an explicit fresh attempt. A failed fetch cannot establish NX.
