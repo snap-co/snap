@@ -20,27 +20,29 @@ thread_local! {
 fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution() {
     for rejected in [None, Some(0), Some(1), Some(2)] {
         ADMISSION.with(|trace| trace.borrow_mut().clear());
-        let mut host = fixture().with_request(Request {
-            name: "fixture.guarded".into(),
-            identity_required: true,
-            input: |v| v.is_object(),
-            output: |v| v.is_i64(),
-            progress: |_| false,
-            inputs: &[],
-            error: |_| true,
-            guards: vec![
-                Guard::policy(|_, _, v, _| guard_visit(0, v)),
-                Guard::policy(|_, _, v, _| guard_visit(1, v)),
-                Guard::policy(|_, _, v, _| guard_visit(2, v)),
-            ],
-            data: snap_store::Data::new(&[]),
-            handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
-                let doc = Document::new(registry());
-                let before = doc.retained(tx, ID)?;
-                doc.observe(tx, ID, json!(before.value.as_i64().unwrap() + 1))?;
-                Ok(json!(1))
-            }),
-        });
+        let mut host = fixture_with(snap_transport::operation::Registry::default().with_request(
+            Request {
+                name: "fixture.guarded".into(),
+                identity_required: true,
+                input: |v| v.is_object(),
+                output: |v| v.is_i64(),
+                progress: |_| false,
+                inputs: &[],
+                error: |_| true,
+                guards: vec![
+                    Guard::policy(|_, _, v, _| guard_visit(0, v)),
+                    Guard::policy(|_, _, v, _| guard_visit(1, v)),
+                    Guard::policy(|_, _, v, _| guard_visit(2, v)),
+                ],
+                data: snap_store::Data::new(&[]),
+                handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
+                    let doc = Document::new(registry());
+                    let before = doc.retained(tx, ID)?;
+                    doc.observe(tx, ID, json!(before.value.as_i64().unwrap() + 1))?;
+                    Ok(json!(1))
+                }),
+            },
+        ));
         let (peer, _) = connect(&mut host, "alice", "guards", 0);
         host.submit(
             peer,
@@ -98,33 +100,35 @@ fn guard_visit(index: usize, input: &serde_json::Value) -> Result<(), snap_store
 #[test]
 fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
     for failure in ["output", "cold", "invalid"] {
-        let mut host = fixture().with_request(Request {
-            name: "fixture.invalid-output".into(),
-            identity_required: true,
-            input: |v| matches!(v.as_str(), Some("output" | "cold" | "invalid")),
-            output: |v| v.is_i64(),
-            progress: |_| false,
-            inputs: &[],
-            error: |_| true,
-            guards: vec![],
-            data: snap_store::Data::new(&[]),
-            handler: snap_transport::operation::Handler::new(|tx, call, _, _, _| {
-                Document::new(registry()).observe(tx, ID, json!(99))?;
-                if call.input == "cold" {
-                    // A caught Store failure still poisons the whole transaction.
-                    assert!(matches!(
-                        tx.find(snap_document::server::TABLES[0], "primary", &[]),
-                        Err(snap_store::Error::Miss(_))
-                    ));
-                } else if call.input == "invalid" {
-                    assert_eq!(
-                        tx.get(snap_document::server::TABLES[0], &[]),
-                        Err(snap_store::Error::Invalid)
-                    );
-                }
-                Ok(json!("not the declared output"))
-            }),
-        });
+        let mut host = fixture_with(snap_transport::operation::Registry::default().with_request(
+            Request {
+                name: "fixture.invalid-output".into(),
+                identity_required: true,
+                input: |v| matches!(v.as_str(), Some("output" | "cold" | "invalid")),
+                output: |v| v.is_i64(),
+                progress: |_| false,
+                inputs: &[],
+                error: |_| true,
+                guards: vec![],
+                data: snap_store::Data::new(&[]),
+                handler: snap_transport::operation::Handler::new(|tx, call, _, _, _| {
+                    Document::new(registry()).observe(tx, ID, json!(99))?;
+                    if call.input == "cold" {
+                        // A caught Store failure still poisons the whole transaction.
+                        assert!(matches!(
+                            tx.find(snap_document::server::TABLES[0], "primary", &[]),
+                            Err(snap_store::Error::Miss(_))
+                        ));
+                    } else if call.input == "invalid" {
+                        assert_eq!(
+                            tx.get(snap_document::server::TABLES[0], &[]),
+                            Err(snap_store::Error::Invalid)
+                        );
+                    }
+                    Ok(json!("not the declared output"))
+                }),
+            },
+        ));
         let (peer, _) = connect(&mut host, "alice", "invalid-output", 0);
         host.submit(
             peer,
@@ -172,26 +176,28 @@ fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
 #[test]
 fn accepted_table_residency_survives_connection_housekeeping_without_readmission() {
     for housekeeping in ["none", "connect", "close", "expire"] {
-        let mut host = fixture().with_request(Request {
-            name: "fixture.scan".into(),
-            identity_required: true,
-            input: |v| v.is_null(),
-            output: |v| v.is_u64(),
-            progress: |_| false,
-            inputs: &[],
-            error: |_| true,
-            guards: vec![Guard::policy(|tx, _, _, _| {
-                tx.find(snap_document::server::TABLES[0], "primary", &[])?;
-                Ok(())
-            })],
-            data: snap_store::Data::new(&[snap_document::server::TABLES[0]]),
-            handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
-                Ok(json!(
-                    tx.find(snap_document::server::TABLES[0], "primary", &[])?
-                        .len()
-                ))
-            }),
-        });
+        let mut host = fixture_with(snap_transport::operation::Registry::default().with_request(
+            Request {
+                name: "fixture.scan".into(),
+                identity_required: true,
+                input: |v| v.is_null(),
+                output: |v| v.is_u64(),
+                progress: |_| false,
+                inputs: &[],
+                error: |_| true,
+                guards: vec![Guard::policy(|tx, _, _, _| {
+                    tx.find(snap_document::server::TABLES[0], "primary", &[])?;
+                    Ok(())
+                })],
+                data: snap_store::Data::new(&[snap_document::server::TABLES[0]]),
+                handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
+                    Ok(json!(
+                        tx.find(snap_document::server::TABLES[0], "primary", &[])?
+                            .len()
+                    ))
+                }),
+            },
+        ));
         let (peer, _) = connect(&mut host, "alice", "scan", 0);
         let other = if matches!(housekeeping, "close" | "expire") {
             Some(connect(&mut host, "bob", "other", 0).0)
@@ -245,20 +251,22 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
 
 #[test]
 fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
-    let mut host = fixture().with_preconnection_request(Request {
-        name: "fixture.fetch".into(),
-        identity_required: false,
-        input: |value| value.is_null(),
-        output: |value| value.is_i64(),
-        progress: |_| false,
-        inputs: &[],
-        error: |_| true,
-        guards: vec![],
-        data: snap_store::Data::new(&[snap_document::server::TABLES[0]]),
-        handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
-            Ok(Document::new(registry()).read(tx, ID, Some("alice"))?.value)
+    let mut host = fixture_with(
+        snap_transport::operation::Registry::default().with_preconnection_request(Request {
+            name: "fixture.fetch".into(),
+            identity_required: false,
+            input: |value| value.is_null(),
+            output: |value| value.is_i64(),
+            progress: |_| false,
+            inputs: &[],
+            error: |_| true,
+            guards: vec![],
+            data: snap_store::Data::new(&[snap_document::server::TABLES[0]]),
+            handler: snap_transport::operation::Handler::new(|tx, _, _, _, _| {
+                Ok(Document::new(registry()).read(tx, ID, Some("alice"))?.value)
+            }),
         }),
-    });
+    );
     let (peer, _) = connect(&mut host, "alice", "http-fifo", 0);
     submit(&mut host, peer, 1, intent(1, 7));
     let invocation = Invocation {
@@ -382,6 +390,12 @@ fn registry() -> Registry {
 }
 
 fn fixture() -> Host<snap_store_sqlite::Sqlite> {
+    fixture_with(snap_transport::operation::Registry::default())
+}
+
+fn fixture_with(
+    mut operations: snap_transport::operation::Registry,
+) -> Host<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = vec![
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
@@ -394,7 +408,10 @@ fn fixture() -> Host<snap_store_sqlite::Sqlite> {
     {
         store.load(table).unwrap();
     }
-    let document = Document::new(registry());
+    let document = Arc::new(Document::new(registry()));
+    for definition in snap_document::operations::definitions(document.clone()) {
+        operations = operations.with_request(definition);
+    }
     store
         .run("fixture", |tx| {
             document.create(
@@ -422,6 +439,7 @@ fn fixture() -> Host<snap_store_sqlite::Sqlite> {
     Host::new(
         store,
         document,
+        operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| match bearer {
                 "alice" | "bob" => Ok(bearer.into()),
@@ -1254,31 +1272,33 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
 fn connectionless_bearer_handoff_is_separate_from_output_and_requires_successful_commit() {
     use snap_transport::bearer::{Change, Receiver, Token};
     for failure in [0, 1, 2] {
-        let mut host = fixture().with_preconnection_request(Request {
-            name: "fixture.issue".into(),
-            identity_required: false,
-            input: |v| v.is_null(),
-            output: if failure == 2 {
-                |_| false
-            } else {
-                |v| v.is_null()
-            },
-            progress: |_| false,
-            error: |_| true,
-            guards: vec![],
-            inputs: &[],
-            data: Document::new(registry()).data(),
-            handler: snap_transport::operation::Handler::new(move |tx, _, _, _, context| {
-                Document::new(registry()).observe(tx, ID, json!(1))?;
-                context
-                    .bearer_changed(Change::Set(Token::new("private-token".into())))
-                    .unwrap();
-                if failure == 1 {
-                    return Err(snap_store::Error::Unavailable);
-                }
-                Ok(json!(null))
+        let mut host = fixture_with(
+            snap_transport::operation::Registry::default().with_preconnection_request(Request {
+                name: "fixture.issue".into(),
+                identity_required: false,
+                input: |v| v.is_null(),
+                output: if failure == 2 {
+                    |_| false
+                } else {
+                    |v| v.is_null()
+                },
+                progress: |_| false,
+                error: |_| true,
+                guards: vec![],
+                inputs: &[],
+                data: Document::new(registry()).data(),
+                handler: snap_transport::operation::Handler::new(move |tx, _, _, _, context| {
+                    Document::new(registry()).observe(tx, ID, json!(1))?;
+                    context
+                        .bearer_changed(Change::Set(Token::new("private-token".into())))
+                        .unwrap();
+                    if failure == 1 {
+                        return Err(snap_store::Error::Unavailable);
+                    }
+                    Ok(json!(null))
+                }),
             }),
-        });
+        );
         let reply = host.preconnection_reply(
             Invocation {
                 id: 7,
@@ -1305,20 +1325,22 @@ fn connectionless_bearer_handoff_is_separate_from_output_and_requires_successful
 
 #[test]
 fn connectionless_reply_preserves_admission_for_failed_execution() {
-    let mut host = fixture().with_preconnection_request(Request {
-        name: "fixture.failure".into(),
-        identity_required: false,
-        input: |v| v.is_null(),
-        output: |v| v.is_null(),
-        progress: |_| false,
-        error: |_| true,
-        guards: vec![],
-        inputs: &[],
-        data: snap_store::Data::default(),
-        handler: snap_transport::operation::Handler::new(|_, _, _, _, _| {
-            Err(snap_store::Error::Unavailable)
+    let mut host = fixture_with(
+        snap_transport::operation::Registry::default().with_preconnection_request(Request {
+            name: "fixture.failure".into(),
+            identity_required: false,
+            input: |v| v.is_null(),
+            output: |v| v.is_null(),
+            progress: |_| false,
+            error: |_| true,
+            guards: vec![],
+            inputs: &[],
+            data: snap_store::Data::default(),
+            handler: snap_transport::operation::Handler::new(|_, _, _, _, _| {
+                Err(snap_store::Error::Unavailable)
+            }),
         }),
-    });
+    );
     for (input, accepted) in [(json!(null), true), (json!({}), false)] {
         let reply = host.preconnection_reply(
             Invocation {

@@ -163,6 +163,14 @@ client operation dispatch cannot exercise. Snap owns reusable module cases;
 apps own their server-specific host and policy. Use the real module and
 its transaction interface, with the authority required by that interface.
 
+Module and application operation definitions register in Transport's registry,
+including the private connectionless classification. Application assembly passes
+that registry to the existing execution host; Document operations are explicitly
+selected like any other module, never registered implicitly by Document's runtime.
+Identity's native OAuth adapter consumes Store's host transaction contract and
+Transport's loop contract, without a Document dependency. Existing host cases
+retain the serialized transaction and controller-ordering guarantees.
+
 Credential resolution is supplied by host assembly through Transport's bearer
 authority interface. Identity owns its provider-backed resolution and optional
 identity policy; hosts prepare credential data before mounting consumers.

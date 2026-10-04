@@ -1,6 +1,6 @@
 //! The portable dispatch boundary owns acceptance, typed outcomes and rollback.
 use snap_store::{Error as StoreError, Transaction};
-use snap_transport::operation::{Context, Definition, Guard, Runtime, TypedFailure};
+use snap_transport::operation::{Context, Definition, Guard, Registry, Runtime, TypedFailure};
 use snap_transport::{Error, Invocation, Operation, Value, json};
 
 struct Increment;
@@ -59,7 +59,6 @@ columns = [{name="id",kind="integer"},{name="value",kind="integer"}]
 #[test]
 fn accepted_typed_handler_composes_nested_writes_without_recharging_policy() {
     let mut store = store();
-    let mut runtime = Runtime::default();
     let definition = Definition::typed::<Increment>(
         false,
         vec![Guard::new(|tx, _, context| {
@@ -82,7 +81,8 @@ fn accepted_typed_handler_composes_nested_writes_without_recharging_policy() {
             Ok(counter(tx)? as u64)
         },
     );
-    let selected = runtime.register(definition).unwrap();
+    let mut runtime = Runtime::new(Registry::default().with_request(definition));
+    let selected = runtime.definitions().resolve(Increment::NAME).unwrap();
     for id in 1..=2 {
         runtime
             .enqueue(
@@ -96,6 +96,20 @@ fn accepted_typed_handler_composes_nested_writes_without_recharging_policy() {
             )
             .unwrap();
     }
+    // A new, otherwise valid name cannot change assembly once traffic begins.
+    let mut late = Definition::typed::<Increment>(
+        false,
+        vec![],
+        snap_store::Data::default(),
+        &[],
+        |_, input, _| Ok(input),
+    );
+    late.name = "quota.late".into();
+    assert_eq!(runtime.register(late), Err(Error::Protocol));
+    assert_eq!(
+        runtime.definitions().resolve("quota.late"),
+        Err(Error::UnknownOperation)
+    );
     let (work, call, selection) = runtime.acquire().unwrap();
     runtime
         .accept(&mut store, work, call, selection, Context::default())
@@ -206,7 +220,6 @@ columns=[{name="id",kind="integer"}]
         let mut store =
             Store::new(migration.apply(&Catalog::default()).unwrap(), Disk(fault)).unwrap();
         store.load("private.tokens").unwrap();
-        let mut runtime = Runtime::default();
         let mut definition = Definition::typed::<Increment>(
             false,
             vec![],
@@ -229,7 +242,8 @@ columns=[{name="id",kind="integer"}]
         if failure == 2 {
             definition.output = |_| false;
         }
-        let selection = runtime.register(definition).unwrap();
+        let mut runtime = Runtime::new(Registry::default().with_preconnection_request(definition));
+        let selection = runtime.definitions().resolve(Increment::NAME).unwrap();
         runtime
             .enqueue(
                 (),

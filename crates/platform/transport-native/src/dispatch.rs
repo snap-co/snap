@@ -358,9 +358,15 @@ mod tests {
         {
             store.load(table).unwrap();
         }
+        let document = Arc::new(document);
+        let mut operations = snap_transport::operation::Registry::default();
+        for definition in snap_document::operations::definitions(document.clone()) {
+            operations = operations.with_request(definition);
+        }
         Host::new(
             store,
             document,
+            operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
                 Ok("actor".into())
             }))),

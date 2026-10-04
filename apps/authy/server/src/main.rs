@@ -160,16 +160,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parsed.scheme() == "https",
         cookie_key.as_ref(),
     )?);
-    let host = Runtime::new(
-        store,
-        authy::document(),
-        Arc::new(snap_identity::authentication::Authentication::new(
-            Arc::new(Identity::default().provider(snap_crypto::Native)),
-            Arc::new(now),
-        )),
-        snap_transport::server::Config::default(),
-        keys::random(),
-    );
     // WebAuthn requires a secure DNS origin (or HTTP localhost). Other valid
     // development origins retain password/issuer behavior without passkeys.
     let webauthn = parsed
@@ -178,7 +168,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|rp| snap_identity_native::passkey::Native::new(rp, &origin))
         .transpose()?;
     let passkeys_enabled = webauthn.is_some();
-    let host = operations::register(host, webauthn);
+    let document = Arc::new(authy::document());
+    let mut registry = snap_transport::operation::Registry::default();
+    for definition in snap_document::operations::definitions(document.clone()) {
+        registry = registry.with_request(definition);
+    }
+    let registry = operations::register(registry, webauthn);
+    let host = Runtime::new(
+        store,
+        document,
+        registry,
+        Arc::new(snap_identity::authentication::Authentication::new(
+            Arc::new(Identity::default().provider(snap_crypto::Native)),
+            Arc::new(now),
+        )),
+        snap_transport::server::Config::default(),
+        keys::random(),
+    )
+    .with_inputs(|key| match key {
+        "clock" => Ok(serde_json::json!(now())),
+        _ => Err(snap_transport::Error::Unavailable),
+    });
     let cookie: ReadCookie = {
         let keys = keys.clone();
         Arc::new(move |headers| keys.read_cookie(headers))

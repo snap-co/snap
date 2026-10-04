@@ -15,7 +15,7 @@ use alloc::{
 };
 use snap_store::{Backend, Store, Transaction};
 use snap_transport::operation::{
-    Context, Definition, Runtime as Operations, Selection, storage_error,
+    Context, Registry, Runtime as Operations, Selection, storage_error,
 };
 use snap_transport::runtime::{CarrierControl, Output};
 use snap_transport::server::{Attachment, Authority, Config, ConnectionId, Server};
@@ -88,7 +88,6 @@ pub struct Runtime<B: Backend> {
     authority: Arc<dyn snap_transport::bearer::Authority>,
     requests: Operations<Work>,
     input: Input,
-    preconnection_requests: BTreeSet<Selection>,
     peers: BTreeMap<u64, Peer>,
     controllers: BTreeMap<String, Controller<B>>,
     reconcile: BTreeMap<String, Snapshot>,
@@ -106,9 +105,12 @@ impl<B: Backend> Runtime<B> {
     /// Hosts supply credential policy and prepare its resident data before use.
     /// Document consumes captured identity and asks Access about documents; it
     /// does not select credential providers or decide credential validity.
+    /// Application assembly supplies a Transport registry, including any desired
+    /// Document operations. This host never registers modules implicitly.
     pub fn new(
         store: Store<B>,
-        document: Document,
+        document: Arc<Document>,
+        operations: Registry,
         authority: Arc<dyn snap_transport::bearer::Authority>,
         config: Config,
         boot: String,
@@ -119,11 +121,7 @@ impl<B: Backend> Runtime<B> {
             store: store.clone(),
             authority: authority.clone(),
         };
-        let document = Arc::new(document);
-        let mut requests = Operations::default();
-        for definition in crate::operations::definitions(document.clone()) {
-            requests.register(definition).expect("document operation");
-        }
+        let requests = Operations::new(operations);
         Self {
             store,
             document,
@@ -131,7 +129,6 @@ impl<B: Backend> Runtime<B> {
             authority,
             requests,
             input: Box::new(|_| Err(Error::Unavailable)),
-            preconnection_requests: BTreeSet::new(),
             peers: BTreeMap::new(),
             controllers: BTreeMap::new(),
             reconcile: BTreeMap::new(),
@@ -144,17 +141,6 @@ impl<B: Backend> Runtime<B> {
         }
     }
 
-    pub fn with_request(mut self, request: Definition) -> Self {
-        assert!(
-            self.peers.is_empty() && self.requests.idle(),
-            "assemble operations before accepting traffic"
-        );
-        self.requests
-            .register(request)
-            .expect("valid, unique operation name");
-        self
-    }
-
     /// Bootstrap selects physical providers for explicitly declared read-only
     /// inputs. Called only for the FIFO owner, never inside a portable handler.
     pub fn with_inputs(
@@ -165,23 +151,11 @@ impl<B: Backend> Runtime<B> {
         self
     }
 
-    /// Sensitive acquisition runs as one connectionless exchange. It cannot be
-    /// invoked on a retained attachment, and its inputs/results are removed after
-    /// completion. Carriers own projection, including HTTP cookies. Validation,
-    /// admission, FIFO and durable completion are shared with connected operations.
-    pub fn with_preconnection_request(mut self, request: Definition) -> Self {
-        let name = request.name.clone();
-        self = self.with_request(request);
-        self.preconnection_requests
-            .insert(self.requests.definitions().resolve(&name).unwrap());
-        self
-    }
-
     pub fn is_preconnection_request(&self, name: &str) -> bool {
         self.requests
             .definitions()
             .resolve(name)
-            .is_ok_and(|selection| self.preconnection_requests.contains(&selection))
+            .is_ok_and(|selection| self.requests.definitions().is_preconnection(selection))
     }
     pub fn retention_ms(&self) -> u64 {
         self.retention_ms
@@ -230,7 +204,7 @@ impl<B: Backend> Runtime<B> {
         bearer: Option<String>,
     ) -> Result<snap_transport::bearer::Reply, Error> {
         let selection = self.requests.definitions().resolve(&invocation.operation)?;
-        if !self.preconnection_requests.contains(&selection) {
+        if !self.requests.definitions().is_preconnection(selection) {
             return Err(Error::UnknownOperation);
         }
         let request = self.requests.definitions().get(selection);
@@ -552,7 +526,9 @@ impl<B: Backend> Runtime<B> {
                 .ok(),
             _ => None,
         };
-        if selection.is_some_and(|selection| self.preconnection_requests.contains(&selection)) {
+        if selection
+            .is_some_and(|selection| self.requests.definitions().is_preconnection(selection))
+        {
             return Err(Error::UnknownOperation);
         }
         let response = match command {
@@ -904,7 +880,7 @@ impl<B: Backend> Runtime<B> {
             serde_json::from_value::<Option<crate::Replication>>(completed.context.publication)
                 .unwrap_or(None);
         let changes = completed.changes;
-        let outcome = if self.preconnection_requests.contains(&work.selection)
+        let outcome = if self.requests.definitions().is_preconnection(work.selection)
             && let Some(error) = completed.storage_failure
         {
             Err(match error {
@@ -1136,6 +1112,16 @@ impl<B: Backend> Runtime<B> {
             let _ = self.transport.disconnect(&attachment, now);
         }
         self.tick(now);
+    }
+}
+
+impl<B: Backend> snap_store::Host for Runtime<B> {
+    fn transact<T>(
+        &mut self,
+        operation: &str,
+        handler: impl FnOnce(&mut Transaction<'_>) -> Result<T, snap_store::Error>,
+    ) -> Result<T, snap_store::Error> {
+        Runtime::transact(self, operation, handler)
     }
 }
 

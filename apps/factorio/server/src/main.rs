@@ -25,7 +25,7 @@ use std::{path::PathBuf, sync::Arc};
 use tower_http::services::{ServeDir, ServeFile};
 
 struct App {
-    oauth: Arc<OAuth>,
+    oauth: Arc<OAuth<Runtime<snap_store_sqlite::Sqlite>>>,
     tools: config::Tools,
     tcp: std::net::SocketAddr,
     tcp_ca_file: Option<PathBuf>,
@@ -211,9 +211,16 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "factorio", origin.starts_with("https:"))?;
+    let document = Arc::new(graph::document());
+    let mut registry = snap_transport::operation::Registry::default();
+    for definition in snap_document::operations::definitions(document.clone()) {
+        registry = registry.with_request(definition);
+    }
+    let registry = operations::register(registry, config, origin.clone());
     let host = Runtime::new(
         store,
-        graph::document(),
+        document,
+        registry,
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
             Arc::new(operations::retained),
@@ -223,8 +230,8 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
             ..Default::default()
         },
         random(),
-    );
-    let host = operations::register(host, config, origin.clone());
+    )
+    .with_inputs(operations::inputs);
     let mut host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
     tokio::task::block_in_place(|| host.recover_controllers())?;
     let documents = Shared::new(host);

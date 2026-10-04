@@ -25,20 +25,7 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
     let executions = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let count = executions.clone();
-    let host = Host::new(
-        store,
-        document,
-        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, b| {
-            if b == "token" {
-                Ok("actor".into())
-            } else {
-                Err(snap_store::Error::NotFound)
-            }
-        }))),
-        Default::default(),
-        "boot".into(),
-    )
-    .with_request(Request {
+    let operations = snap_transport::operation::Registry::default().with_request(Request {
         name: "fixture.probe".into(),
         identity_required: true,
         input: |v| v.is_null(),
@@ -54,6 +41,20 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
             ))
         }),
     });
+    let host = Host::new(
+        store,
+        Arc::new(document),
+        operations,
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, b| {
+            if b == "token" {
+                Ok("actor".into())
+            } else {
+                Err(snap_store::Error::NotFound)
+            }
+        }))),
+        Default::default(),
+        "boot".into(),
+    );
     let shared = Shared::new(host);
     // TLS permits a wildcard listener; peers still verify the concrete address.
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
@@ -169,32 +170,34 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
     let document =
         snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
     document.metadata().prepare(&mut store).unwrap();
+    let operations =
+        snap_transport::operation::Registry::default().with_preconnection_request(Request {
+            name: "fixture.acquire".into(),
+            identity_required: false,
+            input: |v| v.is_null(),
+            output: |v| v.is_null(),
+            progress: |_| false,
+            error: |_| true,
+            guards: vec![],
+            inputs: &[],
+            data: snap_store::Data::default(),
+            handler: snap_transport::operation::Handler::new(|_, _, _, _, context| {
+                context
+                    .bearer_changed(Change::Set(Token::new("private-token".into())))
+                    .unwrap();
+                Ok(json!(null))
+            }),
+        });
     let host = Host::new(
         store,
-        document,
+        Arc::new(document),
+        operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
             Err(snap_store::Error::NotFound)
         }))),
         Default::default(),
         "bearer-boot".into(),
-    )
-    .with_preconnection_request(Request {
-        name: "fixture.acquire".into(),
-        identity_required: false,
-        input: |v| v.is_null(),
-        output: |v| v.is_null(),
-        progress: |_| false,
-        error: |_| true,
-        guards: vec![],
-        inputs: &[],
-        data: snap_store::Data::default(),
-        handler: snap_transport::operation::Handler::new(|_, _, _, _, context| {
-            context
-                .bearer_changed(Change::Set(Token::new("private-token".into())))
-                .unwrap();
-            Ok(json!(null))
-        }),
-    });
+    );
     let shared = Shared::new(host);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

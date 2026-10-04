@@ -13,6 +13,18 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 pub use schema::*;
 pub use transaction::*;
 
+/// Internal transactions supplied by application execution. Implementations
+/// serialize these behind accepted work and return values only after durable
+/// commit and required application reconciliation. Callbacks must not perform
+/// external IO or reenter their execution host.
+pub trait Host {
+    fn transact<T>(
+        &mut self,
+        operation: &str,
+        handler: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
+    ) -> Result<T, Error>;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {

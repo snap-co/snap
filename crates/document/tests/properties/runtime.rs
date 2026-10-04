@@ -69,9 +69,15 @@ fn accepted_authority_dedup_and_draining_match_committed_effects(tc: TestCase) {
         .unwrap();
     let effects = Arc::new(Mutex::new(Vec::new()));
     let observed = effects.clone();
+    let server = Arc::new(document());
+    let mut operations = snap_transport::operation::Registry::default();
+    for definition in snap_document::operations::definitions(server.clone()) {
+        operations = operations.with_request(definition);
+    }
     let mut host = Host::new(
         store,
-        document(),
+        server,
+        operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| Ok(bearer.into()),
         ))),

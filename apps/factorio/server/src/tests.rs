@@ -6,6 +6,17 @@ mod tls_support;
 
 const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 
+fn operations(
+    document: &std::sync::Arc<snap_document::server::Document>,
+    config: factorio::Config,
+) -> snap_transport::operation::Registry {
+    let mut registry = snap_transport::operation::Registry::default();
+    for definition in snap_document::operations::definitions(document.clone()) {
+        registry = registry.with_request(definition);
+    }
+    crate::operations::register(registry, config, "http://localhost".into())
+}
+
 #[test]
 fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
     use factorio::workspaces as graph;
@@ -30,9 +41,11 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
             .unwrap();
         let live = Arc::new(AtomicBool::new(true));
         let authority = live.clone();
-        let host = Host::new(
+        let document = Arc::new(factorio::workspaces::document());
+        let mut host = Host::new(
             store,
-            factorio::workspaces::document(),
+            document.clone(),
+            operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 move |tx, bearer| {
                     if !authority.load(Ordering::SeqCst) {
@@ -43,8 +56,8 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
             ))),
             Default::default(),
             "accepted-authority".into(),
-        );
-        let mut host = crate::operations::register(host, config, "http://localhost".into());
+        )
+        .with_inputs(crate::operations::inputs);
         let peer = host.open().unwrap();
         host.submit(
             peer,
@@ -121,17 +134,19 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
     for loss in ["revoked", "session-expired", "access-expired"] {
         let (store, config, mut session) = authority_fixture();
         let owner = session.owner.clone();
-        let host = Host::new(
+        let document = Arc::new(graph::document());
+        let mut host = Host::new(
             store,
-            graph::document(),
+            document.clone(),
+            operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::with_retained(
                 Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
                 Arc::new(crate::operations::retained),
             )),
             Default::default(),
             "expired-authority".into(),
-        );
-        let mut host = crate::operations::register(host, config, "http://localhost".into());
+        )
+        .with_inputs(crate::operations::inputs);
         let peer = host.open().unwrap();
         host.submit(
             peer,
@@ -250,9 +265,11 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
                 )
             })
             .unwrap();
-        let host = Host::new(
+        let document = Arc::new(factorio::workspaces::document());
+        let mut host = Host::new(
             store,
-            factorio::workspaces::document(),
+            document.clone(),
+            operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::with_retained(
                 Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
                 Arc::new(crate::operations::retained),
@@ -262,8 +279,8 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
                 capacity: 8,
             },
             "retention".into(),
-        );
-        let mut host = crate::operations::register(host, config, "http://localhost".into());
+        )
+        .with_inputs(crate::operations::inputs);
         let connect = || Command::Connect {
             bearer: "cli".into(),
             client_id: "retained".into(),
@@ -371,17 +388,19 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
     let (store, config, mut session) = authority_fixture();
-    let host = Host::new(
+    let document = Arc::new(graph::document());
+    let mut host = Host::new(
         store,
-        graph::document(),
+        document.clone(),
+        operations(&document, config),
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
             Arc::new(crate::operations::retained),
         )),
         Default::default(),
         "holdings-authority".into(),
-    );
-    let mut host = crate::operations::register(host, config, "http://localhost".into());
+    )
+    .with_inputs(crate::operations::inputs);
     let peer = host.open().unwrap();
     host.submit(
         peer,
@@ -474,33 +493,35 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     use std::time::Duration;
     let (mut store, config, _) = authority_fixture();
     let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
+    let document = Arc::new(factorio::workspaces::document());
     let host = Host::new(
         store,
-        factorio::workspaces::document(),
+        document.clone(),
+        operations(&document, config),
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
             Arc::new(crate::operations::retained),
         )),
         Default::default(),
         "slow-controller".into(),
-    );
+    )
+    .with_inputs(crate::operations::inputs);
     let runtime = tokio::runtime::Handle::current();
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let mut entered = Some(entered);
-    let host = crate::operations::register(host, config, "http://localhost".into())
-        .with_controller(
-            factorio::workspaces::WORKSPACE_KIND,
-            Box::new(move |_, _| {
-                if let Some(entered) = entered.take() {
-                    entered.send(()).unwrap();
-                    // Production native controllers await Tokio process IO while
-                    // holding this same host gate. Two renewal waits must leave the
-                    // two async workers free to drive that IO and this deadline.
-                    runtime.block_on(tokio::time::sleep(Duration::from_secs(17)));
-                }
-                Ok(())
-            }),
-        );
+    let host = host.with_controller(
+        factorio::workspaces::WORKSPACE_KIND,
+        Box::new(move |_, _| {
+            if let Some(entered) = entered.take() {
+                entered.send(()).unwrap();
+                // Production native controllers await Tokio process IO while
+                // holding this same host gate. Two renewal waits must leave the
+                // two async workers free to drive that IO and this deadline.
+                runtime.block_on(tokio::time::sleep(Duration::from_secs(17)));
+            }
+            Ok(())
+        }),
+    );
     let shared = Shared::new(host);
     let oauth = OAuth::new(
         shared.clone(),
@@ -645,9 +666,15 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
         })
         .unwrap();
     let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
+    let document = Arc::new(factorio::workspaces::document());
+    let mut registry = snap_transport::operation::Registry::default();
+    for definition in snap_document::operations::definitions(document.clone()) {
+        registry = registry.with_request(definition);
+    }
     let host = Host::new(
         store,
-        factorio::workspaces::document(),
+        document,
+        registry,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner),
         ))),
@@ -849,16 +876,18 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
             Ok(())
         })
         .unwrap();
+    let document = std::sync::Arc::new(factorio::workspaces::document());
     let host = Host::new(
         store,
-        factorio::workspaces::document(),
+        document.clone(),
+        operations(&document, config),
         std::sync::Arc::new(snap_transport::bearer::Callbacks::new(std::sync::Arc::new(
             |tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner),
         ))),
         Default::default(),
         "cli-test".into(),
-    );
-    let host = crate::operations::register(host, config, "http://localhost".into());
+    )
+    .with_inputs(crate::operations::inputs);
     let shared = Shared::new(host);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();

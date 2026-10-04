@@ -9,7 +9,10 @@ use snap_transport_ws::Service;
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
-async fn session(State(oauth): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
+async fn session(
+    State(oauth): State<Arc<OAuth<Runtime<snap_store_sqlite::Sqlite>>>>,
+    headers: HeaderMap,
+) -> Response {
     match oauth.session(&headers).await {
         Ok(session) => no_store(
             json!({"identified":true,"csrf":session.csrf,"account":{"id":session.subject,"owner":session.owner,"name":session.profile["name"],"email":session.profile["email"]}}),
@@ -19,15 +22,17 @@ async fn session(State(oauth): State<Arc<OAuth>>, headers: HeaderMap) -> Respons
     }
 }
 
-fn operations(mut host: Runtime<snap_store_sqlite::Sqlite>) -> Runtime<snap_store_sqlite::Sqlite> {
-    host = host.with_inputs(|key| match key {
-        "clock" => Ok(json!(now())),
-        _ => Err(snap_transport::Error::Unavailable),
-    });
-    for definition in chatty::operations::declarations() {
-        host = host.with_request(definition);
+fn operations(
+    document: Arc<snap_document::server::Document>,
+) -> snap_transport::operation::Registry {
+    let mut operations = snap_transport::operation::Registry::default();
+    for definition in snap_document::operations::definitions(document)
+        .into_iter()
+        .chain(chatty::operations::declarations())
+    {
+        operations = operations.with_request(definition);
     }
-    host
+    operations
 }
 
 #[derive(serde::Deserialize)]
@@ -87,15 +92,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "chatty", origin.starts_with("https:"))?;
-    let host = operations(Runtime::new(
+    let document = Arc::new(chatty::document());
+    let operations = operations(document.clone());
+    let host = Runtime::new(
         store,
-        chatty::document(),
+        document,
+        operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner),
         ))),
         snap_transport::server::Config::default(),
         random(),
-    ));
+    )
+    .with_inputs(|key| match key {
+        "clock" => Ok(json!(now())),
+        _ => Err(snap_transport::Error::Unavailable),
+    });
     let documents = Shared::new(host);
     let transport = Arc::new(Service {
         dispatch: Dispatcher::web(documents.clone()),

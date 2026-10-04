@@ -325,9 +325,15 @@ mod tests {
             })
             .unwrap();
         let calls = Arc::new(Mutex::new(Calls::default()));
+        let document = Arc::new(graph::document());
+        let mut operations = snap_transport::operation::Registry::default();
+        for definition in snap_document::operations::definitions(document.clone()) {
+            operations = operations.with_request(definition);
+        }
         let host = Runtime::new(
             store,
-            graph::document(),
+            document,
+            operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 |_, bearer| Ok(bearer.into()),
             ))),

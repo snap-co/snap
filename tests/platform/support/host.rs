@@ -40,9 +40,16 @@ pub fn mount<B: Backend>(
     for table in cartridge::TABLES {
         store.retain_keys(table, &Default::default())?;
     }
-    let mut host = Host::new(
+    let mut operations = snap_transport::operation::Registry::default();
+    for definition in cartridge::definitions() {
+        operations = operations.with_request(definition);
+    }
+    let host = Host::new(
         store,
-        Document::new(Registry::new(vec![]).expect("empty document registry")),
+        Arc::new(Document::new(
+            Registry::new(vec![]).expect("empty document registry"),
+        )),
+        operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| {
                 if bearer == "alice" {
@@ -55,8 +62,5 @@ pub fn mount<B: Backend>(
         config,
         boot,
     );
-    for definition in cartridge::definitions() {
-        host = host.with_request(definition);
-    }
     Ok(host)
 }

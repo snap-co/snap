@@ -36,7 +36,15 @@ fn assembly_rejects_ambiguous_names_without_replacing_a_selected_definition() {
             Err(Error::Protocol)
         );
     }
-    let second = operations.register(definition("fixture.second")).unwrap();
+    let second = operations
+        .register_preconnection(definition("fixture.second"))
+        .unwrap();
+    assert_eq!(
+        operations.register_preconnection(definition("fixture.first")),
+        Err(Error::Protocol)
+    );
+    assert!(!operations.is_preconnection(first));
+    assert!(operations.is_preconnection(second));
     assert_eq!(operations.resolve("fixture.first"), Ok(first));
     assert_eq!(operations.get(first).name, "fixture.first");
     assert_eq!(operations.resolve("fixture.second"), Ok(second));

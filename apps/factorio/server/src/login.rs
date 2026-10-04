@@ -8,7 +8,10 @@ use axum::{Form, extract::Path, response::Html};
 /// dispatcher still revalidates authority when admitting each protected operation.
 /// Renewal may wait behind an accepted controller; waiting does not block Tokio
 /// or shorten the login/recovery lifetime. Network IO never holds the host lock.
-pub async fn prepare(oauth: &Arc<OAuth>, command: snap_transport::Command) -> Result<(), Error> {
+pub async fn prepare(
+    oauth: &Arc<OAuth<Runtime<snap_store_sqlite::Sqlite>>>,
+    command: snap_transport::Command,
+) -> Result<(), Error> {
     let id = oauth
         .run_async("cli.refresh.select", move |tx| match command {
             snap_transport::Command::Connect { bearer, .. }

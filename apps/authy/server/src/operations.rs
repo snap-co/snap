@@ -1,15 +1,10 @@
 //! Assembly selects Identity's provider and operations, then Authy's account view.
-use serde_json::json;
-use snap_document::runtime::Runtime;
+use snap_transport::operation::Registry;
 
 pub fn register(
-    mut host: Runtime<snap_store_sqlite::Sqlite>,
+    mut operations: Registry,
     webauthn: Option<snap_identity_native::passkey::Native>,
-) -> Runtime<snap_store_sqlite::Sqlite> {
-    host = host.with_inputs(|key| match key {
-        "clock" => Ok(json!(crate::now())),
-        _ => Err(snap_transport::Error::Unavailable),
-    });
+) -> Registry {
     let identity = snap_identity::operation::definitions(
         snap_identity::Identity::default(),
         || snap_crypto::Native,
@@ -21,10 +16,10 @@ pub fn register(
         }),
     );
     for definition in identity.preconnection {
-        host = host.with_preconnection_request(definition);
+        operations = operations.with_preconnection_request(definition);
     }
     for definition in identity.requests {
-        host = host.with_request(definition);
+        operations = operations.with_request(definition);
     }
     if let Some(webauthn) = webauthn {
         for definition in snap_identity::operation::passkey_definitions(
@@ -58,11 +53,11 @@ pub fn register(
                 }),
             }),
         ) {
-            host = host.with_preconnection_request(definition);
+            operations = operations.with_preconnection_request(definition);
         }
     }
     for definition in authy::operations::declarations() {
-        host = host.with_preconnection_request(definition);
+        operations = operations.with_preconnection_request(definition);
     }
-    host
+    operations
 }

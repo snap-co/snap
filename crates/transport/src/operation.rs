@@ -3,7 +3,12 @@
 //! in the caller's transaction; the platform owns loading and durable commit.
 use crate::execution::{Admission, Attempt, Call, Executor, Program, Ticket, View, WorkingSet};
 use crate::{Error, Invocation, Value};
-use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
 use snap_store::{Backend, RowChange, Store, Transaction};
 
 pub type Validator = fn(&Value) -> bool;
@@ -230,9 +235,32 @@ pub struct Selection(usize);
 pub struct Registry {
     names: BTreeMap<String, Selection>,
     definitions: Vec<Definition>,
+    preconnection: BTreeSet<Selection>,
 }
 
 impl Registry {
+    /// Assemble ordinary module and application operations before mounting an
+    /// execution host. No module is registered implicitly.
+    pub fn with_request(mut self, definition: Definition) -> Self {
+        self.register(definition)
+            .expect("valid, unique operation name");
+        self
+    }
+    /// Private connectionless exchanges use the same operation definitions and
+    /// lane, but cannot run through ordinary connected or request ingress.
+    pub fn register_preconnection(&mut self, definition: Definition) -> Result<Selection, Error> {
+        let selection = self.register(definition)?;
+        self.preconnection.insert(selection);
+        Ok(selection)
+    }
+    pub fn with_preconnection_request(mut self, definition: Definition) -> Self {
+        self.register_preconnection(definition)
+            .expect("valid, unique operation name");
+        self
+    }
+    pub fn is_preconnection(&self, selection: Selection) -> bool {
+        self.preconnection.contains(&selection)
+    }
     pub fn register(&mut self, definition: Definition) -> Result<Selection, Error> {
         if !valid_name(&definition.name) || self.names.contains_key(&definition.name) {
             return Err(Error::Protocol);
@@ -280,8 +308,15 @@ pub struct Runtime<W> {
 }
 impl<W> Default for Runtime<W> {
     fn default() -> Self {
+        Self::new(Registry::default())
+    }
+}
+impl<W> Runtime<W> {
+    /// Consume the host's assembled registry. The runtime owns registration
+    /// thereafter and closes it on the first submission.
+    pub fn new(definitions: Registry) -> Self {
         Self {
-            definitions: Registry::default(),
+            definitions,
             engine: Executor::new(Transactional, 1024).expect("transactional adapter"),
             queued: BTreeMap::new(),
             slot: None,

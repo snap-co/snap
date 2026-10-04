@@ -16,10 +16,10 @@ use rand::RngCore;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use snap_crypto::Native;
-use snap_document::runtime::Runtime;
 use snap_identity::Crypto;
 use snap_identity::oauth as rp;
-use snap_store::{Error, Store, Transaction};
+use snap_store::{Error, Host, Store, Transaction};
+use snap_transport::runtime::Loop;
 use snap_transport_native::Shared;
 use snap_transport_ws::ReadCookie;
 use std::{
@@ -216,17 +216,17 @@ pub struct Config {
     pub secret: snap_config::Secret,
     pub dev_origins: Vec<String>,
 }
-pub struct OAuth {
-    pub documents: Arc<Shared<Runtime<snap_store_sqlite::Sqlite>>>,
+pub struct OAuth<H: Loop> {
+    pub host: Arc<Shared<H>>,
     pub cookies: Cookies,
     pub config: Config,
     http: reqwest::Client,
     refresh: tokio::sync::Mutex<()>,
     dev_origins: Vec<String>,
 }
-impl OAuth {
+impl<H: Loop + Host + Send + 'static> OAuth<H> {
     pub fn new(
-        documents: Arc<Shared<Runtime<snap_store_sqlite::Sqlite>>>,
+        host: Arc<Shared<H>>,
         cookies: Cookies,
         mut config: Config,
     ) -> Result<Arc<Self>, Error> {
@@ -247,13 +247,12 @@ impl OAuth {
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|_| Error::Unavailable)?;
-        documents
-            .host
+        host.host
             .lock()
             .unwrap()
             .transact("oauth.recover", |tx| rp::recover(tx, now()))?;
         Ok(Arc::new(Self {
-            documents,
+            host,
             cookies,
             config,
             http,
@@ -266,7 +265,7 @@ impl OAuth {
         name: &str,
         f: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        self.documents.host.lock().unwrap().transact(name, f)
+        self.host.host.lock().unwrap().transact(name, f)
     }
     /// A transaction may wait behind controller IO. Keep that wait off Tokio's
     /// async workers; cancellation of the waiter does not cancel the owned task.
@@ -637,11 +636,11 @@ impl OAuth {
     }
     pub fn routes(self: &Arc<Self>) -> Router {
         Router::new()
-            .route("/auth/login", get(login))
-            .route("/auth/link", post(link))
-            .route("/auth/callback", get(callback))
-            .route("/auth/logout", post(logout))
-            .route("/auth/logged-out", get(logged_out))
+            .route("/auth/login", get(login::<H>))
+            .route("/auth/link", post(link::<H>))
+            .route("/auth/callback", get(callback::<H>))
+            .route("/auth/logout", post(logout::<H>))
+            .route("/auth/logged-out", get(logged_out::<H>))
             .with_state(self.clone())
     }
 }
@@ -697,14 +696,20 @@ fn params(query: Option<String>) -> Result<BTreeMap<String, String>, Error> {
     }
     Ok(result)
 }
-async fn login(State(app): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
+async fn login<H: Loop + Host + Send + 'static>(
+    State(app): State<Arc<OAuth<H>>>,
+    headers: HeaderMap,
+) -> Response {
     app.login(&headers, false).await.unwrap_or_else(failure)
 }
-async fn link(State(app): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
+async fn link<H: Loop + Host + Send + 'static>(
+    State(app): State<Arc<OAuth<H>>>,
+    headers: HeaderMap,
+) -> Response {
     app.login(&headers, true).await.unwrap_or_else(failure)
 }
-async fn callback(
-    State(app): State<Arc<OAuth>>,
+async fn callback<H: Loop + Host + Send + 'static>(
+    State(app): State<Arc<OAuth<H>>>,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
@@ -713,11 +718,14 @@ async fn callback(
         Err(e) => failure(e),
     }
 }
-async fn logout(State(app): State<Arc<OAuth>>, headers: HeaderMap) -> Response {
+async fn logout<H: Loop + Host + Send + 'static>(
+    State(app): State<Arc<OAuth<H>>>,
+    headers: HeaderMap,
+) -> Response {
     app.logout(&headers).unwrap_or_else(failure)
 }
-async fn logged_out(
-    State(app): State<Arc<OAuth>>,
+async fn logged_out<H: Loop + Host + Send + 'static>(
+    State(app): State<Arc<OAuth<H>>>,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
