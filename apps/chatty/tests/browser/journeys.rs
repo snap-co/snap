@@ -260,7 +260,8 @@ async fn other_actor_forbidden(browser: &Browser, thread_url: &str) -> Result<()
                socket.onmessage = event => {{ \
                  const frame = JSON.parse(String(event.data)); \
                  if (frame.Attached) socket.send(JSON.stringify({{ Invoke: {{ id: 1, operation: 'chatty.send', input: {{ thread_id: {}, request_id: 'stolen', message: 'unauthorized' }} }} }})); \
-                 for (const item of frame.Events ?? []) {{ \
+                  if (frame.Event) {{ \
+                    const item = frame.Event; \
                    if (item.Accepted) accepted = true; \
                    if (item.Completed) {{ clearTimeout(timer); socket.close(); resolve({{ accepted, failed: 'Err' in item.Completed.outcome }}); }} \
                  }} \

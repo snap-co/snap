@@ -27,31 +27,28 @@ export class Invocations {
   }
   /** Returns true only for frames owned by these application channels. */
   receive(frame: string): boolean {
-    const response = JSON.parse(frame) as { Events?: Event[]; Attached?: { resumed: boolean }; Failed?: unknown };
+    const response = JSON.parse(frame) as { Event?: Event; Attached?: { resumed: boolean }; Failed?: unknown };
     if (response.Failed !== undefined) { this.close(JSON.stringify(response.Failed)); return false; }
     if (response.Attached) {
       this.close("Connection replaced; outstanding outcomes are unknown");
       return false;
     }
-    if (!response.Events?.length) return false;
-    const ids = response.Events.map(event => "Accepted" in event ? event.Accepted.id : "Progress" in event ? event.Progress.id : event.Completed.id);
-    if (!ids.some(id => this.pending.has(id) || this.settled.has(id))) return false;
-    if (!ids.every(id => this.pending.has(id) || this.settled.has(id))) throw new Error("Mixed invocation channels");
-    for (const event of response.Events) {
-      const id = "Accepted" in event ? event.Accepted.id : "Progress" in event ? event.Progress.id : event.Completed.id;
-      if (this.settled.has(id)) continue;
-      const call = this.pending.get(id)!;
-      if ("Accepted" in event) { call.accepted = true; clearTimeout(call.timer); }
-      else if ("Progress" in event) {
-        if (!call.accepted) throw new Error("Progress before acceptance");
-        call.progress?.(event.Progress.value);
-      } else {
-        const outcome = event.Completed.outcome;
-        if ("Ok" in outcome && !call.accepted) throw new Error("Completion before acceptance");
-        clearTimeout(call.timer); this.pending.delete(id); this.settled.add(id);
-        if ("Err" in outcome) call.reject(new Error(JSON.stringify(outcome.Err)));
-        else call.resolve(outcome.Ok);
-      }
+    const event = response.Event;
+    if (!event) return false;
+    const id = "Accepted" in event ? event.Accepted.id : "Progress" in event ? event.Progress.id : event.Completed.id;
+    if (this.settled.has(id)) return true;
+    const call = this.pending.get(id);
+    if (!call) return false;
+    if ("Accepted" in event) { call.accepted = true; clearTimeout(call.timer); }
+    else if ("Progress" in event) {
+      if (!call.accepted) throw new Error("Progress before acceptance");
+      call.progress?.(event.Progress.value);
+    } else {
+      const outcome = event.Completed.outcome;
+      if ("Ok" in outcome && !call.accepted) throw new Error("Completion before acceptance");
+      clearTimeout(call.timer); this.pending.delete(id); this.settled.add(id);
+      if ("Err" in outcome) call.reject(new Error(JSON.stringify(outcome.Err)));
+      else call.resolve(outcome.Ok);
     }
     return true;
   }

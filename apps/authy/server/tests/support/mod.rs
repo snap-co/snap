@@ -294,7 +294,7 @@ impl Host {
                 if !frame["Failed"].is_null() {
                     return Err(frame["Failed"].clone());
                 }
-                for event in frame["Events"].as_array().into_iter().flatten() {
+                if let Some(event) = frame.get("Event") {
                     if !event["Accepted"].is_null() {
                         accepted = true;
                     }

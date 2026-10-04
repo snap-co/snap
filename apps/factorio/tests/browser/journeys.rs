@@ -85,7 +85,8 @@ async fn invoke(ui: &Ui, operation: &str, input: Value, bearer: &str) -> Result<
                 const frame=JSON.parse(String(event.data));
                 if(frame.Attached) socket.send(JSON.stringify({{Invoke:{{id:1,operation,input}}}}));
                 if(frame.Failed){{clearTimeout(timer);socket.close();reject(new Error(JSON.stringify(frame.Failed)));}}
-                for(const event of frame.Events??[]) {{
+                 if(frame.Event) {{
+                     const event=frame.Event;
                     if(event.Accepted) accepted=true;
                     if(event.Completed){{clearTimeout(timer);socket.close();resolve({{accepted,...event.Completed.outcome}});}}
                 }}

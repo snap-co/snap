@@ -263,7 +263,7 @@ async fn raw_envelopes(browser: &Browser) -> Result<()> {
       ws.onmessage = ({ data }) => {
         const response = JSON.parse(data);
         frames.push(response);
-        if (!response.Events || response.Events.some((event) => event.Completed))
+        if (!response.Event || response.Event.Completed)
           resolve(frames);
       };
       ws.send(JSON.stringify(command));
@@ -279,7 +279,7 @@ async fn raw_envelopes(browser: &Browser) -> Result<()> {
   });
   const enrollment = await exchange(first, { Request: { bearer: null,
     invocation: { id: 2, operation: "identity.enroll", input: { email: "raw@example.com", password: "password1" } } } });
-  const events = enrollment.flatMap(frame => frame.Events ?? []);
+  const events = enrollment.map(frame => frame.Event).filter(Boolean);
   const token = events.find(event => event.Bearer)?.Bearer.change.Set;
   const completion = events.find(event => event.Completed).Completed.outcome.Ok;
   if (!token || completion.bearer || completion.session) throw new Error("private bearer handoff");
@@ -306,8 +306,8 @@ async fn raw_envelopes(browser: &Browser) -> Result<()> {
             observations
                 == json!({
                     "health": [
-                        { "Events": [{ "Accepted": { "id": 1 } }] },
-                        { "Events": [{ "Completed": { "id": 1, "outcome": { "Ok": { "status": "OK" } } } }] },
+                        { "Event": { "Accepted": { "id": 1 } } },
+                        { "Event": { "Completed": { "id": 1, "outcome": { "Ok": { "status": "OK" } } } } },
                     ],
                     "attached": [{ "Attached": { "resumed": false } }],
                     "occupied": [{ "Failed": "Occupied" }],

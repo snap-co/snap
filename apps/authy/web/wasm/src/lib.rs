@@ -26,7 +26,7 @@
 //!   manifest. A new server process therefore clears old pending and reloads
 //!   the profile from the fresh manifest; a surviving reconnect retains the
 //!   journal for receipt deduplication.
-//! * Every `Events`/`Notification` frame goes through [`Wire::receive`] and
+//! * Every `Event`/`Global` frame goes through [`Wire::receive`] and
 //!   then [`Client::handle`] with the shared registry. `Holdings` pushes stay
 //!   distinct from correlated `Manifest` results; wire correlation decides.
 //! * A `NeedManifest` outcome is an observable `error` plus one correlated
@@ -302,7 +302,7 @@ impl AuthyClient {
 
     /// Handle one incoming `/transport` response frame (JSON text).
     ///
-    /// Feeds `Events`/`Notification` frames through the wire correlator and
+    /// Feeds `Event`/`Global` frames through the wire correlator and
     /// the shared client, sends at most one correlated `Manifest` on
     /// `NeedManifest`/`Reset`, otherwise paces one `Mutate` via
     /// `next_submission`. Returns `{snapshot, send, error}` as JSON text.

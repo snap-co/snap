@@ -67,7 +67,7 @@ try {
   await f.runtime.refresh();
   f.sockets[0].receive({Attached:{resumed:false}}); f.sockets[0].receive({manifest:true});
   const call = f.runtime.invoke('example', null).then(() => null, e => e.message);
-  f.sockets[0].receive({Events:[{Accepted:{id:1}}]});
+  f.sockets[0].receive({Event:{Accepted:{id:1}}});
   const epoch = f.runtime.getSnapshot().epoch, publication = f.publications.at(-1);
   f.sockets[0].receive({reset:true}); const retained = f.publications.at(-1) === publication;
   f.sockets[0].close(); const phase = f.runtime.getSnapshot().phase;
@@ -95,12 +95,12 @@ try {
   await f.runtime.refresh(); f.sockets[0].receive({Attached:{resumed:false}}); f.sockets[0].receive({manifest:true});
   const call = f.runtime.invoke('example.change', {value:'new'}).then(value => ({value}), e => ({error:e.message}));
   const frame = f.sockets[0].sent[0], id = JSON.parse(frame).Invoke.id;
-  f.sockets[0].receive({Events:[{Accepted:{id}}]}); f.sockets[0].close();
+  f.sockets[0].receive({Event:{Accepted:{id}}}); f.sockets[0].close();
   await unavailable.promise; const unavailableSockets = f.sockets.length;
   await recovered.promise; await f.runtime.refresh();
   f.sockets[1].receive({Attached:{resumed:true}}); f.sockets[1].receive({manifest:true});
   const original = f.sockets[0].sent, retry = f.sockets[1].sent;
-  f.sockets[1].receive({Events:[{Completed:{id, outcome:{Ok:'recovered'}}}]});
+  f.sockets[1].receive({Event:{Completed:{id, outcome:{Ok:'recovered'}}}});
   return [unavailableSockets, checks, f.created, original.length, retry.length, await call, f.runtime.getSnapshot().connection, f.runtime.getSnapshot().error];
 } finally { f.runtime.close(); }"#,
             json!([1, 3, 1, 1, 0, {"error":"Physical connection lost; outstanding outcomes are unknown"}, "connected", null]),
@@ -114,25 +114,29 @@ await Promise.resolve(); await Promise.resolve(); return [error, f.sockets.lengt
             json!(["Client closed", 0]),
         ),
         (
-            "invocation ACK progress completion and duplicate reply",
+            "single-event invocation routing progress completion and duplicate reply",
             r#"const sent = [], progress = []; let sequence = 0;
 const calls = new Invocations((operation,input) => JSON.stringify({Invoke:{id:++sequence,operation,input}}), frame => sent.push(frame));
 try {
   const result = calls.invoke('test', {}, value => progress.push(value));
-  const accepted = calls.receive(JSON.stringify({Events:[{Accepted:{id:1}}]}));
-  calls.receive(JSON.stringify({Events:[{Progress:{id:1,value:'working'}}]}));
-  const completed = JSON.stringify({Events:[{Completed:{id:1,outcome:{Ok:42}}}]});
+  void result.catch(() => {});
+  const unowned = calls.receive(JSON.stringify({Event:{Completed:{id:2,outcome:{Ok:'other channel'}}}}));
+  const global = calls.receive(JSON.stringify({Global:{kind:'topic',input:null}}));
+  const accepted = calls.receive(JSON.stringify({Event:{Accepted:{id:1}}}));
+  if (!accepted) throw new Error('Single Event acceptance was not claimed');
+  calls.receive(JSON.stringify({Event:{Progress:{id:1,value:'working'}}}));
+  const completed = JSON.stringify({Event:{Completed:{id:1,outcome:{Ok:42}}}});
   calls.receive(completed);
-  return [accepted, progress, sent.length, await result, calls.receive(completed)];
+  return [unowned, global, accepted, progress, sent.length, await result, calls.receive(completed)];
 } finally { calls.close(); }"#,
-            json!([true, ["working"], 1, 42, true]),
+            json!([false, false, true, ["working"], 1, 42, true]),
         ),
         (
             "physical loss rejects unknown outcome without replay on either lifetime",
             r#"const sent = [], calls = new Invocations((operation,input) => JSON.stringify({Invoke:{id:1,operation,input}}), frame => sent.push(frame));
 try {
   const result = calls.invoke('test', {}).then(() => null, e => e.message);
-  calls.receive(JSON.stringify({Events:[{Accepted:{id:1}}]})); calls.detached();
+  calls.receive(JSON.stringify({Event:{Accepted:{id:1}}})); calls.detached();
   calls.receive(JSON.stringify({Attached:{resumed:true}}));
   const resumedSends = sent.length; calls.detached(); calls.receive(JSON.stringify({Attached:{resumed:false}}));
   return [resumedSends, await result, sent.length];
@@ -189,7 +193,7 @@ try {
 try {{
   await f.runtime.refresh(); f.sockets[0].receive({{Attached:{{resumed:false}}}}); f.sockets[0].receive({{manifest:true}});
   let outcome = 'pending'; const call = f.runtime.invoke('example',null).then(() => {{outcome='resolved';}}, () => {{outcome='rejected';}});
-  f.sockets[0].receive({{Events:[{{Accepted:{{id:1}}}}]}}); f.sockets[0].close(); await f.runtime.refresh();
+  f.sockets[0].receive({{Event:{{Accepted:{{id:1}}}}}}); f.sockets[0].close(); await f.runtime.refresh();
   f.sockets[1].receive({terminal}); await Promise.resolve(); await Promise.resolve();
   const observed = [outcome, f.sockets[0].sent.length, f.sockets[1].sent.length]; await call; return observed;
 }} finally {{ f.runtime.close(); }}"#
