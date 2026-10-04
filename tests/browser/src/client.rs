@@ -83,12 +83,12 @@ try {
                 "anonymous",
                 null,
                 1,
-                "Account session ended",
+                "Physical connection lost; outstanding outcomes are unknown",
                 0
             ]),
         ),
         (
-            "failed identity recovery retries same accepted call ID",
+            "failed identity recovery never replays an interrupted application call",
             r#"const unavailable = deferred(), recovered = deferred(); let checks = 0;
 const f = fixture(async () => {checks++; if (checks === 2) {unavailable.resolve(); throw new Error('backend restarting');} if (checks === 3) recovered.resolve(); return {id:'alice'};});
 try {
@@ -101,9 +101,9 @@ try {
   f.sockets[1].receive({Attached:{resumed:true}}); f.sockets[1].receive({manifest:true});
   const original = f.sockets[0].sent, retry = f.sockets[1].sent;
   f.sockets[1].receive({Events:[{Completed:{id, outcome:{Ok:'recovered'}}}]});
-  return [unavailableSockets, checks, f.created, original.length, retry.length, original[0] === retry[0], await call, f.runtime.getSnapshot().connection, f.runtime.getSnapshot().error];
+  return [unavailableSockets, checks, f.created, original.length, retry.length, await call, f.runtime.getSnapshot().connection, f.runtime.getSnapshot().error];
 } finally { f.runtime.close(); }"#,
-            json!([1, 3, 1, 1, 1, true, {"value":"recovered"}, "connected", null]),
+            json!([1, 3, 1, 1, 0, {"error":"Physical connection lost; outstanding outcomes are unknown"}, "connected", null]),
         ),
         (
             "disposal settles held route readiness",
@@ -128,20 +128,43 @@ try {
             json!([true, ["working"], 1, 42, true]),
         ),
         (
-            "resumed invocation retries but fresh lifetime rejects unknown outcome",
+            "physical loss rejects unknown outcome without replay on either lifetime",
             r#"const sent = [], calls = new Invocations((operation,input) => JSON.stringify({Invoke:{id:1,operation,input}}), frame => sent.push(frame));
 try {
   const result = calls.invoke('test', {}).then(() => null, e => e.message);
   calls.receive(JSON.stringify({Events:[{Accepted:{id:1}}]})); calls.detached();
   calls.receive(JSON.stringify({Attached:{resumed:true}}));
-  const same = sent[0] === sent[1]; calls.detached(); calls.receive(JSON.stringify({Attached:{resumed:false}}));
-  return [same, await result, sent.length];
+  const resumedSends = sent.length; calls.detached(); calls.receive(JSON.stringify({Attached:{resumed:false}}));
+  return [resumedSends, await result, sent.length];
 } finally { calls.close(); }"#,
             json!([
-                true,
-                "Logical connection ended; prior outcomes are unknown",
-                2
+                1,
+                "Physical connection lost; outstanding outcomes are unknown",
+                1
             ]),
+        ),
+        (
+            "acceptance timeout reports unknown outcome instead of retransmitting",
+            r#"const sent = [], calls = new Invocations((operation,input) => JSON.stringify({Invoke:{id:1,operation,input}}), frame => sent.push(frame));
+let outcome = 'pending';
+try {
+  void calls.invoke('example.change', {}).then(() => {outcome='resolved';}, e => {outcome=e.message;});
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  return [sent.length, outcome];
+} finally { calls.close(); }"#,
+            json!([1, "Invocation acceptance timed out; outcome is unknown"]),
+        ),
+        (
+            "send failure reports unknown outcome without retry",
+            r#"let sends = 0;
+const calls = new Invocations((operation,input) => JSON.stringify({Invoke:{id:1,operation,input}}), () => {sends++; throw new Error('socket unavailable');});
+let outcome = 'pending';
+try {
+  void calls.invoke('example.change', {}).then(() => {outcome='resolved';}, e => {outcome=e.message;});
+  await Promise.resolve();
+  return [sends, outcome];
+} finally { calls.close(); }"#,
+            json!([1, "Invocation delivery failed; outcome is unknown"]),
         ),
     ];
     let mut ran = 0;

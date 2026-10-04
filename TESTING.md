@@ -134,6 +134,10 @@ conflict handling are operation-selected guard/handler behavior, not Transport
 requirements. Transport never automatically resends an invocation with an unknown
 outcome. Factorio's generic CLI retry is unavailable and preserves its saved
 unknown-outcome record; a fresh login can explicitly abandon it without replay.
+The browser application adapter sends each invocation once. Missing acceptance,
+send failure or physical loss rejects the unresolved call with an unknown-outcome
+error, without replay on logical reconnect. Rust/CDP cases in
+`tests/browser/src/client.rs` cover this adapter-specific lifecycle.
 Document's persisted mutation receipts and manifest recovery remain module-owned
 and covered by Document's server, client and runtime cases.
 
