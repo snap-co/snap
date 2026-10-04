@@ -199,7 +199,10 @@ undo a commit. Generic cases in `tests/platform/tests/host.rs` exercise this
 sequence without Document. Document owns snapshot selection, blocked lifecycle,
 receipt recovery, finalizers, holdings authorization and residency. Its controller
 context has Document access, Store transactions and original-invocation progress,
-but no executor or dispatch access. Async scheduling remains deferred.
+but no executor or dispatch access. Notification failure still drains already-queued
+passes before returning a committed failure. Direct-host detach clears attachment
+holdings without releasing logical residency or accepted-work pins, including when
+the physical peer is reused for another attachment. Async scheduling remains deferred.
 
 ## Client interfaces and end-to-end tests
 

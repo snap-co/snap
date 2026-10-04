@@ -237,6 +237,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             }
         })();
         self.peers.remove(&peer);
+        self.participant.detached(peer);
         result
     }
 
@@ -277,12 +278,10 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.requests.data(),
             None,
         );
-        let result = self
-            .participant
-            .recover(&mut context)
-            .and_then(|()| settle(&mut self.participant, &mut context));
+        let recovered = self.participant.recover(&mut context);
+        let settled = settle(&mut self.participant, &mut context);
         let released = self.participant.release(&mut context);
-        result.and(released)
+        recovered.and(settled).and(released)
     }
 
     pub fn open(&mut self) -> Result<u64, Error> {
@@ -345,13 +344,14 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             .filter_map(|(id, peer)| peer.control.take().map(|signal| (*id, signal)))
             .collect();
         for (id, (close, now)) in controls {
-            if let Some(peer) = self.peers.remove(&id)
-                && let Some(attachment) = peer.attachment
-            {
-                if close {
-                    let _ = self.transport.close(&attachment);
-                } else {
-                    let _ = self.transport.disconnect(&attachment, now);
+            if let Some(peer) = self.peers.remove(&id) {
+                self.participant.detached(id);
+                if let Some(attachment) = peer.attachment {
+                    if close {
+                        let _ = self.transport.close(&attachment);
+                    } else {
+                        let _ = self.transport.disconnect(&attachment, now);
+                    }
                 }
             }
         }
@@ -491,6 +491,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 } else {
                     self.transport.disconnect(&attachment, now)?;
                 }
+                self.participant.detached(peer_id);
                 self.tick(now);
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.actor = None;
@@ -702,9 +703,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 self.requests.data(),
                 Some(scope),
             );
-            self.participant
-                .committed(&mut context, &changes, &publication)
-                .and_then(|()| settle(&mut self.participant, &mut context))
+            complete_commit(&mut self.participant, &mut context, &changes, &publication)
         } else {
             Ok(())
         };
@@ -795,9 +794,12 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
         let result = (|| {
             self.participant.prepare(&mut context)?;
             let committed = context.store.run(operation, handler)?;
-            self.participant
-                .committed(&mut context, &committed.changes, &Value::Null)?;
-            settle(&mut self.participant, &mut context)?;
+            complete_commit(
+                &mut self.participant,
+                &mut context,
+                &committed.changes,
+                &Value::Null,
+            )?;
             Ok(committed.value)
         })();
         let released = self.participant.release(&mut context);
@@ -845,10 +847,11 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
     }
 
     pub fn lost(&mut self, peer: u64, now: u64) {
-        if let Some(peer) = self.peers.remove(&peer)
-            && let Some(attachment) = peer.attachment
-        {
-            let _ = self.transport.disconnect(&attachment, now);
+        if let Some(observer) = self.peers.remove(&peer) {
+            self.participant.detached(peer);
+            if let Some(attachment) = observer.attachment {
+                let _ = self.transport.disconnect(&attachment, now);
+            }
         }
         self.tick(now);
     }
@@ -899,6 +902,19 @@ impl<B: Backend, P: Participant<B>> snap_transport::runtime::Loop for Blocking<B
     ) -> snap_transport::bearer::Reply {
         Blocking::preconnection_reply(self, invocation, bearer)
     }
+}
+
+fn complete_commit<B: Backend, P: Participant<B>>(
+    participant: &mut P,
+    context: &mut CommitContext<'_, B>,
+    changes: &[snap_store::RowChange],
+    publication: &Value,
+) -> Result<(), snap_store::Error> {
+    // Notification may queue passes before failing. Successful persistence still
+    // owns the gate until those passes drain, regardless of notification errors.
+    let notified = participant.committed(context, changes, publication);
+    let settled = settle(participant, context);
+    notified.and(settled)
 }
 
 fn settle<B: Backend, P: Participant<B>>(

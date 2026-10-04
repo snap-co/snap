@@ -241,6 +241,9 @@ impl<B: Backend> Participant<B> for Documents<B> {
             self.state.pinned.extend(ids.iter().cloned());
         }
     }
+    fn detached(&mut self, peer: u64) {
+        self.state.held.remove(&peer);
+    }
     fn committed(
         &mut self,
         ctx: &mut CommitContext<'_, B>,

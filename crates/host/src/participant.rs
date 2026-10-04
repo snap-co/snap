@@ -116,6 +116,9 @@ pub trait Participant<B: Backend> {
     }
     /// Pin module-specific requirements of the accepted logical connection.
     fn accepted(&mut self, _: Option<u64>) {}
+    /// Forget attachment-specific observations on physical loss or explicit
+    /// detach. Logical residency and accepted-work pins must remain intact.
+    fn detached(&mut self, _: u64) {}
     /// Interpret successful commit changes and module-owned publication data.
     /// This also runs for read-only operations that declare publications.
     fn committed(

@@ -15,19 +15,28 @@ use std::sync::{Arc, Mutex};
 struct Controller {
     pending: bool,
     fail: bool,
+    fail_notification: bool,
     observations: Arc<Mutex<Vec<[i64; 2]>>>,
 }
 impl<B: Backend> Participant<B> for Controller {
+    fn prepare(&mut self, ctx: &mut CommitContext<'_, B>) -> Result<(), Error> {
+        snap_store::Data::new(&cartridge::TABLES).prepare(ctx.store)
+    }
     fn committed(
         &mut self,
         _: &mut CommitContext<'_, B>,
         changes: &[RowChange],
         _: &Value,
     ) -> Result<(), Error> {
-        self.pending |= changes
+        let changed = changes
             .iter()
             .any(|c| cartridge::TABLES.contains(&c.table.as_str()));
-        Ok(())
+        self.pending |= changed;
+        if changed && self.fail_notification {
+            Err(Error::Unavailable)
+        } else {
+            Ok(())
+        }
     }
     fn reconcile(&mut self, ctx: &mut CommitContext<'_, B>) -> Result<bool, Error> {
         if !core::mem::take(&mut self.pending) {
@@ -110,13 +119,14 @@ fn connect<B: Backend, P: Participant<B>>(host: &mut snap_host::Blocking<B, P>) 
 
 #[test]
 fn controller_commits_notify_again_before_completion_and_next_admission_even_on_failure() {
-    for fail in [false, true] {
+    for (fail, fail_notification) in [(false, false), (true, false), (false, true)] {
         let observations = Arc::new(Mutex::new(Vec::new()));
         let mut host = assembly::mount(store(), Default::default(), "controllers".into())
             .unwrap()
             .map_participant(|()| Controller {
                 pending: false,
                 fail,
+                fail_notification,
                 observations: observations.clone(),
             });
         let peer = connect(&mut host);
@@ -140,7 +150,7 @@ fn controller_commits_notify_again_before_completion_and_next_admission_even_on_
             ]
         );
         match &first[2..] {
-            [Event::Completed { id: 1, outcome }] if fail => {
+            [Event::Completed { id: 1, outcome }] if fail || fail_notification => {
                 assert!(
                     matches!(outcome, Err(snap_transport::Error::Application(v)) if v["committed"] == true)
                 );
@@ -180,6 +190,7 @@ fn discarded_and_rejected_commits_never_notify_controllers() {
         .map_participant(|()| Controller {
             pending: false,
             fail: false,
+            fail_notification: false,
             observations: observations.clone(),
         });
         let peer = connect(&mut host);
@@ -199,4 +210,35 @@ fn discarded_and_rejected_commits_never_notify_controllers() {
         assert!(observations.lock().unwrap().is_empty());
         assert_eq!(host.transact("persisted", cartridge::read).unwrap(), [0; 2]);
     }
+}
+
+#[test]
+fn internal_notification_failure_drains_controller_commits_before_returning() {
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let mut host = assembly::mount(store(), Default::default(), "internal".into())
+        .unwrap()
+        .map_participant(|()| Controller {
+            pending: false,
+            fail: false,
+            fail_notification: true,
+            observations: observations.clone(),
+        });
+    let peer = connect(&mut host);
+    let result = host.transact("internal.write", |tx| {
+        for table in cartridge::TABLES {
+            tx.update(table, &[1.into()], Row::from([("value".into(), 1.into())]))?;
+        }
+        Ok(())
+    });
+    assert_eq!(result, Err(Error::Unavailable));
+    assert_eq!(*observations.lock().unwrap(), [[1; 2], [2; 2]]);
+    assert!(events(&mut host, peer).is_empty());
+    host.submit(peer, call(2, 2, 10, Stop::Commit), 0).unwrap();
+    assert_eq!(events(&mut host, peer), [Event::Accepted { id: 2 }]);
+    assert!(host.step());
+    assert_eq!(*observations.lock().unwrap(), [[1; 2], [2; 2], [12; 2]]);
+    assert_eq!(
+        host.transact("persisted", cartridge::read).unwrap(),
+        [12; 2]
+    );
 }

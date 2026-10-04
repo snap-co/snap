@@ -1194,6 +1194,43 @@ fn residency_references_survive_socket_loss_and_close_only_after_drain() {
 }
 
 #[test]
+fn reattaching_a_direct_peer_starts_with_fresh_document_holdings() {
+    for detach in [Command::Disconnect, Command::Close] {
+        let mut host = fixture();
+        let (peer, _) = connect(&mut host, "alice", "old-attachment", 0);
+        let initial = messages(manifest(&mut host, peer, 1, vec![]));
+        assert!(
+            initial
+                .iter()
+                .any(|m| matches!(m, ServerMessage::Holdings(d) if d.len() == 1 && d[0].id == ID))
+        );
+        host.submit(peer, detach, 1).unwrap();
+        assert!(host.drain(peer).unwrap().contains(&Response::Detached));
+        host.submit(
+            peer,
+            Command::Connect {
+                bearer: "bob".into(),
+                client_id: "new-attachment".into(),
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            host.drain(peer).unwrap(),
+            [Response::Attached { resumed: false }]
+        );
+        host.transact("synchronize unchanged state", |_| Ok(()))
+            .unwrap();
+        let replacement = messages(host.drain(peer).unwrap());
+        assert!(
+            replacement
+                .iter()
+                .any(|m| matches!(m, ServerMessage::Holdings(d) if d.len() == 1 && d[0].id == ID))
+        );
+    }
+}
+
+#[test]
 fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result() {
     use snap_document::{
         ClientMessage,
