@@ -82,7 +82,13 @@ fn rotation_identity_isolation_and_stale_attachment_fencing() {
         1,
         "connected invocation must not resolve again"
     );
-    assert!(matches!(server.invoke(&old, call(1)), Err(Error::Protocol)));
+    for id in [1, u64::MAX, 1] {
+        assert_eq!(
+            server.invoke(&old, call(id)).unwrap().invocation.id,
+            id,
+            "correlation IDs are not a per-attachment sequence fence"
+        );
+    }
     *token.borrow_mut() = "new";
     server.disconnect(&old, 1).unwrap();
     assert!(matches!(

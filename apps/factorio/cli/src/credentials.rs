@@ -18,9 +18,6 @@ fn client_id() -> String {
 fn first() -> u64 {
     1
 }
-fn replayable() -> bool {
-    true
-}
 #[derive(Serialize, Deserialize)]
 pub struct Credentials {
     #[serde(default, alias = "token")]
@@ -41,8 +38,6 @@ pub struct Credentials {
     pub expires: Option<i64>,
     #[serde(default)]
     pub pending: Option<snap_transport::Invocation>,
-    #[serde(default = "replayable")]
-    pub pending_replayable: bool,
     #[serde(default)]
     pub lifetime: Option<String>,
 }
@@ -100,7 +95,6 @@ impl Locked {
                 workspace: String::new(),
                 expires: None,
                 pending: None,
-                pending_replayable: true,
                 lifetime: None,
             }
         } else {

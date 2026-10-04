@@ -38,7 +38,7 @@ fn grant(tx: &mut snap_store::Transaction<'_>, enabled: bool) -> Result<(), snap
 }
 
 #[hegel::test]
-fn accepted_authority_dedup_and_draining_match_committed_effects(tc: TestCase) {
+fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase) {
     let mut migrations: Vec<snap_store::migration::Migration> = vec![
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),

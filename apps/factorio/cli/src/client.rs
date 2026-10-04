@@ -7,7 +7,6 @@ use std::time::Duration;
 pub struct Client {
     pub tcp: Tcp,
     pub credentials: Locked,
-    pub resumed: bool,
 }
 #[derive(Debug)]
 pub struct OperationError(pub snap_transport::Error);
@@ -38,27 +37,15 @@ impl Client {
             let (reply, info) =
                 tokio::time::timeout(Duration::from_secs(65), tcp.receive()).await??;
             match reply {
-                Response::Attached { resumed } => {
+                Response::Attached { .. } => {
                     let info =
                         info.ok_or_else(|| anyhow::anyhow!("Missing logical lifetime identity"))?;
                     ensure!(!info.lifetime.is_empty(), "Empty logical lifetime identity");
-                    if credentials.value.pending.is_some() {
-                        // Persist the fence: a second attempt must not mistake
-                        // this newly-created lifetime for the original one.
-                        if !resumed
-                            || credentials.value.lifetime.as_deref() != Some(info.lifetime.as_str())
-                        {
-                            credentials.value.pending_replayable = false;
-                        }
-                    } else {
+                    if credentials.value.pending.is_none() {
                         credentials.value.lifetime = Some(info.lifetime);
                     }
                     credentials.save()?;
-                    return Ok(Self {
-                        tcp,
-                        credentials,
-                        resumed,
-                    });
+                    return Ok(Self { tcp, credentials });
                 }
                 // A previous CLI dropped TCP before releasing the file lock, but
                 // the server may not have consumed its EOF yet. No invocation or
@@ -76,7 +63,7 @@ impl Client {
     pub async fn invoke(&mut self, name: &str, input: Value) -> Result<Value> {
         ensure!(
             self.credentials.value.pending.is_none(),
-            "An earlier invocation has an unknown outcome. Run factorio retry, or factorio login to start a new lifetime without replay"
+            "An earlier invocation has an unknown outcome. Inspect application state before factorio login starts a new lifetime without replay"
         );
         let id = self.credentials.reserve()?;
         let invocation = Invocation {
@@ -87,21 +74,7 @@ impl Client {
         snap_transport::binary::command(&Command::Invoke(invocation.clone()))
             .map_err(|e| anyhow::anyhow!("Cannot encode invocation: {e:?}"))?;
         self.credentials.value.pending = Some(invocation.clone());
-        self.credentials.value.pending_replayable = true;
         self.credentials.save()?;
-        self.send_invocation(invocation).await
-    }
-    pub async fn retry(&mut self) -> Result<Value> {
-        ensure!(
-            self.resumed && self.credentials.value.pending_replayable,
-            "Logical lifetime ended. The old outcome is unknown; login starts a fresh lifetime without replay"
-        );
-        let invocation = self
-            .credentials
-            .value
-            .pending
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No interrupted invocation to retry"))?;
         self.send_invocation(invocation).await
     }
     async fn send_invocation(&mut self, invocation: Invocation) -> Result<Value> {

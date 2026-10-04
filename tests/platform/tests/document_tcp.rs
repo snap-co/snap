@@ -11,7 +11,7 @@ mod tls_support;
 
 #[tokio::test]
 #[ignore = "real TCP adapter"]
-async fn adjacent_handshake_streamed_observations_and_detached_replay() {
+async fn adjacent_handshake_streamed_observations_and_new_submission_after_detach() {
     let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
         .map(|s| toml::from_str(s).unwrap());
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
@@ -137,12 +137,12 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
         let (response, _) = resumed.receive().await.unwrap();
         if matches!(
             response,
-            Response::Event(Event::Completed { outcome: Ok(v), .. }) if v == json!(1)
+            Response::Event(Event::Completed { outcome: Ok(v), .. }) if v == json!(2)
         ) {
             break;
         }
     }
-    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 2);
     let mut invalid = Client::open(&addr.to_string(), &client_tls).await.unwrap();
     invalid
         .send(&Command::Connect {

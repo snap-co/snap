@@ -56,13 +56,6 @@ struct Peer {
     control: CarrierControl,
 }
 
-struct Call {
-    peer: u64,
-    operation: Invocation,
-    accepted: bool,
-    outcome: Option<snap_transport::Outcome>,
-}
-
 #[derive(Clone)]
 struct Work {
     peer: u64,
@@ -91,7 +84,6 @@ pub struct Runtime<B: Backend> {
     peers: BTreeMap<u64, Peer>,
     controllers: BTreeMap<String, Controller<B>>,
     reconcile: BTreeMap<String, Snapshot>,
-    calls: BTreeMap<(u64, u64), Call>,
     residency: BTreeMap<u64, (String, BTreeSet<String>)>,
     pinned: BTreeSet<String>,
     next_peer: u64,
@@ -132,7 +124,6 @@ impl<B: Backend> Runtime<B> {
             peers: BTreeMap::new(),
             controllers: BTreeMap::new(),
             reconcile: BTreeMap::new(),
-            calls: BTreeMap::new(),
             residency: BTreeMap::new(),
             pinned: BTreeSet::new(),
             next_peer: 0,
@@ -182,7 +173,7 @@ impl<B: Backend> Runtime<B> {
 
     /// One connectionless exchange; the caller holds the execution mutex on a blocking
     /// thread. Credentials/results live only for this exchange and are removed
-    /// from peer and retry storage before returning. No automatic retry.
+    /// from peer storage before returning. No automatic retry.
     pub fn preconnection_request(
         &mut self,
         invocation: Invocation,
@@ -264,8 +255,6 @@ impl<B: Backend> Runtime<B> {
             }
         })();
         self.peers.remove(&peer);
-        self.calls
-            .retain(|(connection, _), _| *connection != (peer | (1 << 63)));
         result
     }
 
@@ -431,7 +420,6 @@ impl<B: Backend> Runtime<B> {
         let released = !retired.is_empty();
         for connection in retired {
             self.residency.remove(&connection.0);
-            self.calls.retain(|(id, _), _| *id != connection.0);
             let lifetime = self.lifetime(connection.0);
             // Failure is terminal for this expired connection regardless of cleanup.
             // Orphan receipt rows grant no authority and cannot match a fresh boot.
@@ -493,8 +481,6 @@ impl<B: Backend> Runtime<B> {
                     let _ = self.transport.disconnect(&attachment, now);
                 }
             }
-            self.calls
-                .retain(|(connection, _), _| *connection != (id | (1 << 63)));
         }
     }
 
@@ -506,13 +492,12 @@ impl<B: Backend> Runtime<B> {
         })
     }
 
-    /// Connected invocation IDs bind the exact operation and input within one
-    /// logical lifetime. An explicit identical retry observes its pending or
-    /// completed result without re-execution; conflicting reuse is Protocol.
-    /// Physical reconnect alone does not replay results. Close/expiry removes
-    /// this cache after accepted work drains; it is not durable across host loss.
+    /// Invocation IDs correlate observations, not execution identity. Each
+    /// submission enters admission independently; this host caches no results
+    /// and never redirects an old invocation's output to a replacement peer.
+    /// Duplicate handling belongs to the selected operation's guards or handler.
     /// Admission may publish Accepted here. Newly accepted work completes when
-    /// step is driven; admission failures and cached completions can publish here.
+    /// step is driven; admission failures can publish here.
     pub fn submit(&mut self, peer_id: u64, command: Command, now: u64) -> Result<(), Error> {
         self.tick(now);
         if !self.peers.contains_key(&peer_id) {
@@ -661,71 +646,13 @@ impl<B: Backend> Runtime<B> {
         Ok(())
     }
 
-    fn call_key(work: &Work) -> (u64, u64) {
-        (
-            work.connection.unwrap_or(work.peer | (1 << 63)),
-            work.wire_id,
-        )
-    }
-
     fn enqueue(&mut self, work: Work) -> Result<(), Error> {
-        if work.wire_id == 0 {
-            return Err(Error::InvalidInput);
-        }
-        let key = Self::call_key(&work);
-        if let Some(call) = self.calls.get_mut(&key) {
-            if call.operation != work.operation {
-                return Err(Error::Protocol);
-            }
-            call.peer = work.peer;
-            let accepted = call.accepted;
-            let outcome = call.outcome.clone();
-            if accepted {
-                self.respond(&work, Event::Accepted { id: work.wire_id });
-            }
-            if let Some(outcome) = outcome {
-                self.respond(
-                    &work,
-                    Event::Completed {
-                        id: work.wire_id,
-                        outcome,
-                    },
-                );
-            }
-            return Ok(());
-        }
-        if self.calls.len() >= 16384 {
-            return Err(Error::Capacity);
-        }
         self.requests
-            .enqueue(work.clone(), work.operation.clone(), work.selection)?;
-        self.calls.insert(
-            key,
-            Call {
-                peer: work.peer,
-                operation: work.operation.clone(),
-                accepted: false,
-                outcome: None,
-            },
-        );
-        Ok(())
+            .enqueue(work.clone(), work.operation.clone(), work.selection)
     }
 
     fn respond(&mut self, work: &Work, event: Event) {
-        if let Some(call) = self.calls.get_mut(&Self::call_key(work)) {
-            match &event {
-                Event::Accepted { .. } => call.accepted = true,
-                Event::Completed { outcome, .. } => call.outcome = Some(outcome.clone()),
-                Event::Progress { .. } | Event::Bearer { .. } => {}
-            }
-        }
-        // A retry explicitly reattaches observation interest. Merely reconnecting
-        // must not send an old completion into a fresh physical SDK exchange.
-        let target = self
-            .calls
-            .get(&Self::call_key(work))
-            .map_or(work.peer, |call| call.peer);
-        if let Some(peer) = self.peers.get_mut(&target) {
+        if let Some(peer) = self.peers.get_mut(&work.peer) {
             peer.output.push_back(Response::Event(event));
         }
     }
@@ -900,11 +827,7 @@ impl<B: Backend> Runtime<B> {
         {
             // Retire only the optimistic mutation, not the invocation trace.
             // This must precede progress holdings to avoid applying it twice.
-            let target = self
-                .calls
-                .get(&Self::call_key(&work))
-                .map_or(work.peer, |call| call.peer);
-            if let Some(peer) = self.peers.get(&target) {
+            if let Some(peer) = self.peers.get(&work.peer) {
                 peer.output
                     .push_back(notification(ServerMessage::Committed(completion)));
             }
@@ -1105,7 +1028,6 @@ impl<B: Backend> Runtime<B> {
     }
 
     pub fn lost(&mut self, peer: u64, now: u64) {
-        self.calls.retain(|(id, _), _| *id != (peer | (1 << 63)));
         if let Some(peer) = self.peers.remove(&peer)
             && let Some(attachment) = peer.attachment
         {

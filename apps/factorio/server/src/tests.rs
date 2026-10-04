@@ -238,7 +238,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
 }
 
 #[test]
-fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocation() {
+fn detached_cli_lifetime_survives_access_expiry_but_not_login_expiry_or_revocation() {
     use snap_document::runtime::Runtime as Host;
     use snap_identity::oauth as rp;
     use snap_transport::{Command, Invocation, Response, json, server::Config};
@@ -362,8 +362,20 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
             );
             assert_eq!(host.attachment_lifetime(replacement).unwrap(), lifetime);
             host.submit(replacement, invoke(), 610_001).unwrap();
-            // The retained completion is returned; the application is not replayed.
-            assert_eq!(host.drain(replacement).unwrap(), original);
+            // Same ID is a new admission, not a retained completion.
+            assert_eq!(
+                host.drain(replacement).unwrap(),
+                vec![Response::Event(snap_transport::Event::Accepted { id: 1 })]
+            );
+            assert!(host.step());
+            let mut result = vec![Response::Event(snap_transport::Event::Accepted { id: 1 })];
+            result.extend(
+                host.drain(replacement)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|response| matches!(response, Response::Event(_))),
+            );
+            assert_eq!(result, original);
             assert!(!host.step());
             host.carrier_control(replacement).unwrap().detach(610_002);
             host.tick(610_002);
@@ -1045,13 +1057,11 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     .await;
     assert!(!ok, "Stale revision must reject");
     // Lose only the completion via a real TCP proxy, after delivering ACK. The
-    // Host still owns the accepted draft write; a new process must recover its
-    // exact invocation rather than allocating a fresh ID and applying it twice.
+    // Host still owns the accepted draft write. Generic CLI retry must not
+    // resubmit it now that Transport retains no invocation outcomes.
     let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap().to_string();
     let upstream_addr = addr.clone();
-    let drop_handshake = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let proxy_drop_handshake = drop_handshake.clone();
     let proxy_server_tls = server_tls.clone();
     let proxy_client_tls = client_tls.clone();
     let proxy = tokio::spawn(async move {
@@ -1065,19 +1075,15 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
                     let proxy_client_tls = proxy_client_tls.clone();
                     let upstream_addr = upstream_addr.clone();
                     let lose = first; first = false;
-                    let lose_handshake=proxy_drop_handshake.swap(false,std::sync::atomic::Ordering::SeqCst);
                     peers.spawn(async move {
                         let mut down = proxy_server_tls.accept(down).await.unwrap();
                         let mut up = proxy_client_tls.connect(&upstream_addr).await.unwrap();
-                        if !lose && !lose_handshake {let _=tokio::io::copy_bidirectional(&mut down,&mut up).await;return;}
+                        if !lose {let _=tokio::io::copy_bidirectional(&mut down,&mut up).await;return;}
                         let (mut down_read,mut down_write)=tokio::io::split(down);
                         let (mut up_read,mut up_write)=tokio::io::split(up);
                         let forwarding=tokio::spawn(async move {let _=tokio::io::copy(&mut down_read,&mut up_write).await;});
                         loop {
                             let (response,retention)=snap_transport_tcp::read_response(&mut up_read).await.unwrap();
-                            if lose_handshake && matches!(response,snap_transport::Response::Attached {..}) {
-                                 forwarding.abort();let _=forwarding.await;let _=tokio::io::AsyncWriteExt::shutdown(&mut down_write).await;break;
-                            }
                             let accepted=matches!(&response,snap_transport::Response::Event(snap_transport::Event::Accepted {..}));
                             snap_transport_tcp::write_response(&mut down_write,&response,matches!(response,snap_transport::Response::Attached {..}),retention.as_ref()).await.unwrap();
                              if accepted {forwarding.abort();let _=forwarding.await;let _=tokio::io::AsyncWriteExt::shutdown(&mut down_write).await;break;}
@@ -1091,7 +1097,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let (ok,_,_) = call(&binary,&credentials,&["--addr",&proxy_addr,"intake-save","-","--intake",id],Some(json!({"revision":1,"route":"triage","rationale":"accepted but response lost","tickets":[]}))).await;
     assert!(!ok, "The interrupted client must report an unknown outcome");
     // A rejected login must not replace the original recovery endpoint, trust,
-    // or identity. Prove it at the saved-state and subsequent retry boundaries.
+    // or identity. A refused retry also leaves the unknown-outcome record intact.
     let before_login: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
     assert!(before_login["pending"].is_object());
@@ -1126,56 +1132,18 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
         after_login, before_login,
         "Failed login must preserve pending recovery state"
     );
-    let (ok, recovered, error) = call(&binary, &credentials, &["retry"], None).await;
-    assert!(ok, "{error}");
-    assert_eq!(recovered["revision"], 2);
-    let (ok, read, error) = call(
-        &binary,
-        &credentials,
-        &["intake-read", "--intake", id],
-        None,
-    )
-    .await;
-    assert!(ok, "{error}");
-    assert_eq!(read["intake"]["revision"], 2);
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
-    assert!(config["next_id"].as_u64().unwrap() > 5);
-    let client_id = config["client_id"].as_str().unwrap();
-    let mut reattach = snap_transport_tcp::Client::open(&addr, &client_tls)
-        .await
-        .unwrap();
-    reattach
-        .send(&snap_transport::Command::Connect {
-            bearer: config["bearer"].as_str().unwrap().into(),
-            client_id: client_id.into(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        reattach.receive().await.unwrap().0,
-        snap_transport::Response::Attached { resumed: true }
-    );
-    reattach
-        .send(&snap_transport::Command::Close)
-        .await
-        .unwrap();
-    let _ = reattach.receive().await;
-    drop(reattach);
-    let mut fenced = config;
-    fenced["pending"] = json!({"id":fenced["next_id"],"operation":"factorio.intake-drafts","input":{"workspace":fenced["workspace"],"id":id,"drafts":{"revision":2,"route":"triage","rationale":"must never replay on new lifetime","tickets":[]}}});
-    fenced["next_id"] = json!(fenced["next_id"].as_u64().unwrap() + 1);
-    std::fs::write(&credentials, serde_json::to_vec(&fenced).unwrap()).unwrap();
-    drop_handshake.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (ok, _, error) = call(&binary, &credentials, &["retry"], None).await;
-    assert!(!ok && error.contains("TCP detached"), "{error}");
-    let after_loss: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
-    assert_eq!(after_loss["pending_replayable"], true);
-    assert_eq!(after_loss["lifetime"], fenced["lifetime"]);
     for _ in 0..2 {
         let (ok, _, error) = call(&binary, &credentials, &["retry"], None).await;
-        assert!(!ok && error.contains("Logical lifetime ended"), "{error}");
+        assert!(
+            !ok && error.contains("Generic invocation retry is unavailable"),
+            "{error}"
+        );
+        let after_retry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
+        assert_eq!(
+            after_retry, before_login,
+            "Refused retry must preserve the unknown outcome"
+        );
     }
     // Explicit login is the only way to abandon the unknown result here.
     let (ok, _, error) = call(&binary, &credentials, &["login", "--token", "agent"], None).await;

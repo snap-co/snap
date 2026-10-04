@@ -21,8 +21,8 @@ macro_rules! examples {
                 assert_eq!(model.value(), 5);
             }
             #[test]
-            fn retained_retry_and_conflicting_input() {
-                History::default().replay(
+            fn repeated_ids_use_operation_policy_not_transport_history() {
+                History::default().repeated_ids(
                     &mut support::$setup(),
                     Edit {
                         expected: 0,

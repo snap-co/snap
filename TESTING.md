@@ -72,7 +72,7 @@ verification reads declare their data again so backend reloads can detect writes
 that reached resident memory only.
 
 Fixed examples run under ordinary Cargo tests. Hegel generates bounded batches,
-retry histories and observer-loss histories through the `platform-dispatch`
+repeated-ID submissions and observer-loss histories through the `platform-dispatch`
 target of `tests/properties/Cargo.toml`. That consumer uses the same cases and
 adapters; it keeps Hegel out of the default-member build. The memory-only fault
 setup rejects the next nonempty backend commit before writing. SQLite fault
@@ -115,22 +115,27 @@ that every input and schedule was checked.
 | Trusted host resolves identity; stale attachments cannot acquire a replacement's authority. | Existing Transport lifetime model in `crates/transport/tests/properties/lifecycle.rs` |
 | Hosts load declared data before admission. One FIFO owner holds the lane through admission, execution and publication; later guards see prior committed state. | Cartridge batch model, with cold tables and backend-loaded reads |
 | Accepted means admission, not success. Application errors, invalid output and caught Store failures discard staged writes. Confirmed commit rejection must not become success or an automatic retry. | Cartridge batch model and the controlled commit-rejection case |
-| Exact invocation retries observe the same result without another mutation within a retained logical lifetime. Different input under that key is Protocol. | Cartridge retry model, including pending retries and replay after a later mutation |
-| Reconnect alone must not inject an old completion into a fresh call. Explicit retry reattaches observation interest. | Cartridge retry model |
+| Invocation IDs correlate frames, not effects. Repeated IDs and changed payloads enter operation guards/handlers independently; Transport caches no outcomes and imposes no history-based ID ordering. | Cartridge repeated-ID model, including pending submissions, changed operations/inputs and resubmission after reconnect; core attachment tests |
+| Reconnect must not inject an old completion into a fresh peer. Accepted work publishes only to its original observation peer. | Cartridge observer-loss model |
 | One invocation spans several frames. Acceptance reaches the client before the handler finishes, progress arrives while it still runs, and completion terminates it. A channel is a stream: sending never waits for a reply. | `crates/transport/tests/client.rs` routing cases and the `transport-client` property model |
 | Correlation is judged per frame. A frame naming another invocation is dropped without touching this one; a frame that breaks this invocation's ordering contract abandons its trace and is reported immediately, not left to wait. | `transport-client` property model, which distinguishes a broken sequence from an unfinished one |
 | Unhandled global pushes are dropped silently and never fail a client, because any server can publish a topic nobody subscribed to. | `crates/transport/tests/client.rs` |
-| Observer loss does not cancel accepted work. Disconnect can retain retry state; Close and expiry end that scope after accepted work drains. | Cartridge draining model; core lifetime model separately checks retention boundaries and stale handles |
+| Observer loss does not cancel accepted work. Logical connections retain their residency across Disconnect; Close and expiry release it after accepted work drains. | Cartridge draining model; core lifetime model separately checks retention boundaries and stale handles |
 | Carriers deliver commands and published output independently of execution, including final output at retirement. Malformed input never enters dispatch. Physical IO loss is not a successful empty response. | Shared fixed carrier cases in `tests/platform/src/transport.rs` |
 
 The cartridge defines a compare guard and two rows that must move together. Its
 scalar oracle computes acceptance and committed values from inputs alone, never
 from production responses. Generated histories vary batch sizes, amounts, stale
-compares, handler outcomes, retries and observer loss. Authentication/credential
+compares, handler outcomes, repeated IDs and observer loss. Authentication/credential
 rotation, capacity, arbitrary wire corruption, unknown commit outcomes and
 client correlation retain their existing focused tests rather than being
-claimed as coverage of this cartridge. Retained invocation replay is not a
-global exactly-once or crash-recovery guarantee.
+claimed as coverage of this cartridge. Duplicate suppression, result recovery and
+conflict handling are operation-selected guard/handler behavior, not Transport
+requirements. Transport never automatically resends an invocation with an unknown
+outcome. Factorio's generic CLI retry is unavailable and preserves its saved
+unknown-outcome record; a fresh login can explicitly abandon it without replay.
+Document's persisted mutation receipts and manifest recovery remain module-owned
+and covered by Document's server, client and runtime cases.
 
 ## Client SDK
 

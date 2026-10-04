@@ -55,7 +55,7 @@ enum Mode {
     Login,
     /// Revoke this CLI credential and retire its logical connection.
     Logout,
-    /// Recover the exact interrupted invocation, only on its retained lifetime.
+    /// Unavailable until operations define safe recovery. Never resends unknown work.
     Retry,
     Status,
     Repositories,
@@ -288,6 +288,11 @@ async fn open_intake(
 }
 
 async fn run(mut args: Args) -> Result<()> {
+    if matches!(args.command, Mode::Retry) {
+        bail!(
+            "Generic invocation retry is unavailable. Inspect application state before factorio login starts a new lifetime without replay"
+        );
+    }
     args.token = args.token.filter(|token| !token.is_empty());
     let default_addr = args.addr.clone().unwrap_or_else(|| "127.0.0.1:1024".into());
     let login = matches!(args.command, Mode::Login);
@@ -352,7 +357,7 @@ async fn run(mut args: Args) -> Result<()> {
                 .is_none_or(|old| old == addr)
                 && credentials.value.ca_file == ca_file
                 && credentials.value.server_name == server_name,
-            "Cannot change endpoint while an invocation has an unknown outcome. Retry at its original endpoint, or login to start a fresh lifetime"
+            "Cannot change endpoint while an invocation has an unknown outcome. Inspect application state before login starts a fresh lifetime without replay"
         );
     }
     let tls = snap_transport_tcp::tls::ClientTls::new(ca_file.as_deref(), server_name.as_deref())?;
@@ -421,7 +426,6 @@ async fn run(mut args: Args) -> Result<()> {
         credentials.value.client_id = uuid::Uuid::new_v4().to_string();
         credentials.value.next_id = 1;
         credentials.value.pending = None;
-        credentials.value.pending_replayable = true;
         credentials.value.lifetime = None;
         credentials.save()?;
         return print(
@@ -442,8 +446,7 @@ async fn run(mut args: Args) -> Result<()> {
     };
     let mut client = Client::connect(&addr, &tls, credentials).await?;
     let result = match args.command {
-        Mode::Login | Mode::Serve { .. } => unreachable!(),
-        Mode::Retry => client.retry().await?,
+        Mode::Login | Mode::Serve { .. } | Mode::Retry => unreachable!(),
         Mode::Logout => {
             let value = client.invoke("factorio.logout", json!({})).await?;
             let _ = client.tcp.send(&snap_transport::Command::Close).await;

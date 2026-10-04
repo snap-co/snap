@@ -19,14 +19,15 @@ pub trait Loop {
     /// commit and any required module reconciliation have finished.
     fn step(&mut self) -> bool;
     /// Queue or admit a command without executing its operation handler. Admission
-    /// failures and retained replay may publish immediately; new work waits for step.
+    /// failures may publish immediately; new work waits for step. Invocation IDs
+    /// correlate frames; duplicate handling is selected per operation, not here.
     fn submit(&mut self, peer: u64, command: Command, now: u64) -> Result<(), Error>;
     fn retired(&self, peer: u64) -> bool;
     fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error>;
     fn is_preconnection_request(&self, name: &str) -> bool;
     /// Run a private connectionless request through the same FIFO. The native
     /// executor calls this on a blocking worker; issued credentials must not enter
-    /// retained retry state or another peer's output.
+    /// retained diagnostics or another peer's output.
     fn preconnection_reply(
         &mut self,
         invocation: Invocation,
@@ -73,8 +74,8 @@ impl Output {
         }
     }
     /// Append the final frame and stop physical publication atomically. Queued
-    /// frames remain drainable; accepted work can still commit and retain replay
-    /// state, but cannot publish into this retired physical output.
+    /// frames remain drainable; accepted work can still commit, but cannot publish
+    /// into this retired physical output.
     pub fn seal(&self, final_frame: Option<Frame>) {
         let mut outbox = self.0.lock();
         if !outbox.sealed {

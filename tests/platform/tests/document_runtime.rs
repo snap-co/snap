@@ -629,7 +629,9 @@ fn interrupted_completion_recovers_once_only_inside_surviving_lifetime() {
     assert!(resumed);
     let recovery = messages(manifest(&mut host, replacement, 3, vec![intent(1, 7)]));
     assert!(recovery.iter().any(|m|matches!(m,ServerMessage::Manifest(state) if state.completed.len()==1 && state.documents[0].value==json!(7))));
-    submit(&mut host, replacement, 2, intent(1, 7));
+    // A new wire invocation recovers the same Document receipt, independently
+    // of any Transport invocation history.
+    submit(&mut host, replacement, 4, intent(1, 7));
     host.step();
     let repeated = messages(host.drain(replacement).unwrap());
     assert!(repeated.iter().any(|m|matches!(m,ServerMessage::Completed(c) if c.result.as_ref().unwrap().as_ref().unwrap().value==json!(7))));

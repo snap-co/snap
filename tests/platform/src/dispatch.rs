@@ -12,7 +12,7 @@ pub enum Loss {
     Expire,
 }
 
-/// The production host owns submission, admission, loading, execution and replay.
+/// The production host owns submission, admission, loading and execution.
 /// Setup owns driving and observer loss; it must not synthesize result events.
 pub trait Platform {
     fn call(&mut self, invocation: Invocation) -> Result<(), Error>;
@@ -131,32 +131,25 @@ impl History {
         );
     }
 
-    /// Exact retries work both before and after completion. Their cached result
-    /// stays unchanged even after a later mutation. Reconnect alone emits none.
-    pub fn replay<P: Platform>(&mut self, platform: &mut P, edit: Edit, reconnect: bool) {
+    /// Repeated IDs still enter the real guards and handlers. Pending submissions
+    /// and changed payloads are not collapsed, and lower IDs are not rejected.
+    pub fn repeated_ids<P: Platform>(&mut self, platform: &mut P, edit: Edit, reconnect: bool) {
         let id = self.next_id();
         let command = invocation(id, &edit);
-        let (accepted, outcome) = predict(&mut self.value, &edit);
-        let initial = if accepted {
-            vec![Event::Accepted { id }]
-        } else {
-            vec![completed(id, outcome.clone())]
-        };
-        platform.call(command.clone()).unwrap();
-        assert_eq!(platform.events(), initial);
-        platform.call(command.clone()).unwrap();
+        let mut expected = Vec::new();
+        for _ in 0..2 {
+            let (accepted, outcome) = predict(&mut self.value, &edit);
+            expected.extend(trace(id, accepted, outcome));
+            platform.call(command.clone()).unwrap();
+        }
+        let mut observed = platform.events();
+        platform.finish();
+        observed.extend(platform.events());
         assert_eq!(
-            platform.events(),
-            initial,
-            "pending retries preserve observation, not execution"
+            observed, expected,
+            "every submission must run its own admission"
         );
-        let mut conflict = edit.clone();
-        conflict.amount += 1;
-        assert_eq!(
-            platform.call(invocation(id, &conflict)),
-            Err(Error::Protocol)
-        );
-        assert!(platform.events().is_empty());
+        self.verify_loaded_rows(platform);
         if reconnect {
             platform.lose(Loss::Disconnect);
             assert!(platform.connect(), "a retained lifetime should resume");
@@ -164,41 +157,36 @@ impl History {
                 platform.events().is_empty(),
                 "reconnect must not push an unsolicited old completion"
             );
-            platform.call(command.clone()).unwrap();
-            assert_eq!(platform.events(), initial);
         }
+        // Reuse the original ID with a different operation after a higher ID.
+        platform
+            .call(Invocation {
+                id,
+                operation: Read::NAME.into(),
+                input: json!(null),
+            })
+            .unwrap();
+        assert_eq!(platform.events(), vec![Event::Accepted { id }]);
         platform.finish();
         assert_eq!(
             platform.events(),
-            if accepted {
-                vec![completed(id, outcome.clone())]
-            } else {
-                vec![]
-            }
+            vec![completed(id, Ok(json!([self.value, self.value])))]
         );
-        self.verify_loaded_rows(platform);
-        // Advance the real state before requesting the old result. Recomputing
-        // instead of replaying would now fail its guard or mutate again.
-        self.batch(
-            platform,
-            &[Edit {
-                expected: self.value,
-                amount: 1,
-                stop: Stop::Commit,
-            }],
-        );
-        platform.call(command).unwrap();
-        assert_eq!(platform.events(), trace(id, accepted, outcome));
+        let changed = Edit {
+            expected: self.value,
+            amount: edit.amount + 1,
+            stop: Stop::Commit,
+        };
+        let (_, outcome) = predict(&mut self.value, &changed);
+        platform.call(invocation(id, &changed)).unwrap();
+        assert_eq!(platform.events(), vec![Event::Accepted { id }]);
         platform.finish();
-        assert!(
-            platform.events().is_empty(),
-            "a cached retry scheduled another execution"
-        );
+        assert_eq!(platform.events(), vec![completed(id, outcome)]);
         self.verify_loaded_rows(platform);
     }
 
-    /// Observer loss does not revoke accepted work. A retained lifetime keeps its
-    /// retry result; Close and expiry retire that cache after accepted work drains.
+    /// Observer loss does not revoke accepted work. Reconnection never redirects
+    /// its completion, even when the replacement peer exists before it finishes.
     pub fn draining<P: Platform>(&mut self, platform: &mut P, amount: i64, loss: Loss) {
         assert!(amount > 0);
         let id = self.next_id();
@@ -208,24 +196,29 @@ impl History {
             stop: Stop::Commit,
         };
         let command = invocation(id, &edit);
-        let (_, outcome) = predict(&mut self.value, &edit);
+        let _ = predict(&mut self.value, &edit);
         platform.call(command.clone()).unwrap();
         assert_eq!(platform.events(), vec![Event::Accepted { id }]);
         platform.lose(loss);
+        if matches!(loss, Loss::Disconnect) {
+            assert!(platform.connect());
+            assert!(platform.events().is_empty());
+        }
         platform.finish();
-        assert_eq!(platform.connect(), matches!(loss, Loss::Disconnect));
-        assert!(platform.events().is_empty());
+        if !matches!(loss, Loss::Disconnect) {
+            assert!(!platform.connect());
+        }
+        assert!(
+            platform.events().is_empty(),
+            "old output reached the replacement peer"
+        );
         self.verify_loaded_rows(platform);
         platform.call(command).unwrap();
-        let expected = if matches!(loss, Loss::Disconnect) {
-            trace(id, true, outcome)
-        } else {
-            vec![completed(id, Err(Error::Application(json!("stale"))))]
-        };
+        let expected = vec![completed(id, Err(Error::Application(json!("stale"))))];
         assert_eq!(
             platform.events(),
             expected,
-            "retry state is scoped to the logical lifetime"
+            "a new submission must inspect the current committed state"
         );
         platform.finish();
         assert!(platform.events().is_empty());
@@ -233,8 +226,8 @@ impl History {
     }
 
     /// Handler success is insufficient: confirmed commit rejection must surface
-    /// as failure, preserve backend rows, cache that failure without a retry, and
-    /// release the dispatch lane so a fresh invocation can succeed.
+    /// as failure, preserve backend rows, and release the dispatch lane without
+    /// automatically executing it again.
     pub fn rejected_commit<P: CommitFault>(&mut self, platform: &mut P, amount: i64) {
         let id = self.next_id();
         let edit = Edit {
@@ -252,14 +245,17 @@ impl History {
             vec![completed(id, Err(Error::Unavailable))]
         );
         self.verify_loaded_rows(platform);
-        platform.call(command).unwrap();
-        assert_eq!(platform.events(), trace(id, true, Err(Error::Unavailable)));
         platform.finish();
         assert!(
             platform.events().is_empty(),
             "a failed commit was retried implicitly"
         );
+        // An explicit new submission with the same ID is not a cached failure.
+        platform.call(command).unwrap();
+        assert_eq!(platform.events(), vec![Event::Accepted { id }]);
+        let (_, outcome) = predict(&mut self.value, &edit);
+        platform.finish();
+        assert_eq!(platform.events(), vec![completed(id, outcome)]);
         self.verify_loaded_rows(platform);
-        self.batch(platform, &[edit]);
     }
 }

@@ -65,7 +65,6 @@ struct Resident {
     generation: u64,
     attached: bool,
     expires: u64,
-    sequence: u64,
     closing: bool,
     accepted: usize,
 }
@@ -182,14 +181,12 @@ impl<R: Authority> Server<R> {
                 generation: 0,
                 attached: false,
                 expires: 0,
-                sequence: 0,
                 closing: false,
                 accepted: 0,
             });
         entry.attached = true;
         entry.bearer = String::from(bearer);
         entry.generation = self.generation;
-        entry.sequence = 0;
         Ok((
             Attachment {
                 key,
@@ -276,6 +273,8 @@ impl<R: Authority> Server<R> {
             invocation,
         })
     }
+    /// Verify current attachment authority. Nonzero invocation IDs are opaque
+    /// correlation values; this interface does not track their prior use.
     pub fn invoke(
         &mut self,
         attachment: &Attachment,
@@ -294,10 +293,9 @@ impl<R: Authority> Server<R> {
             }
         }
         let entry = self.resident(attachment)?;
-        if invocation.id <= entry.sequence {
-            return Err(Error::Protocol);
+        if invocation.id == 0 {
+            return Err(Error::InvalidInput);
         }
-        entry.sequence = invocation.id;
         Ok(Verified {
             identity: Some(attachment.key.0.clone()),
             connection: Some(entry.id),

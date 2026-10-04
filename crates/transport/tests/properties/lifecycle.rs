@@ -31,7 +31,6 @@ struct Lease {
     connection: ConnectionId,
     owner: Option<usize>,
     deadline: u128,
-    last_invocation: u64,
 }
 
 struct Model {
@@ -140,7 +139,6 @@ impl Model {
         if let Some(i) = existing {
             assert_eq!(attachment.connection(), self.leases[i].connection);
             self.leases[i].owner = Some(self.handles.len());
-            self.leases[i].last_invocation = 0;
         } else {
             assert!(
                 self.allocated.insert(attachment.connection().0),
@@ -152,7 +150,6 @@ impl Model {
                 connection: attachment.connection(),
                 owner: Some(self.handles.len()),
                 deadline: 0,
-                last_invocation: 0,
             });
         }
         self.handles.push(attachment);
@@ -162,11 +159,8 @@ impl Model {
         let owner = self.leases.iter().position(|l| l.owner == Some(index));
         let expected = match owner {
             None => Err(Error::StaleConnection),
-            Some(i) if id <= self.leases[i].last_invocation => Err(Error::Protocol),
-            Some(i) => {
-                self.leases[i].last_invocation = id;
-                Ok((self.leases[i].identity, self.leases[i].connection))
-            }
+            Some(_) if id == 0 => Err(Error::InvalidInput),
+            Some(i) => Ok((self.leases[i].identity, self.leases[i].connection)),
         };
         let lookups = self.credentials.lookups.get();
         let call = Invocation {
@@ -244,12 +238,7 @@ impl Model {
         let Some(index) = self.handle(&tc) else {
             return;
         };
-        let last = self
-            .leases
-            .iter()
-            .find(|l| l.owner == Some(index))
-            .map_or(0, |l| l.last_invocation);
-        let choices = [0, 1, last, last.saturating_add(1), u64::MAX];
+        let choices = [0, 1, 2, u64::MAX];
         let id = choices[tc.draw(gs::integers::<usize>().max_value(choices.len() - 1))];
         tc.note(&format!("invoke handle={index} id={id}"));
         tc.event(

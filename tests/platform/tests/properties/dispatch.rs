@@ -61,10 +61,10 @@ macro_rules! properties {
                 }
             }
 
-            /// Pending/completed retries replay, conflicting payloads fail, and
-            /// physical reconnect never pushes an unsolicited old result.
+            /// Every submission uses operation policy, even when IDs repeat or
+            /// the payload changes. Reconnect never pushes an old result.
             #[hegel::test]
-            fn retained_retries_preserve_results_without_reexecution(tc: TestCase) {
+            fn repeated_ids_use_current_state_and_operation_policy(tc: TestCase) {
                 let mut platform = support::$setup();
                 let mut model = History::default();
                 let rounds = tc.draw(gs::integers::<usize>().min_value(1).max_value(10));
@@ -72,21 +72,21 @@ macro_rules! properties {
                     let edit = edit(&tc, model.value());
                     let reconnect = tc.draw(gs::booleans());
                     tc.note(&format!(
-                        "round={round} retry={edit:?} reconnect={reconnect}"
+                        "round={round} repeated={edit:?} reconnect={reconnect}"
                     ));
                     tc.event(if reconnect {
                         "retained reconnect"
                     } else {
                         "same observer"
                     });
-                    model.replay(&mut platform, edit, reconnect);
+                    model.repeated_ids(&mut platform, edit, reconnect);
                 }
             }
 
-            /// Accepted work commits after observer loss. Only retained logical
-            /// lifetimes keep its replay result; Close and expiry end that scope.
+            /// Accepted work commits after observer loss, without redirecting
+            /// its old observations into a replacement peer.
             #[hegel::test]
-            fn accepted_work_drains_and_replay_respects_lifetime(tc: TestCase) {
+            fn accepted_work_drains_without_redirecting_old_output(tc: TestCase) {
                 let mut platform = support::$setup();
                 let mut model = History::default();
                 let rounds = tc.draw(gs::integers::<usize>().min_value(1).max_value(10));

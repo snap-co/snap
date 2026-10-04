@@ -85,11 +85,9 @@ impl<C: Channel> Client<C> {
     }
     /// Adopt a replacement physical attachment under the same logical connection.
     ///
-    /// Outstanding invocations are retained, not dropped: their logical ids are
-    /// still meaningful and a server that already committed them can report the
-    /// outcome on the new socket. What cannot be recovered is any frame that was
-    /// in flight when the old channel died, so each trace restarts from
-    /// unaccepted and the caller decides whether to resend. Ids are never reused,
+    /// Outstanding correlation traces are retained, but Transport does not recover
+    /// their results or resend commands. Each trace restarts from unaccepted;
+    /// resubmission requires operation-specific recovery semantics. Ids are never reused,
     /// so a late frame from the old channel cannot be mistaken for a new answer.
     pub fn replace_channel(&mut self, channel: C) {
         for trace in self.calls.values_mut() {
@@ -173,8 +171,7 @@ impl<C: Channel> Client<C> {
     }
 
     async fn track(&mut self, command: Command) -> Result<u64, Error> {
-        let (Command::Request { invocation, .. } | Command::Invoke(invocation)) = &command
-        else {
+        let (Command::Request { invocation, .. } | Command::Invoke(invocation)) = &command else {
             return Err(Error::Protocol);
         };
         let id = invocation.id;
@@ -365,9 +362,9 @@ impl<C: Channel> Client<C> {
     }
 }
 
-/// One invocation's channel. Hosts supply monotonic time and drive retries; ACK
-/// disables only the acceptance timer. Progress is transient and completion is
-/// terminal. Retransmission must retain the original invocation and logical ID.
+/// One invocation's correlation trace. ACK disables the caller-supplied acceptance
+/// timer. Progress is transient and completion is terminal. The timer does not
+/// authorize retransmission: only an operation's own recovery contract can do so.
 pub struct Trace {
     id: u64,
     retry_at: u64,
@@ -407,11 +404,9 @@ impl Trace {
 
     /// Reset to pre-acceptance after the physical attachment is replaced.
     ///
-    /// Any acceptance or progress already observed belonged to the old channel and
-    /// cannot be assumed to have been seen. Completion is deliberately *not*
-    /// cleared: it may already have been committed server-side, and refusing to
-    /// accept its report would strand a known outcome. That asymmetry is why a
-    /// resend must retain the original invocation id.
+    /// Completion is deliberately not cleared, so a terminated trace cannot be
+    /// revived. Reopening correlation state does not recover a lost result or
+    /// authorize resubmission of an operation with an unknown outcome.
     pub(crate) fn reopened(&mut self) {
         self.accepted = false;
         self.bearer = None;

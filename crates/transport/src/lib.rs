@@ -11,8 +11,8 @@ pub mod execution;
 pub mod inbox;
 pub mod lane;
 pub mod operation;
-pub mod server;
 pub mod runtime;
+pub mod server;
 
 use alloc::string::String;
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,10 @@ pub enum Failure<E> {
     Application(E),
 }
 
+/// `id` correlates this submission's frames. It is not an idempotency key:
+/// duplicate detection and recovery belong to operation guards or handlers.
+/// Clients must distinguish their outstanding calls to correlate replies; the
+/// server does not keep an invocation-ID history to enforce that for them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Invocation {
     pub id: u64,
@@ -98,26 +102,15 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     /// Admission. Not acceptance of the operation's effect.
-    Accepted {
-        id: u64,
-    },
+    Accepted { id: u64 },
     /// Carrier credential publication, distinct from module output. Sent only
     /// after commit, never retained in invocation diagnostics or replay records.
-    Bearer {
-        id: u64,
-        change: bearer::Change,
-    },
+    Bearer { id: u64, change: bearer::Change },
     /// Transient work update. Originates after durable commit, from platform
     /// controllers rather than operation handlers.
-    Progress {
-        id: u64,
-        value: Value,
-    },
+    Progress { id: u64, value: Value },
     /// Terminal. Transport consumes this and returns the invocation's output.
-    Completed {
-        id: u64,
-        outcome: Outcome,
-    },
+    Completed { id: u64, outcome: Outcome },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Response {
@@ -154,13 +147,9 @@ pub enum Response {
 /// `receive` yields `None` once the channel is closed. IO failure has unknown
 /// mutation outcome: callers must never replay mutations automatically.
 /// Replacement channels may reconnect using the same client ID, and stable
-/// invocation ids let a resumed connection recover its outstanding calls.
+/// invocation ids correlate frames, but do not promise cached results or safe
+/// resubmission. Operations define their own recovery behavior.
 pub trait Channel {
-    fn send(
-        &mut self,
-        command: Command,
-    ) -> impl core::future::Future<Output = Result<(), Error>>;
-    fn receive(
-        &mut self,
-    ) -> impl core::future::Future<Output = Result<Option<Response>, Error>>;
+    fn send(&mut self, command: Command) -> impl core::future::Future<Output = Result<(), Error>>;
+    fn receive(&mut self) -> impl core::future::Future<Output = Result<Option<Response>, Error>>;
 }

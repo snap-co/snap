@@ -376,8 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maintenance_retirement_seals_output_while_controller_finishes_and_completion_replays()
-    {
+    async fn maintenance_retirement_seals_output_while_controller_finishes_and_document_recovers() {
         use snap_document::{
             Definition, Intent, Mutation, Registry, ServerMessage, Snapshot, server::Document,
         };
@@ -487,20 +486,22 @@ mod tests {
             .unwrap();
         // Advance the real maintenance timer while the controller holds the gate.
         tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(15)).await;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !channel.retired() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        // The maintenance task can establish its sleep after the first clock
+        // advance. Keep driving virtual time, bounded by a real wall deadline;
+        // a yield-only loop otherwise keeps the paused clock from reaching it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !channel.retired() && std::time::Instant::now() < deadline {
+            tokio::time::advance(Duration::from_secs(15)).await;
+            tokio::task::yield_now().await;
+        }
+        let retired = channel.retired();
         let controller_still_running = !worker.is_finished();
         let final_frames: Vec<_> = std::iter::from_fn(|| channel.receive()).collect();
         // Release before assertions so even a red regression cannot strand work.
         drop(finish);
         assert!(worker.join().unwrap());
         tokio::time::resume();
+        assert!(retired, "maintenance did not retire the physical output");
         let late: Vec<_> = std::iter::from_fn(|| channel.receive()).collect();
         assert!(
             controller_still_running,
@@ -530,8 +531,8 @@ mod tests {
             json!(1)
         );
 
-        // Socket loss does not discard the accepted result. Reconnect alone must
-        // not publish it, but an explicit retry reattaches completion interest.
+        // Reconnect does not publish an old result. A new invocation recovers
+        // Document's persisted receipt, without running its mutation again.
         channel.disconnect();
         let reopened = Dispatcher::web(shared.clone())
             .open(None, 4096)
@@ -548,13 +549,16 @@ mod tests {
             next_frame(&reopened).await.response,
             Response::Event(Event::Accepted { id: 1 })
         );
-        // The replay is one frame, like every other observation.
-        let Response::Event(Event::Completed {
-            id: 1,
-            outcome: Ok(value),
-        }) = next_frame(&reopened).await.response
-        else {
-            panic!("missing completion replay");
+        assert!(shared.host.lock().unwrap().step());
+        let value = loop {
+            match next_frame(&reopened).await.response {
+                Response::Event(Event::Completed {
+                    id: 1,
+                    outcome: Ok(value),
+                }) => break value,
+                Response::Global { .. } => {}
+                other => panic!("expected recovered Document completion, got {other:?}"),
+            }
         };
         let ServerMessage::Completed(completion) = serde_json::from_value(value.clone()).unwrap()
         else {
