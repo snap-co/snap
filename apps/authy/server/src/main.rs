@@ -160,14 +160,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parsed.scheme() == "https",
         cookie_key.as_ref(),
     )?);
-    let host = Runtime::new_with_provider(
+    let host = Runtime::new(
         store,
         authy::document(),
-        Arc::new(Identity::default().provider(snap_crypto::Native)),
-        Arc::new(now),
+        Arc::new(snap_identity::authentication::Authentication::new(
+            Arc::new(Identity::default().provider(snap_crypto::Native)),
+            Arc::new(now),
+        )),
         snap_transport::server::Config::default(),
         keys::random(),
-    )?;
+    );
     // WebAuthn requires a secure DNS origin (or HTTP localhost). Other valid
     // development origins retain password/issuer behavior without passkeys.
     let webauthn = parsed

@@ -422,10 +422,12 @@ fn fixture() -> Host<snap_store_sqlite::Sqlite> {
     Host::new(
         store,
         document,
-        Arc::new(|_, bearer| match bearer {
-            "alice" | "bob" => Ok(bearer.into()),
-            _ => Err(snap_store::Error::NotFound),
-        }),
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |_, bearer| match bearer {
+                "alice" | "bob" => Ok(bearer.into()),
+                _ => Err(snap_store::Error::NotFound),
+            },
+        ))),
         Config {
             reconnect_ms: 100,
             capacity: 16,

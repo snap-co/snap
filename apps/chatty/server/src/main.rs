@@ -90,7 +90,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = operations(Runtime::new(
         store,
         chatty::document(),
-        Arc::new(|tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner)),
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner),
+        ))),
         snap_transport::server::Config::default(),
         random(),
     ));

@@ -28,13 +28,13 @@ async fn adjacent_handshake_streamed_observations_and_detached_replay() {
     let host = Host::new(
         store,
         document,
-        Arc::new(|_, b| {
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, b| {
             if b == "token" {
                 Ok("actor".into())
             } else {
                 Err(snap_store::Error::NotFound)
             }
-        }),
+        }))),
         Default::default(),
         "boot".into(),
     )
@@ -172,7 +172,9 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
     let host = Host::new(
         store,
         document,
-        Arc::new(|_, _| Err(snap_store::Error::NotFound)),
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
+            Err(snap_store::Error::NotFound)
+        }))),
         Default::default(),
         "bearer-boot".into(),
     )

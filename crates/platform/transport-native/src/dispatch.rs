@@ -361,7 +361,9 @@ mod tests {
         Host::new(
             store,
             document,
-            Arc::new(|_, _| Ok("actor".into())),
+            Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
+                Ok("actor".into())
+            }))),
             Default::default(),
             "boot".into(),
         )

@@ -163,6 +163,12 @@ client operation dispatch cannot exercise. Snap owns reusable module cases;
 apps own their server-specific host and policy. Use the real module and
 its transaction interface, with the authority required by that interface.
 
+Credential resolution is supplied by host assembly through Transport's bearer
+authority interface. Identity owns its provider-backed resolution and optional
+identity policy; hosts prepare credential data before mounting consumers.
+Document's controlled cases retain delivery-time authorization coverage, while
+Factorio's host cases own the distinction between renewable lifetime and access.
+
 Direct calls do not prove dispatch admission, credential handling or wire
 behavior. Those guarantees belong to their own seams. Conversely, avoid routing
 every server-only behavior through a synthetic client operation just to test it.

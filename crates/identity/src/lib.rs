@@ -3,6 +3,7 @@
 #![no_std]
 extern crate alloc;
 mod attempt;
+pub mod authentication;
 pub mod client;
 pub mod credential;
 pub mod oauth;

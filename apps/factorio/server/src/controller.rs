@@ -328,7 +328,9 @@ mod tests {
         let host = Runtime::new(
             store,
             graph::document(),
-            Arc::new(|_, bearer| Ok(bearer.into())),
+            Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+                |_, bearer| Ok(bearer.into()),
+            ))),
             snap_transport::server::Config::default(),
             "controller-tests".into(),
         );

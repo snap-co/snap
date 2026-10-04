@@ -72,7 +72,9 @@ fn accepted_authority_dedup_and_draining_match_committed_effects(tc: TestCase) {
     let mut host = Host::new(
         store,
         document(),
-        Arc::new(|_, bearer| Ok(bearer.into())),
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |_, bearer| Ok(bearer.into()),
+        ))),
         Config {
             reconnect_ms: 10,
             capacity: 100,

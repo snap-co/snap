@@ -43,13 +43,15 @@ pub fn mount<B: Backend>(
     let mut host = Host::new(
         store,
         Document::new(Registry::new(vec![]).expect("empty document registry")),
-        Arc::new(|_, bearer| {
-            if bearer == "alice" {
-                Ok("alice".into())
-            } else {
-                Err(snap_store::Error::NotFound)
-            }
-        }),
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |_, bearer| {
+                if bearer == "alice" {
+                    Ok("alice".into())
+                } else {
+                    Err(snap_store::Error::NotFound)
+                }
+            },
+        ))),
         config,
         boot,
     );

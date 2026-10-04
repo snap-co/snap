@@ -211,11 +211,13 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "factorio", origin.starts_with("https:"))?;
-    let host = Runtime::new_with_lifetime_authority(
+    let host = Runtime::new(
         store,
         graph::document(),
-        Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
-        Arc::new(operations::retained),
+        Arc::new(snap_transport::bearer::Callbacks::with_retained(
+            Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
+            Arc::new(operations::retained),
+        )),
         snap_transport::server::Config {
             reconnect_ms: startup.app.tcp.retention_ms,
             ..Default::default()

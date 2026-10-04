@@ -22,35 +22,27 @@ use snap_transport::server::{Attachment, Authority, Config, ConnectionId, Server
 use snap_transport::{Command, Error, Event, Invocation, Response, Value, json};
 use spin::Mutex;
 
-/// Runs against resident Store state for identification and admission, never
-/// external IO. Accepted work retains the actor instead of rerunning this callback
-/// during handler execution. Later visibility observations use current authority.
-pub type Authenticate =
-    Arc<dyn Fn(&mut Transaction<'_>, &str) -> Result<String, snap_store::Error> + Send + Sync>;
 type Input = Box<dyn FnMut(&str) -> Result<Value, Error> + Send>;
-type BearerProvider = (
-    Arc<dyn snap_transport::bearer::Provider>,
-    Arc<dyn Fn() -> i64 + Send + Sync>,
-);
 struct StoreAuthority<B> {
     store: Arc<Mutex<Store<B>>>,
-    authenticate: Authenticate,
-    lifetime: Authenticate,
+    authority: Arc<dyn snap_transport::bearer::Authority>,
 }
 
 impl<B: Backend> Authority for StoreAuthority<B> {
     fn identify(&self, bearer: &str) -> Result<String, Error> {
         self.store
             .lock()
-            .inspect("document.authenticate", |tx| {
-                (self.authenticate)(tx, bearer)
+            .inspect("transport.authenticate", |tx| {
+                self.authority.identify(tx, bearer)
             })
             .map_err(storage_error)
     }
     fn retained(&self, bearer: &str) -> Result<String, Error> {
         self.store
             .lock()
-            .inspect("document.lifetime", |tx| (self.lifetime)(tx, bearer))
+            .inspect("transport.lifetime", |tx| {
+                self.authority.retained(tx, bearer)
+            })
             .map_err(storage_error)
     }
 }
@@ -93,13 +85,11 @@ pub struct Runtime<B: Backend> {
     store: Arc<Mutex<Store<B>>>,
     document: Arc<Document>,
     transport: Server<StoreAuthority<B>>,
-    authenticate: Authenticate,
-    provider: Option<BearerProvider>,
+    authority: Arc<dyn snap_transport::bearer::Authority>,
     requests: Operations<Work>,
     input: Input,
     preconnection_requests: BTreeSet<Selection>,
     peers: BTreeMap<u64, Peer>,
-    lifetimes: BTreeSet<u64>,
     controllers: BTreeMap<String, Controller<B>>,
     reconcile: BTreeMap<String, Snapshot>,
     calls: BTreeMap<(u64, u64), Call>,
@@ -113,62 +103,21 @@ pub struct Runtime<B: Backend> {
 impl<B: Backend> Runtime<B> {
     /// `boot` must be a new random namespace each host start. Logical connections
     /// are ephemeral across process loss; old receipts must not identify new work.
+    /// Hosts supply credential policy and prepare its resident data before use.
+    /// Document consumes captured identity and asks Access about documents; it
+    /// does not select credential providers or decide credential validity.
     pub fn new(
         store: Store<B>,
         document: Document,
-        authenticate: Authenticate,
-        config: Config,
-        boot: String,
-    ) -> Self {
-        Self::new_with_lifetime_authority(
-            store,
-            document,
-            authenticate.clone(),
-            authenticate,
-            config,
-            boot,
-        )
-    }
-
-    /// Assemble generic bearer validation once for connection admission and
-    /// connectionless principal capture. Provider IO is limited to this Store.
-    pub fn new_with_provider(
-        store: Store<B>,
-        document: Document,
-        provider: Arc<dyn snap_transport::bearer::Provider>,
-        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
-        config: Config,
-        boot: String,
-    ) -> Result<Self, snap_store::Error> {
-        let validation = provider.clone();
-        let time = clock.clone();
-        let authenticate: Authenticate = Arc::new(move |tx, bearer| {
-            validation
-                .identify(tx, bearer, time())
-                .map(|principal| principal.identity)
-        });
-        Self::new(store, document, authenticate, config, boot).with_bearer_provider(provider, clock)
-    }
-
-    /// Separate renewable login lifetime from current access authority. Lifetime
-    /// checks govern retained state only; connect, invocation admission and
-    /// protected Document publication still use `authenticate`. Neither callback
-    /// may do external IO. Local/absolute expiry and known revocation must fail
-    /// both, while an owned refresh may preserve state without granting access.
-    pub fn new_with_lifetime_authority(
-        store: Store<B>,
-        document: Document,
-        authenticate: Authenticate,
-        lifetime: Authenticate,
+        authority: Arc<dyn snap_transport::bearer::Authority>,
         config: Config,
         boot: String,
     ) -> Self {
         assert!(!boot.is_empty());
         let store = Arc::new(Mutex::new(store));
-        let authority = StoreAuthority {
+        let transport_authority = StoreAuthority {
             store: store.clone(),
-            authenticate: authenticate.clone(),
-            lifetime,
+            authority: authority.clone(),
         };
         let document = Arc::new(document);
         let mut requests = Operations::default();
@@ -178,14 +127,12 @@ impl<B: Backend> Runtime<B> {
         Self {
             store,
             document,
-            transport: Server::new(authority, config).with_live_authority(),
-            authenticate,
-            provider: None,
+            transport: Server::new(transport_authority, config).with_live_authority(),
+            authority,
             requests,
             input: Box::new(|_| Err(Error::Unavailable)),
             preconnection_requests: BTreeSet::new(),
             peers: BTreeMap::new(),
-            lifetimes: BTreeSet::new(),
             controllers: BTreeMap::new(),
             reconcile: BTreeMap::new(),
             calls: BTreeMap::new(),
@@ -195,19 +142,6 @@ impl<B: Backend> Runtime<B> {
             boot,
             retention_ms: config.reconnect_ms,
         }
-    }
-
-    /// Mount a bearer provider's data interface at assembly. Transport calls its
-    /// resident-only validation callback before admission and captures public facts.
-    fn with_bearer_provider(
-        mut self,
-        provider: Arc<dyn snap_transport::bearer::Provider>,
-        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
-    ) -> Result<Self, snap_store::Error> {
-        assert!(self.peers.is_empty() && self.requests.idle());
-        provider.data().prepare(&mut self.store.lock())?;
-        self.provider = Some((provider, clock));
-        Ok(self)
     }
 
     pub fn with_request(mut self, request: Definition) -> Self {
@@ -267,7 +201,7 @@ impl<B: Backend> Runtime<B> {
         self.store
             .lock()
             .inspect("transport.upgrade", |tx| {
-                (self.authenticate)(tx, bearer).map(|_| ())
+                self.authority.identify(tx, bearer).map(|_| ())
             })
             .map_err(storage_error)
     }
@@ -524,7 +458,6 @@ impl<B: Backend> Runtime<B> {
         for connection in retired {
             self.residency.remove(&connection.0);
             self.calls.retain(|(id, _), _| *id != connection.0);
-            self.lifetimes.remove(&connection.0);
             let lifetime = self.lifetime(connection.0);
             // Failure is terminal for this expired connection regardless of cleanup.
             // Orphan receipt rows grant no authority and cannot match a fresh boot.
@@ -641,7 +574,6 @@ impl<B: Backend> Runtime<B> {
                 match self.transport.connect(&bearer, &client_id, now) {
                     Ok((attachment, resumed)) => {
                         let connection = attachment.connection().0;
-                        self.lifetimes.insert(connection);
                         let peer = self.peers.get_mut(&peer_id).unwrap();
                         peer.attachment = Some(attachment);
                         peer.bearer = Some(bearer);
@@ -841,47 +773,23 @@ impl<B: Backend> Runtime<B> {
             let authenticated = self
                 .store
                 .lock()
-                .inspect("document.admit", |tx| {
+                .inspect("transport.admit.identity", |tx| {
                     if let Some(connection) = work.connection
                         && self.transport.state(ConnectionId(connection))
                             != snap_transport::server::ConnectionState::Open
                     {
                         return Err(snap_store::Error::NotFound);
                     }
-                    let principal = if let (Some((provider, clock)), Some(bearer)) =
-                        (&self.provider, &work.bearer)
-                    {
-                        match provider.identify(tx, bearer, clock()) {
-                            Ok(principal) => Some(principal),
-                            Err(snap_store::Error::NotFound)
-                                if !self
-                                    .requests
-                                    .definitions()
-                                    .get(selection)
-                                    .identity_required
-                                    && work.connection.is_none() =>
-                            {
-                                None
-                            }
-                            Err(error) => return Err(error),
-                        }
-                    } else {
-                        None
-                    };
-                    let actor = if self.provider.is_some() {
-                        principal
-                            .as_ref()
-                            .map(|principal| principal.identity.clone())
-                    } else {
-                        work.bearer
-                            .as_deref()
-                            .map(|bearer| (self.authenticate)(tx, bearer))
-                            .transpose()?
-                    };
-                    if work.connection.is_some() && actor != work.actor {
+                    let resolved = self.authority.resolve(
+                        tx,
+                        work.bearer.as_deref(),
+                        work.connection.is_some()
+                            || self.requests.definitions().get(selection).identity_required,
+                    )?;
+                    if work.connection.is_some() && resolved.actor != work.actor {
                         return Err(snap_store::Error::Invalid);
                     }
-                    Ok((actor, principal))
+                    Ok((resolved.actor, resolved.principal))
                 })
                 .map_err(storage_error);
             let (actor, principal) = match authenticated {
@@ -1091,7 +999,7 @@ impl<B: Backend> Runtime<B> {
             // A retained renewable login is not current read authority.
             // Do not publish new holdings while its access is unavailable.
             let bearer = peer.bearer.as_deref().ok_or(snap_store::Error::NotFound)?;
-            if (self.authenticate)(tx, bearer)? != actor {
+            if self.authority.identify(tx, bearer)? != actor {
                 return Err(snap_store::Error::NotFound);
             }
             self.document

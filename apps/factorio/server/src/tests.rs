@@ -33,12 +33,14 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
         let host = Host::new(
             store,
             factorio::workspaces::document(),
-            Arc::new(move |tx, bearer| {
-                if !authority.load(Ordering::SeqCst) {
-                    return Err(snap_store::Error::NotFound);
-                }
-                crate::operations::session(tx, bearer).map(|(s, _)| s.owner)
-            }),
+            Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+                move |tx, bearer| {
+                    if !authority.load(Ordering::SeqCst) {
+                        return Err(snap_store::Error::NotFound);
+                    }
+                    crate::operations::session(tx, bearer).map(|(s, _)| s.owner)
+                },
+            ))),
             Default::default(),
             "accepted-authority".into(),
         );
@@ -119,11 +121,13 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
     for loss in ["revoked", "session-expired", "access-expired"] {
         let (store, config, mut session) = authority_fixture();
         let owner = session.owner.clone();
-        let host = Host::new_with_lifetime_authority(
+        let host = Host::new(
             store,
             graph::document(),
-            Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
-            Arc::new(crate::operations::retained),
+            Arc::new(snap_transport::bearer::Callbacks::with_retained(
+                Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+                Arc::new(crate::operations::retained),
+            )),
             Default::default(),
             "expired-authority".into(),
         );
@@ -246,11 +250,13 @@ fn detached_cli_recovery_survives_access_expiry_but_not_login_expiry_or_revocati
                 )
             })
             .unwrap();
-        let host = Host::new_with_lifetime_authority(
+        let host = Host::new(
             store,
             factorio::workspaces::document(),
-            Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
-            Arc::new(crate::operations::retained),
+            Arc::new(snap_transport::bearer::Callbacks::with_retained(
+                Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+                Arc::new(crate::operations::retained),
+            )),
             Config {
                 reconnect_ms: 1_800_000,
                 capacity: 8,
@@ -365,11 +371,13 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
     let (store, config, mut session) = authority_fixture();
-    let host = Host::new_with_lifetime_authority(
+    let host = Host::new(
         store,
         graph::document(),
-        Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
-        Arc::new(crate::operations::retained),
+        Arc::new(snap_transport::bearer::Callbacks::with_retained(
+            Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+            Arc::new(crate::operations::retained),
+        )),
         Default::default(),
         "holdings-authority".into(),
     );
@@ -466,11 +474,13 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     use std::time::Duration;
     let (mut store, config, _) = authority_fixture();
     let cookies = Cookies::load(&mut store, "factorio", false).unwrap();
-    let host = Host::new_with_lifetime_authority(
+    let host = Host::new(
         store,
         factorio::workspaces::document(),
-        Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
-        Arc::new(crate::operations::retained),
+        Arc::new(snap_transport::bearer::Callbacks::with_retained(
+            Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+            Arc::new(crate::operations::retained),
+        )),
         Default::default(),
         "slow-controller".into(),
     );
@@ -638,7 +648,9 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
     let host = Host::new(
         store,
         factorio::workspaces::document(),
-        Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner),
+        ))),
         Default::default(),
         "cancelled-refresh".into(),
     );
@@ -840,7 +852,9 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let host = Host::new(
         store,
         factorio::workspaces::document(),
-        std::sync::Arc::new(|tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner)),
+        std::sync::Arc::new(snap_transport::bearer::Callbacks::new(std::sync::Arc::new(
+            |tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner),
+        ))),
         Default::default(),
         "cli-test".into(),
     );
