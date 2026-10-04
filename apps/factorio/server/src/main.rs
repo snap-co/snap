@@ -15,7 +15,7 @@ use axum::{
 };
 use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
-use snap_document::runtime::Runtime;
+type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
@@ -25,7 +25,7 @@ use std::{path::PathBuf, sync::Arc};
 use tower_http::services::{ServeDir, ServeFile};
 
 struct App {
-    oauth: Arc<OAuth<Runtime<snap_store_sqlite::Sqlite>>>,
+    oauth: Arc<OAuth<Host<snap_store_sqlite::Sqlite>>>,
     tools: config::Tools,
     tcp: std::net::SocketAddr,
     tcp_ca_file: Option<PathBuf>,
@@ -217,9 +217,9 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         registry = registry.with_request(definition);
     }
     let registry = operations::register(registry, config, origin.clone());
-    let host = Runtime::new(
+    let host = Host::new(
         store,
-        document,
+        snap_document::host::Documents::new(document),
         registry,
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -233,7 +233,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     )
     .with_inputs(operations::inputs);
     let mut host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
-    tokio::task::block_in_place(|| host.recover_controllers())?;
+    tokio::task::block_in_place(|| host.recover())?;
     let documents = Shared::new(host);
     let transport = Arc::new(Service {
         dispatch: Dispatcher::web(documents.clone()),

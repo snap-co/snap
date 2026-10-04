@@ -1,18 +1,12 @@
 //! Cartridge assembly shared by controlled and physical-IO setups.
-use snap_document::{Registry, runtime::Runtime as Host, server::Document};
+use snap_host::Blocking as Host;
 use snap_platform_tests::cartridge;
 use snap_store::{Backend, Row, Store, migration::Migration};
 use snap_transport::server::Config;
 use std::sync::Arc;
 
 pub fn migrations() -> Vec<Migration> {
-    let mut migrations: Vec<Migration> = [snap_access::MIGRATION, snap_document::server::MIGRATION]
-        .into_iter()
-        .map(|text| toml::from_str(text).expect("valid module migration"))
-        .collect();
-    migrations.push(cartridge::migration());
-    migrations.sort_by(|a, b| a.id.cmp(&b.id));
-    migrations
+    vec![cartridge::migration()]
 }
 
 /// Mount on a fresh Store. Probe rows remain cold so the host must prepare the
@@ -22,12 +16,6 @@ pub fn mount<B: Backend>(
     config: Config,
     boot: String,
 ) -> Result<Host<B>, snap_store::Error> {
-    for table in snap_access::TABLES
-        .iter()
-        .chain(snap_document::server::TABLES.iter())
-    {
-        store.load(table)?;
-    }
     store.run("probe.seed", |tx| {
         for table in cartridge::TABLES {
             tx.insert(
@@ -46,9 +34,7 @@ pub fn mount<B: Backend>(
     }
     let host = Host::new(
         store,
-        Arc::new(Document::new(
-            Registry::new(vec![]).expect("empty document registry"),
-        )),
+        (),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| {

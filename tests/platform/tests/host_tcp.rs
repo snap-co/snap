@@ -1,5 +1,5 @@
 //! Socket ownership tests, not repeats of Host's controlled-clock lifecycle suite.
-use snap_document::runtime::Runtime as Host;
+use snap_host::Blocking as Host;
 use snap_transport::operation::Definition as Request;
 use snap_transport::{Command, Event, Invocation, Response, binary, json};
 use snap_transport_native::{Dispatcher, Shared};
@@ -12,17 +12,7 @@ mod tls_support;
 #[tokio::test]
 #[ignore = "real TCP adapter"]
 async fn adjacent_handshake_streamed_observations_and_new_submission_after_detach() {
-    let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
-        .map(|s| toml::from_str(s).unwrap());
-    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
-    for table in snap_access::TABLES
-        .iter()
-        .chain(snap_document::server::TABLES.iter())
-    {
-        store.load(table).unwrap();
-    }
-    let document =
-        snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
+    let store = snap_store_sqlite::Sqlite::memory(&[]).unwrap();
     let executions = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let count = executions.clone();
     let operations = snap_transport::operation::Registry::default().with_request(Request {
@@ -43,7 +33,7 @@ async fn adjacent_handshake_streamed_observations_and_new_submission_after_detac
     });
     let host = Host::new(
         store,
-        Arc::new(document),
+        (),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, b| {
             if b == "token" {
@@ -164,12 +154,7 @@ async fn adjacent_handshake_streamed_observations_and_new_submission_after_detac
 #[tokio::test]
 async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
     use snap_transport::bearer::{Change, Receiver, Token};
-    let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
-        .map(|source| toml::from_str(source).unwrap());
-    let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
-    let document =
-        snap_document::server::Document::new(snap_document::Registry::new(vec![]).unwrap());
-    document.metadata().prepare(&mut store).unwrap();
+    let store = snap_store_sqlite::Sqlite::memory(&[]).unwrap();
     let operations =
         snap_transport::operation::Registry::default().with_preconnection_request(Request {
             name: "fixture.acquire".into(),
@@ -190,7 +175,7 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
         });
     let host = Host::new(
         store,
-        Arc::new(document),
+        (),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
             Err(snap_store::Error::NotFound)

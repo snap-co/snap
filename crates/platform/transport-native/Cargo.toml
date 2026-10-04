@@ -9,6 +9,7 @@ snap-transport = { path = "../../transport" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
+snap-host.workspace = true
 snap-document.workspace = true
 snap-access.workspace = true
 snap-store.workspace = true

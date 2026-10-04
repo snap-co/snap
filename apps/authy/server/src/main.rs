@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-use snap_document::runtime::Runtime;
+type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
 use snap_transport_native::{Dispatcher, Shared};
@@ -24,7 +24,7 @@ use std::{
 use tower_http::services::{ServeDir, ServeFile};
 
 pub struct App {
-    pub documents: Arc<Shared<Runtime<snap_store_sqlite::Sqlite>>>,
+    pub documents: Arc<Shared<Host<snap_store_sqlite::Sqlite>>>,
     pub keys: Arc<keys::Keys>,
     pub origin: String,
     pub issuer: oidc_http::Issuer,
@@ -174,9 +174,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         registry = registry.with_request(definition);
     }
     let registry = operations::register(registry, webauthn);
-    let host = Runtime::new(
+    let host = Host::new(
         store,
-        document,
+        snap_document::host::Documents::new(document),
         registry,
         Arc::new(snap_identity::authentication::Authentication::new(
             Arc::new(Identity::default().provider(snap_crypto::Native)),

@@ -9,7 +9,7 @@ use axum::{Form, extract::Path, response::Html};
 /// Renewal may wait behind an accepted controller; waiting does not block Tokio
 /// or shorten the login/recovery lifetime. Network IO never holds the host lock.
 pub async fn prepare(
-    oauth: &Arc<OAuth<Runtime<snap_store_sqlite::Sqlite>>>,
+    oauth: &Arc<OAuth<Host<snap_store_sqlite::Sqlite>>>,
     command: snap_transport::Command,
 ) -> Result<(), Error> {
     let id = oauth

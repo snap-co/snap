@@ -6,12 +6,12 @@ publish.workspace = true
 
 [dependencies]
 snap-store.workspace = true
+snap-host.workspace = true
 snap-access.workspace = true
 snap-transport = { path = "../transport" }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = { version = "0.10", default-features = false }
-spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [dev-dependencies]
 snap-store-sqlite = { path = "../platform/store-sqlite" }

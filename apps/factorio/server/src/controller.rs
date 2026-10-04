@@ -1,10 +1,11 @@
 //! One synchronous reconciliation step per pass. The shared host owns scheduling,
 //! the execution gate, blocked state and explicit retries.
+use crate::Host;
 use factorio::{Config, Desired, Effect, Phase, Session, workspaces as graph};
-use snap_document::runtime::{ControllerContext, Runtime};
+use snap_document::host::ControllerContext;
 use snap_store::Error;
 
-type Context<'a> = ControllerContext<'a, snap_store_sqlite::Sqlite>;
+type Context<'a, 'host> = ControllerContext<'a, 'host, snap_store_sqlite::Sqlite>;
 
 /// Keep the effect boundary small so reconciliation can be exercised without Git
 /// processes or a running OpenCode service.
@@ -48,101 +49,103 @@ impl Effects for Native {
 /// Native effects enter Tokio's blocking section while retaining the application
 /// gate. Never wait for an agent turn under this gate.
 pub fn register(
-    host: Runtime<snap_store_sqlite::Sqlite>,
+    host: Host<snap_store_sqlite::Sqlite>,
     runtime: tokio::runtime::Handle,
     tools: crate::config::Tools,
-) -> Runtime<snap_store_sqlite::Sqlite> {
+) -> Host<snap_store_sqlite::Sqlite> {
     with_effects(host, Native(runtime, tools))
 }
 
 fn with_effects(
-    host: Runtime<snap_store_sqlite::Sqlite>,
+    host: Host<snap_store_sqlite::Sqlite>,
     mut effects: impl Effects,
-) -> Runtime<snap_store_sqlite::Sqlite> {
-    host.with_controller(
-        graph::SESSION_KIND,
-        Box::new(move |ctx, snapshot| {
-            let child: graph::Child<Session> =
-                serde_json::from_value(snapshot.value).map_err(|_| Error::Invalid)?;
-            let root = ctx.document(&child.workspace)?;
-            let root: graph::Root =
-                serde_json::from_value(root.value).map_err(|_| Error::Invalid)?;
-            for id in root
-                .tickets
-                .values()
-                .chain(root.sessions.values())
-                .chain(root.intakes.values())
-            {
-                ctx.document(id)?;
-            }
-            let state = ctx.inspect("factorio.controller.inspect", |tx| {
-                graph::retained(tx, &child.workspace)
-            })?;
-            let session = state.sessions.get(&child.data.id).ok_or(Error::NotFound)?;
-            if root.sessions.get(&session.id) != Some(&snapshot.id) {
-                return Err(Error::Invalid);
-            }
-            let lifecycle = ctx.lifecycle(&snapshot.id)?;
-            if lifecycle.blocked.is_some() {
-                return Ok(());
-            }
-            // A retained deleted/archived session still owns its resources. Finish a
-            // journaled integration first; otherwise abandon while preserving work.
-            if lifecycle.state != snap_document::lifecycle::State::Active
-                && !matches!(
-                    session.phase,
-                    Phase::Integrating
-                        | Phase::Cleanup
-                        | Phase::Complete
-                        | Phase::Abandoning
-                        | Phase::Abandoned
-                )
-            {
-                let mut session = session.clone();
-                session.phase = Phase::Abandoning;
-                session.desired = Desired::Abandoned;
-                ctx.transact("factorio.controller.abandon", |tx| {
-                    graph::document().observe(
-                        tx,
-                        &snapshot.id,
-                        serde_json::to_value(graph::Child {
-                            workspace: child.workspace,
-                            data: session,
-                        })
-                        .map_err(|_| Error::Invalid)?,
-                    )?;
-                    Ok(())
+) -> Host<snap_store_sqlite::Sqlite> {
+    host.map_participant(|documents| {
+        documents.with_controller(
+            graph::SESSION_KIND,
+            Box::new(move |ctx, snapshot| {
+                let child: graph::Child<Session> =
+                    serde_json::from_value(snapshot.value).map_err(|_| Error::Invalid)?;
+                let root = ctx.document(&child.workspace)?;
+                let root: graph::Root =
+                    serde_json::from_value(root.value).map_err(|_| Error::Invalid)?;
+                for id in root
+                    .tickets
+                    .values()
+                    .chain(root.sessions.values())
+                    .chain(root.intakes.values())
+                {
+                    ctx.document(id)?;
+                }
+                let state = ctx.inspect("factorio.controller.inspect", |tx| {
+                    graph::retained(tx, &child.workspace)
                 })?;
-                return Ok(());
-            }
-            match step(&mut effects, &state.config, session) {
-                Ok(Some(effect)) => {
-                    publish(ctx, &child.workspace, &session.id, effect)?;
+                let session = state.sessions.get(&child.data.id).ok_or(Error::NotFound)?;
+                if root.sessions.get(&session.id) != Some(&snapshot.id) {
+                    return Err(Error::Invalid);
                 }
-                Ok(None) => {}
-                Err(message) => {
-                    // Persist the useful error atomically with the stop condition.
-                    // Returning success avoids replacing it with a generic Store error.
-                    ctx.transact("factorio.controller.blocked", |tx| {
-                        graph::observe(
+                let lifecycle = ctx.lifecycle(&snapshot.id)?;
+                if lifecycle.blocked.is_some() {
+                    return Ok(());
+                }
+                // A retained deleted/archived session still owns its resources. Finish a
+                // journaled integration first; otherwise abandon while preserving work.
+                if lifecycle.state != snap_document::lifecycle::State::Active
+                    && !matches!(
+                        session.phase,
+                        Phase::Integrating
+                            | Phase::Cleanup
+                            | Phase::Complete
+                            | Phase::Abandoning
+                            | Phase::Abandoned
+                    )
+                {
+                    let mut session = session.clone();
+                    session.phase = Phase::Abandoning;
+                    session.desired = Desired::Abandoned;
+                    ctx.transact("factorio.controller.abandon", |tx| {
+                        graph::document().observe(
                             tx,
-                            &child.workspace,
-                            &session.id,
-                            Effect::Failed(message.clone()),
+                            &snapshot.id,
+                            serde_json::to_value(graph::Child {
+                                workspace: child.workspace,
+                                data: session,
+                            })
+                            .map_err(|_| Error::Invalid)?,
                         )?;
-                        let mut lifecycle = graph::document().lifecycle(tx, &snapshot.id)?;
-                        lifecycle.blocked = Some(message);
-                        graph::document().set_lifecycle(tx, &snapshot.id, &lifecycle)
+                        Ok(())
                     })?;
+                    return Ok(());
                 }
-            }
-            Ok(())
-        }),
-    )
+                match step(&mut effects, &state.config, session) {
+                    Ok(Some(effect)) => {
+                        publish(ctx, &child.workspace, &session.id, effect)?;
+                    }
+                    Ok(None) => {}
+                    Err(message) => {
+                        // Persist the useful error atomically with the stop condition.
+                        // Returning success avoids replacing it with a generic Store error.
+                        ctx.transact("factorio.controller.blocked", |tx| {
+                            graph::observe(
+                                tx,
+                                &child.workspace,
+                                &session.id,
+                                Effect::Failed(message.clone()),
+                            )?;
+                            let mut lifecycle = graph::document().lifecycle(tx, &snapshot.id)?;
+                            lifecycle.blocked = Some(message);
+                            graph::document().set_lifecycle(tx, &snapshot.id, &lifecycle)
+                        })?;
+                    }
+                }
+                Ok(())
+            }),
+        )
+    })
 }
 
 fn publish(
-    ctx: &mut Context<'_>,
+    ctx: &mut Context<'_, '_>,
     workspace: &str,
     session: &str,
     effect: Effect,
@@ -256,7 +259,7 @@ mod tests {
             self.call("cleanup")
         }
     }
-    fn fixture() -> (Runtime<snap_store_sqlite::Sqlite>, Arc<Mutex<Calls>>) {
+    fn fixture() -> (Host<snap_store_sqlite::Sqlite>, Arc<Mutex<Calls>>) {
         let mut migrations: Vec<snap_store::migration::Migration> =
             [snap_access::MIGRATION, snap_document::server::MIGRATION]
                 .into_iter()
@@ -330,9 +333,9 @@ mod tests {
         for definition in snap_document::operations::definitions(document.clone()) {
             operations = operations.with_request(definition);
         }
-        let host = Runtime::new(
+        let host = Host::new(
             store,
-            document,
+            snap_document::host::Documents::new(document),
             operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 |_, bearer| Ok(bearer.into()),
@@ -342,13 +345,13 @@ mod tests {
         );
         (with_effects(host, Fake(calls.clone())), calls)
     }
-    fn command(host: &mut Runtime<snap_store_sqlite::Sqlite>, cmd: Command, human: bool) {
+    fn command(host: &mut Host<snap_store_sqlite::Sqlite>, cmd: Command, human: bool) {
         host.transact("command", |tx| {
             graph::command(tx, ROOT, "owner", human, 0, cmd)
         })
         .unwrap();
     }
-    fn retry(host: &mut Runtime<snap_store_sqlite::Sqlite>) {
+    fn retry(host: &mut Host<snap_store_sqlite::Sqlite>) {
         host.transact("retry", |tx| {
             let id = graph::child_id(ROOT, graph::SESSION_KIND, "work");
             let mut lifecycle = graph::document().lifecycle(tx, &id)?;
@@ -361,7 +364,7 @@ mod tests {
     #[test]
     fn startup_converges_and_unknown_integration_outcome_retries_recorded_commit() {
         let (mut host, calls) = fixture();
-        host.recover_controllers().unwrap();
+        host.recover().unwrap();
         command(
             &mut host,
             Command::Publish {
@@ -389,7 +392,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        host.recover_controllers().unwrap();
+        host.recover().unwrap();
         assert_eq!(
             calls.lock().unwrap().log,
             ["setup", "candidate", "prepare", "integrate"]
@@ -404,7 +407,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        host.recover_controllers().unwrap();
+        host.recover().unwrap();
         assert_eq!(
             calls.lock().unwrap().log,
             [
@@ -422,8 +425,8 @@ mod tests {
     fn setup_failure_waits_for_explicit_retry_and_deletion_runs_cleanup() {
         let (mut host, calls) = fixture();
         calls.lock().unwrap().fail = Some("setup");
-        host.recover_controllers().unwrap();
-        host.recover_controllers().unwrap();
+        host.recover().unwrap();
+        host.recover().unwrap();
         assert_eq!(calls.lock().unwrap().log, ["setup"]);
         calls.lock().unwrap().fail = None;
         retry(&mut host);

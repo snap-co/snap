@@ -3,9 +3,9 @@
 #![no_std]
 extern crate alloc;
 pub mod access;
+pub mod host;
 pub mod lifecycle;
 pub mod operations;
-pub mod runtime;
 pub use access::DocumentAccessGuard;
 
 pub mod client;

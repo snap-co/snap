@@ -103,11 +103,17 @@ fn execute(
     let prepared: Prepared = serde_json::from_value(core::mem::take(&mut context.prepared))
         .map_err(|_| Error::Invalid)?;
     Ok(match prepared {
-        Prepared::Replay(completion) => ServerMessage::Completed(completion),
+        Prepared::Replay(completion) => {
+            context.publication = snap_transport::json!({crate::wire::KIND: crate::host::Publication {
+                completion: completion.clone(), replication: None,
+            }});
+            ServerMessage::Completed(completion)
+        }
         Prepared::Mutation(admitted) => {
             let result = document.execute_recorded(tx, lifetime, admitted)?;
-            context.publication =
-                serde_json::to_value(result.replication).map_err(|_| Error::Invalid)?;
+            context.publication = snap_transport::json!({crate::wire::KIND: crate::host::Publication {
+                completion: result.completion.clone(), replication: result.replication,
+            }});
             ServerMessage::Completed(result.completion)
         }
         Prepared::Manifest(manifest, extent) => ServerMessage::Manifest(document.manifest(

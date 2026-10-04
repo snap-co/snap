@@ -339,7 +339,7 @@ async fn run<L: Loop + Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snap_document::runtime::Runtime as Host;
+    type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
     use std::sync::atomic::AtomicUsize;
 
     fn fixture() -> Arc<Shared<Host<snap_store_sqlite::Sqlite>>> {
@@ -365,7 +365,7 @@ mod tests {
         }
         Host::new(
             store,
-            document,
+            snap_document::host::Documents::new(document),
             operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
                 Ok("actor".into())
@@ -423,17 +423,19 @@ mod tests {
         let (finish, released) = std::sync::mpsc::channel::<()>();
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
-        let host = host.with_controller(
-            "counter",
-            Box::new(move |ctx, _| {
-                count.fetch_add(1, Ordering::SeqCst);
-                ctx.progress(json!("before retirement"))?;
-                entered.take().unwrap().send(()).unwrap();
-                let _ = released.recv_timeout(Duration::from_secs(10));
-                ctx.progress(json!("after retirement"))?;
-                Ok(())
-            }),
-        );
+        let host = host.map_participant(|documents| {
+            documents.with_controller(
+                "counter",
+                Box::new(move |ctx, _| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    ctx.progress(json!("before retirement"))?;
+                    entered.take().unwrap().send(()).unwrap();
+                    let _ = released.recv_timeout(Duration::from_secs(10));
+                    ctx.progress(json!("after retirement"))?;
+                    Ok(())
+                }),
+            )
+        });
         let shared = Shared::new(host);
         let preparation = Arc::new(AtomicUsize::new(0));
         let prepare: Prepare = Arc::new(move |_| {

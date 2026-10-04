@@ -1,7 +1,7 @@
 use snap_access::{
     Access, Actor, Audience, ChangeSet, GrantChange, KindDefinition, Resource, Role,
 };
-use snap_document::runtime::Runtime as Host;
+type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
 use snap_document::{
     Definition, Intent, Manifest, Mutation, Registry, ServerMessage, Snapshot, server::Document,
 };
@@ -338,28 +338,30 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
         let (peer, _) = connect(&mut host, "alice", "dependency", 0);
         let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = called.clone();
-        let mut host = host.with_controller(
-            "counter",
-            Box::new(move |ctx, snapshot| {
-                if snapshot.id != ID {
-                    return Ok(());
-                }
-                let resident = ctx.inspect("resident dependency", |tx| {
-                    Document::new(registry()).retained(tx, DEP)
-                });
-                if cleanup {
-                    assert_eq!(resident?.value, json!(12));
-                } else {
-                    assert!(matches!(resident, Err(snap_store::Error::Miss(_))));
-                }
-                assert_eq!(ctx.document(DEP)?.value, json!(12));
-                if cleanup {
-                    ctx.finalize(DEP, "resource")?;
-                }
-                observed.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            }),
-        );
+        let mut host = host.map_participant(|documents| {
+            documents.with_controller(
+                "counter",
+                Box::new(move |ctx, snapshot| {
+                    if snapshot.id != ID {
+                        return Ok(());
+                    }
+                    let resident = ctx.inspect("resident dependency", |tx| {
+                        Document::new(registry()).retained(tx, DEP)
+                    });
+                    if cleanup {
+                        assert_eq!(resident?.value, json!(12));
+                    } else {
+                        assert!(matches!(resident, Err(snap_store::Error::Miss(_))));
+                    }
+                    assert_eq!(ctx.document(DEP)?.value, json!(12));
+                    if cleanup {
+                        ctx.finalize(DEP, "resource")?;
+                    }
+                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }),
+            )
+        });
         submit(&mut host, peer, 1, intent(1, 1));
         assert!(host.step());
         assert!(called.load(std::sync::atomic::Ordering::SeqCst));
@@ -438,7 +440,7 @@ fn fixture_with(
         .unwrap();
     Host::new(
         store,
-        document,
+        snap_document::host::Documents::new(document),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| match bearer {
@@ -862,16 +864,18 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (finish, released) = std::sync::mpsc::channel();
     let mut entered = Some(entered);
-    let host = fixture().with_controller(
-        "counter",
-        Box::new(move |_, _| {
-            entered.take().unwrap().send(()).unwrap();
-            released
-                .recv()
-                .map_err(|_| snap_store::Error::Unavailable)?;
-            Ok(())
-        }),
-    );
+    let host = fixture().map_participant(|documents| {
+        documents.with_controller(
+            "counter",
+            Box::new(move |_, _| {
+                entered.take().unwrap().send(()).unwrap();
+                released
+                    .recv()
+                    .map_err(|_| snap_store::Error::Unavailable)?;
+                Ok(())
+            }),
+        )
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let shared = Shared::new(host);
@@ -961,7 +965,7 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     closed.expect("physical close waited for controller IO");
     let mut host = shared.host.lock().unwrap();
     host.tick(10);
-    assert_eq!(host.residency_references(ID), 0);
+    assert_eq!(host.participant().residency_references(ID), 0);
     assert_eq!(
         host.transact("read drained mutation", |tx| Document::new(registry())
             .read(tx, ID, Some("alice")))
@@ -975,20 +979,22 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
 fn controller_commits_progress_and_converges_before_the_next_acceptance() {
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = observations.clone();
-    let mut host = fixture().with_controller(
-        "counter",
-        Box::new(move |ctx, snapshot| {
-            log.lock().unwrap().push(snapshot.value.clone());
-            if snapshot.value == json!(1) {
-                ctx.progress(json!({"message":"preparing"}))?;
-                ctx.transact("controller.observe", |tx| {
-                    Document::new(registry()).replace(tx, ID, "alice", json!(2))?;
-                    Ok(())
-                })?;
-            }
-            Ok(())
-        }),
-    );
+    let mut host = fixture().map_participant(|documents| {
+        documents.with_controller(
+            "counter",
+            Box::new(move |ctx, snapshot| {
+                log.lock().unwrap().push(snapshot.value.clone());
+                if snapshot.value == json!(1) {
+                    ctx.progress(json!({"message":"preparing"}))?;
+                    ctx.transact("controller.observe", |tx| {
+                        Document::new(registry()).replace(tx, ID, "alice", json!(2))?;
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            }),
+        )
+    });
     let (peer, _) = connect(&mut host, "alice", "controller", 0);
     submit(&mut host, peer, 1, intent(1, 1));
     submit(&mut host, peer, 2, intent(2, 10));
@@ -1028,15 +1034,17 @@ fn controller_commits_progress_and_converges_before_the_next_acceptance() {
 fn controller_io_does_not_hold_the_carrier_output_lock() {
     let (entered, waiting) = std::sync::mpsc::channel();
     let (finish, released) = std::sync::mpsc::channel();
-    let mut host = fixture().with_controller(
-        "counter",
-        Box::new(move |ctx, _| {
-            ctx.progress(json!("waiting for IO"))?;
-            entered.send(()).unwrap();
-            released.recv().unwrap();
-            Ok(())
-        }),
-    );
+    let mut host = fixture().map_participant(|documents| {
+        documents.with_controller(
+            "counter",
+            Box::new(move |ctx, _| {
+                ctx.progress(json!("waiting for IO"))?;
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            }),
+        )
+    });
     let (peer, _) = connect(&mut host, "alice", "held-io", 0);
     let output = host.output(peer).unwrap();
     submit(&mut host, peer, 1, intent(1, 1));
@@ -1071,22 +1079,24 @@ fn controller_io_does_not_hold_the_carrier_output_lock() {
 fn failed_reconciliation_stays_blocked_until_explicit_retry() {
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = attempts.clone();
-    let mut host = fixture().with_controller(
-        "counter",
-        Box::new(move |_, _| {
-            if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                Err(snap_store::Error::Unavailable)
-            } else {
-                Ok(())
-            }
-        }),
-    );
+    let mut host = fixture().map_participant(|documents| {
+        documents.with_controller(
+            "counter",
+            Box::new(move |_, _| {
+                if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err(snap_store::Error::Unavailable)
+                } else {
+                    Ok(())
+                }
+            }),
+        )
+    });
     let (peer, _) = connect(&mut host, "alice", "blocked", 0);
     submit(&mut host, peer, 1, intent(1, 1));
     host.step();
     let output = host.drain(peer).unwrap();
     assert!(output.iter().any(|r| matches!(r, Response::Event(Event::Completed { outcome: Err(snap_transport::Error::Application(value)), .. }) if value["committed"] == true)));
-    host.recover_controllers().unwrap();
+    host.recover().unwrap();
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     let state = host
         .transact("inspect failure", |tx| {
@@ -1112,14 +1122,16 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
 fn carrier_close_during_controller_io_drains_only_accepted_work() {
     let (entered, waiting) = std::sync::mpsc::channel();
     let (finish, released) = std::sync::mpsc::channel();
-    let mut host = fixture().with_controller(
-        "counter",
-        Box::new(move |_, _| {
-            entered.send(()).unwrap();
-            released.recv().unwrap();
-            Ok(())
-        }),
-    );
+    let mut host = fixture().map_participant(|documents| {
+        documents.with_controller(
+            "counter",
+            Box::new(move |_, _| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            }),
+        )
+    });
     let (peer, _) = connect(&mut host, "alice", "closing-io", 0);
     let output = host.output(peer).unwrap();
     let control = host.carrier_control(peer).unwrap();
@@ -1138,7 +1150,7 @@ fn carrier_close_during_controller_io_drains_only_accepted_work() {
     let mut host = worker.join().unwrap();
     assert!(!host.step());
     assert!(host.retired(peer));
-    assert_eq!(host.residency_references(ID), 0);
+    assert_eq!(host.participant().residency_references(ID), 0);
     let events: Vec<_> = std::iter::from_fn(|| output.pop_front())
         .filter_map(|r| match r {
             Response::Event(event) => Some(vec![event]),
@@ -1169,16 +1181,16 @@ fn residency_references_survive_socket_loss_and_close_only_after_drain() {
     let mut host = fixture();
     let (alice, _) = connect(&mut host, "alice", "a", 0);
     let (bob, _) = connect(&mut host, "bob", "b", 0);
-    assert_eq!(host.residency_references(ID), 2);
+    assert_eq!(host.participant().residency_references(ID), 2);
     host.lost(alice, 1);
-    assert_eq!(host.residency_references(ID), 2);
+    assert_eq!(host.participant().residency_references(ID), 2);
     submit(&mut host, bob, 1, intent(1, 1));
     host.submit(bob, Command::Close, 2).unwrap();
-    assert_eq!(host.residency_references(ID), 2);
+    assert_eq!(host.participant().residency_references(ID), 2);
     host.step();
-    assert_eq!(host.residency_references(ID), 1);
+    assert_eq!(host.participant().residency_references(ID), 1);
     host.tick(101);
-    assert_eq!(host.residency_references(ID), 0);
+    assert_eq!(host.participant().residency_references(ID), 0);
 }
 
 #[test]

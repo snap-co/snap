@@ -306,6 +306,7 @@ dependencies = [
  "snap-config",
  "snap-crypto",
  "snap-document",
+ "snap-host",
  "snap-identity",
  "snap-identity-native",
  "snap-oidc",
@@ -591,6 +592,7 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-document",
+ "snap-host",
  "snap-http",
  "snap-identity",
  "snap-identity-native",
@@ -1079,6 +1081,7 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-document",
+ "snap-host",
  "snap-identity",
  "snap-identity-native",
  "snap-store",
@@ -3253,6 +3256,7 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
+ "snap-host",
  "snap-identity",
  "snap-platform-tests",
  "snap-store",
@@ -3285,11 +3289,20 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "snap-access",
+ "snap-host",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "spin 0.10.1",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "snap-host"
+version = "0.0.0"
+dependencies = [
+ "snap-store",
+ "snap-transport",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -3364,6 +3377,7 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
+ "snap-host",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
@@ -3424,6 +3438,7 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
+ "snap-host",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",

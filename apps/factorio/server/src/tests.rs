@@ -19,8 +19,8 @@ fn operations(
 
 #[test]
 fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
+    use crate::Host;
     use factorio::workspaces as graph;
-    use snap_document::runtime::Runtime as Host;
     use snap_transport::{Command, Event, Invocation, Response, json};
     use std::sync::{
         Arc,
@@ -44,7 +44,7 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
         let document = Arc::new(factorio::workspaces::document());
         let mut host = Host::new(
             store,
-            document.clone(),
+            snap_document::host::Documents::new(document.clone()),
             operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 move |tx, bearer| {
@@ -126,8 +126,8 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
 
 #[test]
 fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
+    use crate::Host;
     use factorio::workspaces as graph;
-    use snap_document::runtime::Runtime as Host;
     use snap_identity::oauth as rp;
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
@@ -137,7 +137,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
         let document = Arc::new(graph::document());
         let mut host = Host::new(
             store,
-            document.clone(),
+            snap_document::host::Documents::new(document.clone()),
             operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::with_retained(
                 Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -239,7 +239,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
 
 #[test]
 fn detached_cli_lifetime_survives_access_expiry_but_not_login_expiry_or_revocation() {
-    use snap_document::runtime::Runtime as Host;
+    use crate::Host;
     use snap_identity::oauth as rp;
     use snap_transport::{Command, Invocation, Response, json, server::Config};
     use std::sync::Arc;
@@ -268,7 +268,7 @@ fn detached_cli_lifetime_survives_access_expiry_but_not_login_expiry_or_revocati
         let document = Arc::new(factorio::workspaces::document());
         let mut host = Host::new(
             store,
-            document.clone(),
+            snap_document::host::Documents::new(document.clone()),
             operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::with_retained(
                 Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -395,15 +395,15 @@ fn detached_cli_lifetime_survives_access_expiry_but_not_login_expiry_or_revocati
 
 #[test]
 fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
+    use crate::Host;
     use factorio::workspaces as graph;
-    use snap_document::runtime::Runtime as Host;
     use snap_transport::{Command, Invocation, Response, json};
     use std::sync::Arc;
     let (store, config, mut session) = authority_fixture();
     let document = Arc::new(graph::document());
     let mut host = Host::new(
         store,
-        document.clone(),
+        snap_document::host::Documents::new(document.clone()),
         operations(&document, config),
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -494,7 +494,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real TLS maintenance and slow controller suite"]
 async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
-    use snap_document::runtime::Runtime as Host;
+    use crate::Host;
     use snap_identity_native::oauth::{Cookies, OAuth};
     use snap_transport::{Command, Event, Invocation, Response, json};
     use snap_transport_native::{Dispatcher, Shared};
@@ -508,7 +508,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let document = Arc::new(factorio::workspaces::document());
     let host = Host::new(
         store,
-        document.clone(),
+        snap_document::host::Documents::new(document.clone()),
         operations(&document, config),
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -521,19 +521,21 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let runtime = tokio::runtime::Handle::current();
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let mut entered = Some(entered);
-    let host = host.with_controller(
-        factorio::workspaces::WORKSPACE_KIND,
-        Box::new(move |_, _| {
-            if let Some(entered) = entered.take() {
-                entered.send(()).unwrap();
-                // Production native controllers await Tokio process IO while
-                // holding this same host gate. Two renewal waits must leave the
-                // two async workers free to drive that IO and this deadline.
-                runtime.block_on(tokio::time::sleep(Duration::from_secs(17)));
-            }
-            Ok(())
-        }),
-    );
+    let host = host.map_participant(|documents| {
+        documents.with_controller(
+            factorio::workspaces::WORKSPACE_KIND,
+            Box::new(move |_, _| {
+                if let Some(entered) = entered.take() {
+                    entered.send(()).unwrap();
+                    // Production native controllers await Tokio process IO while
+                    // holding this same host gate. Two renewal waits must leave the
+                    // two async workers free to drive that IO and this deadline.
+                    runtime.block_on(tokio::time::sleep(Duration::from_secs(17)));
+                }
+                Ok(())
+            }),
+        )
+    });
     let shared = Shared::new(host);
     let oauth = OAuth::new(
         shared.clone(),
@@ -650,7 +652,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
 #[tokio::test]
 #[ignore = "real OAuth IO suite"]
 async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it() {
-    use snap_document::runtime::Runtime as Host;
+    use crate::Host;
     use snap_identity::oauth as rp;
     use snap_identity_native::oauth::{Cookies, OAuth};
     use snap_transport_native::Shared;
@@ -685,7 +687,7 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
     }
     let host = Host::new(
         store,
-        document,
+        snap_document::host::Documents::new(document),
         registry,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner),
@@ -857,8 +859,8 @@ fn authority_session(bearer: &str) -> snap_identity::oauth::Grant {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real native CLI processes"]
 async fn native_cli_login_intake_tools_and_authority_without_shell_environment() {
+    use crate::Host;
     use serde_json::json;
-    use snap_document::runtime::Runtime as Host;
     use snap_identity::oauth as rp;
     use snap_transport_native::{Dispatcher, Shared};
     let (temp, config, _) = fixture().await;
@@ -891,7 +893,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let document = std::sync::Arc::new(factorio::workspaces::document());
     let host = Host::new(
         store,
-        document.clone(),
+        snap_document::host::Documents::new(document.clone()),
         operations(&document, config),
         std::sync::Arc::new(snap_transport::bearer::Callbacks::new(std::sync::Arc::new(
             |tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner),

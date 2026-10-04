@@ -5,7 +5,7 @@ mod host;
 #[path = "../../../crates/platform/transport-tcp/tests/support/mod.rs"]
 mod tls_support;
 
-use snap_document::runtime::Runtime as Host;
+use snap_host::Blocking as Host;
 use snap_platform_tests::{cartridge, journey};
 use snap_store_sqlite::Sqlite;
 use snap_transport::{Channel, Command, Error, Response, client::Client};

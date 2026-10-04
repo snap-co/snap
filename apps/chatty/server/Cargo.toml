@@ -23,6 +23,7 @@ snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-access.workspace = true
 snap-identity.workspace = true
 snap-store.workspace = true
+snap-host.workspace = true
 snap-transport = { path = "../../../crates/transport" }
 serde_json.workspace = true
 axum = "0.8"

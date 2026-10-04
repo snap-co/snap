@@ -1,7 +1,7 @@
-//! Generated admission/lifetime histories through the portable Document runtime.
+//! Generated Document admission/lifetime histories through the blocking host.
 use hegel::{TestCase, generators as gs};
 use snap_access::{Actor, Audience, ChangeSet, GrantChange, Resource, Role};
-use snap_document::runtime::Runtime as Host;
+type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot, server::Document};
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
 use std::sync::{Arc, Mutex};
@@ -76,7 +76,7 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
     }
     let mut host = Host::new(
         store,
-        server,
+        snap_document::host::Documents::new(server),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| Ok(bearer.into()),
@@ -87,13 +87,15 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
         },
         "properties".into(),
     )
-    .with_controller(
-        "counter",
-        Box::new(move |_, snapshot| {
-            observed.lock().unwrap().push(snapshot.value);
-            Ok(())
-        }),
-    );
+    .map_participant(|documents| {
+        documents.with_controller(
+            "counter",
+            Box::new(move |_, snapshot| {
+                observed.lock().unwrap().push(snapshot.value);
+                Ok(())
+            }),
+        )
+    });
     let mut expected = 0_i64;
     let mut committed = Vec::new();
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(40));

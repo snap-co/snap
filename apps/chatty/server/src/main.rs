@@ -1,6 +1,6 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::json;
-use snap_document::runtime::Runtime;
+type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
 async fn session(
-    State(oauth): State<Arc<OAuth<Runtime<snap_store_sqlite::Sqlite>>>>,
+    State(oauth): State<Arc<OAuth<Host<snap_store_sqlite::Sqlite>>>>,
     headers: HeaderMap,
 ) -> Response {
     match oauth.session(&headers).await {
@@ -94,9 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cookies = Cookies::load(&mut store, "chatty", origin.starts_with("https:"))?;
     let document = Arc::new(chatty::document());
     let operations = operations(document.clone());
-    let host = Runtime::new(
+    let host = Host::new(
         store,
-        document,
+        snap_document::host::Documents::new(document),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner),

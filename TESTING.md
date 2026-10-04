@@ -60,8 +60,8 @@ regression where applicable to the selected role.
 
 Store and carrier cases are independently selectable. The IO-free cartridge in
 `tests/platform/src/cartridge.rs` also exercises actual Transport-to-Store
-execution through Document's portable runtime and Transport's transactional
-executor. Shared properties and a
+execution through the portable `snap-host::Blocking` engine and Transport's
+transactional executor, without a Document instance or migration. Shared properties and a
 scalar reference model live in `tests/platform/src/dispatch.rs`. The controlled
 native server-role adapter drives public commands, output and execution steps
 against memory, ephemeral SQLite and file-backed SQLite. It does not replace the
@@ -139,7 +139,7 @@ send failure or physical loss rejects the unresolved call with an unknown-outcom
 error, without replay on logical reconnect. Rust/CDP cases in
 `tests/browser/src/client.rs` cover this adapter-specific lifecycle.
 Document's persisted mutation receipts and manifest recovery remain module-owned
-and covered by Document's server, client and runtime cases.
+and covered by Document's server, client and host-participation cases.
 
 ## Client SDK
 
@@ -174,8 +174,9 @@ its transaction interface, with the authority required by that interface.
 
 Module and application operation definitions register in Transport's registry,
 including the private connectionless classification. Application assembly passes
-that registry to the existing execution host; Document operations are explicitly
-selected like any other module, never registered implicitly by Document's runtime.
+that registry to the blocking execution host; Document operations and Document's
+commit participation are selected explicitly, like any other module. The generic
+host has no Document dependency and registers no modules implicitly.
 Identity's native OAuth adapter consumes Store's host transaction contract and
 Transport's loop contract, without a Document dependency. Existing host cases
 retain the serialized transaction and controller-ordering guarantees.
@@ -190,9 +191,15 @@ Direct calls do not prove dispatch admission, credential handling or wire
 behavior. Those guarantees belong to their own seams. Conversely, avoid routing
 every server-only behavior through a synthetic client operation just to test it.
 
-Controller definitions and their technical place in the execution loop are
-deferred. Preserve existing controller regressions without making their current
-shape the required harness design.
+The host retains Transport's FIFO gate through Store commit, selected commit
+notification, synchronous controller passes, resource release and completion.
+Only successful persistence notifies controllers. Controller commits request
+further passes before the next operation's admission; controller failure cannot
+undo a commit. Generic cases in `tests/platform/tests/host.rs` exercise this
+sequence without Document. Document owns snapshot selection, blocked lifecycle,
+receipt recovery, finalizers, holdings authorization and residency. Its controller
+context has Document access, Store transactions and original-invocation progress,
+but no executor or dispatch access. Async scheduling remains deferred.
 
 ## Client interfaces and end-to-end tests
 
@@ -221,7 +228,8 @@ transfer ownership of an app scenario to Snap.
 | Snap platform conformance and controlled storage | Shared portable cases and memory backend in `tests/platform/src/`; native setup adapters and default-run coverage in `tests/platform/tests/` |
 | Snap interfaces, modules and adapter-specific guarantees | `crates/*/tests/` and `crates/platform/*/tests/`; shared Store and carrier conformance lives in `tests/platform/` rather than provider-local copies |
 | Identity credential flows and private session policy | `crates/identity/tests/{identity,oauth,operations}.rs`; native WebAuthn signatures, origin/counter policy and durable ceremony state in `crates/platform/identity-native/tests/passkey.rs`, selected by the `passkey` feature; Authy's `passkey browser ceremony` journey uses a CDP authenticator to cover browser/Wasm conversion and cookie delivery; OAuth refresh/socket integration remains app-owned in Factorio |
-| Document runtime and native execution integration | Controlled document lifecycle and socket cases in `tests/platform/tests/document_{runtime,tcp}.rs`; generated document histories in `crates/document/tests/properties/runtime.rs` via the `document-runtime` property target; independent execution/output-lock regressions in `crates/platform/transport-native/src/dispatch.rs` |
+| Generic blocking execution and native integration | Document-free cartridge assembly in `tests/platform/support/host.rs`; commit/controller sequencing in `tests/platform/tests/host.rs`; physical TCP cases in `tests/platform/tests/host_tcp.rs` |
+| Document host participation | Controlled document lifecycle in `tests/platform/tests/document_runtime.rs`; generated document histories in `crates/document/tests/properties/runtime.rs` via the `document-runtime` property target; independent execution/output-lock regressions in `crates/platform/transport-native/src/dispatch.rs` |
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
 | Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
 | Paired cartridge client and physical IO | Portable SDK journey in `tests/platform/src/journey.rs`; shared native assembly in `tests/platform/support/{host,tcp_sqlite}.rs`; default-run integration in `tests/platform/tests/cartridge_tcp.rs` and visible runner in `tests/platform/examples/plumbing.rs` |
