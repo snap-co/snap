@@ -124,7 +124,12 @@ fn filter_completion(completion: &mut Completion, allowed: &BTreeSet<alloc::stri
 }
 fn filter(message: &mut ServerMessage, allowed: &BTreeSet<alloc::string::String>) -> bool {
     match message {
-        ServerMessage::Completed(c) | ServerMessage::Committed(c) => filter_completion(c, allowed),
+        // An absent completion snapshot means document loss to the client and
+        // clears its other intents. Temporary read denial must not forge that
+        // meaning. Early retirement is optional; the captured-authority terminal
+        // Event still resolves this intent, and queued siblings remain intact.
+        ServerMessage::Committed(c) => return allowed.contains(&c.document),
+        ServerMessage::Completed(c) => filter_completion(c, allowed),
         ServerMessage::Manifest(state) => {
             state.unchanged.retain(|h| allowed.contains(&h.document));
             state.documents.retain(|s| allowed.contains(&s.id));

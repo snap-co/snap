@@ -217,8 +217,12 @@ prepares host resource metadata even when application data does not declare it.
 Topic payloads are filtered before early publication as well as when queued.
 Denied read authority invalidates the observer baseline; renewal on the same
 attachment sends current state rather than assuming redacted updates were received.
-Document sync cases exercise early-commitment redaction without stripping terminal
-invocation Events, and client catch-up after a queued replication is removed.
+Document sync cases exercise omission of unauthorized early commitments without
+stripping terminal invocation Events, preservation of pipelined originating-client
+intents across temporary denial and renewal, and client catch-up after a queued
+replication is removed. Early commitments must not encode temporary read denial
+as permanent document loss. Correlated terminal results retain captured authority
+and still carry genuine deletion/visibility outcomes.
 Document owns JSON snapshot validation,
 visibility, exact mutation receipts, manifest reconciliation and replication encoding.
 It owns no controller registration, resource cleanup/retry policy or observer/residency

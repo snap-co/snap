@@ -588,7 +588,188 @@ fn messages(responses: Vec<Response>) -> Vec<ServerMessage> {
 }
 
 #[test]
-fn committed_topic_retirement_redacts_live_denial_but_preserves_terminal_authority() {
+fn temporary_live_denial_preserves_pipelined_origin_intents_through_renewal() {
+    use snap_document::{
+        ClientMessage,
+        client::{Client, Outcome},
+        wire::Wire,
+    };
+    use std::sync::atomic::{AtomicU8, Ordering};
+    for failure in [1, 2] {
+        for deny_after_first_commit in [false, true] {
+            let status = Arc::new(AtomicU8::new(0));
+            let live = status.clone();
+            let authority = snap_transport::bearer::Callbacks::with_retained(
+                Arc::new(move |_, bearer| match live.load(Ordering::SeqCst) {
+                    0 => Ok(bearer.into()),
+                    1 => Err(snap_store::Error::NotFound),
+                    _ => Err(snap_store::Error::Unavailable),
+                }),
+                Arc::new(|_, bearer| Ok(bearer.into())),
+            );
+            let mut host = fixture_with_authority(Default::default(), Arc::new(authority));
+            let renewal = status.clone();
+            // Renewal may finish during blocking controller IO, after topic
+            // synchronization but before the next FIFO admission.
+            host = host.map_participant(|app| {
+                app.with_controller(document_controller(
+                    "counter",
+                    Box::new(move |_, _| {
+                        renewal.store(0, Ordering::SeqCst);
+                        Ok(())
+                    }),
+                ))
+            });
+            let (alice, _) = connect(&mut host, "alice", "pipelined-origin", 0);
+            let output = host.output(alice).unwrap();
+            let mut wire = Wire::default();
+            let mut ids = snap_transport::client::InvocationIds::default();
+            let mut client = Client::new("alice".into());
+            host.submit(
+                alice,
+                wire.submit(&mut ids, ClientMessage::Manifest(client.manifest()))
+                    .unwrap(),
+                0,
+            )
+            .unwrap();
+            assert!(host.step());
+            while let Some(response) = output.pop_front() {
+                if let Some(message) = wire.receive(response).unwrap() {
+                    client.handle(&registry(), message).unwrap();
+                }
+            }
+            let first = client.enqueue(&registry(), ID, "add", json!(7)).unwrap();
+            let second = client.enqueue(&registry(), ID, "add", json!(5)).unwrap();
+            host.submit(
+                alice,
+                wire.submit(&mut ids, client.next_submission().unwrap())
+                    .unwrap(),
+                0,
+            )
+            .unwrap();
+            let accepted = wire.receive(output.pop_front().unwrap()).unwrap().unwrap();
+            assert_eq!(
+                client.handle(&registry(), accepted),
+                Ok(Outcome::Accepted { id: first })
+            );
+            host.submit(
+                alice,
+                wire.submit(&mut ids, client.next_submission().unwrap())
+                    .unwrap(),
+                0,
+            )
+            .unwrap();
+            assert!(output.is_empty()); // The second call waits for the first.
+            if !deny_after_first_commit {
+                status.store(failure, Ordering::SeqCst);
+            }
+            assert!(host.step());
+            let responses = if deny_after_first_commit {
+                // Direct delivery can redact an already queued commitment
+                // before authority renews for the second FIFO admission.
+                status.store(failure, Ordering::SeqCst);
+                let responses = host.drain(alice).unwrap();
+                status.store(0, Ordering::SeqCst);
+                responses
+            } else {
+                // Native delivery uses the independent output after the host
+                // synchronized under denial and the controller renewed access.
+                let mut responses = Vec::new();
+                while let Some(response) = output.pop_front() {
+                    responses.push(response);
+                }
+                responses
+            };
+            let mut completed = Vec::new();
+            for response in responses {
+                if let Some(message) = wire.receive(response).unwrap() {
+                    let outcome = client
+                        .handle(&registry(), message)
+                        .expect("legal origin exchange");
+                    assert!(
+                        !matches!(outcome, Outcome::NeedManifest { .. }),
+                        "{outcome:?}"
+                    );
+                    if let Outcome::Completed { id } = outcome {
+                        completed.push(id);
+                    }
+                }
+            }
+            assert_eq!(
+                client
+                    .pending()
+                    .iter()
+                    .map(|intent| intent.id)
+                    .collect::<Vec<_>>(),
+                [second]
+            );
+            assert_eq!(client.authoritative()[ID].value, json!(7));
+            assert_eq!(client.get(ID).unwrap().value, json!(12));
+            assert!(host.step());
+            while let Some(response) = output.pop_front() {
+                if let Some(message) = wire.receive(response).unwrap() {
+                    let outcome = client
+                        .handle(&registry(), message)
+                        .expect("second accepted intent remains correlated");
+                    if let Outcome::Completed { id } = outcome {
+                        completed.push(id);
+                    }
+                }
+            }
+            assert_eq!(completed, [first, second]);
+            assert!(client.pending().is_empty());
+            assert_eq!(client.authoritative()[ID].value, json!(12));
+            assert!(!host.step());
+        }
+    }
+}
+
+#[test]
+fn genuine_visibility_completion_still_removes_the_origin_document() {
+    use snap_document::{Visibility, client::Client, wire::Wire};
+    for visibility in [Visibility::Delete, Visibility::Archive] {
+        let mut host = fixture();
+        let (alice, _) = connect(&mut host, "alice", "visibility-origin", 0);
+        let output = host.output(alice).unwrap();
+        let mut wire = Wire::default();
+        let mut ids = snap_transport::client::InvocationIds::default();
+        let mut client = Client::new("alice".into());
+        host.transact("initial holdings", |_| Ok(())).unwrap();
+        while let Some(response) = output.pop_front() {
+            if let Some(message) = wire.receive(response).unwrap() {
+                client.handle(&registry(), message).unwrap();
+            }
+        }
+        assert!(client.get(ID).is_some());
+        let intent = client.visibility(&registry(), ID, visibility).unwrap();
+        host.submit(
+            alice,
+            wire.submit(&mut ids, client.next_submission().unwrap())
+                .unwrap(),
+            0,
+        )
+        .unwrap();
+        assert!(host.step());
+        let mut terminal = false;
+        while let Some(response) = output.pop_front() {
+            if let Some(message) = wire.receive(response).unwrap() {
+                if let ServerMessage::Completed(c) = &message {
+                    assert_eq!(c.id, intent);
+                    assert_eq!(c.result, Ok(None));
+                    terminal = true;
+                }
+                client.handle(&registry(), message).unwrap();
+            }
+        }
+        assert!(terminal);
+        assert!(client.pending().is_empty());
+        assert!(client.get(ID).is_none());
+        assert!(!host.step());
+    }
+}
+
+#[test]
+fn live_denial_suppresses_early_commitment_but_preserves_terminal_authority() {
     use std::sync::atomic::{AtomicU8, Ordering};
     for failure in [1, 2] {
         for deny_before_execution in [false, true] {
@@ -621,18 +802,12 @@ fn committed_topic_retirement_redacts_live_denial_but_preserves_terminal_authori
                 status.store(failure, Ordering::SeqCst);
                 host.transact("live denial", |_| Ok(())).unwrap();
             }
-            let mut retired = false;
             let mut terminal = false;
             while let Some(response) = output.pop_front() {
                 match response {
                     Response::Global { input, .. } => {
                         let message: ServerMessage = serde_json::from_value(input).unwrap();
                         match message {
-                            ServerMessage::Committed(c) => {
-                                assert_eq!(c.id, 1);
-                                assert_eq!(c.result, Ok(None));
-                                retired = true;
-                            }
                             ServerMessage::Holdings(documents) => assert!(documents.is_empty()),
                             other => panic!("unexpected topic message: {other:?}"),
                         }
@@ -652,7 +827,7 @@ fn committed_topic_retirement_redacts_live_denial_but_preserves_terminal_authori
                     other => panic!("unexpected output: {other:?}"),
                 }
             }
-            assert!(retired && terminal);
+            assert!(terminal);
         }
     }
 }
