@@ -312,13 +312,13 @@ impl Client {
         }
     }
 
-    /// Queue server-owned lifecycle work through the same receipt/reconnect path.
+    /// Queue a visibility change through the same receipt/reconnect path.
     /// It leaves the projected Document unchanged until authoritative publication.
-    pub fn lifecycle(
+    pub fn visibility(
         &mut self,
         registry: &Registry,
         document: &str,
-        operation: crate::lifecycle::Operation,
+        operation: crate::Visibility,
     ) -> Result<u64, Error> {
         self.enqueue(
             registry,

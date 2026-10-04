@@ -14,16 +14,3 @@ action = "create_table"
 name = "document.receipts"
 primary = ["lifetime", "intent"]
 columns = [{ name = "lifetime", kind = "text" }, { name = "intent", kind = "integer" }, { name = "actor", kind = "text" }, { name = "document", kind = "text" }, { name = "version", kind = "text" }, { name = "mutation", kind = "text" }, { name = "args", kind = "text" }, { name = "completion", kind = "text" }]
-
-[[changes]]
-action = "create_table"
-[changes.table]
-name = "document.lifecycle"
-primary = ["id"]
-columns = [
-  { name = "id", kind = "text" },
-  { name = "state", kind = "text" },
-  { name = "finalizers", kind = "text" },
-  { name = "blocked", kind = "text" },
-]
-foreign = [{ columns = ["id"], table = "document.documents", references = ["id"] }]

@@ -15,7 +15,7 @@ use axum::{
 };
 use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
-type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
+type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
@@ -73,6 +73,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_store::resource::MIGRATION,
         snap_identity::MIGRATION,
         snap_identity_native::oauth::MIGRATION,
         factorio::MIGRATION,
@@ -203,6 +204,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(rp::TABLES.iter())
         .chain(["factorio.agents"].iter())
         .chain(["factorio.cli"].iter())
@@ -219,7 +221,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let registry = operations::register(registry, config, origin.clone());
     let host = Host::new(
         store,
-        snap_document::host::Documents::new(document),
+        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
         registry,
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),

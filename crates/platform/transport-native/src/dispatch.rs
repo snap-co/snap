@@ -339,7 +339,7 @@ async fn run<L: Loop + Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
+    type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
     use std::sync::atomic::AtomicUsize;
 
     fn fixture() -> Arc<Shared<Host<snap_store_sqlite::Sqlite>>> {
@@ -349,12 +349,17 @@ mod tests {
     }
 
     fn host_fixture(document: snap_document::server::Document) -> Host<snap_store_sqlite::Sqlite> {
-        let migrations = [snap_access::MIGRATION, snap_document::server::MIGRATION]
-            .map(|source| toml::from_str(source).unwrap());
+        let migrations = [
+            snap_store::resource::MIGRATION,
+            snap_access::MIGRATION,
+            snap_document::server::MIGRATION,
+        ]
+        .map(|source| toml::from_str(source).unwrap());
         let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
         for table in snap_access::TABLES
             .iter()
             .chain(snap_document::server::TABLES.iter())
+            .chain(core::iter::once(&snap_store::resource::TABLE))
         {
             store.load(table).unwrap();
         }
@@ -365,7 +370,7 @@ mod tests {
         }
         Host::new(
             store,
-            snap_document::host::Documents::new(document),
+            snap_host::Application::new(vec![snap_document::sync::binding(document)]),
             operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(|_, _| {
                 Ok("actor".into())
@@ -424,17 +429,19 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
         let host = host.map_participant(|documents| {
-            documents.with_controller(
+            documents.with_controller(snap_host::Controller::new(
                 "counter",
-                Box::new(move |ctx, _| {
+                snap_document::server::TABLES[0],
+                |row| row.get("kind") == Some(&"counter".into()),
+                move |ctx, _| {
                     count.fetch_add(1, Ordering::SeqCst);
                     ctx.progress(json!("before retirement"))?;
                     entered.take().unwrap().send(()).unwrap();
                     let _ = released.recv_timeout(Duration::from_secs(10));
                     ctx.progress(json!("after retirement"))?;
                     Ok(())
-                }),
-            )
+                },
+            ))
         });
         let shared = Shared::new(host);
         let preparation = Arc::new(AtomicUsize::new(0));

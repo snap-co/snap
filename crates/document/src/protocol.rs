@@ -2,6 +2,29 @@ use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Document visibility mutations. External cleanup, blocking and retry policy are
+/// Store-resource and application concerns, not Document mutation behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    Delete,
+    Archive,
+}
+impl Visibility {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Delete => "document.delete",
+            Self::Archive => "document.archive",
+        }
+    }
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "document.delete" => Some(Self::Delete),
+            "document.archive" => Some(Self::Archive),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Error {
     Denied,
@@ -90,7 +113,7 @@ pub enum ServerMessage {
         id: u64,
     },
     Completed(Completion),
-    /// Desired mutation is durably committed while its controller may still run.
+    /// Mutation is durably committed before terminal invocation completion.
     /// Reconcile the optimistic journal without closing the invocation channel.
     Committed(Completion),
     Manifest(Reconciliation),

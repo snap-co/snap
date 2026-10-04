@@ -14,7 +14,11 @@ fn intent(id: u64) -> Intent {
 #[test]
 fn physical_correlation_is_distinct_from_recovered_mutation_ids() {
     let mut wire = Wire::default();
-    let Command::Invoke(first) = wire.submit(ClientMessage::Mutate(intent(42))).unwrap() else {
+    let mut ids = snap_transport::client::InvocationIds::default();
+    let Command::Invoke(first) = wire
+        .submit(&mut ids, ClientMessage::Mutate(intent(42)))
+        .unwrap()
+    else {
         panic!()
     };
     assert_eq!(first.id, 1);
@@ -23,7 +27,10 @@ fn physical_correlation_is_distinct_from_recovered_mutation_ids() {
             .unwrap(),
         Some(ServerMessage::Accepted { id: 42 })
     );
-    let Command::Invoke(second) = wire.submit(ClientMessage::Mutate(intent(43))).unwrap() else {
+    let Command::Invoke(second) = wire
+        .submit(&mut ids, ClientMessage::Mutate(intent(43)))
+        .unwrap()
+    else {
         panic!()
     };
     assert_eq!(second.id, 2);
@@ -48,10 +55,14 @@ fn physical_correlation_is_distinct_from_recovered_mutation_ids() {
 #[test]
 fn acceptance_is_its_own_frame_and_produces_no_manifest_message() {
     let mut wire = Wire::default();
-    wire.submit(ClientMessage::Manifest(Manifest {
-        holdings: Vec::new(),
-        pending: Vec::new(),
-    }))
+    let mut ids = snap_transport::client::InvocationIds::default();
+    wire.submit(
+        &mut ids,
+        ClientMessage::Manifest(Manifest {
+            holdings: Vec::new(),
+            pending: Vec::new(),
+        }),
+    )
     .unwrap();
     assert_eq!(
         wire.receive(Response::Event(Event::Accepted { id: 1 }))
@@ -65,7 +76,9 @@ fn acceptance_is_its_own_frame_and_produces_no_manifest_message() {
 #[test]
 fn progress_is_reported_against_the_intent_id() {
     let mut wire = Wire::default();
-    wire.submit(ClientMessage::Mutate(intent(77))).unwrap();
+    let mut ids = snap_transport::client::InvocationIds::default();
+    wire.submit(&mut ids, ClientMessage::Mutate(intent(77)))
+        .unwrap();
     wire.receive(Response::Event(Event::Accepted { id: 1 }))
         .unwrap();
     let mut seen = Vec::new();
@@ -86,7 +99,9 @@ fn progress_is_reported_against_the_intent_id() {
 #[test]
 fn an_unknown_commit_outcome_is_not_converted_to_a_definite_rejection() {
     let mut wire = Wire::default();
-    wire.submit(ClientMessage::Mutate(intent(9))).unwrap();
+    let mut ids = snap_transport::client::InvocationIds::default();
+    wire.submit(&mut ids, ClientMessage::Mutate(intent(9)))
+        .unwrap();
     wire.receive(Response::Event(Event::Accepted { id: 1 }))
         .unwrap();
     assert_eq!(
@@ -102,7 +117,9 @@ fn an_unknown_commit_outcome_is_not_converted_to_a_definite_rejection() {
 fn completion_cannot_claim_a_different_intent_or_skip_acceptance() {
     for accepted in [false, true] {
         let mut wire = Wire::default();
-        wire.submit(ClientMessage::Mutate(intent(9))).unwrap();
+        let mut ids = snap_transport::client::InvocationIds::default();
+        wire.submit(&mut ids, ClientMessage::Mutate(intent(9)))
+            .unwrap();
         if accepted {
             wire.receive(Response::Event(Event::Accepted { id: 1 }))
                 .unwrap();

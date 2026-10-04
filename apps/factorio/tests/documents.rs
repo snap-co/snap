@@ -46,16 +46,20 @@ fn dispatch(
     outcome
 }
 fn store() -> Store<snap_store_sqlite::Sqlite> {
-    let mut migrations: Vec<snap_store::migration::Migration> =
-        [snap_access::MIGRATION, snap_document::server::MIGRATION]
-            .into_iter()
-            .map(|s| toml::from_str(s).unwrap())
-            .collect();
+    let mut migrations: Vec<snap_store::migration::Migration> = [
+        snap_store::resource::MIGRATION,
+        snap_access::MIGRATION,
+        snap_document::server::MIGRATION,
+    ]
+    .into_iter()
+    .map(|s| toml::from_str(s).unwrap())
+    .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
     {
         store.load(table).unwrap();
     }
@@ -604,8 +608,8 @@ fn deleted_session_retains_claims_and_cleanup_finalizer() {
                     .contains(&id)
             );
             assert!(
-                graph::document()
-                    .lifecycle(tx, &id)?
+                snap_document::server::resource(&id)
+                    .lifecycle(tx)?
                     .finalizers
                     .contains("factorio.session.resources")
             );
@@ -737,8 +741,8 @@ fn controller_observations_complete_tickets_atomically_and_release_finalizers_la
     store
         .inspect("cleanup owned", |tx| {
             assert!(
-                graph::document()
-                    .lifecycle(tx, &id)?
+                snap_document::server::resource(&id)
+                    .lifecycle(tx)?
                     .finalizers
                     .contains("factorio.session.resources")
             );
@@ -752,7 +756,12 @@ fn controller_observations_complete_tickets_atomically_and_release_finalizers_la
         .unwrap();
     store
         .inspect("released", |tx| {
-            assert!(graph::document().lifecycle(tx, &id)?.finalizers.is_empty());
+            assert!(
+                snap_document::server::resource(&id)
+                    .lifecycle(tx)?
+                    .finalizers
+                    .is_empty()
+            );
             assert_eq!(
                 graph::retained(tx, ROOT)?.sessions["first"].phase,
                 Phase::Complete

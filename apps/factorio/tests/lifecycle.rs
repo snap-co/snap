@@ -3,16 +3,20 @@ use snap_store::{Error, Store};
 type Database = Store<snap_store_sqlite::Sqlite>;
 const ROOT: &str = "a0000000-0000-4000-8000-000000000001";
 fn fixture() -> Database {
-    let mut migrations: Vec<snap_store::migration::Migration> =
-        [snap_access::MIGRATION, snap_document::server::MIGRATION]
-            .into_iter()
-            .map(|s| toml::from_str(s).unwrap())
-            .collect();
+    let mut migrations: Vec<snap_store::migration::Migration> = [
+        snap_store::resource::MIGRATION,
+        snap_access::MIGRATION,
+        snap_document::server::MIGRATION,
+    ]
+    .into_iter()
+    .map(|s| toml::from_str(s).unwrap())
+    .collect();
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
     {
         store.load(table).unwrap();
     }

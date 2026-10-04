@@ -19,29 +19,21 @@ struct Pending {
 
 #[derive(Default)]
 pub struct Wire {
-    sequence: u64,
     pending: BTreeMap<u64, Pending>,
 }
 
 impl Wire {
-    /// Allocate an application invocation without adding it to the Document
-    /// journal. The carrier SDK must route its observations separately from
-    /// `receive`; only `submit` tracks Document completions here.
-    pub fn invoke(&mut self, operation: &str, input: serde_json::Value) -> Result<Command, Error> {
-        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
-        Ok(Command::Invoke(Invocation {
-            id: self.sequence,
-            operation: operation.into(),
-            input,
-        }))
-    }
     /// Forget interrupted exchanges while keeping invocation IDs unique across
     /// physical attachments. Document receipts recover stable mutation outcomes.
     pub fn reconnect(&mut self) {
         self.pending.clear();
     }
-    pub fn submit(&mut self, message: ClientMessage) -> Result<Command, Error> {
-        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
+    pub fn submit(
+        &mut self,
+        ids: &mut snap_transport::client::InvocationIds,
+        message: ClientMessage,
+    ) -> Result<Command, Error> {
+        let id = ids.allocate()?;
         let (operation, input, intent) = match message {
             ClientMessage::Manifest(manifest) => {
                 ("document.manifest", serde_json::to_value(manifest), None)
@@ -54,14 +46,14 @@ impl Wire {
         };
         let input = input.map_err(|_| Error::InvalidInput)?;
         self.pending.insert(
-            self.sequence,
+            id,
             Pending {
                 intent,
                 accepted: false,
             },
         );
         Ok(Command::Invoke(Invocation {
-            id: self.sequence,
+            id,
             operation: operation.into(),
             input,
         }))
@@ -87,12 +79,8 @@ impl Wire {
         match response {
             // Uncorrelated server push. Delivered to every logical connection
             // subscribed to this topic, not to an originator.
-            Response::Global {
-                kind,
-                input,
-            } if kind == KIND => {
-                let message =
-                    serde_json::from_value(input).map_err(|_| Error::Protocol)?;
+            Response::Global { kind, input } if kind == KIND => {
+                let message = serde_json::from_value(input).map_err(|_| Error::Protocol)?;
                 if !matches!(
                     message,
                     ServerMessage::Replication(_)
@@ -141,11 +129,9 @@ impl Wire {
                             let message =
                                 serde_json::from_value(value).map_err(|_| Error::Protocol)?;
                             match (&pending.intent, &message) {
-                                (
-                                    Some((id, document)),
-                                    ServerMessage::Completed(completion),
-                                ) if *id == completion.id
-                                    && *document == completion.document => {}
+                                (Some((id, document)), ServerMessage::Completed(completion))
+                                    if *id == completion.id && *document == completion.document => {
+                                }
                                 (None, ServerMessage::Manifest(_)) => {}
                                 _ => return Err(Error::Protocol),
                             }
@@ -153,7 +139,7 @@ impl Wire {
                         }
                         Err(error) => {
                             // The desired mutation may already have left the
-                            // journal. Still surface controller failure to the
+                            // journal. Still surface post-commit failure to the
                             // caller, without undoing that commit.
                             if matches!(&error, Error::Application(value) if value.get("committed") == Some(&serde_json::Value::Bool(true)))
                             {
@@ -169,16 +155,16 @@ impl Wire {
                                 return Err(error);
                             }
                             match pending.intent {
-                                Some((id, document)) => Ok(Some(ServerMessage::Completed(
-                                    Completion {
+                                Some((id, document)) => {
+                                    Ok(Some(ServerMessage::Completed(Completion {
                                         id,
                                         document,
                                         result: Err(crate::Error::Rejected(
                                             serde_json::to_string(&error)
                                                 .map_err(|_| Error::Protocol)?,
                                         )),
-                                    },
-                                ))),
+                                    })))
+                                }
                                 None => Err(error),
                             }
                         }

@@ -1,6 +1,6 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::json;
-type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
+type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
@@ -44,6 +44,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut values: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_store::resource::MIGRATION,
         snap_identity::MIGRATION,
         snap_identity_native::oauth::MIGRATION,
         chatty::MIGRATION,
@@ -86,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(rp::TABLES.iter())
         .chain(chatty::TABLES.iter())
     {
@@ -96,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operations = operations(document.clone());
     let host = Host::new(
         store,
-        snap_document::host::Documents::new(document),
+        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner),

@@ -1,0 +1,14 @@
+id = "0000_store_resources"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "store.resources"
+primary = ["table", "key"]
+columns = [
+  { name = "table", kind = "text" },
+  { name = "key", kind = "text" },
+  { name = "state", kind = "text" },
+  { name = "finalizers", kind = "text" },
+  { name = "blocked", kind = "text" },
+]

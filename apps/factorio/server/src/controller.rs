@@ -2,7 +2,7 @@
 //! the execution gate, blocked state and explicit retries.
 use crate::Host;
 use factorio::{Config, Desired, Effect, Phase, Session, workspaces as graph};
-use snap_document::host::ControllerContext;
+use snap_host::ControllerContext;
 use snap_store::Error;
 
 type Context<'a, 'host> = ControllerContext<'a, 'host, snap_store_sqlite::Sqlite>;
@@ -61,12 +61,15 @@ fn with_effects(
     mut effects: impl Effects,
 ) -> Host<snap_store_sqlite::Sqlite> {
     host.map_participant(|documents| {
-        documents.with_controller(
-            graph::SESSION_KIND,
-            Box::new(move |ctx, snapshot| {
+        documents.with_controller(snap_host::Controller::new(
+            "factorio.sessions",
+            snap_document::server::TABLES[0],
+            |row| row.get("kind") == Some(&graph::SESSION_KIND.into()),
+            move |ctx, resource| {
+                let snapshot = load_snapshot(ctx, &resource)?;
                 let child: graph::Child<Session> =
                     serde_json::from_value(snapshot.value).map_err(|_| Error::Invalid)?;
-                let root = ctx.document(&child.workspace)?;
+                let root = load_snapshot(ctx, &snap_document::server::resource(&child.workspace))?;
                 let root: graph::Root =
                     serde_json::from_value(root.value).map_err(|_| Error::Invalid)?;
                 for id in root
@@ -75,7 +78,7 @@ fn with_effects(
                     .chain(root.sessions.values())
                     .chain(root.intakes.values())
                 {
-                    ctx.document(id)?;
+                    load_snapshot(ctx, &snap_document::server::resource(id))?;
                 }
                 let state = ctx.inspect("factorio.controller.inspect", |tx| {
                     graph::retained(tx, &child.workspace)
@@ -84,13 +87,13 @@ fn with_effects(
                 if root.sessions.get(&session.id) != Some(&snapshot.id) {
                     return Err(Error::Invalid);
                 }
-                let lifecycle = ctx.lifecycle(&snapshot.id)?;
+                let lifecycle = ctx.inspect("factorio.lifecycle", |tx| resource.lifecycle(tx))?;
                 if lifecycle.blocked.is_some() {
                     return Ok(());
                 }
                 // A retained deleted/archived session still owns its resources. Finish a
                 // journaled integration first; otherwise abandon while preserving work.
-                if lifecycle.state != snap_document::lifecycle::State::Active
+                if lifecycle.state != snap_store::resource::State::Active
                     && !matches!(
                         session.phase,
                         Phase::Integrating
@@ -132,15 +135,15 @@ fn with_effects(
                                 &session.id,
                                 Effect::Failed(message.clone()),
                             )?;
-                            let mut lifecycle = graph::document().lifecycle(tx, &snapshot.id)?;
+                            let mut lifecycle = resource.lifecycle(tx)?;
                             lifecycle.blocked = Some(message);
-                            graph::document().set_lifecycle(tx, &snapshot.id, &lifecycle)
+                            resource.set_lifecycle(tx, &lifecycle)
                         })?;
                     }
                 }
                 Ok(())
-            }),
-        )
+            },
+        ))
     })
 }
 
@@ -154,6 +157,17 @@ fn publish(
         graph::observe(tx, workspace, session, effect)
     })?;
     Ok(())
+}
+
+fn load_snapshot(
+    ctx: &mut Context<'_, '_>,
+    resource: &snap_store::resource::Resource,
+) -> Result<snap_document::Snapshot, Error> {
+    ctx.row(resource)?;
+    let [snap_store::Value::Text(id)] = resource.key.as_slice() else {
+        return Err(Error::Invalid);
+    };
+    ctx.inspect("factorio.document", |tx| graph::document().retained(tx, id))
 }
 
 fn step(
@@ -260,16 +274,20 @@ mod tests {
         }
     }
     fn fixture() -> (Host<snap_store_sqlite::Sqlite>, Arc<Mutex<Calls>>) {
-        let mut migrations: Vec<snap_store::migration::Migration> =
-            [snap_access::MIGRATION, snap_document::server::MIGRATION]
-                .into_iter()
-                .map(|s| toml::from_str(s).unwrap())
-                .collect();
+        let mut migrations: Vec<snap_store::migration::Migration> = [
+            snap_store::resource::MIGRATION,
+            snap_access::MIGRATION,
+            snap_document::server::MIGRATION,
+        ]
+        .into_iter()
+        .map(|s| toml::from_str(s).unwrap())
+        .collect();
         migrations.sort_by(|a, b| a.id.cmp(&b.id));
         let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
         for table in snap_access::TABLES
             .iter()
             .chain(snap_document::server::TABLES.iter())
+            .chain(core::iter::once(&snap_store::resource::TABLE))
         {
             store.load(table).unwrap();
         }
@@ -335,7 +353,7 @@ mod tests {
         }
         let host = Host::new(
             store,
-            snap_document::host::Documents::new(document),
+            snap_host::Application::new(vec![snap_document::sync::binding(document)]),
             operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 |_, bearer| Ok(bearer.into()),
@@ -354,9 +372,7 @@ mod tests {
     fn retry(host: &mut Host<snap_store_sqlite::Sqlite>) {
         host.transact("retry", |tx| {
             let id = graph::child_id(ROOT, graph::SESSION_KIND, "work");
-            let mut lifecycle = graph::document().lifecycle(tx, &id)?;
-            lifecycle.blocked = None;
-            graph::document().set_lifecycle(tx, &id, &lifecycle)
+            snap_document::server::resource(&id).retry(tx)
         })
         .unwrap();
     }
@@ -403,7 +419,10 @@ mod tests {
             let state = graph::retained(tx, ROOT)?;
             assert_eq!(state.sessions["work"].phase, Phase::Complete);
             assert_eq!(state.tickets["ticket"].status, Status::Done);
-            assert!(graph::document().cleanup_ids(tx)?.is_empty());
+            assert!(
+                snap_store::resource::cleanup_keys(tx, snap_document::server::TABLES[0])?
+                    .is_empty()
+            );
             Ok(())
         })
         .unwrap();
@@ -435,7 +454,10 @@ mod tests {
         host.transact("delete", |tx| graph::document().remove(tx, &id, "owner"))
             .unwrap();
         host.transact("retained", |tx| {
-            assert!(graph::document().cleanup_ids(tx)?.contains(&id));
+            assert!(
+                snap_store::resource::cleanup_keys(tx, snap_document::server::TABLES[0])?
+                    .contains(&vec![id.clone().into()])
+            );
             assert_eq!(
                 graph::retained(tx, ROOT)?.sessions["work"].phase,
                 Phase::Abandoning
@@ -446,7 +468,10 @@ mod tests {
         calls.lock().unwrap().fail = None;
         retry(&mut host);
         host.transact("abandoned", |tx| {
-            assert!(graph::document().cleanup_ids(tx)?.is_empty());
+            assert!(
+                snap_store::resource::cleanup_keys(tx, snap_document::server::TABLES[0])?
+                    .is_empty()
+            );
             assert_eq!(
                 graph::retained(tx, ROOT)?.sessions["work"].phase,
                 Phase::Abandoned

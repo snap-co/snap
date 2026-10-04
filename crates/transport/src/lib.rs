@@ -13,6 +13,7 @@ pub mod lane;
 pub mod operation;
 pub mod runtime;
 pub mod server;
+pub mod subscription;
 
 use alloc::string::String;
 use serde::{Deserialize, Serialize};

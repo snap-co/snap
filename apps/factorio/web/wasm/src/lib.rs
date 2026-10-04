@@ -13,12 +13,13 @@ fn error(v: impl core::fmt::Debug) -> JsValue {
 pub struct FactorioClient {
     client: Client,
     wire: Wire,
+    ids: snap_transport::client::InvocationIds,
 }
 #[wasm_bindgen]
 impl FactorioClient {
     pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
         let command = self
-            .wire
+            .ids
             .invoke(operation, serde_json::from_str(input).map_err(error)?)
             .map_err(error)?;
         serde_json::to_string(&command).map_err(error)
@@ -28,6 +29,7 @@ impl FactorioClient {
         Self {
             client: Client::new(actor),
             wire: Wire::default(),
+            ids: Default::default(),
         }
     }
     pub fn connect(&mut self, id: &str) -> Result<String, JsValue> {
@@ -70,7 +72,10 @@ impl FactorioClient {
                 serde_json::to_string(
                     &self
                         .wire
-                        .submit(ClientMessage::Manifest(self.client.manifest()))
+                        .submit(
+                            &mut self.ids,
+                            ClientMessage::Manifest(self.client.manifest()),
+                        )
                         .map_err(error)?,
                 )
                 .map_err(error)?,

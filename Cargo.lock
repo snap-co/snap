@@ -3289,7 +3289,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "snap-access",
- "snap-host",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
@@ -3407,6 +3406,7 @@ name = "snap-store"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -56,5 +56,5 @@ name = "platform-dispatch"
 path = "../platform/tests/properties/dispatch.rs"
 
 [[test]]
-name = "document-runtime"
-path = "../../crates/document/tests/properties/runtime.rs"
+name = "document-sync"
+path = "../../crates/document/tests/properties/sync.rs"

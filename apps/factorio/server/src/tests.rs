@@ -44,7 +44,7 @@ fn accepted_operations_use_captured_authority_while_new_admissions_reject() {
         let document = Arc::new(factorio::workspaces::document());
         let mut host = Host::new(
             store,
-            snap_document::host::Documents::new(document.clone()),
+            snap_host::Application::new(vec![snap_document::sync::binding(document.clone())]),
             operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 move |tx, bearer| {
@@ -137,7 +137,7 @@ fn revoked_and_expired_sessions_cannot_admit_workspace_operations() {
         let document = Arc::new(graph::document());
         let mut host = Host::new(
             store,
-            snap_document::host::Documents::new(document.clone()),
+            snap_host::Application::new(vec![snap_document::sync::binding(document.clone())]),
             operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::with_retained(
                 Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -268,7 +268,7 @@ fn detached_cli_lifetime_survives_access_expiry_but_not_login_expiry_or_revocati
         let document = Arc::new(factorio::workspaces::document());
         let mut host = Host::new(
             store,
-            snap_document::host::Documents::new(document.clone()),
+            snap_host::Application::new(vec![snap_document::sync::binding(document.clone())]),
             operations(&document, config),
             Arc::new(snap_transport::bearer::Callbacks::with_retained(
                 Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -403,7 +403,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
     let document = Arc::new(graph::document());
     let mut host = Host::new(
         store,
-        snap_document::host::Documents::new(document.clone()),
+        snap_host::Application::new(vec![snap_document::sync::binding(document.clone())]),
         operations(&document, config),
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -508,7 +508,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let document = Arc::new(factorio::workspaces::document());
     let host = Host::new(
         store,
-        snap_document::host::Documents::new(document.clone()),
+        snap_host::Application::new(vec![snap_document::sync::binding(document.clone())]),
         operations(&document, config),
         Arc::new(snap_transport::bearer::Callbacks::with_retained(
             Arc::new(|tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner)),
@@ -522,9 +522,11 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let mut entered = Some(entered);
     let host = host.map_participant(|documents| {
-        documents.with_controller(
-            factorio::workspaces::WORKSPACE_KIND,
-            Box::new(move |_, _| {
+        documents.with_controller(snap_host::Controller::new(
+            "slow-workspace",
+            snap_document::server::TABLES[0],
+            |row| row.get("kind") == Some(&factorio::workspaces::WORKSPACE_KIND.into()),
+            move |_, _| {
                 if let Some(entered) = entered.take() {
                     entered.send(()).unwrap();
                     // Production native controllers await Tokio process IO while
@@ -533,8 +535,8 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
                     runtime.block_on(tokio::time::sleep(Duration::from_secs(17)));
                 }
                 Ok(())
-            }),
-        )
+            },
+        ))
     });
     let shared = Shared::new(host);
     let oauth = OAuth::new(
@@ -687,7 +689,7 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
     }
     let host = Host::new(
         store,
-        snap_document::host::Documents::new(document),
+        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
         registry,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| crate::operations::session(tx, bearer).map(|(s, _)| s.owner),
@@ -786,6 +788,7 @@ fn authority_fixture() -> (
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(rp::TABLES.iter())
         .chain(["factorio.agents", "factorio.cli", "factorio.cli_login"].iter())
     {
@@ -868,6 +871,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(rp::TABLES.iter())
         .chain(["factorio.agents", "factorio.cli", "factorio.cli_login"].iter())
     {
@@ -893,7 +897,7 @@ async fn native_cli_login_intake_tools_and_authority_without_shell_environment()
     let document = std::sync::Arc::new(factorio::workspaces::document());
     let host = Host::new(
         store,
-        snap_document::host::Documents::new(document.clone()),
+        snap_host::Application::new(vec![snap_document::sync::binding(document.clone())]),
         operations(&document, config),
         std::sync::Arc::new(snap_transport::bearer::Callbacks::new(std::sync::Arc::new(
             |tx, b| crate::operations::session(tx, b).map(|(s, _)| s.owner),

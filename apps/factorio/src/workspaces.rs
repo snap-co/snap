@@ -180,7 +180,8 @@ pub fn onboard(
 pub fn root(tx: &mut Transaction<'_>, id: &str, actor: &str) -> Result<Root, Error> {
     let snapshot = document().read(tx, id, Some(actor))?;
     if snapshot.kind != WORKSPACE_KIND
-        || document().lifecycle(tx, id)?.state != snap_document::lifecycle::State::Active
+        || snap_document::server::resource(id).lifecycle(tx)?.state
+            != snap_store::resource::State::Active
     {
         return Err(Error::NotFound);
     }
@@ -267,9 +268,10 @@ pub fn observe(
         })?,
     )?;
     if !session.claims() {
-        let mut lifecycle = document().lifecycle(tx, doc_id)?;
+        let resource = snap_document::server::resource(doc_id);
+        let mut lifecycle = resource.lifecycle(tx)?;
         lifecycle.finalizers.remove("factorio.session.resources");
-        document().set_lifecycle(tx, doc_id, &lifecycle)?;
+        resource.set_lifecycle(tx, &lifecycle)?;
     }
     Ok(after)
 }
@@ -286,7 +288,8 @@ fn children<T: serde::de::DeserializeOwned>(
         // Retained sessions keep their claims until the cleanup controller marks
         // them complete/abandoned. Hiding a Document must not free repository work.
         if kind != SESSION_KIND
-            && document().lifecycle(tx, &id)?.state != snap_document::lifecycle::State::Active
+            && snap_document::server::resource(&id).lifecycle(tx)?.state
+                != snap_store::resource::State::Active
         {
             continue;
         }
@@ -341,9 +344,7 @@ pub fn command(
             .get(&id)
             .ok_or(Error::NotFound)?
             .clone();
-        let mut lifecycle = document().lifecycle(tx, &id)?;
-        lifecycle.blocked = None;
-        document().set_lifecycle(tx, &id, &lifecycle)?;
+        snap_document::server::resource(&id).retry(tx)?;
     }
     Ok(after)
 }
@@ -478,11 +479,12 @@ fn sync<T: Serialize>(
             });
             snap_document::access::vocabulary().change(tx, &links)?;
             if kind == SESSION_KIND {
-                let mut lifecycle = document().lifecycle(tx, &id)?;
+                let resource = snap_document::server::resource(&id);
+                let mut lifecycle = resource.lifecycle(tx)?;
                 lifecycle
                     .finalizers
                     .insert("factorio.session.resources".into());
-                document().set_lifecycle(tx, &id, &lifecycle)?;
+                resource.set_lifecycle(tx, &lifecycle)?;
             }
             index.insert(key.clone(), id);
         }

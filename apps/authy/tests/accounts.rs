@@ -34,6 +34,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         toml::from_str(snap_identity::MIGRATION).unwrap(),
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
+        toml::from_str(snap_store::resource::MIGRATION).unwrap(),
         toml::from_str(authy::MIGRATION).unwrap(),
     ];
     all.sort_by(|a: &snap_store::migration::Migration, b| a.id.cmp(&b.id));
@@ -45,6 +46,7 @@ fn all_tables() -> Vec<&'static str> {
     tables.extend(snap_identity::TABLES.iter().copied());
     tables.extend(snap_access::TABLES.iter().copied());
     tables.extend(snap_document::server::TABLES.iter().copied());
+    tables.push(snap_store::resource::TABLE);
     tables.extend(authy::TABLES.iter().copied());
     tables
 }

@@ -1,6 +1,24 @@
 use crate::{Channel, Command, Error, Event, Invocation, Outcome, Response, Value};
 use alloc::{boxed::Box, collections::BTreeMap, string::String};
 
+/// Client-owned correlation IDs shared across module bindings. Keep the allocator
+/// across physical reconnects; IDs grant no authority and imply no retry policy.
+#[derive(Default)]
+pub struct InvocationIds(u64);
+impl InvocationIds {
+    pub fn allocate(&mut self) -> Result<u64, Error> {
+        self.0 = self.0.checked_add(1).ok_or(Error::Capacity)?;
+        Ok(self.0)
+    }
+    pub fn invoke(&mut self, operation: &str, input: Value) -> Result<Command, Error> {
+        Ok(Command::Invoke(Invocation {
+            id: self.allocate()?,
+            operation: operation.into(),
+            input,
+        }))
+    }
+}
+
 /// Receives an uncorrelated server push for one topic kind.
 ///
 /// Handlers are keyed by kind alone: a capability registers once and receives
@@ -48,7 +66,7 @@ pub enum Pump {
 /// reply without someone else pumping.
 pub struct Client<C> {
     channel: C,
-    sequence: u64,
+    sequence: InvocationIds,
     bearer: Option<crate::bearer::Token>,
     handlers: BTreeMap<String, Handler>,
     /// Outstanding invocations by client-minted id. Entries are removed on
@@ -60,7 +78,7 @@ impl<C: Channel> Client<C> {
     pub fn new(channel: C) -> Self {
         Self {
             channel,
-            sequence: 0,
+            sequence: InvocationIds::default(),
             bearer: None,
             handlers: BTreeMap::new(),
             calls: BTreeMap::new(),
@@ -100,8 +118,7 @@ impl<C: Channel> Client<C> {
     /// `replace_channel`, so a late frame from an abandoned connection cannot be
     /// mistaken for the answer to a newer invocation.
     pub fn next_id(&mut self) -> Result<u64, Error> {
-        self.sequence = self.sequence.checked_add(1).ok_or(Error::Capacity)?;
-        Ok(self.sequence)
+        self.sequence.allocate()
     }
 
     pub fn outstanding(&self) -> usize {

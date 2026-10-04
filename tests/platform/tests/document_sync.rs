@@ -1,7 +1,8 @@
+//! Document extent, replication and recovery through generic host assembly.
 use snap_access::{
     Access, Actor, Audience, ChangeSet, GrantChange, KindDefinition, Resource, Role,
 };
-type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
+type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
 use snap_document::{
     Definition, Intent, Manifest, Mutation, Registry, ServerMessage, Snapshot, server::Document,
 };
@@ -328,9 +329,10 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
             )?;
             if cleanup {
                 doc.remove(tx, DEP, "bob")?;
-                let mut lifecycle = doc.lifecycle(tx, DEP)?;
+                let resource = snap_document::server::resource(DEP);
+                let mut lifecycle = resource.lifecycle(tx)?;
                 lifecycle.finalizers.insert("resource".into());
-                doc.set_lifecycle(tx, DEP, &lifecycle)?;
+                resource.set_lifecycle(tx, &lifecycle)?;
             }
             Ok(())
         })
@@ -339,7 +341,7 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
         let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = called.clone();
         let mut host = host.map_participant(|documents| {
-            documents.with_controller(
+            documents.with_controller(document_controller(
                 "counter",
                 Box::new(move |ctx, snapshot| {
                     if snapshot.id != ID {
@@ -353,14 +355,20 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
                     } else {
                         assert!(matches!(resident, Err(snap_store::Error::Miss(_))));
                     }
-                    assert_eq!(ctx.document(DEP)?.value, json!(12));
+                    ctx.row(&snap_document::server::resource(DEP))?;
+                    assert_eq!(
+                        ctx.inspect("dependency", |tx| Document::new(registry())
+                            .retained(tx, DEP))?
+                            .value,
+                        json!(12)
+                    );
                     if cleanup {
-                        ctx.finalize(DEP, "resource")?;
+                        ctx.finalize(&snap_document::server::resource(DEP), "resource")?;
                     }
                     observed.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(())
                 }),
-            )
+            ))
         });
         submit(&mut host, peer, 1, intent(1, 1));
         assert!(host.step());
@@ -370,6 +378,33 @@ fn controller_dependencies_load_explicitly_and_finalizers_retain_hidden_values()
 
 fn access() -> Access {
     Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap()
+}
+
+fn document_controller(
+    kind: &str,
+    mut run: Box<
+        dyn FnMut(
+                &mut snap_host::ControllerContext<'_, '_, snap_store_sqlite::Sqlite>,
+                Snapshot,
+            ) -> Result<(), snap_store::Error>
+            + Send,
+    >,
+) -> snap_host::Controller<snap_store_sqlite::Sqlite> {
+    let selected = kind.to_owned();
+    snap_host::Controller::new(
+        kind,
+        snap_document::server::TABLES[0],
+        move |row| row.get("kind") == Some(&selected.clone().into()),
+        move |ctx, resource| {
+            let [snap_store::Value::Text(id)] = resource.key.as_slice() else {
+                return Err(snap_store::Error::Invalid);
+            };
+            let snapshot = ctx.inspect("document.controller", |tx| {
+                Document::new(registry()).retained(tx, id)
+            })?;
+            run(ctx, snapshot)
+        },
+    )
 }
 
 fn registry() -> Registry {
@@ -401,12 +436,14 @@ fn fixture_with(
     let mut migrations: Vec<snap_store::migration::Migration> = vec![
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
+        toml::from_str(snap_store::resource::MIGRATION).unwrap(),
     ];
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
     {
         store.load(table).unwrap();
     }
@@ -440,7 +477,7 @@ fn fixture_with(
         .unwrap();
     Host::new(
         store,
-        snap_document::host::Documents::new(document),
+        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| match bearer {
@@ -865,7 +902,7 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     let (finish, released) = std::sync::mpsc::channel();
     let mut entered = Some(entered);
     let host = fixture().map_participant(|documents| {
-        documents.with_controller(
+        documents.with_controller(document_controller(
             "counter",
             Box::new(move |_, _| {
                 entered.take().unwrap().send(()).unwrap();
@@ -874,7 +911,7 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
                     .map_err(|_| snap_store::Error::Unavailable)?;
                 Ok(())
             }),
-        )
+        ))
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -965,7 +1002,10 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     closed.expect("physical close waited for controller IO");
     let mut host = shared.host.lock().unwrap();
     host.tick(10);
-    assert_eq!(host.participant().residency_references(ID), 0);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        0
+    );
     assert_eq!(
         host.transact("read drained mutation", |tx| Document::new(registry())
             .read(tx, ID, Some("alice")))
@@ -980,7 +1020,7 @@ fn controller_commits_progress_and_converges_before_the_next_acceptance() {
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = observations.clone();
     let mut host = fixture().map_participant(|documents| {
-        documents.with_controller(
+        documents.with_controller(document_controller(
             "counter",
             Box::new(move |ctx, snapshot| {
                 log.lock().unwrap().push(snapshot.value.clone());
@@ -993,7 +1033,7 @@ fn controller_commits_progress_and_converges_before_the_next_acceptance() {
                 }
                 Ok(())
             }),
-        )
+        ))
     });
     let (peer, _) = connect(&mut host, "alice", "controller", 0);
     submit(&mut host, peer, 1, intent(1, 1));
@@ -1035,7 +1075,7 @@ fn controller_io_does_not_hold_the_carrier_output_lock() {
     let (entered, waiting) = std::sync::mpsc::channel();
     let (finish, released) = std::sync::mpsc::channel();
     let mut host = fixture().map_participant(|documents| {
-        documents.with_controller(
+        documents.with_controller(document_controller(
             "counter",
             Box::new(move |ctx, _| {
                 ctx.progress(json!("waiting for IO"))?;
@@ -1043,7 +1083,7 @@ fn controller_io_does_not_hold_the_carrier_output_lock() {
                 released.recv().unwrap();
                 Ok(())
             }),
-        )
+        ))
     });
     let (peer, _) = connect(&mut host, "alice", "held-io", 0);
     let output = host.output(peer).unwrap();
@@ -1080,7 +1120,7 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = attempts.clone();
     let mut host = fixture().map_participant(|documents| {
-        documents.with_controller(
+        documents.with_controller(document_controller(
             "counter",
             Box::new(move |_, _| {
                 if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
@@ -1089,7 +1129,7 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
                     Ok(())
                 }
             }),
-        )
+        ))
     });
     let (peer, _) = connect(&mut host, "alice", "blocked", 0);
     submit(&mut host, peer, 1, intent(1, 1));
@@ -1100,19 +1140,18 @@ fn failed_reconciliation_stays_blocked_until_explicit_retry() {
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     let state = host
         .transact("inspect failure", |tx| {
-            Document::new(registry()).lifecycle(tx, ID)
+            snap_document::server::resource(ID).lifecycle(tx)
         })
         .unwrap();
     assert!(state.blocked.is_some());
-    let mut retry = intent(2, 0);
-    retry.mutation = "document.retry".into();
-    retry.args = serde_json::Value::Null;
-    submit(&mut host, peer, 2, retry);
-    host.step();
+    host.transact("explicit resource retry", |tx| {
+        snap_document::server::resource(ID).retry(tx)
+    })
+    .unwrap();
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     let state = host
         .transact("inspect cleared", |tx| {
-            Document::new(registry()).lifecycle(tx, ID)
+            snap_document::server::resource(ID).lifecycle(tx)
         })
         .unwrap();
     assert!(state.blocked.is_none());
@@ -1123,14 +1162,14 @@ fn carrier_close_during_controller_io_drains_only_accepted_work() {
     let (entered, waiting) = std::sync::mpsc::channel();
     let (finish, released) = std::sync::mpsc::channel();
     let mut host = fixture().map_participant(|documents| {
-        documents.with_controller(
+        documents.with_controller(document_controller(
             "counter",
             Box::new(move |_, _| {
                 entered.send(()).unwrap();
                 released.recv().unwrap();
                 Ok(())
             }),
-        )
+        ))
     });
     let (peer, _) = connect(&mut host, "alice", "closing-io", 0);
     let output = host.output(peer).unwrap();
@@ -1150,7 +1189,10 @@ fn carrier_close_during_controller_io_drains_only_accepted_work() {
     let mut host = worker.join().unwrap();
     assert!(!host.step());
     assert!(host.retired(peer));
-    assert_eq!(host.participant().residency_references(ID), 0);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        0
+    );
     let events: Vec<_> = std::iter::from_fn(|| output.pop_front())
         .filter_map(|r| match r {
             Response::Event(event) => Some(vec![event]),
@@ -1181,16 +1223,31 @@ fn residency_references_survive_socket_loss_and_close_only_after_drain() {
     let mut host = fixture();
     let (alice, _) = connect(&mut host, "alice", "a", 0);
     let (bob, _) = connect(&mut host, "bob", "b", 0);
-    assert_eq!(host.participant().residency_references(ID), 2);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        2
+    );
     host.lost(alice, 1);
-    assert_eq!(host.participant().residency_references(ID), 2);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        2
+    );
     submit(&mut host, bob, 1, intent(1, 1));
     host.submit(bob, Command::Close, 2).unwrap();
-    assert_eq!(host.participant().residency_references(ID), 2);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        2
+    );
     host.step();
-    assert_eq!(host.participant().residency_references(ID), 1);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        1
+    );
     host.tick(101);
-    assert_eq!(host.participant().residency_references(ID), 0);
+    assert_eq!(
+        host.residency_references(&snap_document::server::resource(ID)),
+        0
+    );
 }
 
 #[test]
@@ -1260,10 +1317,17 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
     let (bob, _) = connect(&mut host, "bob", "sdk-b", 0);
     let (mut a, mut b) = (Client::new("alice".into()), Client::new("bob".into()));
     let (mut aw, mut bw) = (Wire::default(), Wire::default());
-    for (peer, wire, client) in [(alice, &mut aw, &mut a), (bob, &mut bw, &mut b)] {
+    let (mut ai, mut bi) = (
+        snap_transport::client::InvocationIds::default(),
+        snap_transport::client::InvocationIds::default(),
+    );
+    for (peer, wire, client, ids) in [
+        (alice, &mut aw, &mut a, &mut ai),
+        (bob, &mut bw, &mut b, &mut bi),
+    ] {
         host.submit(
             peer,
-            wire.submit(ClientMessage::Manifest(client.manifest()))
+            wire.submit(ids, ClientMessage::Manifest(client.manifest()))
                 .unwrap(),
             0,
         )
@@ -1277,14 +1341,26 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
     b.enqueue(&registry(), ID, "add", json!(10)).unwrap();
     assert_eq!(a.get(ID).unwrap().value, json!(7));
     assert_eq!(b.get(ID).unwrap().value, json!(10));
-    host.submit(alice, aw.submit(a.next_submission().unwrap()).unwrap(), 0)
-        .unwrap();
+    host.submit(
+        alice,
+        aw.submit(&mut ai, a.next_submission().unwrap()).unwrap(),
+        0,
+    )
+    .unwrap();
     receive(&mut host, alice, &mut aw, &mut a);
-    host.submit(bob, bw.submit(b.next_submission().unwrap()).unwrap(), 0)
-        .unwrap();
+    host.submit(
+        bob,
+        bw.submit(&mut bi, b.next_submission().unwrap()).unwrap(),
+        0,
+    )
+    .unwrap();
     receive(&mut host, bob, &mut bw, &mut b);
-    host.submit(alice, aw.submit(a.next_submission().unwrap()).unwrap(), 0)
-        .unwrap();
+    host.submit(
+        alice,
+        aw.submit(&mut ai, a.next_submission().unwrap()).unwrap(),
+        0,
+    )
+    .unwrap();
     receive(&mut host, alice, &mut aw, &mut a);
     assert_eq!(a.pending().len(), 2); // ACKs did not complete either write.
     for _ in 0..3 {
@@ -1296,8 +1372,12 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
     assert_eq!(a.authoritative(), b.authoritative());
     assert!(a.pending().is_empty() && b.pending().is_empty());
     a.enqueue(&registry(), ID, "add", json!(3)).unwrap();
-    host.submit(alice, aw.submit(a.next_submission().unwrap()).unwrap(), 0)
-        .unwrap();
+    host.submit(
+        alice,
+        aw.submit(&mut ai, a.next_submission().unwrap()).unwrap(),
+        0,
+    )
+    .unwrap();
     receive(&mut host, alice, &mut aw, &mut a);
     host.step();
     host.lost(alice, 10); // Drop the committed completion at the carrier boundary.
@@ -1307,7 +1387,8 @@ fn two_real_sdks_rebase_optimism_over_host_replication_and_recover_a_lost_result
     aw.reconnect();
     host.submit(
         replacement,
-        aw.submit(ClientMessage::Manifest(a.manifest())).unwrap(),
+        aw.submit(&mut ai, ClientMessage::Manifest(a.manifest()))
+            .unwrap(),
         20,
     )
     .unwrap();

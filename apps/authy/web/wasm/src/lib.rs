@@ -93,6 +93,7 @@ mod tests {
 pub struct AuthyClient {
     client: Client,
     wire: Wire,
+    ids: snap_transport::client::InvocationIds,
     registry: snap_document::Registry,
     profile: String,
 }
@@ -140,8 +141,12 @@ fn result_value(
 fn submit_manifest(
     client: &Client,
     wire: &mut Wire,
+    ids: &mut snap_transport::client::InvocationIds,
 ) -> Result<snap_transport::Command, snap_transport::Error> {
-    wire.submit(snap_document::ClientMessage::Manifest(client.manifest()))
+    wire.submit(
+        ids,
+        snap_document::ClientMessage::Manifest(client.manifest()),
+    )
 }
 
 fn command_text(command: &snap_transport::Command) -> Result<String, snap_transport::Error> {
@@ -178,7 +183,7 @@ impl AuthyClient {
     pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
         let input = serde_json::from_str(input).map_err(|e| js_error(e.to_string()))?;
         let command = self
-            .wire
+            .ids
             .invoke(operation, input)
             .map_err(|e| js_error(format!("{e:?}")))?;
         serde_json::to_string(&command).map_err(|e| js_error(e.to_string()))
@@ -192,6 +197,7 @@ impl AuthyClient {
         Ok(Self {
             client: Client::new(actor),
             wire: Wire::default(),
+            ids: Default::default(),
             registry: authy::registry(),
             profile,
         })
@@ -216,7 +222,7 @@ impl AuthyClient {
     /// Build the `Connect {bearer:"", client_id}` command for JS to send.
     ///
     /// Resets the physical wire driver: stable intent IDs survive in the
-    /// client journal, while physical invocation IDs restart per socket.
+    /// client journal. The shared invocation allocator survives reconnects.
     /// `client_id` must stay stable within the tab across reconnects.
     pub fn connect_command(&mut self, client_id: &str) -> Result<String, JsValue> {
         if client_id.is_empty() {
@@ -243,7 +249,7 @@ impl AuthyClient {
             let _ = self.client.handle(&registry, ServerMessage::Reset);
             self.registry = registry;
         }
-        let command = submit_manifest(&self.client, &mut self.wire)
+        let command = submit_manifest(&self.client, &mut self.wire, &mut self.ids)
             .map_err(|e| js_error(format!("{e:?}")))?;
         let text = command_text(&command).map_err(|e| js_error(format!("{e:?}")))?;
         result_value(&self.client, &self.profile, vec![text], None)
@@ -289,7 +295,7 @@ impl AuthyClient {
             && !self.client.needs_recovery()
             && let Some(message) = self.client.next_submission()
         {
-            match self.wire.submit(message) {
+            match self.wire.submit(&mut self.ids, message) {
                 Ok(command) => match command_text(&command) {
                     Ok(text) => send.push(text),
                     Err(e) => error = Some(format!("{e:?}")),
@@ -359,7 +365,7 @@ impl AuthyClient {
         }
         let mut send = Vec::new();
         if needs_manifest {
-            match submit_manifest(&self.client, &mut self.wire) {
+            match submit_manifest(&self.client, &mut self.wire, &mut self.ids) {
                 Ok(command) => match command_text(&command) {
                     Ok(text) => send.push(text),
                     Err(e) => {
@@ -378,7 +384,7 @@ impl AuthyClient {
             && !self.client.needs_recovery()
             && let Some(message) = self.client.next_submission()
         {
-            match self.wire.submit(message) {
+            match self.wire.submit(&mut self.ids, message) {
                 Ok(command) => match command_text(&command) {
                     Ok(text) => send.push(text),
                     Err(e) => {

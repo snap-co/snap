@@ -7,6 +7,7 @@ fn fixture() -> Store<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_store::resource::MIGRATION,
         chatty::MIGRATION,
     ]
     .into_iter()
@@ -17,6 +18,7 @@ fn fixture() -> Store<snap_store_sqlite::Sqlite> {
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(chatty::TABLES.iter())
     {
         store.load(table).unwrap();

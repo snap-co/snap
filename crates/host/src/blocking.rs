@@ -77,6 +77,7 @@ pub struct Blocking<B: Backend, P: Participant<B> = ()> {
     next_peer: u64,
     boot: String,
     retention_ms: u64,
+    residency: snap_store::residency::Residency,
 }
 
 impl<B: Backend, P: Participant<B>> Blocking<B, P> {
@@ -112,6 +113,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             next_peer: 0,
             boot,
             retention_ms: config.reconnect_ms,
+            residency: Default::default(),
         }
     }
 
@@ -262,6 +264,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             next_peer: self.next_peer,
             boot: self.boot,
             retention_ms: self.retention_ms,
+            residency: self.residency,
         }
     }
 
@@ -277,9 +280,11 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.authority.as_ref(),
             self.requests.data(),
             None,
+            &mut self.residency,
         );
         let recovered = self.participant.recover(&mut context);
         let settled = settle(&mut self.participant, &mut context);
+        context.residency.release_work();
         let released = self.participant.release(&mut context);
         recovered.and(settled).and(released)
     }
@@ -638,7 +643,17 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             match result {
                 Ok(()) => {
                     self.respond(&work, Event::Accepted { id: work.wire_id });
-                    self.participant.accepted(work.connection);
+                    let mut store = self.store.lock();
+                    let mut context = CommitContext::new(
+                        &mut store,
+                        &self.connections,
+                        &self.peers,
+                        self.authority.as_ref(),
+                        self.requests.data(),
+                        None,
+                        &mut self.residency,
+                    );
+                    self.participant.accepted(&mut context, work.connection);
                     return;
                 }
                 Err((_, error)) => {
@@ -702,12 +717,14 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 self.authority.as_ref(),
                 self.requests.data(),
                 Some(scope),
+                &mut self.residency,
             );
             complete_commit(&mut self.participant, &mut context, &changes, &publication)
         } else {
             Ok(())
         };
         self.requests.release_data();
+        self.residency.release_work();
         let released = {
             let mut store = self.store.lock();
             let mut context = CommitContext::new(
@@ -717,6 +734,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 self.authority.as_ref(),
                 self.requests.data(),
                 None,
+                &mut self.residency,
             );
             self.participant.release(&mut context)
         };
@@ -766,6 +784,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.authority.as_ref(),
             self.requests.data(),
             None,
+            &mut self.residency,
         );
         self.participant.maintain(&mut context)
     }
@@ -790,6 +809,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.authority.as_ref(),
             self.requests.data(),
             None,
+            &mut self.residency,
         );
         let result = (|| {
             self.participant.prepare(&mut context)?;
@@ -802,6 +822,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             )?;
             Ok(committed.value)
         })();
+        context.residency.release_work();
         let released = self.participant.release(&mut context);
         result.and_then(|value| released.map(|()| value))
     }
@@ -833,6 +854,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.authority.as_ref(),
             self.requests.data(),
             None,
+            &mut self.residency,
         );
         while let Some(mut response) = peer.output.pop_front() {
             if self
@@ -854,6 +876,9 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             }
         }
         self.tick(now);
+    }
+    pub fn residency_references(&self, resource: &snap_store::resource::Resource) -> usize {
+        self.residency.references(resource)
     }
 }
 

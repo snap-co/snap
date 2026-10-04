@@ -6,7 +6,6 @@ publish.workspace = true
 
 [dependencies]
 snap-store.workspace = true
-snap-host.workspace = true
 snap-access.workspace = true
 snap-transport = { path = "../transport" }
 serde.workspace = true

@@ -13,6 +13,7 @@ fn error(value: impl std::fmt::Debug) -> JsValue {
 pub struct ChattyClient {
     client: Client,
     wire: Wire,
+    ids: snap_transport::client::InvocationIds,
     registry: snap_document::Registry,
 }
 #[wasm_bindgen]
@@ -22,6 +23,7 @@ impl ChattyClient {
         Self {
             client: Client::new(actor),
             wire: Wire::default(),
+            ids: Default::default(),
             registry: chatty::registry(),
         }
     }
@@ -35,7 +37,7 @@ impl ChattyClient {
     }
     pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
         let command = self
-            .wire
+            .ids
             .invoke(operation, serde_json::from_str(input).map_err(error)?)
             .map_err(error)?;
         serde_json::to_string(&command).map_err(error)
@@ -125,7 +127,7 @@ impl ChattyClient {
         message
             .map(|message| {
                 self.wire
-                    .submit(message)
+                    .submit(&mut self.ids, message)
                     .map_err(error)
                     .and_then(|command| serde_json::to_string(&command).map_err(error))
             })

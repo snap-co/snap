@@ -54,7 +54,7 @@ impl<'a> DocumentAccessGuard<'a> {
         };
         let resource = Resource::new("document", &intent.document)?;
         let role = vocabulary().role(tx, &resource, Some(actor), true)?;
-        let mutation = if crate::lifecycle::Operation::named(&intent.mutation).is_some() {
+        let mutation = if crate::Visibility::named(&intent.mutation).is_some() {
             None
         } else {
             Some(
@@ -87,8 +87,10 @@ impl<'a> DocumentAccessGuard<'a> {
         let mut ids = BTreeSet::new();
         for entry in vocabulary().accessible(tx, Some(actor), true)? {
             if entry.resource.kind == "document"
-                && self.document.lifecycle(tx, &entry.resource.id)?.state
-                    == crate::lifecycle::State::Active
+                && crate::server::resource(&entry.resource.id)
+                    .lifecycle(tx)?
+                    .state
+                    == snap_store::resource::State::Active
             {
                 ids.insert(entry.resource.id);
             }

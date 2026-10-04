@@ -74,20 +74,33 @@ columns = [{ name = "id", kind = "text" }, { name = "body", kind = "text" }]
 }
 
 fn migrations() -> Vec<snap_store::migration::Migration> {
-    let mut all = vec![access_migration(), doc_migration()];
+    let mut all = vec![
+        access_migration(),
+        doc_migration(),
+        toml::from_str(snap_store::resource::MIGRATION).unwrap(),
+    ];
     all.sort_by(|a, b| a.id.cmp(&b.id));
     all
 }
 
 fn migrations_with_notes() -> Vec<snap_store::migration::Migration> {
-    let mut all = vec![access_migration(), doc_migration(), notes_migration()];
+    let mut all = vec![
+        access_migration(),
+        doc_migration(),
+        notes_migration(),
+        toml::from_str(snap_store::resource::MIGRATION).unwrap(),
+    ];
     all.sort_by(|a, b| a.id.cmp(&b.id));
     all
 }
 
 fn store_loaded() -> Store {
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
-    for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
+    for table in snap_access::TABLES
+        .iter()
+        .chain(TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
+    {
         store.load(table).unwrap();
     }
     store
@@ -114,7 +127,11 @@ fn admission_guards_read_related_resident_state_and_preserve_store_misses() {
         .unwrap(),
     );
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations_with_notes()).unwrap();
-    for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
+    for table in snap_access::TABLES
+        .iter()
+        .chain(TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
+    {
         store.load(table).unwrap();
     }
     let id = uuid(99);
@@ -874,6 +891,7 @@ fn access_and_document_writes_roll_back_together() {
     for table in snap_access::TABLES
         .iter()
         .chain(TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(["test.notes"].iter())
     {
         store.load(table).unwrap();
@@ -956,7 +974,11 @@ fn cold_tables_miss_and_stage_nothing() {
         Ok(())
     });
     assert!(matches!(poisoned, Err(StoreError::Miss(_))));
-    for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
+    for table in snap_access::TABLES
+        .iter()
+        .chain(TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
+    {
         store.load(table).unwrap();
     }
     // Nothing from the cold attempts survived.
@@ -1020,7 +1042,11 @@ fn receipts_survive_restart_and_manifest_recovers() {
     let id = uuid(110);
     {
         let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
-        for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
+        for table in snap_access::TABLES
+            .iter()
+            .chain(TABLES.iter())
+            .chain(core::iter::once(&snap_store::resource::TABLE))
+        {
             store.load(table).unwrap();
         }
         let doc = document();
@@ -1037,7 +1063,11 @@ fn receipts_survive_restart_and_manifest_recovers() {
     }
     {
         let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
-        for table in snap_access::TABLES.iter().chain(TABLES.iter()) {
+        for table in snap_access::TABLES
+            .iter()
+            .chain(TABLES.iter())
+            .chain(core::iter::once(&snap_store::resource::TABLE))
+        {
             store.load(table).unwrap();
         }
         let doc = document();
@@ -1166,7 +1196,7 @@ fn document_migration_applies_cleanly() {
     }
     assert!(store.catalog().table("document.documents").is_ok());
     assert!(store.catalog().table("document.receipts").is_ok());
-    assert!(store.catalog().table("document.lifecycle").is_ok());
+    assert!(store.catalog().table("document.lifecycle").is_err());
 }
 
 #[test]

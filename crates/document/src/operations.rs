@@ -10,8 +10,8 @@ use snap_transport::{
     operation::{Context, Definition, Failure, Guard},
 };
 
-/// Shared SDK/server contracts. Progress remains module-owned JSON because a
-/// Document mutation may invoke any explicitly composed platform controller.
+/// Shared SDK/server contracts. The host may publish application progress while
+/// finishing post-commit work; Document does not interpret those payloads.
 pub struct Mutate;
 impl Operation for Mutate {
     const NAME: &'static str = "document.mutate";
@@ -104,14 +104,14 @@ fn execute(
         .map_err(|_| Error::Invalid)?;
     Ok(match prepared {
         Prepared::Replay(completion) => {
-            context.publication = snap_transport::json!({crate::wire::KIND: crate::host::Publication {
+            context.publication = snap_transport::json!({crate::wire::KIND: crate::sync::Publication {
                 completion: completion.clone(), replication: None,
             }});
             ServerMessage::Completed(completion)
         }
         Prepared::Mutation(admitted) => {
             let result = document.execute_recorded(tx, lifetime, admitted)?;
-            context.publication = snap_transport::json!({crate::wire::KIND: crate::host::Publication {
+            context.publication = snap_transport::json!({crate::wire::KIND: crate::sync::Publication {
                 completion: result.completion.clone(), replication: result.replication,
             }});
             ServerMessage::Completed(result.completion)

@@ -1,6 +1,6 @@
 use crate::blocking::Peer;
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
-use snap_store::{Backend, Data, Error, RowChange, Store, Transaction};
+use snap_store::{Backend, Data, Error, RowChange, Store, Transaction, residency::Residency};
 use snap_transport::{
     Event, Response, Value, bearer::Authority, operation::Validator, runtime::Output,
 };
@@ -59,6 +59,7 @@ pub struct CommitContext<'a, B: Backend> {
     pub authority: &'a dyn Authority,
     pub data: &'a Data,
     pub invocation: Option<InvocationScope<'a>>,
+    pub residency: &'a mut Residency,
     changes: Vec<RowChange>,
 }
 impl<'a, B: Backend> CommitContext<'a, B> {
@@ -69,6 +70,7 @@ impl<'a, B: Backend> CommitContext<'a, B> {
         authority: &'a dyn Authority,
         data: &'a Data,
         invocation: Option<InvocationScope<'a>>,
+        residency: &'a mut Residency,
     ) -> Self {
         Self {
             store,
@@ -77,6 +79,7 @@ impl<'a, B: Backend> CommitContext<'a, B> {
             authority,
             data,
             invocation,
+            residency,
             changes: Vec::new(),
         }
     }
@@ -115,7 +118,7 @@ pub trait Participant<B: Backend> {
         Ok(())
     }
     /// Pin module-specific requirements of the accepted logical connection.
-    fn accepted(&mut self, _: Option<u64>) {}
+    fn accepted(&mut self, _: &mut CommitContext<'_, B>, _: Option<u64>) {}
     /// Forget attachment-specific observations on physical loss or explicit
     /// detach. Logical residency and accepted-work pins must remain intact.
     fn detached(&mut self, _: u64) {}

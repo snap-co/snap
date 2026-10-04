@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
+type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
 use snap_transport_native::{Dispatcher, Shared};
@@ -76,6 +76,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_identity::MIGRATION,
         snap_access::MIGRATION,
         snap_document::server::MIGRATION,
+        snap_store::resource::MIGRATION,
         authy::MIGRATION,
         snap_oidc::MIGRATION,
         keys::MIGRATION,
@@ -150,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(authy::TABLES.iter())
         .chain(snap_oidc::TABLES.iter())
     {
@@ -176,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = operations::register(registry, webauthn);
     let host = Host::new(
         store,
-        snap_document::host::Documents::new(document),
+        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
         registry,
         Arc::new(snap_identity::authentication::Authentication::new(
             Arc::new(Identity::default().provider(snap_crypto::Native)),

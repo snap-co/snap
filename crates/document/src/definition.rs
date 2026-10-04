@@ -95,7 +95,7 @@ impl Registry {
         intent: &Intent,
         actor: &str,
     ) -> Result<Snapshot, Error> {
-        if crate::lifecycle::Operation::named(&intent.mutation).is_some() {
+        if crate::Visibility::named(&intent.mutation).is_some() {
             self.validate(snapshot)?;
             if intent.id == 0
                 || intent.document != snapshot.id
@@ -104,9 +104,8 @@ impl Registry {
             {
                 return Err(Error::Invalid);
             }
-            // Cleanup and blocked status belong to the authority. Keep the visible
-            // value until its committed holdings/removal arrives, without inventing
-            // a value revision for a lifecycle-only mutation.
+            // Keep the visible value until committed holdings/removal arrives,
+            // without inventing a value revision for a visibility-only mutation.
             return Ok(snapshot.clone());
         }
         let mutation = self.mutation(snapshot, intent)?;

@@ -68,15 +68,14 @@ use snap_store::Error as StoreError;
 /// Initial migration for all Document tables.
 pub const MIGRATION: &str = include_str!("../migrations/0001_document.toml");
 /// Store tables owned by this module. Hosts load these to arrange residency.
-pub const TABLES: [&str; 3] = [
-    "document.documents",
-    "document.receipts",
-    "document.lifecycle",
-];
+pub const TABLES: [&str; 2] = ["document.documents", "document.receipts"];
 
 const DOCUMENTS: &str = TABLES[0];
 const RECEIPTS: &str = TABLES[1];
-const LIFECYCLE: &str = TABLES[2];
+/// Store's generic lifecycle is keyed by the owning table and primary key.
+pub fn resource(id: &str) -> snap_store::resource::Resource {
+    snap_store::resource::Resource::new(DOCUMENTS, &[id.into()])
+}
 /// Access kind for every document resource. App definitions select behavior
 /// through `Snapshot::kind` instead.
 const RESOURCE_KIND: &str = "document";
@@ -114,56 +113,18 @@ pub struct Document {
 
 impl Document {
     pub fn metadata(&self) -> snap_store::Data {
-        snap_store::Data::new(&[TABLES[1], TABLES[2]]).and(snap_access::data())
+        snap_store::Data::new(&[TABLES[1]])
+            .and(snap_access::data())
+            .and(snap_store::resource::data())
     }
     pub fn data(&self) -> snap_store::Data {
-        snap_store::Data::new(&TABLES).and(snap_access::data())
+        snap_store::Data::new(&TABLES)
+            .and(snap_access::data())
+            .and(snap_store::resource::data())
     }
 
     pub fn access_guard(&self) -> crate::DocumentAccessGuard<'_> {
         crate::DocumentAccessGuard::new(self)
-    }
-    /// Translate a committed Store change to current Document state. Deletion
-    /// requires retained lifecycle state so controllers can finish cleanup.
-    pub fn changed(
-        &self,
-        tx: &mut Transaction<'_>,
-        change: &snap_store::RowChange,
-    ) -> Result<Option<Snapshot>, StoreError> {
-        if change.table == LIFECYCLE {
-            return tx
-                .get(DOCUMENTS, &change.key)?
-                .as_ref()
-                .map(snapshot_from_row)
-                .transpose();
-        }
-        if change.table != DOCUMENTS {
-            return Ok(None);
-        }
-        change.after.as_ref().map(snapshot_from_row).transpose()
-    }
-
-    /// Host-only residency/recovery scan. This grants no client read authority.
-    pub fn snapshots(&self, tx: &mut Transaction<'_>) -> Result<Vec<Snapshot>, StoreError> {
-        tx.find(DOCUMENTS, "primary", &[])?
-            .iter()
-            .map(snapshot_from_row)
-            .collect()
-    }
-
-    /// Cleanup ownership retains these rows independently of connected viewers.
-    /// Lifecycle metadata is resident even when Document values are partially loaded.
-    pub fn cleanup_ids(&self, tx: &mut Transaction<'_>) -> Result<BTreeSet<String>, StoreError> {
-        let mut ids = BTreeSet::new();
-        for row in tx.find(LIFECYCLE, "primary", &[])? {
-            let Some(Value::Text(id)) = row.get("id") else {
-                return Err(StoreError::Invalid);
-            };
-            if !self.lifecycle(tx, id)?.finalizers.is_empty() {
-                ids.insert(id.clone());
-            }
-        }
-        Ok(ids)
     }
     /// Assemble resident behavior. Dispatch separately composes Access policy.
     pub fn new(registry: Registry) -> Self {
@@ -238,7 +199,7 @@ impl Document {
         Ok(snapshot)
     }
 
-    /// Trusted controller observation, including retained deleted/archived values.
+    /// Read retained deleted/archived values without selecting a client extent.
     /// This grants no client authority; wire operations require dispatch policy.
     pub fn retained(&self, tx: &mut Transaction<'_>, id: &str) -> Result<Snapshot, StoreError> {
         if !is_uuid(id) {
@@ -288,8 +249,8 @@ impl Document {
         Ok(snapshot)
     }
 
-    /// Request deletion after acceptance. Retain data, Access and finalizers
-    /// for cleanup, while excluding the Document from normal synchronization.
+    /// Request deletion after acceptance. Retain the row for Store-owned cleanup,
+    /// while excluding the Document from normal synchronization.
     pub fn remove(
         &self,
         tx: &mut Transaction<'_>,
@@ -297,14 +258,15 @@ impl Document {
         actor: &str,
     ) -> Result<(), StoreError> {
         self.read(tx, id, Some(actor))?;
-        let mut lifecycle = self.lifecycle(tx, id)?;
-        lifecycle.state = crate::lifecycle::State::Deleted;
-        self.set_lifecycle(tx, id, &lifecycle)?;
+        let resource = resource(id);
+        let mut lifecycle = resource.lifecycle(tx)?;
+        lifecycle.state = snap_store::resource::State::Deleted;
+        resource.set_lifecycle(tx, &lifecycle)?;
         Ok(())
     }
 
-    /// Trusted controller publication, independent of a currently connected owner.
-    /// Values are schema checked; unchanged observations do not enqueue a new pass.
+    /// Replace a whole JSON value independently of a currently connected owner.
+    /// Values are schema checked; unchanged replacements stage no writes.
     /// Never expose this method as an unguarded wire replacement operation.
     pub fn observe(
         &self,
@@ -336,68 +298,6 @@ impl Document {
             .collect(),
         )?;
         Ok(snapshot)
-    }
-
-    pub fn lifecycle(
-        &self,
-        tx: &mut Transaction<'_>,
-        id: &str,
-    ) -> Result<crate::lifecycle::Lifecycle, StoreError> {
-        let Some(row) = tx.get(LIFECYCLE, &[id.into()])? else {
-            return Ok(Default::default());
-        };
-        let text = |name: &str| match row.get(name) {
-            Some(Value::Text(value)) => Ok(value.as_str()),
-            _ => Err(StoreError::Invalid),
-        };
-        Ok(crate::lifecycle::Lifecycle {
-            state: serde_json::from_str(text("state")?).map_err(|_| StoreError::Invalid)?,
-            finalizers: serde_json::from_str(text("finalizers")?)
-                .map_err(|_| StoreError::Invalid)?,
-            blocked: serde_json::from_str(text("blocked")?).map_err(|_| StoreError::Invalid)?,
-        })
-    }
-
-    /// Platform/controller-owned metadata. Public operations must check Access
-    /// before calling this, just as for their composed domain mutations.
-    pub fn set_lifecycle(
-        &self,
-        tx: &mut Transaction<'_>,
-        id: &str,
-        lifecycle: &crate::lifecycle::Lifecycle,
-    ) -> Result<(), StoreError> {
-        if self.lifecycle(tx, id)? == *lifecycle {
-            return Ok(());
-        }
-        let fields: Row = [
-            (
-                "state".into(),
-                serde_json::to_string(&lifecycle.state)
-                    .map_err(|_| StoreError::Invalid)?
-                    .into(),
-            ),
-            (
-                "finalizers".into(),
-                serde_json::to_string(&lifecycle.finalizers)
-                    .map_err(|_| StoreError::Invalid)?
-                    .into(),
-            ),
-            (
-                "blocked".into(),
-                serde_json::to_string(&lifecycle.blocked)
-                    .map_err(|_| StoreError::Invalid)?
-                    .into(),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        if tx.get(LIFECYCLE, &[id.into()])?.is_some() {
-            tx.update(LIFECYCLE, &[id.into()], fields)
-        } else {
-            let mut row = fields;
-            row.insert("id".into(), id.into());
-            tx.insert(LIFECYCLE, row)
-        }
     }
 
     /// Execute one named mutation on one document inside the caller's
@@ -477,7 +377,7 @@ impl Document {
 
         if matches!(
             intent.mutation.as_str(),
-            "document.delete" | "document.archive" | "document.retry"
+            "document.delete" | "document.archive"
         ) {
             if intent.version != before.version || !intent.args.is_null() {
                 return Ok(Err(DomainError::Invalid));
@@ -488,7 +388,7 @@ impl Document {
                 actor: actor.into(),
             }));
         }
-        if self.lifecycle(tx, &intent.document)?.state != crate::lifecycle::State::Active {
+        if resource(&intent.document).lifecycle(tx)?.state != snap_store::resource::State::Active {
             return Ok(Err(DomainError::NotFound));
         }
 
@@ -544,21 +444,21 @@ impl Document {
 
         if matches!(
             intent.mutation.as_str(),
-            "document.delete" | "document.archive" | "document.retry"
+            "document.delete" | "document.archive"
         ) {
-            let mut lifecycle = self.lifecycle(tx, &intent.document)?;
+            let resource = resource(&intent.document);
+            let mut lifecycle = resource.lifecycle(tx)?;
             match intent.mutation.as_str() {
-                "document.delete" => lifecycle.state = crate::lifecycle::State::Deleted,
-                "document.archive" => lifecycle.state = crate::lifecycle::State::Archived,
-                _ => lifecycle.blocked = None,
+                "document.delete" => lifecycle.state = snap_store::resource::State::Deleted,
+                _ => lifecycle.state = snap_store::resource::State::Archived,
             }
-            self.set_lifecycle(tx, &intent.document, &lifecycle)?;
+            resource.set_lifecycle(tx, &lifecycle)?;
             return Ok(MutationResult {
                 completion: Completion {
                     id: intent.id,
                     document: intent.document.clone(),
                     result: Ok(
-                        (lifecycle.state == crate::lifecycle::State::Active).then_some(before)
+                        (lifecycle.state == snap_store::resource::State::Active).then_some(before)
                     ),
                 },
                 replication: None,
@@ -687,7 +587,7 @@ impl Document {
         let mut unchanged = Vec::new();
         let mut allowed: BTreeSet<String> = BTreeSet::new();
         for id in extent {
-            if self.lifecycle(tx, id)?.state != crate::lifecycle::State::Active {
+            if resource(id).lifecycle(tx)?.state != snap_store::resource::State::Active {
                 continue;
             }
             let Some(row) = tx.get(DOCUMENTS, &[Value::Text(id.clone())])? else {

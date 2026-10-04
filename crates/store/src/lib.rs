@@ -5,6 +5,8 @@ extern crate alloc;
 mod data;
 pub mod inbox;
 pub mod migration;
+pub mod residency;
+pub mod resource;
 pub use data::Data;
 mod schema;
 mod transaction;

@@ -1,7 +1,7 @@
-//! Generated Document admission/lifetime histories through the blocking host.
+//! Generated Document synchronization and receipt histories through the host.
 use hegel::{TestCase, generators as gs};
 use snap_access::{Actor, Audience, ChangeSet, GrantChange, Resource, Role};
-type Host<B> = snap_host::Blocking<B, snap_document::host::Documents<B>>;
+type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot, server::Document};
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
 use std::sync::{Arc, Mutex};
@@ -42,12 +42,14 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
     let mut migrations: Vec<snap_store::migration::Migration> = vec![
         toml::from_str(snap_access::MIGRATION).unwrap(),
         toml::from_str(snap_document::server::MIGRATION).unwrap(),
+        toml::from_str(snap_store::resource::MIGRATION).unwrap(),
     ];
     migrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();
     for table in snap_access::TABLES
         .iter()
         .chain(snap_document::server::TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
     {
         store.load(table).unwrap();
     }
@@ -76,7 +78,7 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
     }
     let mut host = Host::new(
         store,
-        snap_document::host::Documents::new(server),
+        snap_host::Application::new(vec![snap_document::sync::binding(server)]),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| Ok(bearer.into()),
@@ -88,13 +90,19 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
         "properties".into(),
     )
     .map_participant(|documents| {
-        documents.with_controller(
+        documents.with_controller(snap_host::Controller::new(
             "counter",
-            Box::new(move |_, snapshot| {
+            snap_document::server::TABLES[0],
+            |row| row.get("kind") == Some(&"counter".into()),
+            move |ctx, resource| {
+                let [snap_store::Value::Text(id)] = resource.key.as_slice() else {
+                    return Err(snap_store::Error::Invalid);
+                };
+                let snapshot = ctx.inspect("counter", |tx| document().retained(tx, id))?;
                 observed.lock().unwrap().push(snapshot.value);
                 Ok(())
-            }),
-        )
+            },
+        ))
     });
     let mut expected = 0_i64;
     let mut committed = Vec::new();
