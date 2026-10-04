@@ -130,6 +130,104 @@ fn check_resources<B: snap_store::Backend>(mut store: Store<B>) {
 }
 
 #[test]
+fn first_connectionless_commit_prepares_cold_controller_metadata_and_finishes_every_pass() {
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
+    store
+        .run("seed", |tx| {
+            for table in cartridge::TABLES {
+                tx.insert(
+                    table,
+                    Row::from([("id".into(), 1.into()), ("value".into(), 0.into())]),
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        store.inspect("cold metadata", |tx| tx.find(
+            resource::TABLE,
+            "primary",
+            &[]
+        )),
+        Err(Error::Miss(_))
+    ));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut app = Application::new(vec![]);
+    for table in cartridge::TABLES {
+        let seen = log.clone();
+        app = app.with_controller(Controller::new(
+            table,
+            table,
+            |_| true,
+            move |ctx, resource| {
+                let row = ctx.row(&resource)?;
+                seen.lock()
+                    .unwrap()
+                    .push((resource.table.clone(), row["value"].clone()));
+                if row["value"] == 1.into() {
+                    ctx.transact("reconcile", |tx| {
+                        tx.update(
+                            table,
+                            &resource.key,
+                            Row::from([("value".into(), 2.into())]),
+                        )
+                    })?;
+                }
+                Ok(())
+            },
+        ));
+    }
+    let operations = cartridge::definitions().into_iter().fold(
+        snap_transport::operation::Registry::default(),
+        |registry, definition| registry.with_preconnection_request(definition),
+    );
+    let mut host = Blocking::new(
+        store,
+        app,
+        operations,
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |_, bearer| Ok(bearer.into()),
+        ))),
+        Default::default(),
+        "cold-controller".into(),
+    );
+    let outcome = host.preconnection_request(
+        Invocation {
+            id: 1,
+            operation: "probe.change".into(),
+            input: serde_json::to_value(cartridge::Edit {
+                expected: 0,
+                amount: 1,
+                stop: cartridge::Stop::Commit,
+            })
+            .unwrap(),
+        },
+        Some("alice".into()),
+    );
+    assert_eq!(outcome, Ok(json!([1, 1])));
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            ("probe.left".into(), 1.into()),
+            ("probe.left".into(), 2.into()),
+            ("probe.right".into(), 1.into()),
+            ("probe.right".into(), 2.into()),
+        ]
+    );
+    assert_eq!(
+        host.preconnection_request(
+            Invocation {
+                id: 2,
+                operation: "probe.read".into(),
+                input: json!(null)
+            },
+            Some("alice".into())
+        ),
+        Ok(json!([2, 2]))
+    );
+}
+
+#[test]
 fn generic_controllers_drain_independent_resources_and_recover_only_after_explicit_retry() {
     let migrations = migrations();
     let mut store = snap_store_sqlite::Sqlite::memory(&migrations).unwrap();

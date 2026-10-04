@@ -45,6 +45,9 @@ impl Progress {
     }
 }
 pub struct InvocationScope<'a> {
+    /// The original physical peer. This does not grant delivery to a replacement
+    /// attachment; topic publication must also match the captured connection.
+    pub peer: u64,
     pub connection: Option<u64>,
     pub progress: &'a Progress,
 }

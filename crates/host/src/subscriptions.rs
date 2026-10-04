@@ -96,6 +96,9 @@ impl Subscriptions {
                     true
                 });
                 let Ok(_) = allowed else {
+                    // Queued state is no longer a delivery baseline after it was
+                    // redacted. Renewal on this attachment needs a fresh snapshot.
+                    self.held.remove(&(index, id));
                     continue;
                 };
                 let Some(connection) = peer.connection().and_then(|id| ctx.connections.get(&id))
@@ -197,9 +200,27 @@ impl<B: Backend> Participant<B> for Subscriptions {
         for definition in &self.definitions {
             let data = publication.get(&definition.topic).unwrap_or(&Value::Null);
             match (definition.origin)(data) {
-                Ok(Some(input)) => {
+                Ok(Some(mut input)) => {
                     if let Some(invocation) = &ctx.invocation {
-                        invocation.progress.publish(&definition.topic, input);
+                        let peer = invocation.peer;
+                        let same_attachment = ctx.peers.get(&peer).is_some_and(|p| {
+                            invocation.connection.is_some()
+                                && p.connection() == invocation.connection
+                        });
+                        let allowed = if same_attachment {
+                            Self::allowed(definition, ctx, peer).unwrap_or_default()
+                        } else {
+                            Extent::new()
+                        };
+                        // Independent carriers can drain immediately. Filter
+                        // before enqueue, not only in the later backlog sweep.
+                        if (definition.filter)(&mut input, &allowed).unwrap_or(false) {
+                            ctx.invocation
+                                .as_ref()
+                                .expect("invocation remains captured")
+                                .progress
+                                .publish(&definition.topic, input);
+                        }
                     }
                 }
                 Err(error) => {
@@ -225,9 +246,19 @@ impl<B: Backend> Participant<B> for Subscriptions {
         response: &mut Response,
     ) -> Result<bool, Error> {
         if let Response::Global { kind, input } = response
-            && let Some(definition) = self.definitions.iter().find(|d| d.topic == *kind)
+            && let Some((index, definition)) = self
+                .definitions
+                .iter()
+                .enumerate()
+                .find(|(_, d)| d.topic == *kind)
         {
-            let allowed = Self::allowed(definition, ctx, peer).unwrap_or_default();
+            let allowed = match Self::allowed(definition, ctx, peer) {
+                Ok(allowed) => allowed,
+                Err(_) => {
+                    self.held.remove(&(index, peer));
+                    Extent::new()
+                }
+            };
             return (definition.filter)(input, &allowed);
         }
         Ok(true)

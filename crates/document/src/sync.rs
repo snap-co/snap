@@ -124,7 +124,7 @@ fn filter_completion(completion: &mut Completion, allowed: &BTreeSet<alloc::stri
 }
 fn filter(message: &mut ServerMessage, allowed: &BTreeSet<alloc::string::String>) -> bool {
     match message {
-        ServerMessage::Completed(c) => filter_completion(c, allowed),
+        ServerMessage::Completed(c) | ServerMessage::Committed(c) => filter_completion(c, allowed),
         ServerMessage::Manifest(state) => {
             state.unchanged.retain(|h| allowed.contains(&h.document));
             state.documents.retain(|s| allowed.contains(&s.id));

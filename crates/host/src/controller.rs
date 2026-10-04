@@ -163,7 +163,14 @@ impl<B: Backend, P: Participant<B>> Participant<B> for Controllers<B, P> {
         changes: &[RowChange],
         publication: &Value,
     ) -> Result<(), Error> {
-        let selected = self.pending.changed(ctx, changes);
+        // Dispatch declares application data only. Prepare host-owned metadata
+        // before selecting passes, including the first connectionless commit.
+        let prepared = if self.pending.watches.is_empty() {
+            Ok(())
+        } else {
+            snap_store::resource::data().prepare(ctx.store)
+        };
+        let selected = prepared.and_then(|()| self.pending.changed(ctx, changes));
         let observed = self.participant.committed(ctx, changes, publication);
         selected.and(observed)
     }

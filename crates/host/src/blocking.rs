@@ -51,6 +51,7 @@ pub struct Peer {
 
 #[derive(Clone)]
 struct Work {
+    peer: u64,
     connection: Option<u64>,
     wire_id: u64,
     bearer: Option<String>,
@@ -197,6 +198,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             let mut bearer_change = None;
             let mut accepted = false;
             self.enqueue(Work {
+                peer,
                 connection: None,
                 wire_id: id,
                 bearer,
@@ -450,6 +452,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 }
                 let id = invocation.id;
                 self.enqueue(Work {
+                    peer: peer_id,
                     connection: Some(connection),
                     wire_id: id,
                     bearer: self.peers[&peer_id].bearer.clone(),
@@ -472,6 +475,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 }
                 let id = invocation.id;
                 self.enqueue(Work {
+                    peer: peer_id,
                     connection: None,
                     wire_id: id,
                     bearer,
@@ -703,6 +707,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.requests.definitions().get(work.selection).progress,
         );
         let scope = InvocationScope {
+            peer: work.peer,
             connection: work.connection,
             progress: &progress,
         };

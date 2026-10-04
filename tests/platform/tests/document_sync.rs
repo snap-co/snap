@@ -431,7 +431,22 @@ fn fixture() -> Host<snap_store_sqlite::Sqlite> {
 }
 
 fn fixture_with(
+    operations: snap_transport::operation::Registry,
+) -> Host<snap_store_sqlite::Sqlite> {
+    fixture_with_authority(
+        operations,
+        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+            |_, bearer| match bearer {
+                "alice" | "bob" => Ok(bearer.into()),
+                _ => Err(snap_store::Error::NotFound),
+            },
+        ))),
+    )
+}
+
+fn fixture_with_authority(
     mut operations: snap_transport::operation::Registry,
+    authority: Arc<dyn snap_transport::bearer::Authority>,
 ) -> Host<snap_store_sqlite::Sqlite> {
     let mut migrations: Vec<snap_store::migration::Migration> = vec![
         toml::from_str(snap_access::MIGRATION).unwrap(),
@@ -479,12 +494,7 @@ fn fixture_with(
         store,
         snap_host::Application::new(vec![snap_document::sync::binding(document)]),
         operations,
-        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
-            |_, bearer| match bearer {
-                "alice" | "bob" => Ok(bearer.into()),
-                _ => Err(snap_store::Error::NotFound),
-            },
-        ))),
+        authority,
         Config {
             reconnect_ms: 100,
             capacity: 16,
@@ -575,6 +585,133 @@ fn messages(responses: Vec<Response>) -> Vec<ServerMessage> {
             _ => vec![],
         })
         .collect()
+}
+
+#[test]
+fn committed_topic_retirement_redacts_live_denial_but_preserves_terminal_authority() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    for failure in [1, 2] {
+        for deny_before_execution in [false, true] {
+            let status = Arc::new(AtomicU8::new(0));
+            let live = status.clone();
+            let authority = snap_transport::bearer::Callbacks::with_retained(
+                Arc::new(move |_, bearer| match live.load(Ordering::SeqCst) {
+                    0 => Ok(bearer.into()),
+                    1 => Err(snap_store::Error::NotFound),
+                    _ => Err(snap_store::Error::Unavailable),
+                }),
+                Arc::new(|_, bearer| Ok(bearer.into())),
+            );
+            let mut host = fixture_with_authority(Default::default(), Arc::new(authority));
+            let (alice, _) = connect(&mut host, "alice", "retirement", 0);
+            manifest(&mut host, alice, 1, vec![]);
+            let output = host.output(alice).unwrap();
+            submit(&mut host, alice, 2, intent(1, 7));
+            assert_eq!(
+                output.pop_front(),
+                Some(Response::Event(Event::Accepted { id: 2 }))
+            );
+            if deny_before_execution {
+                status.store(failure, Ordering::SeqCst);
+            }
+            assert!(host.step());
+            if !deny_before_execution {
+                assert!(matches!(output.front(), Some(Response::Global{input,..})
+                    if matches!(serde_json::from_value::<ServerMessage>(input.clone()).unwrap(), ServerMessage::Committed(c) if c.result.as_ref().unwrap().is_some())));
+                status.store(failure, Ordering::SeqCst);
+                host.transact("live denial", |_| Ok(())).unwrap();
+            }
+            let mut retired = false;
+            let mut terminal = false;
+            while let Some(response) = output.pop_front() {
+                match response {
+                    Response::Global { input, .. } => {
+                        let message: ServerMessage = serde_json::from_value(input).unwrap();
+                        match message {
+                            ServerMessage::Committed(c) => {
+                                assert_eq!(c.id, 1);
+                                assert_eq!(c.result, Ok(None));
+                                retired = true;
+                            }
+                            ServerMessage::Holdings(documents) => assert!(documents.is_empty()),
+                            other => panic!("unexpected topic message: {other:?}"),
+                        }
+                    }
+                    Response::Event(Event::Completed {
+                        id: 2,
+                        outcome: Ok(value),
+                    }) => {
+                        let ServerMessage::Completed(c) = serde_json::from_value(value).unwrap()
+                        else {
+                            panic!()
+                        };
+                        assert_eq!(c.result.unwrap().unwrap().value, json!(7));
+                        terminal = true;
+                    }
+                    Response::Event(Event::Accepted { id: 2 }) => {}
+                    other => panic!("unexpected output: {other:?}"),
+                }
+            }
+            assert!(retired && terminal);
+        }
+    }
+}
+
+#[test]
+fn renewed_authority_replaces_redacted_remote_replication_on_the_same_attachment() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    for failure in [1, 2] {
+        let status = Arc::new(AtomicU8::new(0));
+        let live = status.clone();
+        let authority = snap_transport::bearer::Callbacks::with_retained(
+            Arc::new(move |_, bearer| {
+                if bearer == "bob" {
+                    match live.load(Ordering::SeqCst) {
+                        1 => return Err(snap_store::Error::NotFound),
+                        2 => return Err(snap_store::Error::Unavailable),
+                        _ => {}
+                    }
+                }
+                Ok(bearer.into())
+            }),
+            Arc::new(|_, bearer| Ok(bearer.into())),
+        );
+        let mut host = fixture_with_authority(Default::default(), Arc::new(authority));
+        let (alice, _) = connect(&mut host, "alice", "writer", 0);
+        let (bob, _) = connect(&mut host, "bob", "reader", 0);
+        let output = host.output(bob).unwrap();
+        let mut client = snap_document::client::Client::new("bob".into());
+        host.transact("initial state", |_| Ok(())).unwrap();
+        while let Some(Response::Global { input, .. }) = output.pop_front() {
+            client
+                .handle(&registry(), serde_json::from_value(input).unwrap())
+                .unwrap();
+        }
+        assert_eq!(client.get(ID).unwrap().value, json!(0));
+        submit(&mut host, alice, 1, intent(1, 7));
+        assert!(host.step());
+        assert!(
+            matches!(output.front(), Some(Response::Global{input,..}) if matches!(serde_json::from_value::<ServerMessage>(input.clone()).unwrap(), ServerMessage::Replication(_)))
+        );
+        status.store(failure, Ordering::SeqCst);
+        host.transact("redact pending replication", |_| Ok(()))
+            .unwrap();
+        assert!(output.pop_front().is_none());
+        status.store(0, Ordering::SeqCst);
+        host.transact("renew current read authority", |_| Ok(()))
+            .unwrap();
+        let Response::Global { input, .. } = output.pop_front().expect("fresh observer baseline")
+        else {
+            panic!()
+        };
+        let message: ServerMessage = serde_json::from_value(input).unwrap();
+        assert!(
+            matches!(&message, ServerMessage::Holdings(documents) if documents[0].value == json!(7))
+        );
+        client.handle(&registry(), message).unwrap();
+        assert_eq!(client.get(ID).unwrap().value, json!(7));
+        assert!(output.pop_front().is_none());
+    }
 }
 
 #[test]

@@ -212,7 +212,14 @@ the physical peer is reused for another attachment. The shared subscription engi
 reauthorizes topic backlogs through independent Output handles on commit, including
 denied live bearer access with retained login lifetime. Invocation Events retain
 captured admission authority. Two non-Document topics exercise independent extents
-and backlog redaction in `resources.rs`. Document owns JSON snapshot validation,
+and backlog redaction in `resources.rs`. The first connectionless controller commit
+prepares host resource metadata even when application data does not declare it.
+Topic payloads are filtered before early publication as well as when queued.
+Denied read authority invalidates the observer baseline; renewal on the same
+attachment sends current state rather than assuming redacted updates were received.
+Document sync cases exercise early-commitment redaction without stripping terminal
+invocation Events, and client catch-up after a queued replication is removed.
+Document owns JSON snapshot validation,
 visibility, exact mutation receipts, manifest reconciliation and replication encoding.
 It owns no controller registration, resource cleanup/retry policy or observer/residency
 bookkeeping. Async scheduling remains deferred.
