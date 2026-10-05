@@ -14,6 +14,25 @@ use std::{
 };
 type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
 
+#[tokio::test]
+async fn pending_listener_refuses_connections_until_explicit_activation() {
+    use snap_transport::native::PendingListener;
+    use tokio::net::TcpStream;
+
+    for address in ["127.0.0.1:0", "[::1]:0"] {
+        let pending = PendingListener::reserve(address.parse().unwrap()).unwrap();
+        let address = pending.local_addr().unwrap();
+        assert_ne!(address.port(), 0);
+        assert!(TcpStream::connect(address).await.is_err());
+        drop(pending);
+        let pending = PendingListener::reserve(address).unwrap();
+        let listener = pending.listen().unwrap();
+        let _client = TcpStream::connect(address).await.unwrap();
+        let _accepted = listener.accept().await.unwrap();
+        assert_eq!(listener.local_addr().unwrap(), address);
+    }
+}
+
 fn fixture() -> Arc<Shared<Host<snap_store_sqlite::Sqlite>>> {
     Shared::new(host_fixture(snap_document::server::Document::new(
         snap_document::Registry::new(vec![]).unwrap(),

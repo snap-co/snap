@@ -18,6 +18,10 @@ Application `snap check`, `snap test` and future `snap ci` commands are app work
 not evidence of complete framework verification. The framework gate's executable
 selection lives in `tools/cli/src/verify.rs`; it verifies a source copy
 with application workspace members and aliases removed and no `apps/` directory.
+Intermediate Rust build artifacts use a checkout-local cache; isolated source
+copies and final outputs remain disposable. Cold verification bypasses that cache
+without deleting it. The IO gate runs the real Cargo cache-reuse regression in
+`tools/cli/tests/verify.rs`.
 Reusable framework test consumers declare the `tool` role, not the app-owned
 `host` role, so Cargo dependency checks retain the application isolation rule.
 The repository-wide browser wrapper retains app and framework aggregates; the
@@ -219,6 +223,15 @@ uses this composition; app browser journeys exercise the production entrypoint a
 browser-Wasm over WebSocket. Authy and Chatty use the same server's HTTP-only runner
 and transaction handle. Testy's custom development loop and controlled carrier
 setups use Transport's native carrier and queue APIs directly.
+Production hosts finish fallible bootstrap before enabling connections. Factorio,
+Authy and Chatty reserve addresses through `native::PendingListener` so ephemeral
+ports are known without listening, then activate after Store loading, controller
+recovery and route preparation. The IPv4/IPv6 reservation contract lives in
+`crates/transport/tests/native_dispatch.rs`. Authy's native HTTP gate blocks the
+real asset read to verify refusal during bootstrap, refusal after invalid assets,
+and successful serving after valid assets. The CLI's readiness probe tests use
+real loopback peers to cover status parsing, response bounds and stalled servers;
+the probe is startup reachability, not application health or deployment rollback.
 `native-client` selects TCP client IO; `native-server` adds
 the native server. Both are excluded on Wasm even when all features are enabled, so
 the existing `wasm32v1-none` architecture check remains unchanged.
@@ -310,6 +323,9 @@ transfer ownership of an app scenario to Snap.
 | App production host policy | Testy's production origin/debugger assertions live in `apps/testing/browser/tests/packaging.rs`, selected by Testy's native suite |
 
 Read manifests, suite declarations and runner code to determine actual selection.
+Web packaging uses the external wasm-bindgen tool pinned in mise. The tooling
+contracts reject missing or mismatched tools before compilation; the real packaging
+case covers generated browser bindings, declarations and failure-safe publication.
 Each module and host storage component owns one initial migration. Identity's
 single schema supports password, OAuth and passkey flows; hosts select it without
 an alternative OAuth history. The CLI migration gate applies Identity's directory

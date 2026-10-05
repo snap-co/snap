@@ -18,12 +18,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "si
 nix = { version = "0.30", features = ["signal", "user", "fs", "net"] }
 notify = "8"
 url = "2"
-reqwest = { version = "0.12", default-features = false }
 snap-store.workspace = true
 snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-config.workspace = true
 age = { version = "0.11", default-features = false }
-wasm-bindgen-cli-support = "=0.2.128"
 tempfile = "3"
 
 [lints]

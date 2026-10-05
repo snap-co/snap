@@ -324,6 +324,29 @@ async fn build_web(
     production: bool,
     runner: &Runner,
 ) -> Result<()> {
+    // The external tool must match the framework's exact Rust binding pin. Check
+    // before compiling; native-only builds do not require this executable.
+    let framework: toml::Value = toml::from_str(include_str!("../../../Cargo.toml"))?;
+    let version = framework["workspace"]["dependencies"]["wasm-bindgen"]
+        .as_str()
+        .and_then(|pin| pin.strip_prefix('='))
+        .context("Framework wasm-bindgen must have an exact version pin")?;
+    let tool = runner
+        .run(
+            Command::new("wasm-bindgen")
+                .arg("--version")
+                .env_remove("SNAP_MASTER_KEY")
+                .current_dir(&project.root),
+            true,
+        )
+        .await
+        .with_context(|| format!("Install wasm-bindgen {version} with mise install"))?;
+    let actual = String::from_utf8(tool)?;
+    ensure!(
+        actual.trim() == format!("wasm-bindgen {version}"),
+        "Expected wasm-bindgen {version}, got {}; run mise install and use mise exec",
+        actual.trim()
+    );
     std::fs::create_dir_all(output.join("bindings"))?;
     let (manifest, metadata) = cargo::metadata(project, runner, &web.wasm).await?;
     let package = cargo::selected_package(&metadata, &manifest)?;
@@ -358,16 +381,23 @@ async fn build_web(
         command.arg("--release");
     }
     runner.run(&mut command, false).await?;
-    wasm_bindgen_cli_support::Bindgen::new()
-        .typescript(true)
-        .input_path(
-            target
-                .join("wasm32-unknown-unknown")
-                .join(if production { "release" } else { "debug" })
-                .join(format!("{library}.wasm")),
+    runner
+        .run(
+            Command::new("wasm-bindgen")
+                .arg(
+                    target
+                        .join("wasm32-unknown-unknown")
+                        .join(if production { "release" } else { "debug" })
+                        .join(format!("{library}.wasm")),
+                )
+                // TypeScript declarations are enabled by default in the CLI.
+                .args(["--target", "web", "--out-dir"])
+                .arg(output.join("bindings"))
+                .env_remove("SNAP_MASTER_KEY")
+                .current_dir(&project.root),
+            false,
         )
-        .web(true)?
-        .generate(output.join("bindings"))?;
+        .await?;
     let helper = tempfile::Builder::new()
         .prefix(".web-build-")
         .suffix(".mjs")

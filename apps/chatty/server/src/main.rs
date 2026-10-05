@@ -4,7 +4,7 @@ type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Applicati
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
-use snap_transport::native::{Server, WebSocket};
+use snap_transport::native::{PendingListener, Server, WebSocket};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &secrets,
         config.host.dev_origins.clone(),
     )?;
-    let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
+    let listener = PendingListener::reserve(config.host.listen)?;
     let address = listener.local_addr()?;
     let origin = snap_identity_native::oauth::origin(&config.host.public_origin(address))?;
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
+    let listener = listener.listen()?;
     println!("Chatty http://{address}");
     server
         .run_http(axum::serve(listener, router).with_graceful_shutdown(async {

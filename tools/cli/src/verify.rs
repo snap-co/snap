@@ -31,6 +31,9 @@ pub struct Args {
     /// Retain the isolated source and target after success
     #[arg(long)]
     keep: bool,
+    /// Use fresh build artifacts without reading or replacing the framework cache
+    #[arg(long)]
+    cold: bool,
 }
 
 struct Check {
@@ -100,6 +103,8 @@ fn commands(gate: Gate, root: &Path, target: &Path) -> Vec<Check> {
                     "check_contract",
                     "--test",
                     "application",
+                    "--test",
+                    "verify",
                     "--",
                     "--ignored",
                     "--skip",
@@ -291,12 +296,13 @@ fn checkout(root: &Path, destination: &Path, manifest: &toml::Value) -> Result<(
     Ok(())
 }
 
-fn command(args: &[String], root: &Path, target: &Path, cache: &Path) -> Command {
+fn command(args: &[String], root: &Path, target: &Path, build: &Path, cache: &Path) -> Command {
     let mut command = Command::new(&args[0]);
     command
         .args(&args[1..])
         .current_dir(root)
         .env("CARGO_TARGET_DIR", target)
+        .env("CARGO_BUILD_BUILD_DIR", build)
         .env("TMPDIR", cache)
         .env("SNAP_BROWSER_ROOT", root);
     command
@@ -305,6 +311,7 @@ fn command(args: &[String], root: &Path, target: &Path, cache: &Path) -> Command
 async fn verify(
     root: &Path,
     target: &Path,
+    build: &Path,
     cache: &Path,
     gates: &[Gate],
     runner: &Runner,
@@ -320,6 +327,7 @@ async fn verify(
                 ],
                 root,
                 target,
+                build,
                 cache,
             ),
             true,
@@ -350,7 +358,7 @@ async fn verify(
         for check in commands(*gate, root, target) {
             println!("+ {}", check.args.join(" "));
             // Capture only test summaries. Compiler and browser output streams normally.
-            let mut command = command(&check.args, root, target, cache);
+            let mut command = command(&check.args, root, target, build, cache);
             let output = if check.tests {
                 runner.report(&mut command).await
             } else {
@@ -415,9 +423,21 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
         .keep();
     println!("Isolated verification: {}", scratch.display());
     let source = scratch.join("source");
+    let target = scratch.join("target");
+    // Source isolation does not require recompiling registry dependencies. Keep
+    // intermediate artifacts outside the disposable output directory; Cargo owns
+    // fingerprint validation and locking. Cold runs must also override any
+    // inherited build directory so they cannot read or change the warm cache.
+    let build = if args.cold {
+        target.clone()
+    } else {
+        root.join("target/framework-build")
+    };
+    println!("Cargo build directory: {}", build.display());
     let result = async {
         checkout(&root, &source, &manifest)?;
-        verify(&source, &scratch.join("target"), &cache, &gates, runner).await
+        fs::create_dir_all(&build)?;
+        verify(&source, &target, &build, &cache, &gates, runner).await
     }
     .await;
     if let Err(error) = result {

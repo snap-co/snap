@@ -41,15 +41,15 @@ async fn main() -> std::io::Result<()> {
         },
     );
     let assets = config.assets().to_string_lossy().into_owned();
+    let development = config.host.mode == snap_config::Mode::Development;
+    // Validate the serving policy before bind makes TCP connections possible.
+    if development && !config.host.listen.ip().is_loopback() {
+        return Err(std::io::Error::other(
+            "development controls require a loopback listener",
+        ));
+    }
     let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
     let origin = config.host.public_origin(listener.local_addr()?);
     println!("Testy http://{}", listener.local_addr()?);
-    web::serve_configured(
-        listener,
-        host,
-        assets,
-        origin,
-        config.host.mode == snap_config::Mode::Development,
-    )
-    .await
+    web::serve_configured(listener, host, assets, origin, development).await
 }

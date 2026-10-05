@@ -17,6 +17,10 @@ pub use tcp::{Client as TcpClient, tls};
 pub use web::ReadCookie;
 
 #[cfg(feature = "native-server")]
+mod listener;
+#[cfg(feature = "native-server")]
 mod server;
+#[cfg(feature = "native-server")]
+pub use listener::PendingListener;
 #[cfg(feature = "native-server")]
 pub use server::{Server, Transactions, WebSocket};

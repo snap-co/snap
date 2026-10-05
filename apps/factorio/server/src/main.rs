@@ -19,7 +19,7 @@ type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Applicati
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
-use snap_transport::native::{Prepare, Server, WebSocket, tls};
+use snap_transport::native::{PendingListener, Prepare, Server, WebSocket, tls};
 use std::{path::PathBuf, sync::Arc};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -194,9 +194,9 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     )
     .await?;
     effects::head(&config).await?;
-    let listener = tokio::net::TcpListener::bind(startup.host.listen).await?;
+    let listener = PendingListener::reserve(startup.host.listen)?;
     let address = listener.local_addr()?;
-    let tcp_listener = tokio::net::TcpListener::bind(startup.app.tcp.listen).await?;
+    let tcp_listener = PendingListener::reserve(startup.app.tcp.listen)?;
     let tcp_address = tcp_listener.local_addr()?;
     let origin = snap_identity_native::oauth::origin(&startup.host.public_origin(address))?;
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
@@ -287,8 +287,6 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
-    println!("Factorio http://{address}");
-    println!("Factorio tls://{tcp_address}");
     let prepare: Prepare = Arc::new(move |command| {
         let oauth = oauth.clone();
         Box::pin(async move {
@@ -300,6 +298,12 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
                 })
         })
     });
+    // All fallible bootstrap, including Store loading and controller recovery,
+    // is complete. No client can connect to either port before this point.
+    let tcp_listener = tcp_listener.listen()?;
+    let listener = listener.listen()?;
+    println!("Factorio http://{address}");
+    println!("Factorio tls://{tcp_address}");
     transport
         .run(
             tcp_listener,

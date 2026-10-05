@@ -14,23 +14,19 @@ fn main() -> std::io::Result<()> {
         .build()?
         .block_on(tokio::task::LocalSet::new().run_until(async {
             let address = config.host.listen;
-            let listener = tokio::net::TcpListener::bind(address).await?;
-            println!("Testy listening on {}", listener.local_addr()?);
             let sessions = testy_server::identity::open(&config.database())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let (_shutdown, receiver) = tokio::sync::watch::channel(false);
-            testy_native::serve(
-                listener,
-                testy_server::identity::platform(sessions),
-                receiver,
-                |_, key| {
-                    if key == testy::CEILING {
-                        Ok(snap_transport::json!(1000))
-                    } else {
-                        Err(snap_transport::execution::Error::Unavailable)
-                    }
-                },
-            )
+            let platform = testy_server::identity::platform(sessions);
+            let listener = tokio::net::TcpListener::bind(address).await?;
+            println!("Testy listening on {}", listener.local_addr()?);
+            testy_native::serve(listener, platform, receiver, |_, key| {
+                if key == testy::CEILING {
+                    Ok(snap_transport::json!(1000))
+                } else {
+                    Err(snap_transport::execution::Error::Unavailable)
+                }
+            })
             .await
         }))
 }

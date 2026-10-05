@@ -16,7 +16,7 @@ type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Applicati
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
 use snap_transport::native::web::{HttpOperation, WriteCookie};
-use snap_transport::native::{ReadCookie, Server, Transactions, WebSocket};
+use snap_transport::native::{PendingListener, ReadCookie, Server, Transactions, WebSocket};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &secrets,
         &config.host.dev_client_origins,
     )?;
-    let listener = tokio::net::TcpListener::bind(config.host.listen).await?;
+    let listener = PendingListener::reserve(config.host.listen)?;
     let address = listener.local_addr()?;
     let origin = config.host.public_origin(address);
     let parsed = url::Url::parse(&origin)?;
@@ -241,6 +241,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
+    // Keys, required pages, routes and recovered controllers are ready before
+    // the kernel can acknowledge a client's TCP connection.
+    let listener = listener.listen()?;
     println!("Authy http://{address}");
     server
         .run_http(axum::serve(listener, router).with_graceful_shutdown(async {

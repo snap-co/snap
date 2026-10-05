@@ -3,6 +3,65 @@ use std::{fs, process::Command};
 mod package;
 
 #[test]
+fn web_build_rejects_missing_or_mismatched_binding_tools_before_compiling() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    fs::write(root.join("snap.toml"), "version=1\napplication='fixture'\n").unwrap();
+    fs::create_dir_all(root.join("web/wasm")).unwrap();
+    fs::write(
+        root.join("web/wasm/Cargo.toml"),
+        "[package]\nname='fixture-wasm'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        bin.join("cargo"),
+        "#!/bin/sh\nprintf reached > cargo-ran\nexit 19\n",
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
+    let output = root.join("dist/development/clients/web");
+    fs::create_dir_all(&output).unwrap();
+    fs::write(output.join("previous"), "retained").unwrap();
+    for installed in [false, true] {
+        if installed {
+            fs::write(
+                bin.join("wasm-bindgen"),
+                "#!/bin/sh\nprintf 'wasm-bindgen 0.0.0\\n'\n",
+            )
+            .unwrap();
+            fs::set_permissions(bin.join("wasm-bindgen"), fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let result = Command::new(env!("CARGO_BIN_EXE_snap"))
+            .current_dir(root)
+            .env("PATH", &bin)
+            .args(["build", "--web-only"])
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success());
+        assert!(
+            error.contains("wasm-bindgen") && error.contains("mise install"),
+            "{error}"
+        );
+        assert!(!root.join("cargo-ran").exists());
+        assert_eq!(
+            fs::read_to_string(output.join("previous")).unwrap(),
+            "retained"
+        );
+    }
+}
+
+#[test]
 fn build_selects_the_named_environment_without_development_fallback() {
     let root = tempfile::tempdir().unwrap();
     fs::write(
@@ -169,6 +228,25 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
             .join("clients/web/bindings/fixture_wasm_bg.wasm")
             .is_file()
     );
+    assert!(
+        package
+            .join("clients/web/bindings/fixture_wasm.d.ts")
+            .is_file()
+    );
+    let bindings = Command::new("bun")
+        .args([
+            "--eval",
+            "const { default: init, answer } = await import(process.argv[1]); await init({ module_or_path: await Bun.file(process.argv[2]).arrayBuffer() }); if (answer() !== 42) throw new Error('Wasm binding returned the wrong answer');",
+        ])
+        .arg(package.join("clients/web/bindings/fixture_wasm.js"))
+        .arg(package.join("clients/web/bindings/fixture_wasm_bg.wasm"))
+        .output()
+        .unwrap();
+    assert!(
+        bindings.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bindings.stderr)
+    );
     assert!(package.join("clients/web/client.js").is_file());
     let artifacts: snap_config::Artifacts =
         toml::from_str(&fs::read_to_string(package.join("artifacts.toml")).unwrap()).unwrap();
@@ -180,6 +258,38 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         assert_ne!(artifact.target, "host");
     }
     let inventory = fs::read_to_string(package.join("artifacts.toml")).unwrap();
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let version = Command::new("wasm-bindgen")
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    fs::write(bin.join("wasm-bindgen"), format!("#!/bin/sh\n[ -z \"${{SNAP_MASTER_KEY+x}}\" ] || exit 24\nif [ \"$1\" = --version ]; then printf '%s' '{}'; else exit 23; fi\n", String::from_utf8(version.stdout).unwrap())).unwrap();
+    fs::set_permissions(bin.join("wasm-bindgen"), fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let failed = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root)
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", root.join("target"))
+        .env("SNAP_MASTER_KEY", "must-not-reach-binding-tool")
+        .args(["build", "--web-only"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        failed.status.code(),
+        Some(23),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(package.join("artifacts.toml")).unwrap(),
+        inventory
+    );
+    assert!(package.join("clients/web/client.js").is_file());
     for (targets, expected) in [
         (vec!["--target", "not-a-rust-target"], "Unknown Rust target"),
         (

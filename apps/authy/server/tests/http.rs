@@ -5,6 +5,122 @@ use serde_json::{Value, json};
 use support::{CHALLENGE, CLIENT_SECRET, Host, VERIFIER, cookie, destination, query, value};
 
 #[tokio::test]
+#[ignore = "real startup/socket gate with a blocked asset read"]
+async fn startup_refuses_connections_until_assets_are_loaded_and_validated() {
+    use std::{
+        fs,
+        io::Write,
+        net::TcpStream,
+        os::unix::fs::OpenOptionsExt,
+        process::Command,
+        time::{Duration, Instant},
+    };
+
+    for valid in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reservation.local_addr().unwrap();
+        let config = root.join("config.toml");
+        fs::write(&config, format!("version=1\n[host]\nmode='development'\nlisten='{address}'\ndata_dir='data'\nweb_dir='web'\n[app]\nclients=[]\n")).unwrap();
+        let command = || {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_authy"));
+            command
+                .arg("--config")
+                .arg(&config)
+                .env_remove("SNAP_MASTER_KEY");
+            command
+        };
+        let migrated = command().arg("--migrate").output().unwrap();
+        assert!(
+            migrated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&migrated.stderr)
+        );
+        fs::create_dir(root.join("web")).unwrap();
+        let assets = root.join("web/auth-pages.json");
+        nix::unistd::mkfifo(
+            &assets,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        drop(reservation);
+        let mut process = support::Process::start(command());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // A nonblocking writer can open only once the real server has reached
+        // its asset read. No sleeps in production or test-only readiness hook.
+        let mut writer = loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NONBLOCK)
+                .open(&assets)
+            {
+                Ok(writer) => break writer,
+                Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {}
+                Err(error) => panic!("{error}"),
+            }
+            assert!(
+                process.child.try_wait().unwrap().is_none(),
+                "Server exited before loading assets"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "Server never reached the asset read"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(
+            TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err(),
+            "TCP readiness succeeded during incomplete bootstrap"
+        );
+        writer
+            .write_all(if valid {
+                br#"{"consent":"","logout":"","error":"","permission":""}"#
+            } else {
+                b"invalid JSON"
+            })
+            .unwrap();
+        drop(writer);
+        if valid {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap();
+            loop {
+                if let Ok(response) = client.get(format!("http://{address}/health")).send().await {
+                    assert_eq!(response.status(), 200);
+                    break;
+                }
+                assert!(process.child.try_wait().unwrap().is_none());
+                assert!(
+                    Instant::now() < deadline,
+                    "Server failed to serve after bootstrap"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        } else {
+            loop {
+                if let Some(status) = process.child.try_wait().unwrap() {
+                    assert!(!status.success());
+                    break;
+                }
+                assert!(
+                    TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err(),
+                    "Failed bootstrap briefly published a listener"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "Server did not reject invalid assets"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err());
+        }
+    }
+}
+
+#[tokio::test]
 #[ignore = "real HTTP/WebSocket, storage and password hashing gate; prepare Authy web assets"]
 async fn account_operations_preserve_credential_cookie_and_session_authority() {
     let mut host = Host::new("http://127.0.0.1:3850", None).await;

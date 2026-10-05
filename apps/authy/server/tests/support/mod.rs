@@ -18,13 +18,13 @@ pub const CLIENT_SECRET: &str = "fixture-client-secret-with-at-least-32-bytes";
 pub const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 pub const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-struct Process {
-    child: Child,
+pub struct Process {
+    pub child: Child,
     readers: Vec<JoinHandle<()>>,
     lines: mpsc::Receiver<String>,
 }
 impl Process {
-    fn start(mut command: Command) -> Self {
+    pub fn start(mut command: Command) -> Self {
         use std::os::unix::process::CommandExt;
         let mut child = command
             .process_group(0)

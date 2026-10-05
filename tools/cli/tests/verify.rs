@@ -117,6 +117,66 @@ esac
 }
 
 #[test]
+#[ignore = "compiler/filesystem cache contract"]
+fn framework_dependencies_are_reused_after_cleanup_and_cold_runs() {
+    let directory = scratch();
+    let path = directory.path();
+    root(path);
+    let core = path.join("crates/core");
+    fs::create_dir_all(core.join("src")).unwrap();
+    fs::write(
+        core.join("Cargo.toml"),
+        "[package]\nname='snap-core-properties'\nversion='0.0.0'\nedition='2024'\n[dependencies]\nitoa='1'\n",
+    )
+    .unwrap();
+    fs::write(
+        core.join("src/lib.rs"),
+        "#[test]\nfn formats_integer() { assert_eq!(itoa::Buffer::new().format(123), \"123\"); }\n",
+    )
+    .unwrap();
+    executable(
+        &path.join("bin/cargo"),
+        r#"
+if [ "$1" = test ]; then
+  shift
+  exec "$VERIFY_REAL_CARGO" test --offline --message-format=json "$@"
+fi
+exec "$VERIFY_REAL_CARGO" "$@" --offline
+"#,
+    );
+    for (cold, fresh) in [(false, false), (false, true), (true, false), (false, true)] {
+        let mut command = verifier(path);
+        command
+            .arg("properties")
+            .env("VERIFY_REAL_CARGO", env!("CARGO"))
+            .env_remove("CARGO_BUILD_BUILD_DIR");
+        if cold {
+            command
+                .arg("--cold")
+                .env("CARGO_BUILD_BUILD_DIR", path.join("inherited-build-dir"));
+        }
+        let output = command.output().unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            output.status.success(),
+            "{text}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let artifact = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|value| {
+                value["reason"] == "compiler-artifact" && value["target"]["name"] == "itoa"
+            })
+            .expect("Cargo must report the dependency artifact");
+        assert_eq!(artifact["fresh"], fresh, "cold={cold}: {text}");
+        assert!(!retained(&text).unwrap().exists());
+        let file = Path::new(artifact["filenames"][0].as_str().unwrap());
+        assert_eq!(file.exists(), !cold, "{}", file.display());
+    }
+}
+
+#[test]
 fn browser_wrapper_preserves_arguments_and_both_aggregates() {
     let directory = scratch();
     let path = directory.path();

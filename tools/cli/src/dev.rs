@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines},
     process::{ChildStdout, Command},
     sync::mpsc,
 };
@@ -379,10 +379,6 @@ async fn launch(
     }
     let mut process = runner.spawn(&mut command)?;
     process.forward_output();
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_millis(300))
-        .build()?;
     let authority = url::Url::parse(&installation.origin)?;
     let host = authority[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
     let ready = async {
@@ -392,13 +388,7 @@ async fn launch(
                 process.child.try_wait()?.is_none(),
                 "Development backend exited before readiness; explicitly migrate its database first"
             );
-            if client
-                .get(format!("http://{backend}/"))
-                .header("host", &host)
-                .send()
-                .await
-                .is_ok()
-            {
+            if http_ready(backend, &host).await.is_ok() {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -411,6 +401,45 @@ async fn launch(
         return Err(error);
     }
     Ok(process)
+}
+
+/// Startup reachability, not application health: any final HTTP status counts.
+/// Direct loopback IO ignores proxy settings and never follows redirects. The
+/// entire connect/write/read attempt has one 300ms timeout.
+async fn http_ready(backend: SocketAddr, host: &str) -> std::io::Result<()> {
+    tokio::time::timeout(Duration::from_millis(300), async {
+        let mut stream = tokio::net::TcpStream::connect(backend).await?;
+        stream
+            .write_all(
+                format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .await?;
+        // Read only a bounded status line; a stalled body is irrelevant to startup.
+        let mut line = Vec::new();
+        BufReader::new(stream.take(1024))
+            .read_until(b'\n', &mut line)
+            .await?;
+        let valid = std::str::from_utf8(&line)
+            .ok()
+            .and_then(|line| line.strip_suffix("\r\n"))
+            .and_then(|line| line.split_once(' '))
+            .is_some_and(|(version, rest)| {
+                let status = rest.split(' ').next().unwrap_or("");
+                matches!(version, "HTTP/1.0" | "HTTP/1.1")
+                    && status.len() == 3
+                    && status.bytes().all(|byte| byte.is_ascii_digit())
+                    && status
+                        .parse::<u16>()
+                        .is_ok_and(|status| (200..600).contains(&status))
+            });
+        if valid {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("Invalid readiness HTTP status line"))
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 #[derive(Default)]
@@ -714,5 +743,74 @@ fn adapter_code(path: &Path) -> Result<Vec<u8>> {
         Ok(std::fs::read(path)?)
     } else {
         Ok(include_bytes!("../web-dev.mjs").to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_requires_a_bounded_http_status_not_just_a_connection() {
+        let responses = [
+            (Some("HTTP/1.1 200 OK\r\n".to_owned()), true),
+            (Some("HTTP/1.0 404 Not Found\r\n".to_owned()), true),
+            (
+                Some("HTTP/1.1 500 Internal Server Error\r\n".to_owned()),
+                true,
+            ),
+            (Some("HTTP/1.1 302 Found\r\n".to_owned()), true),
+            (Some("HTTP/1.1 100 Continue\r\n".to_owned()), false),
+            (Some("not HTTP\r\n".to_owned()), false),
+            (Some("HTTP/1.1 20 OK\r\n".to_owned()), false),
+            (Some("HTTP/1.1 200 OK".to_owned()), false),
+            (
+                Some(format!("HTTP/1.1 200 {}\r\n", "x".repeat(1024))),
+                false,
+            ),
+            (Some(String::new()), false),
+            (None, false),
+        ];
+        for (response, expected) in responses {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (finish, finished) = tokio::sync::oneshot::channel();
+            let peer = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                    request.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    request,
+                    "GET / HTTP/1.1\r\nHost: example.test:8080\r\nConnection: close\r\n\r\n"
+                );
+                if let Some(response) = response {
+                    // Separate writes exercise partial status-line delivery.
+                    let (first, rest) = response.split_at(response.len().min(5));
+                    stream.get_mut().write_all(first.as_bytes()).await.unwrap();
+                    tokio::task::yield_now().await;
+                    stream.get_mut().write_all(rest.as_bytes()).await.unwrap();
+                } else {
+                    // A listening socket with no HTTP service is not ready.
+                    let _ = finished.await;
+                }
+            });
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                http_ready(address, "example.test:8080"),
+            )
+            .await
+            .expect("Readiness attempt did not enforce its timeout");
+            let _ = finish.send(());
+            peer.await.unwrap();
+            assert_eq!(result.is_ok(), expected, "{result:?}");
+        }
     }
 }
