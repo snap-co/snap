@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-#[path = "../../../../crates/platform/transport-tcp/tests/support/mod.rs"]
+#[path = "../../../../crates/transport/tests/support/mod.rs"]
 pub(super) mod tls_support;
 
 #[derive(Clone)]
@@ -104,7 +104,7 @@ enum Socket {
             >,
         >,
     ),
-    Tcp(Box<snap_transport_tcp::tls::ClientStream>),
+    Tcp(Box<snap_transport::native::tls::ClientStream>),
 }
 impl Socket {
     async fn send(&mut self, command: &Command) {
@@ -136,7 +136,7 @@ impl Socket {
                         None,
                     ))
                 }
-                Self::Tcp(socket) => snap_transport_tcp::read_response(socket)
+                Self::Tcp(socket) => snap_transport::native::tcp::read_response(socket)
                     .await
                     .map_err(|e| e.to_string()),
             }
@@ -164,12 +164,14 @@ pub async fn start(driver: Driver) -> Setup {
     let queues = Queues(openings);
     let (server, socket) = match driver {
         Driver::WebSocket => {
-            let app = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
-                dispatch: queues,
-                origin: format!("http://{address}"),
-                cookie: None,
-                require_cookie: false,
-            }));
+            let app = snap_transport::native::web::router(Arc::new(
+                snap_transport::native::web::Service {
+                    dispatch: queues,
+                    origin: format!("http://{address}"),
+                    cookie: None,
+                    require_cookie: false,
+                },
+            ));
             let server = Task(tokio::spawn(async move {
                 axum::serve(listener, app).await.unwrap();
             }));
@@ -182,7 +184,7 @@ pub async fn start(driver: Driver) -> Setup {
             let temp = tempfile::tempdir().unwrap();
             let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
             let server = Task(tokio::spawn(async move {
-                snap_transport_tcp::serve(listener, queues, server_tls)
+                snap_transport::native::tcp::serve(listener, queues, server_tls)
                     .await
                     .unwrap();
             }));

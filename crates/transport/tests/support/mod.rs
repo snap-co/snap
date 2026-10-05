@@ -3,7 +3,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
 };
-use snap_transport_tcp::tls::{ClientTls, ServerTls};
+use snap_transport::native::tls::{ClientTls, ServerTls};
 use std::path::Path;
 
 pub fn pki(directory: &Path, expired: bool) -> (ServerTls, ClientTls) {

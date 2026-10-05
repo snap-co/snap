@@ -1,5 +1,5 @@
 //! Existing native handoff regressions, retained during carrier consolidation.
-use snap_transport::native::legacy::{Dispatcher, Endpoint, Prepare, Shared};
+use snap_transport::native::driver::{Dispatcher, Endpoint, Prepare, Shared};
 use snap_transport::{
     Command, Error, Event, Invocation, Response,
     carrier::{Connection, Dispatch, Frame, Submission},

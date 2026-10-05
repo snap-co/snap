@@ -8,6 +8,7 @@ use std::{future::IntoFuture, io, sync::Arc};
 
 /// Bootstrap policy for the WebSocket upgrade. Applications own credential
 /// decoding; Transport enforces origin checks and injects the selected bearer.
+#[derive(Clone)]
 pub struct WebSocket {
     pub origin: String,
     pub cookie: Option<ReadCookie>,
@@ -37,7 +38,6 @@ impl<H: Loop + Host> Transactions<H> {
         self.shared.host.lock().unwrap().transact(name, f)
     }
 }
-#[cfg(feature = "native-legacy")]
 impl<H: Loop> From<Arc<driver::Shared<H>>> for Transactions<H> {
     fn from(shared: Arc<driver::Shared<H>>) -> Self {
         Self { shared }
@@ -77,6 +77,28 @@ impl<B: Backend + Send + 'static, P: Participant<B> + Send + 'static> Server<B, 
             cookie: options.cookie,
             require_cookie: options.require_cookie,
         }))
+    }
+
+    /// Mount connectionless operations with the same origin and credential policy
+    /// as WebSocket traffic. Cookie changes are published only after commit.
+    pub fn http(&self, options: WebSocket, operations: Vec<web::HttpOperation>) -> axum::Router {
+        web::http_router(
+            Arc::new(web::Service {
+                dispatch: driver::Dispatcher::web(self.shared.clone()),
+                origin: options.origin,
+                cookie: options.cookie,
+                require_cookie: options.require_cookie,
+            }),
+            operations,
+        )
+    }
+
+    /// Drive HTTP/WebSocket and execution without opening a TCP listener.
+    pub async fn run_http(self, http: impl IntoFuture<Output = io::Result<()>>) -> io::Result<()> {
+        tokio::select! {
+            result = http.into_future() => result,
+            _ = driver::dispatch(self.shared) => Err(io::Error::other("Transport execution stopped")),
+        }
     }
 
     /// Drive the app-owned HTTP server, TCP listener and execution pump together.

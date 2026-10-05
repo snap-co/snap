@@ -14,4 +14,3 @@
 **/workers/build/
 .dev.vars*
 .hegel/
-__pycache__/

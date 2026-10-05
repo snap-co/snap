@@ -1,7 +1,7 @@
 //! Cartridge assembly shared by controlled and physical-IO setups.
-use snap_host::Blocking as Host;
 use snap_platform_tests::cartridge;
 use snap_store::{Backend, Row, Store, migration::Migration};
+use snap_transport::host::Blocking as Host;
 use snap_transport::server::Config;
 use std::sync::Arc;
 

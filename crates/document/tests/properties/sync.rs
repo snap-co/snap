@@ -1,7 +1,7 @@
 //! Generated Document synchronization and receipt histories through the host.
 use hegel::{TestCase, generators as gs};
 use snap_access::{Actor, Audience, ChangeSet, GrantChange, Resource, Role};
-type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
 use snap_document::{Definition, Intent, Mutation, Registry, Snapshot, server::Document};
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
 use std::sync::{Arc, Mutex};
@@ -78,7 +78,7 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
     }
     let mut host = Host::new(
         store,
-        snap_host::Application::new(vec![snap_document::sync::binding(server)]),
+        snap_transport::host::Application::new(vec![snap_document::sync::binding(server)]),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |_, bearer| Ok(bearer.into()),
@@ -90,7 +90,7 @@ fn accepted_authority_receipts_and_draining_match_committed_effects(tc: TestCase
         "properties".into(),
     )
     .map_participant(|documents| {
-        documents.with_controller(snap_host::Controller::new(
+        documents.with_controller(snap_transport::host::Controller::new(
             "counter",
             snap_document::server::TABLES[0],
             |row| row.get("kind") == Some(&"counter".into()),

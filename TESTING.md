@@ -16,14 +16,14 @@ scenarios and paired-app integration fixtures stay under `apps/`.
 Framework verification uses Cargo and Snap's existing native/browser runners.
 Application `snap check`, `snap test` and future `snap ci` commands are app workflows,
 not evidence of complete framework verification. The framework gate's executable
-selection lives in `tools/verification/framework.py`; it verifies a source copy
+selection lives in `tools/cli/src/verify.rs`; it verifies a source copy
 with application workspace members and aliases removed and no `apps/` directory.
 Reusable framework test consumers declare the `tool` role, not the app-owned
 `host` role, so Cargo dependency checks retain the application isolation rule.
 The repository-wide browser wrapper retains app and framework aggregates; the
 isolated framework gate invokes only its framework consumer. Verification owns
 its subprocess groups and retires descendants on cancellation, not just their leaders.
-Executable routing and cancellation regressions live in `tools/verification/tests/`;
+Executable routing, source-isolation and cancellation regressions live in `tools/cli/tests/verify.rs`;
 they drive the wrapper and verifier with external command/listener fixtures.
 
 Interface contract cases run through host-selected platform setups. Drivers do not
@@ -216,8 +216,10 @@ Factorio's native assembly uses Transport's `native::Server` for controller reco
 WebSocket routes, TCP serving and execution pumping. Its OAuth routes use the server's
 transaction handle, not a dispatcher or execution mutex. The existing real CLI gate
 uses this composition; app browser journeys exercise the production entrypoint and
-browser-Wasm over WebSocket. Other hosts and controlled setups retain compatibility
-exports until migrated. `native-client` selects TCP client IO; `native-server` adds
+browser-Wasm over WebSocket. Authy and Chatty use the same server's HTTP-only runner
+and transaction handle. Testy's custom development loop and controlled carrier
+setups use Transport's native carrier and queue APIs directly.
+`native-client` selects TCP client IO; `native-server` adds
 the native server. Both are excluded on Wasm even when all features are enabled, so
 the existing `wasm32v1-none` architecture check remains unchanged.
 
@@ -294,7 +296,8 @@ transfer ownership of an app scenario to Snap.
 | Identity credential flows and private session policy | `crates/identity/tests/{identity,oauth,operations}.rs`; native WebAuthn signatures, origin/counter policy and durable ceremony state in `crates/platform/identity-native/tests/passkey.rs`, selected by the `passkey` feature; Authy's `passkey browser ceremony` journey uses a CDP authenticator to cover browser/Wasm conversion and cookie delivery; OAuth refresh/socket integration remains app-owned in Factorio |
 | Generic blocking execution and native integration | Document-free cartridge assembly in `tests/platform/support/host.rs`; commit/controller sequencing in `tests/platform/tests/host.rs`; physical TCP cases in `tests/platform/tests/host_tcp.rs` |
 | Store resources and generic host composition | Lifecycle/residency over controlled memory and SQLite, composite-key cleanup, independent controllers and two non-Document subscription topics in `tests/platform/tests/resources.rs` |
-| Document synchronization bindings | Controlled replication, extent, visibility and receipt-recovery cases in `tests/platform/tests/document_sync.rs`; generated histories in `crates/document/tests/properties/sync.rs` via the `document-sync` property target; independent execution/output-lock regressions in `crates/transport/tests/native_dispatch.rs`, selected with `native-legacy` |
+| Document synchronization bindings | Controlled replication, extent, visibility and receipt-recovery cases in `tests/platform/tests/document_sync.rs`; generated histories in `crates/document/tests/properties/sync.rs` via the `document-sync` property target; independent execution/output-lock regressions in `crates/transport/tests/native_dispatch.rs`, selected with `native-server` |
+| Native Transport carriers | Binary framing and TLS policy in `crates/transport/tests/native_{binary,tls}.rs`, selected with `native-server`; disposable PKI in `crates/transport/tests/support/` is shared by real-carrier consumers |
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
 | Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
 | Paired cartridge client and physical IO | Portable SDK journey in `tests/platform/src/journey.rs`; shared native assembly in `tests/platform/support/{host,tcp_sqlite}.rs`; default-run integration in `tests/platform/tests/cartridge_tcp.rs` and visible runner in `tests/platform/examples/plumbing.rs` |

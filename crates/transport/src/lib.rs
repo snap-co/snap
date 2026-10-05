@@ -3,11 +3,7 @@
 #![cfg_attr(
     not(all(
         not(target_family = "wasm"),
-        any(
-            feature = "native-server",
-            feature = "native-client",
-            feature = "native-legacy"
-        )
+        any(feature = "native-server", feature = "native-client")
     )),
     no_std
 )]
@@ -24,11 +20,7 @@ pub mod inbox;
 pub mod lane;
 #[cfg(all(
     not(target_family = "wasm"),
-    any(
-        feature = "native-server",
-        feature = "native-client",
-        feature = "native-legacy"
-    )
+    any(feature = "native-server", feature = "native-client")
 ))]
 pub mod native;
 pub mod operation;

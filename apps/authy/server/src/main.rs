@@ -12,11 +12,11 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
-use snap_transport_native::{Dispatcher, Shared};
-use snap_transport_ws::{ReadCookie, Service};
+use snap_transport::native::web::{HttpOperation, WriteCookie};
+use snap_transport::native::{ReadCookie, Server, Transactions, WebSocket};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -24,7 +24,7 @@ use std::{
 use tower_http::services::{ServeDir, ServeFile};
 
 pub struct App {
-    pub documents: Arc<Shared<Host<snap_store_sqlite::Sqlite>>>,
+    pub transactions: Transactions<Host<snap_store_sqlite::Sqlite>>,
     pub keys: Arc<keys::Keys>,
     pub origin: String,
     pub issuer: oidc_http::Issuer,
@@ -37,7 +37,7 @@ impl App {
         operation: &str,
         f: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        self.documents.host.lock().unwrap().transact(operation, f)
+        self.transactions.run(operation, f)
     }
     pub fn bearer(&self, headers: &HeaderMap) -> Option<String> {
         self.keys.read_cookie(headers)
@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = operations::register(registry, webauthn);
     let host = Host::new(
         store,
-        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
+        snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
         registry,
         Arc::new(snap_identity::authentication::Authentication::new(
             Arc::new(Identity::default().provider(snap_crypto::Native)),
@@ -195,27 +195,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let keys = keys.clone();
         Arc::new(move |headers| keys.read_cookie(headers))
     };
-    let documents = Shared::new(host);
-    let transport = Arc::new(Service {
-        dispatch: Dispatcher::web(documents.clone()),
+    let server = Server::new(host).await?;
+    let transport = WebSocket {
         origin: origin.clone(),
         cookie: Some(cookie),
         require_cookie: true,
-    });
+    };
     issuer.config.issuer = origin.clone();
     let assets = config.assets().to_string_lossy().into_owned();
     let app = Arc::new(App {
-        documents: documents.clone(),
+        transactions: server.transactions(),
         keys,
         origin,
         issuer,
         pages: pages::Pages::load(&assets)?,
     });
-    let write_cookie: snap_transport_ws::WriteCookie = {
+    let write_cookie: WriteCookie = {
         let keys = app.keys.clone();
         Arc::new(move |bearer| keys.cookie(bearer))
     };
-    let identity_routes = snap_transport_ws::http_router(
+    let identity_routes = server.http(
         transport.clone(),
         snap_identity::operation::http_routes()
             .into_iter()
@@ -225,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Vec::new()
             })
             .chain(authy::operations::http_routes())
-            .map(|route| snap_transport_ws::HttpOperation::from_route(route, write_cookie.clone()))
+            .map(|route| HttpOperation::from_route(route, write_cookie.clone()))
             .collect(),
     );
     let router = Router::new()
@@ -237,15 +236,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(oidc_http::routes(app.clone()))
         .with_state(app)
         .merge(identity_routes)
-        .merge(snap_transport_ws::router(transport))
+        .merge(server.websocket(transport))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Authy http://{address}");
-    tokio::select! {
-        result=axum::serve(listener,router).with_graceful_shutdown(async {let _=tokio::signal::ctrl_c().await;})=>result?,
-        _=snap_transport_native::dispatch(documents)=>unreachable!(),
-    }
+    server
+        .run_http(axum::serve(listener, router).with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        }))
+        .await?;
     Ok(())
 }

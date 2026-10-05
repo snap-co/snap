@@ -1,11 +1,10 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::json;
-type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
-use snap_transport_native::{Dispatcher, Shared};
-use snap_transport_ws::Service;
+use snap_transport::native::{Server, WebSocket};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -98,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operations = operations(document.clone());
     let host = Host::new(
         store,
-        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
+        snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
             |tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner),
@@ -110,15 +109,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "clock" => Ok(json!(now())),
         _ => Err(snap_transport::Error::Unavailable),
     });
-    let documents = Shared::new(host);
-    let transport = Arc::new(Service {
-        dispatch: Dispatcher::web(documents.clone()),
+    let server = Server::new(host).await?;
+    let transport = WebSocket {
         origin: origin.clone(),
         cookie: Some(cookies.reader()),
         require_cookie: false,
-    });
+    };
     let oauth = OAuth::new(
-        documents.clone(),
+        server.transactions(),
         cookies,
         snap_identity_native::oauth::Config {
             origin,
@@ -131,11 +129,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/session", get(session))
         .with_state(oauth.clone())
         .merge(oauth.routes())
-        .merge(snap_transport_ws::router(transport))
+        .merge(server.websocket(transport))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),
         );
     println!("Chatty http://{address}");
-    tokio::select! {result=axum::serve(listener,router).with_graceful_shutdown(async{let _=tokio::signal::ctrl_c().await;})=>result?,_=snap_transport_native::dispatch(documents)=>unreachable!()}
+    server
+        .run_http(axum::serve(listener, router).with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        }))
+        .await?;
     Ok(())
 }

@@ -1,6 +1,5 @@
 //! HTTP/WebSocket JSON IO. Transport owns operation execution and logical
 //! connections. Socket tasks only decode, enqueue and write queued observations.
-#[cfg(feature = "native-legacy")]
 mod http;
 use axum::{
     Router,
@@ -13,11 +12,8 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-#[cfg(feature = "native-legacy")]
 pub use http::{HttpOperation, WriteCookie, http_router};
 use snap_transport::carrier::{Connection, Dispatch, Physical, Submission};
-#[cfg(feature = "native-legacy")]
-pub use snap_transport::inbox::Inbox;
 use std::{sync::Arc, time::Duration};
 
 pub type ReadCookie = Arc<dyn Fn(&HeaderMap) -> Option<String> + Send + Sync>;

@@ -10,7 +10,6 @@ serde = { workspace = true, optional = true }
 testy = { path = ".." }
 snap-transport = { path = "../../../crates/transport" }
 testy-native = { path = "../native", optional = true }
-snap-transport-ws = { path = "../../../crates/platform/transport-ws", optional = true }
 serde_json = { workspace = true, optional = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
@@ -27,7 +26,7 @@ snap-crypto = { path = "../../../crates/platform/crypto", optional = true }
 default = ["memory"]
 memory = ["dep:futures"]
 native = ["dep:testy-native", "dep:tokio", "identity", "dep:snap-config", "dep:serde"]
-web = ["dep:tokio", "dep:serde_json", "dep:axum", "dep:tower-http", "dep:futures-util", "dep:snap-transport-ws", "identity", "dep:snap-config", "dep:serde"]
+web = ["dep:tokio", "dep:serde_json", "dep:axum", "dep:tower-http", "dep:futures-util", "snap-transport/native-server", "identity", "dep:snap-config", "dep:serde"]
 store = ["testy/store", "dep:snap-store", "dep:snap-store-sqlite", "dep:toml"]
 identity = ["store", "dep:snap-identity", "dep:snap-crypto"]
 

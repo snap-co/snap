@@ -306,15 +306,12 @@ dependencies = [
  "snap-config",
  "snap-crypto",
  "snap-document",
- "snap-host",
  "snap-identity",
  "snap-identity-native",
  "snap-oidc",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
- "snap-transport-ws",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -592,15 +589,12 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-document",
- "snap-host",
  "snap-http",
  "snap-identity",
  "snap-identity-native",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
- "snap-transport-ws",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tower-http",
@@ -1080,14 +1074,11 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-document",
- "snap-host",
  "snap-identity",
  "snap-identity-native",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
- "snap-transport-tcp",
  "tempfile",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -3273,7 +3264,6 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
- "snap-host",
  "snap-identity",
  "snap-platform-tests",
  "snap-store",
@@ -3310,13 +3300,6 @@ dependencies = [
  "snap-store-sqlite",
  "snap-transport",
  "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "snap-host"
-version = "0.0.0"
-dependencies = [
- "snap-transport",
 ]
 
 [[package]]
@@ -3389,13 +3372,9 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-document",
- "snap-host",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "snap-transport-native",
- "snap-transport-tcp",
- "snap-transport-ws",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -3438,6 +3417,7 @@ dependencies = [
  "axum",
  "ciborium",
  "futures-util",
+ "rcgen",
  "rustls-pemfile",
  "serde",
  "serde_json",
@@ -3446,35 +3426,11 @@ dependencies = [
  "snap-store",
  "snap-store-sqlite",
  "spin 0.10.1",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "toml 0.9.12+spec-1.1.0",
  "webpki-roots",
-]
-
-[[package]]
-name = "snap-transport-native"
-version = "0.0.0"
-dependencies = [
- "snap-transport",
-]
-
-[[package]]
-name = "snap-transport-tcp"
-version = "0.0.0"
-dependencies = [
- "rcgen",
- "snap-transport",
- "tempfile",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
-name = "snap-transport-ws"
-version = "0.0.0"
-dependencies = [
- "snap-transport",
 ]
 
 [[package]]
@@ -3673,7 +3629,6 @@ dependencies = [
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
- "snap-transport-ws",
  "tempfile",
  "testy",
  "testy-native",

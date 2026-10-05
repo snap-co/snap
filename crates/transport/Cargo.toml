@@ -8,8 +8,6 @@ publish.workspace = true
 default = []
 native-client = ["dep:tokio", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"]
 native-server = ["native-client", "dep:axum", "dep:futures-util"]
-# Temporary compatibility for unmigrated hosts and carrier conformance consumers.
-native-legacy = ["native-server"]
 
 [dependencies]
 snap-store.workspace = true
@@ -32,10 +30,20 @@ toml = "0.9"
 snap-document.workspace = true
 snap-access.workspace = true
 tokio = { version = "1", features = ["test-util"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+tempfile = "3"
 
 [[test]]
 name = "native_dispatch"
-required-features = ["native-legacy"]
+required-features = ["native-server"]
+
+[[test]]
+name = "native_binary"
+required-features = ["native-server"]
+
+[[test]]
+name = "native_tls"
+required-features = ["native-server"]
 
 [lints]
 workspace = true

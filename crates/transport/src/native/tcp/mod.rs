@@ -2,15 +2,11 @@
 //! here. Failed reads/writes have unknown operation outcomes and are never retried.
 use snap_transport::{Command, Response, binary};
 use std::{io, time::Duration};
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 mod server;
 pub mod tls;
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 pub use server::serve;
-// Re-exported so a TCP composition names one inbox type, the same one a WebSocket
-// composition names. The carrier performs socket IO; the inbox is the handoff.
-#[cfg(feature = "native-legacy")]
-pub use snap_transport::inbox::Inbox;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 fn protocol(error: snap_transport::Error) -> io::Error {
@@ -33,7 +29,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Opti
     })
     .await?
 }
-#[cfg(feature = "native-legacy")]
+#[cfg(feature = "native-server")]
 pub async fn read_command<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Option<Command>> {
     Ok(read_command_sized(reader)
         .await?
@@ -41,7 +37,7 @@ pub async fn read_command<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Op
 }
 /// Wire payload size lets hosts bound aggregate queued input as well as each
 /// logical message, without reserializing credentials or application data.
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 pub async fn read_command_sized<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> io::Result<Option<(Command, usize)>> {
@@ -112,7 +108,7 @@ pub async fn write_command<W: AsyncWrite + Unpin>(
 ) -> io::Result<()> {
     write_frame(writer, &binary::command(command).map_err(protocol)?).await
 }
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 pub async fn write_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     response: &Response,

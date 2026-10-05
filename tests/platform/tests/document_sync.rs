@@ -2,13 +2,13 @@
 use snap_access::{
     Access, Actor, Audience, ChangeSet, GrantChange, KindDefinition, Resource, Role,
 };
-type Host<B> = snap_host::Blocking<B, snap_host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
 use snap_document::{
     Definition, Intent, Manifest, Mutation, Registry, ServerMessage, Snapshot, server::Document,
 };
+use snap_transport::native::driver::{Dispatcher, Shared};
 use snap_transport::operation::{Definition as Request, Guard};
 use snap_transport::{Command, Event, Invocation, Response, json, server::Config};
-use snap_transport_native::{Dispatcher, Shared};
 use std::sync::Arc;
 
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
@@ -382,7 +382,7 @@ fn access() -> Access {
 
 type ReconcileDocument = Box<
     dyn FnMut(
-            &mut snap_host::ControllerContext<'_, '_, snap_store_sqlite::Sqlite>,
+            &mut snap_transport::host::ControllerContext<'_, '_, snap_store_sqlite::Sqlite>,
             Snapshot,
         ) -> Result<(), snap_store::Error>
         + Send,
@@ -391,9 +391,9 @@ type ReconcileDocument = Box<
 fn document_controller(
     kind: &str,
     mut run: ReconcileDocument,
-) -> snap_host::Controller<snap_store_sqlite::Sqlite> {
+) -> snap_transport::host::Controller<snap_store_sqlite::Sqlite> {
     let selected = kind.to_owned();
-    snap_host::Controller::new(
+    snap_transport::host::Controller::new(
         kind,
         snap_document::server::TABLES[0],
         move |row| row.get("kind") == Some(&selected.clone().into()),
@@ -494,7 +494,7 @@ fn fixture_with_authority(
         .unwrap();
     Host::new(
         store,
-        snap_host::Application::new(vec![snap_document::sync::binding(document)]),
+        snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
         operations,
         authority,
         Config {
@@ -1020,19 +1020,20 @@ async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_polici
     ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let read: snap_transport_ws::ReadCookie = Arc::new(|headers| {
+        let read: snap_transport::native::ReadCookie = Arc::new(|headers| {
             headers
                 .get("cookie")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         });
         let shared = Shared::new(fixture());
-        let router = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
-            dispatch: Dispatcher::web(shared),
-            origin: format!("http://{address}"),
-            cookie: Some(read),
-            require_cookie: required,
-        }));
+        let router =
+            snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
+                dispatch: Dispatcher::web(shared),
+                origin: format!("http://{address}"),
+                cookie: Some(read),
+                require_cookie: required,
+            }));
         let _stop = Stop(tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         }));
@@ -1088,12 +1089,13 @@ async fn websocket_delivers_ack_before_execution_and_serializes_following_accept
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let shared = Shared::new(fixture());
-    let router = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
-        dispatch: Dispatcher::web(shared.clone()),
-        origin: format!("http://{address}"),
-        cookie: None,
-        require_cookie: false,
-    }));
+    let router =
+        snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
+            dispatch: Dispatcher::web(shared.clone()),
+            origin: format!("http://{address}"),
+            cookie: None,
+            require_cookie: false,
+        }));
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
@@ -1156,7 +1158,7 @@ async fn websocket_delivers_ack_before_execution_and_serializes_following_accept
     // The first ACK crossed the socket before any handler ran. Drive the first
     // completion; the second command may still be waiting in the carrier reader.
     assert!(shared.host.lock().unwrap().step());
-    let _dispatch = Stop(tokio::spawn(snap_transport_native::dispatch(
+    let _dispatch = Stop(tokio::spawn(snap_transport::native::driver::dispatch(
         shared.clone(),
     )));
     let mut values = vec![];
@@ -1230,12 +1232,13 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let shared = Shared::new(host);
-    let router = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
-        dispatch: Dispatcher::web(shared.clone()),
-        origin: format!("http://{address}"),
-        cookie: None,
-        require_cookie: false,
-    }));
+    let router =
+        snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
+            dispatch: Dispatcher::web(shared.clone()),
+            origin: format!("http://{address}"),
+            cookie: None,
+            require_cookie: false,
+        }));
     struct Stop(tokio::task::JoinHandle<()>);
     impl Drop for Stop {
         fn drop(&mut self) {

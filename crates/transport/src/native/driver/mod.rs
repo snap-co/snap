@@ -2,7 +2,6 @@
 //! handles; blocking application execution never runs on their async tasks.
 mod dispatch;
 use crate::runtime::Loop;
-#[cfg(feature = "native-legacy")]
 pub use dispatch::Endpoint;
 pub use dispatch::{Dispatcher, Prepare};
 use std::{

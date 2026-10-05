@@ -7,9 +7,6 @@ members = [
     "apps/factorio/web/wasm",
     "apps/factorio/properties",
     "crates/transport",
-    "crates/platform/transport-native",
-    "crates/platform/transport-tcp",
-    "crates/platform/transport-ws",
     "crates/platform/wasm-browser",
     "apps/factorio/cli",
     "crates/platform/identity-native",
@@ -21,7 +18,6 @@ members = [
     "apps/testy/web/wasm",
     "apps/testy/properties",
     "crates/store",
-    "crates/host",
     "crates/access",
     "crates/document",
     "crates/oidc",
@@ -51,9 +47,6 @@ default-members = [
     "apps/chatty/server",
     "apps/chatty/web/wasm",
     "crates/oidc",
-    "crates/platform/transport-native",
-    "crates/platform/transport-tcp",
-    "crates/platform/transport-ws",
     "apps/factorio/cli",
     "apps/authy",
     "apps/authy/server",
@@ -63,7 +56,6 @@ default-members = [
     "crates/identity",
     "crates/platform/crypto",
     "crates/store",
-    "crates/host",
     "crates/platform/store-sqlite",
     "crates/transport",
     "apps/testy",
@@ -87,7 +79,6 @@ snap-identity = { path = "crates/identity" }
 snap-oidc = { path = "crates/oidc" }
 authy = { path = "apps/authy" }
 snap-store = { path = "crates/store" }
-snap-host = { path = "crates/host" }
 wasm-bindgen = "=0.2.128"
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

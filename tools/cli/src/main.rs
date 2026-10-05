@@ -10,6 +10,7 @@ mod migrate;
 mod process;
 mod secrets;
 mod test;
+mod verify;
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -27,6 +28,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Verify framework source independently of applications
+    VerifyFramework(verify::Args),
     /// Build the application's configured artifacts
     Build(build::Args),
     /// Run the application's development server and reload workflow
@@ -67,6 +70,7 @@ async fn main() -> ExitCode {
     let result = async {
         let runner = process::Runner::new()?;
         match cli.command {
+            Command::VerifyFramework(args) => verify::run(args, &runner).await,
             Command::Build(args) => build::run(args, &runner).await,
             Command::Dev { project, config } => {
                 dev::run(config::Project::discover(project)?, &runner, config).await

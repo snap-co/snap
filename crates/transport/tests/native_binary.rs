@@ -22,7 +22,7 @@ async fn segmented_envelopes_preserve_order_and_reject_invalid_continuations() {
     assert!(starts.len() > 2);
     let mut stream = encoded.as_slice();
     assert_eq!(
-        snap_transport_tcp::read_response(&mut stream)
+        snap_transport::native::tcp::read_response(&mut stream)
             .await
             .unwrap(),
         (response, None)
@@ -36,8 +36,9 @@ async fn segmented_envelopes_preserve_order_and_reject_invalid_continuations() {
     let mut commands = binary::command(&command).unwrap();
     commands.extend(binary::command(&Command::Close).unwrap());
     let mut stream = commands.as_slice();
-    let Some(Command::Invoke(received)) =
-        snap_transport_tcp::read_command(&mut stream).await.unwrap()
+    let Some(Command::Invoke(received)) = snap_transport::native::tcp::read_command(&mut stream)
+        .await
+        .unwrap()
     else {
         panic!("Missing invocation");
     };
@@ -45,11 +46,13 @@ async fn segmented_envelopes_preserve_order_and_reject_invalid_continuations() {
     assert_eq!(received.operation, "large.input");
     assert_eq!(received.input, json!("y".repeat(200000)));
     assert!(matches!(
-        snap_transport_tcp::read_command(&mut stream).await.unwrap(),
+        snap_transport::native::tcp::read_command(&mut stream)
+            .await
+            .unwrap(),
         Some(Command::Close)
     ));
     assert!(
-        snap_transport_tcp::read_command(&mut stream)
+        snap_transport::native::tcp::read_command(&mut stream)
             .await
             .unwrap()
             .is_none()
@@ -69,7 +72,7 @@ async fn segmented_envelopes_preserve_order_and_reject_invalid_continuations() {
             }                                       // truncated final payload
         }
         assert!(
-            snap_transport_tcp::read_response(&mut bad.as_slice())
+            snap_transport::native::tcp::read_response(&mut bad.as_slice())
                 .await
                 .is_err(),
             "defect {defect}"
@@ -77,7 +80,7 @@ async fn segmented_envelopes_preserve_order_and_reject_invalid_continuations() {
     }
     let short = b"SNAP\x01\x03\x00\x00\x00\x00\x00\x08\x00\x02\x00\x00\x00\x00\x00\x00";
     assert!(
-        snap_transport_tcp::read_response(&mut short.as_slice())
+        snap_transport::native::tcp::read_response(&mut short.as_slice())
             .await
             .is_err()
     );

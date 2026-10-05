@@ -35,15 +35,13 @@ fn tools_can_hold_inspect_revert_replace_and_replay_through_transport() {
         0,
     )
     .unwrap();
-    assert!(
-        matches!(
-            &host.drain(peer).unwrap()[1],
-            Response::Event(Event::Completed {
-                id: 1,
-                outcome: Ok(value),
-            }) if value == &json!({"status":"OK"})
-        )
-    );
+    assert!(matches!(
+        &host.drain(peer).unwrap()[1],
+        Response::Event(Event::Completed {
+            id: 1,
+            outcome: Ok(value),
+        }) if value == &json!({"status":"OK"})
+    ));
     host.send(
         peer,
         Command::Connect {

@@ -39,7 +39,7 @@ allowed_local_dependencies = ["testy", "testy-native", "snap-transport", "snap-c
 manifest = "server/Cargo.toml"
 features = ["web"]
 default_features = false
-allowed_local_dependencies = ["testy", "snap-transport", "snap-transport-ws", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
+allowed_local_dependencies = ["testy", "snap-transport", "snap-config", "snap-store", "snap-store-sqlite", "snap-identity", "snap-crypto"]
 
 [[check.variants]]
 manifest = "server/Cargo.toml"

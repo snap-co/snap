@@ -8,7 +8,6 @@ autotests = false
 # A separate host test consumer keeps Hegel's compilation and exploration out of
 # the default check. The cases themselves stay with the capability that owns them.
 [dev-dependencies]
-snap-host.workspace = true
 hegeltest = { version = "=0.47.4", features = ["static-engine"] }
 snap-transport = { path = "../../crates/transport" }
 snap-store = { path = "../../crates/store" }

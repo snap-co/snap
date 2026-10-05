@@ -1,5 +1,7 @@
 # Store owns application state and residency
 
+This decision remains accepted. Migrating Testy's calculator from executor-held state to a Document-backed application object is an open implementation requirement.
+
 Store owns transactional application state, including ephemeral state supplied by a memory driver, rather than Transport maintaining a second application-state transaction system. Transport retains its invocation, connection and execution bookkeeping; Testy's calculator becomes a Document-backed application object rather than executor-held domain state.
 
 Modules declaratively describe their stored data and translate domain requests into generic Store requests. Store owns shared storage and residency machinery; drivers translate loading and commit requests into their chosen storage operations, without Store understanding Document-specific semantics.

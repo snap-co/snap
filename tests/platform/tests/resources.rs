@@ -1,13 +1,13 @@
 //! Store resource ownership and generic host controllers over non-Document rows.
 #[path = "../support/host.rs"]
 mod assembly;
-use snap_host::{Application, Blocking, Controller};
 use snap_platform_tests::{cartridge, memory::Memory};
 use snap_store::{
     Catalog, Error, Row, Store,
     residency::Residency,
     resource::{self, Resource, State},
 };
+use snap_transport::host::{Application, Blocking, Controller};
 use snap_transport::{Command, Event, Invocation, Response, json};
 use std::sync::{Arc, Mutex};
 

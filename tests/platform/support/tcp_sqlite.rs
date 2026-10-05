@@ -2,14 +2,14 @@
 //! and the portable cartridge SDK journey. No transport observations are faked.
 #[path = "host.rs"]
 mod host;
-#[path = "../../../crates/platform/transport-tcp/tests/support/mod.rs"]
+#[path = "../../../crates/transport/tests/support/mod.rs"]
 mod tls_support;
 
-use snap_host::Blocking as Host;
 use snap_platform_tests::{cartridge, journey};
 use snap_store_sqlite::Sqlite;
+use snap_transport::host::Blocking as Host;
+use snap_transport::native::driver::{Dispatcher, Shared};
 use snap_transport::{Channel, Command, Error, Response, client::Client};
-use snap_transport_native::{Dispatcher, Shared};
 use std::{io, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 
@@ -18,7 +18,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 // Host-level adaptation to Channel. Framing and verified TLS remain in the
 // production driver. A physical failure fences this channel; it never retries.
 struct TcpChannel {
-    driver: snap_transport_tcp::Client,
+    driver: snap_transport::native::TcpClient,
     usable: bool,
 }
 impl Channel for TcpChannel {
@@ -51,7 +51,7 @@ struct Server {
     serving: JoinHandle<io::Result<()>>,
     dispatch: JoinHandle<()>,
     address: SocketAddr,
-    client_tls: snap_transport_tcp::tls::ClientTls,
+    client_tls: snap_transport::native::tls::ClientTls,
     _pki: tempfile::TempDir,
 }
 impl Drop for Server {
@@ -99,12 +99,12 @@ impl Server {
         let shared = Shared::new(host::mount(store, Default::default(), boot)?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
-        let serving = tokio::spawn(snap_transport_tcp::serve(
+        let serving = tokio::spawn(snap_transport::native::tcp::serve(
             listener,
             Dispatcher::tcp(shared.clone(), None),
             server_tls,
         ));
-        let dispatch = tokio::spawn(snap_transport_native::dispatch(shared.clone()));
+        let dispatch = tokio::spawn(snap_transport::native::driver::dispatch(shared.clone()));
         Ok(Self {
             shared,
             serving,
@@ -152,9 +152,11 @@ pub async fn run(
 ) -> Result<[i64; 2]> {
     let server = Server::start(database).await?;
     let execution = tokio::time::timeout(Duration::from_secs(30), async {
-        let driver =
-            snap_transport_tcp::Client::open(&server.address.to_string(), &server.client_tls)
-                .await?;
+        let driver = snap_transport::native::TcpClient::open(
+            &server.address.to_string(),
+            &server.client_tls,
+        )
+        .await?;
         let mut client = Client::new(TcpChannel {
             driver,
             usable: true,

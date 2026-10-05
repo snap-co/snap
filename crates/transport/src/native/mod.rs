@@ -1,32 +1,22 @@
 //! Native composition. Applications own listeners, HTTP routes and shutdown;
 //! Transport owns queue handoff and execution pumping. TCP never replays a call.
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
-mod driver;
-mod tcp;
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
-mod web;
+/// Queue adapter and execution pump for hosts that explicitly drive a portable
+/// loop. Ordinary applications use `Server`; controlled platforms own stepping.
+#[cfg(feature = "native-server")]
+pub mod driver;
+pub mod tcp;
+/// JSON carriers for a host-selected `carrier::Dispatch`, including custom
+/// development hosts. Ordinary applications mount these through `Server`.
+#[cfg(feature = "native-server")]
+pub mod web;
 
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 pub use driver::Prepare;
 pub use tcp::{Client as TcpClient, tls};
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 pub use web::ReadCookie;
 
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 mod server;
-#[cfg(any(feature = "native-server", feature = "native-legacy"))]
+#[cfg(feature = "native-server")]
 pub use server::{Server, Transactions, WebSocket};
-
-/// Temporary exports for hosts not yet migrated to `Server`. These are not the
-/// supported composition API and will disappear with their remaining consumers.
-#[cfg(feature = "native-legacy")]
-#[doc(hidden)]
-pub mod legacy {
-    pub use super::driver::{Dispatcher, Endpoint, Prepare, Shared, dispatch};
-    pub mod tcp {
-        pub use super::super::tcp::*;
-    }
-    pub mod web {
-        pub use super::super::web::*;
-    }
-}

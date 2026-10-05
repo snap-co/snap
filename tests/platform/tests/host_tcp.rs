@@ -1,12 +1,12 @@
 //! Socket ownership tests, not repeats of Host's controlled-clock lifecycle suite.
-use snap_host::Blocking as Host;
+use snap_transport::host::Blocking as Host;
+use snap_transport::native::TcpClient as Client;
+use snap_transport::native::driver::{Dispatcher, Shared};
 use snap_transport::operation::Definition as Request;
 use snap_transport::{Command, Event, Invocation, Response, binary, json};
-use snap_transport_native::{Dispatcher, Shared};
-use snap_transport_tcp::Client;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-#[path = "../../../crates/platform/transport-tcp/tests/support/mod.rs"]
+#[path = "../../../crates/transport/tests/support/mod.rs"]
 mod tls_support;
 
 #[tokio::test]
@@ -51,12 +51,12 @@ async fn adjacent_handshake_streamed_observations_and_new_submission_after_detac
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], listener.local_addr().unwrap().port()));
     let temp = tempfile::tempdir().unwrap();
     let (server_tls, client_tls) = tls_support::pki(temp.path(), false);
-    let serving = tokio::spawn(snap_transport_tcp::serve(
+    let serving = tokio::spawn(snap_transport::native::tcp::serve(
         listener,
         Dispatcher::tcp(shared.clone(), None),
         server_tls,
     ));
-    let dispatch = tokio::spawn(snap_transport_native::dispatch(shared.clone()));
+    let dispatch = tokio::spawn(snap_transport::native::driver::dispatch(shared.clone()));
     let make = || {
         Command::Invoke(Invocation {
             id: 1,
@@ -75,17 +75,19 @@ async fn adjacent_handshake_streamed_observations_and_new_submission_after_detac
     socket.write_all(&bytes[..3]).await.unwrap();
     socket.write_all(&bytes[3..]).await.unwrap();
     socket.flush().await.unwrap();
-    let (reply, retention) = snap_transport_tcp::read_response(&mut socket)
+    let (reply, retention) = snap_transport::native::tcp::read_response(&mut socket)
         .await
         .unwrap();
     assert_eq!(reply, Response::Attached { resumed: false });
     let attachment = retention.unwrap();
     assert_eq!(attachment.retention_ms, 300000);
     assert!(!attachment.lifetime.is_empty());
-    async fn completion(socket: &mut snap_transport_tcp::tls::ClientStream) {
+    async fn completion(socket: &mut snap_transport::native::tls::ClientStream) {
         let mut accepted = false;
         loop {
-            let (reply, _) = snap_transport_tcp::read_response(socket).await.unwrap();
+            let (reply, _) = snap_transport::native::tcp::read_response(socket)
+                .await
+                .unwrap();
             // One event per frame now, so each read is a single observation.
             if let Response::Event(event) = reply {
                 {
@@ -188,7 +190,7 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
     let address = listener.local_addr().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (server_tls, client_tls) = tls_support::pki(directory.path(), false);
-    let serving = tokio::spawn(snap_transport_tcp::serve(
+    let serving = tokio::spawn(snap_transport::native::tcp::serve(
         listener,
         Dispatcher::tcp(shared, None),
         server_tls,

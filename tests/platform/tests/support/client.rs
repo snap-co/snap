@@ -9,8 +9,8 @@ use snap_transport::{
 use std::time::Duration;
 
 pub struct Setup {
-    client: snap_transport_tcp::Client,
-    peer: Option<snap_transport_tcp::tls::ServerStream>,
+    client: snap_transport::native::TcpClient,
+    peer: Option<snap_transport::native::tls::ServerStream>,
 }
 
 pub async fn start() -> Setup {
@@ -19,7 +19,7 @@ pub async fn start() -> Setup {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let (client, peer) = tokio::join!(
-        snap_transport_tcp::Client::open(&address, &client_tls),
+        snap_transport::native::TcpClient::open(&address, &client_tls),
         async { server_tls.accept(listener.accept().await.unwrap().0).await }
     );
     Setup {
@@ -35,7 +35,7 @@ impl Duplex for Setup {
     async fn incoming(&mut self) -> Command {
         tokio::time::timeout(
             Duration::from_secs(2),
-            snap_transport_tcp::read_command(self.peer.as_mut().unwrap()),
+            snap_transport::native::tcp::read_command(self.peer.as_mut().unwrap()),
         )
         .await
         .unwrap()
@@ -43,7 +43,7 @@ impl Duplex for Setup {
         .unwrap()
     }
     async fn publish(&mut self, frame: Frame) {
-        snap_transport_tcp::write_response(
+        snap_transport::native::tcp::write_response(
             self.peer.as_mut().unwrap(),
             &frame.response,
             frame.handshake,

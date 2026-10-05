@@ -81,6 +81,16 @@ impl Runner {
         Ok(output)
     }
 
+    /// Preserve test output on failure as well as success, while retaining it for
+    /// nonempty-selection checks. Process-group ownership is shared with all tools.
+    pub async fn report(&self, command: &mut Command) -> Result<Vec<u8>> {
+        let (status, output) = self.status(command, true).await?;
+        print!("{}", String::from_utf8_lossy(&output));
+        self.check()?;
+        successful(status)?;
+        Ok(output)
+    }
+
     async fn status(&self, command: &mut Command, capture: bool) -> Result<(ExitStatus, Vec<u8>)> {
         let mut stopped = self.stopped.clone();
         self.check()?;

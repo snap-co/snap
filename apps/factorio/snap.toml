@@ -30,7 +30,7 @@ args = ["serve"]
 commands = [["cargo", "test", "-p", "factorio"]]
 
 [test.native]
-commands = [["cargo", "build", "-p", "factorio-server"], ["cargo", "test", "-p", "snap-transport-tcp", "--test", "tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-server", "--", "--include-ignored"]]
+commands = [["cargo", "build", "-p", "factorio-server"], ["cargo", "test", "-p", "snap-transport", "--features", "native-server", "--test", "native_tls", "--", "--ignored"], ["cargo", "test", "-p", "factorio-server", "--", "--include-ignored"]]
 
 [test.browser]
 commands = [["../../bin/browser-tests", "factorio"]]

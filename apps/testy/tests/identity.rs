@@ -14,8 +14,10 @@ use testy_server::memory::Memory;
 async fn round_trip<C: Channel>(channel: &mut C, command: Command) -> Response {
     channel.send(command).await.unwrap();
     loop {
-        if let Some(response @ (Response::Event(snap_transport::Event::Completed { .. })
-            | Response::Failed(_))) = channel.receive().await.unwrap()
+        if let Some(
+            response @ (Response::Event(snap_transport::Event::Completed { .. })
+            | Response::Failed(_)),
+        ) = channel.receive().await.unwrap()
         {
             return response;
         }
@@ -133,14 +135,17 @@ fn protected_identity_requests_validate_authority_before_ack() {
     );
     let memory = Memory::new(platform(sessions));
     let mut channel = memory.channel();
-    let reply = block_on(round_trip(&mut channel, Command::Request {
-        bearer: Some("invalid".into()),
-        invocation: Invocation {
-            id: 1,
-            operation: "identity.release".into(),
-            input: json!({"scope":"current"}),
+    let reply = block_on(round_trip(
+        &mut channel,
+        Command::Request {
+            bearer: Some("invalid".into()),
+            invocation: Invocation {
+                id: 1,
+                operation: "identity.release".into(),
+                input: json!({"scope":"current"}),
+            },
         },
-    }));
+    ));
     assert!(matches!(
         reply,
         Response::Event(snap_transport::Event::Completed {
@@ -162,11 +167,14 @@ fn identity_inputs_on_wrong_command_kind_never_enter_execution_diagnostics() {
     let memory = Memory::new(platform(sessions));
     let mut channel = memory.channel();
     assert_eq!(
-        block_on(round_trip(&mut channel, Command::Invoke(Invocation {
-            id: 1,
-            operation: "identity.acquire".into(),
-            input: json!({"email": "a@b", "password": "never-log-this"}),
-        }))),
+        block_on(round_trip(
+            &mut channel,
+            Command::Invoke(Invocation {
+                id: 1,
+                operation: "identity.acquire".into(),
+                input: json!({"email": "a@b", "password": "never-log-this"}),
+            })
+        )),
         Response::Failed(Error::Protocol)
     );
     assert!(memory.trace().is_empty());

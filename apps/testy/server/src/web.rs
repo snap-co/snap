@@ -138,12 +138,13 @@ pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send +
                 axum::routing::any(|| async { StatusCode::NOT_FOUND }),
             );
     }
-    let transport = snap_transport_ws::router(Arc::new(snap_transport_ws::Service {
-        dispatch: carrier::Dispatcher(shared.clone()),
-        origin: shared.authority.clone(),
-        cookie: None,
-        require_cookie: false,
-    }));
+    let transport =
+        snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
+            dispatch: carrier::Dispatcher(shared.clone()),
+            origin: shared.authority.clone(),
+            cookie: None,
+            require_cookie: false,
+        }));
     let app = app.with_state(shared.clone()).merge(transport);
     let sweep = async {
         let mut interval = tokio::time::interval(Duration::from_millis(50));

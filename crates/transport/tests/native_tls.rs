@@ -1,8 +1,8 @@
 //! Real TLS owns trust/name/expiry and plaintext rejection. Application suites
 //! separately prove dispatch and retained lifetimes through this carrier.
 mod support;
+use snap_transport::native::{TcpClient as Client, tls::ClientTls};
 use snap_transport::{Command, Response};
-use snap_transport_tcp::{Client, tls::ClientTls};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -22,10 +22,12 @@ async fn verified_tls_carries_snap_and_rejects_untrusted_wrong_name_expired_and_
             let (socket, _) = listener.accept().await.unwrap();
             if let Ok(mut socket) = server.accept(socket).await {
                 assert!(matches!(
-                    snap_transport_tcp::read_command(&mut socket).await.unwrap(),
+                    snap_transport::native::tcp::read_command(&mut socket)
+                        .await
+                        .unwrap(),
                     Some(Command::Close)
                 ));
-                snap_transport_tcp::write_response(
+                snap_transport::native::tcp::write_response(
                     &mut socket,
                     &Response::Global {
                         kind: "probe".into(),
@@ -96,7 +98,9 @@ async fn verified_tls_carries_snap_and_rejects_untrusted_wrong_name_expired_and_
         let (socket, _) = ipv6_listener.accept().await.unwrap();
         let mut socket = ipv6_server.accept(socket).await.unwrap();
         assert!(matches!(
-            snap_transport_tcp::read_command(&mut socket).await.unwrap(),
+            snap_transport::native::tcp::read_command(&mut socket)
+                .await
+                .unwrap(),
             Some(Command::Close)
         ));
     });

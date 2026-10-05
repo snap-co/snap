@@ -353,7 +353,7 @@ mod tests {
         }
         let host = Host::new(
             store,
-            snap_host::Application::new(vec![snap_document::sync::binding(document)]),
+            snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
             operations,
             Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
                 |_, bearer| Ok(bearer.into()),

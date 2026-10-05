@@ -3,12 +3,12 @@
 #[path = "../support/host.rs"]
 mod assembly;
 
-use snap_host::{CommitContext, Participant};
 use snap_platform_tests::{
     cartridge::{self, Edit, Stop},
     memory::{Memory, RejectOnce},
 };
 use snap_store::{Backend, Catalog, Error, Row, RowChange, Store};
+use snap_transport::host::{CommitContext, Participant};
 use snap_transport::{Command, Event, Invocation, Response, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -75,7 +75,7 @@ fn call(id: u64, expected: i64, amount: i64, stop: Stop) -> Command {
     })
 }
 fn events<B: Backend, P: Participant<B>>(
-    host: &mut snap_host::Blocking<B, P>,
+    host: &mut snap_transport::host::Blocking<B, P>,
     peer: u64,
 ) -> Vec<Event> {
     host.drain(peer)
@@ -99,7 +99,7 @@ fn catalog() -> Catalog {
         })
         .unwrap()
 }
-fn connect<B: Backend, P: Participant<B>>(host: &mut snap_host::Blocking<B, P>) -> u64 {
+fn connect<B: Backend, P: Participant<B>>(host: &mut snap_transport::host::Blocking<B, P>) -> u64 {
     let peer = host.open().unwrap();
     host.submit(
         peer,

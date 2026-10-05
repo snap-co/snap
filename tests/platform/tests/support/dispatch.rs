@@ -1,10 +1,10 @@
 //! Controlled server-role command adapter around the production host. No fake
 //! dispatch, acceptance, completion or retry cache lives in this adapter.
-use snap_host::Blocking as Host;
 use snap_platform_tests::dispatch::{CommitFault, Loss, Platform};
 use snap_platform_tests::memory::Memory;
 use snap_platform_tests::memory::{CommitRejection, RejectOnce};
 use snap_store::{Backend, Catalog, Store};
+use snap_transport::host::Blocking as Host;
 use snap_transport::{Command, Event, Invocation, Response, server::Config};
 #[path = "../../support/host.rs"]
 mod assembly;
