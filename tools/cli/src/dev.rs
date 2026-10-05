@@ -5,7 +5,6 @@ use crate::{
     config::Project,
     process::{OwnedProcess, Runner},
 };
-use age::secrecy::ExposeSecret;
 use anyhow::{Context, Result, bail, ensure};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{Value, json};
@@ -25,7 +24,7 @@ use tokio::{
 #[derive(Clone)]
 struct Installation {
     document: toml::Table,
-    key: Option<String>,
+    key: Option<snap_config::Secret>,
     bag: Option<Vec<u8>>,
     listen: SocketAddr,
     origin: String,
@@ -142,9 +141,7 @@ impl Installation {
         let clients = client_origins(&config.app, &hosts)?;
         host_table(&mut document)?
             .insert("dev_client_origins".into(), toml::Value::try_from(clients)?);
-        let key = config
-            .master_key()?
-            .map(|key| key.to_string().expose_secret().to_owned());
+        let key = config.master_key()?.map(|key| key.encode());
         let bag = optional_read(config.path("secrets.enc"))?;
         Ok(Self {
             document,
@@ -375,7 +372,7 @@ async fn launch(
         .stderr(Stdio::inherit());
     command.env_remove("SNAP_MASTER_KEY");
     if let Some(key) = &installation.key {
-        command.env("SNAP_MASTER_KEY", key);
+        command.env("SNAP_MASTER_KEY", key.expose());
     }
     let mut process = runner.spawn(&mut command)?;
     process.forward_output();

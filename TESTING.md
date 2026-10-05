@@ -326,6 +326,13 @@ Read manifests, suite declarations and runner code to determine actual selection
 Web packaging uses the external wasm-bindgen tool pinned in mise. The tooling
 contracts reject missing or mismatched tools before compilation; the real packaging
 case covers generated browser bindings, declarations and failure-safe publication.
+
+Deployment secrets use one symmetric `secrets.key` to seal and unseal `secrets.enc`.
+The config startup suite owns key parsing, bag authentication and malformed-input
+rejection; `tools/cli/tests/secrets.rs` owns init/seal/unseal, private file permissions
+and refusal to overwrite existing key or authoring files. Packaging and native host
+tests retain their separate secret-exclusion and production-key selection contracts.
+
 Each module and host storage component owns one initial migration. Identity's
 single schema supports password, OAuth and passkey flows; hosts select it without
 an alternative OAuth history. The CLI migration gate applies Identity's directory

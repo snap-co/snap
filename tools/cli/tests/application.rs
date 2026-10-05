@@ -164,7 +164,6 @@ fn build_selects_the_named_environment_without_development_fallback() {
 #[test]
 #[ignore = "native packaging"]
 fn native_package_is_relocatable_and_excludes_private_deployment_files() {
-    use age::secrecy::ExposeSecret;
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::TcpStream,
@@ -181,11 +180,11 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     let input = root.join(".deployment/development");
     fs::create_dir_all(&input).unwrap();
     fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='{}'\n[app.oauth]\nclient_secret_ref='oauth.client_secret'\n", root.join("data").display())).unwrap();
-    let identity = age::x25519::Identity::generate();
+    let identity = snap_config::MasterKey::generate().unwrap();
     let secret = "packaging-test-client-credential-at-least-32-bytes";
     fs::write(
         input.join("secrets.key"),
-        identity.to_string().expose_secret(),
+        identity.encode().expose(),
     )
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -196,7 +195,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         input.join("secrets.enc"),
         snap_config::Secrets::encrypt(
             format!("[oauth]\nclient_secret='{secret}'\n").as_bytes(),
-            &[identity.to_public()],
+            &identity,
         )
         .unwrap(),
     )
@@ -352,7 +351,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     );
     let mut server = Command::new(relocated.join(executable))
         .current_dir(&repository)
-        .env("SNAP_MASTER_KEY", identity.to_string().expose_secret())
+        .env("SNAP_MASTER_KEY", identity.encode().expose())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

@@ -21,7 +21,6 @@ url = "2"
 snap-store.workspace = true
 snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 snap-config.workspace = true
-age = { version = "0.11", default-features = false }
 tempfile = "3"
 
 [lints]

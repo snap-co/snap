@@ -1,7 +1,8 @@
 //! Host-owned startup configuration. Portable modules receive resolved inputs,
 //! never this loader, filesystem paths to secrets, or ambient configuration.
-use age::secrecy::{ExposeSecret, SecretString};
+mod secrets;
 use anyhow::{Context, Result, bail, ensure};
+pub use secrets::{MasterKey, Secret, SecretRef, Secrets};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::BTreeMap,
@@ -233,11 +234,11 @@ impl<T: DeserializeOwned> Config<T> {
         Ok(())
     }
     /// A missing bag is allowed for secretless applications. Required references
-    /// still fail when resolved. Present bags always require a valid identity.
-    pub fn secrets(&self, identity: Option<&age::x25519::Identity>) -> Result<Secrets> {
+    /// still fail when resolved. Present bags always require a valid master key.
+    pub fn secrets(&self, key: Option<&MasterKey>) -> Result<Secrets> {
         let path = self.root.join("secrets.enc");
         match std::fs::read(path) {
-            Ok(bytes) => Secrets::decrypt(&bytes, identity.context("SNAP_MASTER_KEY is required")?),
+            Ok(bytes) => Secrets::decrypt(&bytes, key.context("SNAP_MASTER_KEY is required")?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Secrets::default()),
             Err(_) => bail!("Cannot read secrets.enc"),
         }
@@ -245,14 +246,14 @@ impl<T: DeserializeOwned> Config<T> {
     /// Explicit environment keys always win, including when invalid. Development
     /// may otherwise read a private config-adjacent secrets.key; production never does.
     /// The supervisor and native hosts use the same selection and privacy checks.
-    pub fn master_key(&self) -> Result<Option<age::x25519::Identity>> {
+    pub fn master_key(&self) -> Result<Option<MasterKey>> {
         match std::env::var("SNAP_MASTER_KEY") {
             Ok(value) => {
                 return value
                     .trim()
                     .parse()
                     .map(Some)
-                    .map_err(|_| anyhow::anyhow!("Invalid SNAP_MASTER_KEY"));
+                    .context("Invalid SNAP_MASTER_KEY");
             }
             Err(std::env::VarError::NotUnicode(_)) => bail!("Invalid SNAP_MASTER_KEY"),
             Err(std::env::VarError::NotPresent) => {}
@@ -260,37 +261,21 @@ impl<T: DeserializeOwned> Config<T> {
         if self.host.mode != Mode::Development {
             return Ok(None);
         }
-        let mut file = match std::fs::File::open(self.path("secrets.key")) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("Cannot open development secrets.key"),
-        };
-        let metadata = file.metadata()?;
-        ensure!(
-            metadata.is_file() && metadata.len() <= 4096,
-            "Invalid development secrets.key file"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            ensure!(
-                metadata.permissions().mode() & 0o077 == 0,
-                "Development secrets.key must be private; use chmod 600"
-            );
+        match MasterKey::read(&self.path("secrets.key")) {
+            Ok(key) => Ok(Some(key)),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
-        use std::io::Read;
-        let mut value = String::new();
-        file.read_to_string(&mut value)
-            .context("Cannot read development secrets.key")?;
-        value
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(|_| anyhow::anyhow!("Invalid development secrets.key"))
     }
     pub fn load_secrets(&self) -> Result<Secrets> {
-        let identity = self.master_key()?;
-        self.secrets(identity.as_ref())
+        let key = self.master_key()?;
+        self.secrets(key.as_ref())
     }
 }
 fn resolved_path(path: &Path) -> Result<PathBuf> {
@@ -384,109 +369,6 @@ pub fn validate_origin(origin: &str) -> Result<()> {
         "Configured URL must be an HTTP(S) origin"
     );
     Ok(())
-}
-
-#[derive(Clone)]
-pub struct SecretRef(String);
-impl<'de> Deserialize<'de> for SecretRef {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let name = String::deserialize(deserializer)?;
-        if name.split('.').any(str::is_empty)
-            || !name
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
-        {
-            return Err(serde::de::Error::custom("Invalid secret reference"));
-        }
-        Ok(Self(name))
-    }
-}
-impl SecretRef {
-    pub fn name(&self) -> &str {
-        &self.0
-    }
-}
-pub struct Secret(SecretString);
-impl Clone for Secret {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-impl From<String> for Secret {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-impl Secret {
-    pub fn expose(&self) -> &str {
-        self.0.expose_secret()
-    }
-}
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[redacted]")
-    }
-}
-#[derive(Default)]
-pub struct Secrets(BTreeMap<String, Secret>);
-impl Secrets {
-    pub fn resolve(&self, reference: &SecretRef) -> Result<&Secret> {
-        self.0
-            .get(reference.name())
-            .with_context(|| format!("Missing secret: {}", reference.name()))
-    }
-    pub fn encrypt(plaintext: &[u8], recipients: &[age::x25519::Recipient]) -> Result<Vec<u8>> {
-        use std::io::Write;
-        // Validate the bag before encrypting. No plaintext appears in diagnostics.
-        Self::parse(plaintext)?;
-        let encryptor =
-            age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))
-                .context("No age recipients")?;
-        let mut output = Vec::new();
-        let mut writer = encryptor.wrap_output(&mut output)?;
-        writer.write_all(plaintext)?;
-        writer.finish()?;
-        Ok(output)
-    }
-    pub fn decrypt(ciphertext: &[u8], identity: &age::x25519::Identity) -> Result<Self> {
-        let plaintext = age::decrypt(identity, ciphertext)
-            .map_err(|_| anyhow::anyhow!("Secrets decryption failed"))?;
-        Self::parse(&plaintext)
-    }
-    fn parse(bytes: &[u8]) -> Result<Self> {
-        let text =
-            std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("Invalid secrets bag"))?;
-        let table: toml::Table =
-            toml::from_str(text).map_err(|_| anyhow::anyhow!("Invalid secrets bag"))?;
-        fn collect(
-            prefix: &str,
-            table: toml::Table,
-            output: &mut BTreeMap<String, Secret>,
-        ) -> Result<()> {
-            for (key, value) in table {
-                ensure!(
-                    !key.is_empty() && !key.contains('.'),
-                    "Secret keys must be nonempty without dots"
-                );
-                let name = if prefix.is_empty() {
-                    key
-                } else {
-                    format!("{prefix}.{key}")
-                };
-                match value {
-                    toml::Value::String(s) => {
-                        output.insert(name, Secret(s.into()));
-                    }
-                    toml::Value::Table(t) => collect(&name, t, output)?,
-                    _ => bail!("Secrets must be strings or nested tables"),
-                }
-            }
-            Ok(())
-        }
-        let mut output = BTreeMap::new();
-        collect("", table, &mut output)?;
-        Ok(Self(output))
-    }
 }
 
 /// The same arguments are accepted by all native servers. Schema checking and

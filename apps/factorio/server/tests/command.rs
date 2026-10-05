@@ -154,11 +154,10 @@ fn checkout_server_discovers_its_private_profile_but_preserves_explicit_and_pack
 
 #[test]
 fn development_server_reads_a_private_key_but_production_requires_an_explicit_key() {
-    use age::secrecy::ExposeSecret;
     let root = tempfile::tempdir().unwrap();
-    let identity = age::x25519::Identity::generate();
+    let identity = snap_config::MasterKey::generate().unwrap();
     let key = root.path().join("secrets.key");
-    fs::write(&key, identity.to_string().expose_secret()).unwrap();
+    fs::write(&key, identity.encode().expose()).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -168,7 +167,7 @@ fn development_server_reads_a_private_key_but_production_requires_an_explicit_ke
         root.path().join("secrets.enc"),
         snap_config::Secrets::encrypt(
             b"[oauth]\nclient_secret='private-native-defaults-credential'\n",
-            &[identity.to_public()],
+            &identity,
         )
         .unwrap(),
     )
@@ -186,15 +185,13 @@ fn development_server_reads_a_private_key_but_production_requires_an_explicit_ke
         assert!(!output.status.success());
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(!error.contains("private-native-defaults-credential"));
-        assert!(!error.contains(identity.to_string().expose_secret()));
+        assert!(!error.contains(identity.encode().expose()));
         error
     };
     fs::write(&path, configuration(root.path())).unwrap();
     assert!(run(None).contains("PEM file contains no certificates"));
-    let wrong = age::x25519::Identity::generate();
-    assert!(
-        !run(Some(wrong.to_string().expose_secret())).contains("PEM file contains no certificates")
-    );
+    let wrong = snap_config::MasterKey::generate().unwrap();
+    assert!(!run(Some(wrong.encode().expose())).contains("PEM file contains no certificates"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -220,10 +217,7 @@ fn development_server_reads_a_private_key_but_production_requires_an_explicit_ke
         production_error.contains("SNAP_MASTER_KEY is required"),
         "{production_error}"
     );
-    assert!(
-        run(Some(identity.to_string().expose_secret()))
-            .contains("PEM file contains no certificates")
-    );
+    assert!(run(Some(identity.encode().expose())).contains("PEM file contains no certificates"));
 }
 
 #[test]

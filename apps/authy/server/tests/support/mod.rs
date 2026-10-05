@@ -1,4 +1,3 @@
-use age::secrecy::ExposeSecret;
 use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
@@ -67,7 +66,7 @@ impl Drop for Process {
 pub struct Host {
     _directory: tempfile::TempDir,
     config: std::path::PathBuf,
-    identity: age::x25519::Identity,
+    identity: snap_config::MasterKey,
     process: Option<Process>,
     pub client: Client,
     pub base: String,
@@ -83,12 +82,12 @@ impl Host {
             .prefix("authy-http-")
             .tempdir_in(cache)
             .unwrap();
-        let identity = age::x25519::Identity::generate();
+        let identity = snap_config::MasterKey::generate().unwrap();
         fs::write(
             directory.path().join("secrets.enc"),
             snap_config::Secrets::encrypt(
                 format!("[clients]\nchatty='{CLIENT_SECRET}'\n").as_bytes(),
-                &[identity.to_public()],
+                &identity,
             )
             .unwrap(),
         )
@@ -123,7 +122,7 @@ impl Host {
         command
             .args(["--config"])
             .arg(&self.config)
-            .env("SNAP_MASTER_KEY", self.identity.to_string().expose_secret());
+            .env("SNAP_MASTER_KEY", self.identity.encode().expose());
         command
     }
 

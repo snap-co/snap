@@ -49,7 +49,7 @@ fn development_secrets_are_initialized_and_sealed_in_the_selected_private_profil
     run("seal");
     let identity = fs::read_to_string(selected.join("secrets.key"))
         .unwrap()
-        .parse::<age::x25519::Identity>()
+        .parse::<snap_config::MasterKey>()
         .unwrap();
     let config = snap_config::Config::<Application>::read(&selected.join("config.toml")).unwrap();
     assert_eq!(
@@ -67,11 +67,61 @@ fn development_secrets_are_initialized_and_sealed_in_the_selected_private_profil
     );
     assert!(!template.join("secrets.key").exists());
     assert!(!template.join("secrets.enc").exists());
+    assert!(!selected.join("recipients.txt").exists());
+    // Init and unseal must not overwrite an existing key or authoring file.
+    for action in ["init", "unseal"] {
+        let rejected = Command::new(env!("CARGO_BIN_EXE_snap"))
+            .current_dir(root.path())
+            .args(["secrets", action])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert_eq!(
+            fs::read_to_string(selected.join("secrets.key")).unwrap(),
+            identity.encode().expose()
+        );
+        assert_eq!(
+            fs::read_to_string(selected.join("secrets.toml")).unwrap(),
+            "[oauth]\nclient_secret='private-profile-client-secret'\n"
+        );
+    }
+    fs::remove_file(selected.join("secrets.toml")).unwrap();
+    let ciphertext = fs::read(selected.join("secrets.enc")).unwrap();
+    fs::write(
+        selected.join("secrets.key"),
+        snap_config::MasterKey::generate()
+            .unwrap()
+            .encode()
+            .expose(),
+    )
+    .unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_snap"))
+        .current_dir(root.path())
+        .args(["secrets", "unseal"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(!selected.join("secrets.toml").exists());
+    assert_eq!(fs::read(selected.join("secrets.enc")).unwrap(), ciphertext);
+    fs::write(selected.join("secrets.key"), identity.encode().expose()).unwrap();
+    run("unseal");
+    assert_eq!(
+        fs::read_to_string(selected.join("secrets.toml")).unwrap(),
+        "[oauth]\nclient_secret='private-profile-client-secret'\n"
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             fs::metadata(selected.join("secrets.key"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        assert_eq!(
+            fs::metadata(selected.join("secrets.toml"))
                 .unwrap()
                 .permissions()
                 .mode()

@@ -31,7 +31,6 @@ uuid = { version = "1", features = ["v4"] }
 nix = { version = "0.30", features = ["signal", "process"] }
 
 [dev-dependencies]
-age = { version = "0.11", default-features = false }
 tempfile = "3"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
