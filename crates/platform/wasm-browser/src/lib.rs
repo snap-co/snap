@@ -50,7 +50,8 @@ impl Channel for Http {
         // admission happened. Synthesize the acceptance Transport's ordering
         // contract requires, then hand out one event per receive.
         if outcome.is_ok() {
-            self.buffered.push_back(Response::Event(Event::Accepted { id }));
+            self.buffered
+                .push_back(Response::Event(Event::Accepted { id }));
         }
         self.buffered
             .push_back(Response::Event(Event::Completed { id, outcome }));

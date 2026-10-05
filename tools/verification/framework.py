@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run framework gates in a source copy that cannot reach apps/."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,8 @@ def commands(gate, root, target):
             ([cli, "check-deps", str(root)], False),
         ]
     if gate == "test":
-        return [(["cargo", "test", "--workspace", "--exclude", "snap-core-properties",
+        return [(["python3", "-m", "unittest", "discover", "-s", "tools/verification/tests", "-v"], True),
+                (["cargo", "test", "--workspace", "--exclude", "snap-core-properties",
                   "--exclude", "snap-browser-tests", "--features", "snap-identity-native/passkey"], True)]
     if gate == "properties":
         return [(["cargo", "test", "-p", "snap-core-properties", "--", "--nocapture"], True)]
@@ -116,26 +118,72 @@ def checkout(manifest, scratch):
     return destination
 
 
+class Interrupted(KeyboardInterrupt):
+    def __init__(self, signum):
+        self.signum = signum
+        super().__init__(f"interrupted by {signal.Signals(signum).name}")
+
+
+def interrupted(signum, _frame):
+    raise Interrupted(signum)
+
+
+def retire(process, signum):
+    # Gates own a separate process group. Reaping its leader does not prove that
+    # its listeners or builds exited; always retire the remaining group as well.
+    def send(signum):
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    send(signum)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        send(signal.SIGKILL)
+        process.wait()
+
+
+@contextmanager
+def owned_process(command, root, environment, **options):
+    previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGINT, signal.SIGTERM)}
+    process = None
+    cancellation = signal.SIGTERM
+    try:
+        process = subprocess.Popen(command, cwd=root, env=environment, text=True,
+                                   start_new_session=True, **options)
+        yield process
+    except Interrupted as error:
+        cancellation = error.signum
+        raise
+    finally:
+        # A repeated interrupt must not bypass teardown of this owned group.
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            if process is not None:
+                retire(process, cancellation)
+                if process.stdout is not None:
+                    process.stdout.close()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+
 def run(command, root, environment, require_tests):
     print("+ " + shlex.join(command), flush=True)
-    process = subprocess.Popen(command, cwd=root, env=environment, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True, start_new_session=True)
     count = 0
-    try:
+    with owned_process(command, root, environment, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT) as process:
         for line in process.stdout:
             print(line, end="", flush=True)
-            match = re.search(r"test result: ok\. (\d+) passed;", line)
+            match = re.search(r"test result: ok\. (\d+) passed;|^Ran (\d+) tests? in ", line)
             if match:
-                count += int(match.group(1))
+                count += int(match.group(1) or match.group(2))
         status = process.wait()
-    except BaseException:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-        raise
     if status:
         raise RuntimeError(f"command exited with status {status}: {shlex.join(command)}")
     if require_tests and not count:
@@ -143,11 +191,12 @@ def run(command, root, environment, require_tests):
 
 
 def verify_local_graph(root, environment):
-    metadata = subprocess.run(
-        ["cargo", "metadata", "--format-version=1", "--all-features"],
-        cwd=root, env=environment, stdout=subprocess.PIPE, text=True, check=True,
-    )
-    for package in json.loads(metadata.stdout)["packages"]:
+    command = ["cargo", "metadata", "--format-version=1", "--all-features"]
+    with owned_process(command, root, environment, stdout=subprocess.PIPE) as process:
+        output, _ = process.communicate()
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command)
+    for package in json.loads(output)["packages"]:
         if package["source"] is None:
             manifest = Path(package["manifest_path"]).resolve()
             if not manifest.is_relative_to(root):
@@ -155,6 +204,8 @@ def verify_local_graph(root, environment):
 
 
 def main():
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, interrupted)
     parser = argparse.ArgumentParser(description=__doc__, epilog=
         "All gates run without apps/. Unsupported Wasm/browser conformance setups remain "
         "outside the current shared platform matrix; browser runs the existing adapter contracts.")
@@ -198,6 +249,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except Interrupted as error:
+        print(f"framework verification: {error}", file=sys.stderr)
+        sys.exit(128 + error.signum)
     except (RuntimeError, OSError, subprocess.CalledProcessError, KeyboardInterrupt) as error:
         print(f"framework verification: {error}", file=sys.stderr)
         sys.exit(1)

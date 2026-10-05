@@ -1,10 +1,7 @@
 //! Native Identity cryptography. Argon2id's encoded hashes carry their parameters
 //! and salt. Bearers contain 256 random bits; storage only receives SHA-256 digests.
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
-use base64::{
-    Engine,
-    engine::general_purpose::URL_SAFE_NO_PAD,
-};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rsa::{BigUint, RsaPublicKey, signature::Verifier};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

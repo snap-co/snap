@@ -2,13 +2,40 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
+suite=all
+value=false
+positional=false
+for arg in "$@"; do
+  if "$value"; then
+    value=false
+    continue
+  fi
+  if "$positional"; then
+    suite=$arg
+    break
+  fi
+  case "$arg" in
+    --browser|--filter|--artifacts) value=true ;;
+    --) positional=true ;;
+    -*) ;; # Clap validates options; option values never select a consumer.
+    *) suite=$arg; break ;;
+  esac
+done
+
+launcher=()
+if command -v mise >/dev/null; then
+  launcher=(mise exec --)
+fi
 package=snap-browser-tests
-case "${1:-all}" in
+case "$suite" in
+  all)
+    # Preserve the repository aggregate. The isolated framework gate invokes
+    # snap-browser-tests directly, never this app-aware wrapper.
+    "${launcher[@]}" cargo run -p snap-browser-tests -- --prepare "$@"
+    package=snap-app-browser-tests
+    ;;
   testy|authy|chatty|factorio|dev|authy-dev|chatty-dev|dev-origins|factorio-dev)
     package=snap-app-browser-tests
     ;;
 esac
-if command -v mise >/dev/null; then
-  exec mise exec -- cargo run -p "$package" -- --prepare "$@"
-fi
-exec cargo run -p "$package" -- --prepare "$@"
+exec "${launcher[@]}" cargo run -p "$package" -- --prepare "$@"

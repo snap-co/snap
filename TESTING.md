@@ -20,6 +20,11 @@ selection lives in `tools/verification/framework.py`; it verifies a source copy
 with application workspace members and aliases removed and no `apps/` directory.
 Reusable framework test consumers declare the `tool` role, not the app-owned
 `host` role, so Cargo dependency checks retain the application isolation rule.
+The repository-wide browser wrapper retains app and framework aggregates; the
+isolated framework gate invokes only its framework consumer. Verification owns
+its subprocess groups and retires descendants on cancellation, not just their leaders.
+Executable routing and cancellation regressions live in `tools/verification/tests/`;
+they drive the wrapper and verifier with external command/listener fixtures.
 
 Interface contract cases run through host-selected platform setups. Drivers do not
 own separate copies of those expectations. Core module scenarios use the same

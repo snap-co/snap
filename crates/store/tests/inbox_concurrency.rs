@@ -130,7 +130,10 @@ fn sustained_backpressure_never_corrupts() {
 
     let refused = producer.join().expect("producer");
     consumer.join().expect("consumer");
-    assert!(refused > 0, "the test should actually have hit backpressure");
+    assert!(
+        refused > 0,
+        "the test should actually have hit backpressure"
+    );
     assert!(channel.is_empty());
 }
 
@@ -181,5 +184,8 @@ fn concurrent_producer_with_channel_dropped_underneath() {
     assert_eq!(sent as usize, ROUNDS as usize);
     assert_eq!(total.load(Ordering::Acquire), ROUNDS as usize);
     assert!(channel.is_empty());
-    assert!(channel.pop().is_none(), "nothing is left after both sides finish");
+    assert!(
+        channel.pop().is_none(),
+        "nothing is left after both sides finish"
+    );
 }

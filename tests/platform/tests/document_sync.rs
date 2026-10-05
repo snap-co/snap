@@ -380,15 +380,17 @@ fn access() -> Access {
     Access::new(vec![KindDefinition::kind("document").unwrap()]).unwrap()
 }
 
+type ReconcileDocument = Box<
+    dyn FnMut(
+            &mut snap_host::ControllerContext<'_, '_, snap_store_sqlite::Sqlite>,
+            Snapshot,
+        ) -> Result<(), snap_store::Error>
+        + Send,
+>;
+
 fn document_controller(
     kind: &str,
-    mut run: Box<
-        dyn FnMut(
-                &mut snap_host::ControllerContext<'_, '_, snap_store_sqlite::Sqlite>,
-                Snapshot,
-            ) -> Result<(), snap_store::Error>
-            + Send,
-    >,
+    mut run: ReconcileDocument,
 ) -> snap_host::Controller<snap_store_sqlite::Sqlite> {
     let selected = kind.to_owned();
     snap_host::Controller::new(

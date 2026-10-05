@@ -241,10 +241,10 @@ pub fn issue(
             &session.issuer,
         )?;
     }
-    if attempt.target.is_none() {
-        if let Some(old) = attempt.old_session {
-            revoke_id(tx, &old)?;
-        }
+    if attempt.target.is_none()
+        && let Some(old) = attempt.old_session
+    {
+        revoke_id(tx, &old)?;
     }
     let mut session = session.clone();
     session.owner = owner;

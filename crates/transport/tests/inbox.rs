@@ -80,12 +80,7 @@ fn observations_cross_in_order() {
         inbox.receive().is_none(),
         "nothing is published before the application publishes it"
     );
-    assert!(inbox.publish(
-        Response::Event(Event::Accepted { id: 1 }),
-        false,
-        false,
-        1,
-    ));
+    assert!(inbox.publish(Response::Event(Event::Accepted { id: 1 }), false, false, 1,));
     assert!(inbox.publish(
         Response::Event(Event::Completed {
             id: 1,
@@ -97,11 +92,18 @@ fn observations_cross_in_order() {
     ));
     assert!(matches!(
         inbox.receive(),
-        Some(Frame { response: Response::Event(Event::Accepted { id: 1 }), .. })
+        Some(Frame {
+            response: Response::Event(Event::Accepted { id: 1 }),
+            ..
+        })
     ));
     assert!(matches!(
         inbox.receive(),
-        Some(Frame { response: Response::Event(Event::Completed { id: 1, .. }), terminal: true, .. })
+        Some(Frame {
+            response: Response::Event(Event::Completed { id: 1, .. }),
+            terminal: true,
+            ..
+        })
     ));
     assert!(inbox.receive().is_none());
 }
@@ -185,7 +187,10 @@ fn a_large_budget_does_not_reserve_proportional_depth() {
     // The byte budget is still fully enforced, so a large message is still
     // accepted and a second one is still refused.
     let inbox = Inbox::new(16 * 1024 * 1024);
-    assert_eq!(inbox.submit(invoke(1), 4 * 1024 * 1024), Ok(Submission::Queued));
+    assert_eq!(
+        inbox.submit(invoke(1), 4 * 1024 * 1024),
+        Ok(Submission::Queued)
+    );
     assert_eq!(
         inbox.submit(invoke(2), 4 * 1024 * 1024),
         Ok(Submission::Queued),
@@ -305,12 +310,7 @@ fn retirement_races_a_draining_carrier_without_losing_frames() {
 #[test]
 fn failure_is_terminal_for_the_inbox() {
     let inbox = Inbox::new(1024);
-    assert!(inbox.publish(
-        Response::Failed(Error::Unavailable),
-        false,
-        true,
-        1
-    ));
+    assert!(inbox.publish(Response::Failed(Error::Unavailable), false, true, 1));
     inbox.retire();
 
     let Frame { response, .. } = inbox.receive().expect("failure frame");

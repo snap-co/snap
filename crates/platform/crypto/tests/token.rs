@@ -74,11 +74,11 @@ fn verification_ignores_token_supplied_key_locations() {
         URL_SAFE_NO_PAD.encode(claims.to_string())
     );
     let signature = rsa::pkcs1v15::SigningKey::<Sha256>::new(key).sign(input.as_bytes());
-    let token = format!(
-        "{input}.{}",
-        URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+    assert_eq!(
+        native().verify_token(&token, &jwks).unwrap()["sub"],
+        "person"
     );
-    assert_eq!(native().verify_token(&token, &jwks).unwrap()["sub"], "person");
     // An empty or unrelated JWKS supplies no candidate key for the header's kid.
     assert!(native().verify_token(&token, &json!({"keys":[]})).is_err());
 }

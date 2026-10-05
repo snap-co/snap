@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::{
-    io::{Read, Write},
+    io::{BufRead, BufReader, Write},
     net::TcpListener,
 };
 
@@ -14,13 +14,15 @@ struct OAuth {
 }
 
 fn main() {
-    let config = snap_config::Config::<Application>::read(
-        &snap_config::application_config("fixture").unwrap(),
-    )
-    .unwrap();
-    if std::env::args().any(|arg| arg == "--migrate") {
-        std::fs::create_dir_all(config.path(&config.host.data_dir)).unwrap();
-        return;
+    let options = snap_config::Options::parse().unwrap();
+    let config = snap_config::Config::<Application>::read(&options.config).unwrap();
+    match options.action {
+        snap_config::Action::Check => return,
+        snap_config::Action::Migrate => {
+            std::fs::create_dir_all(config.path(&config.host.data_dir)).unwrap();
+            return;
+        }
+        snap_config::Action::Serve => {}
     }
     let secrets = config.load_secrets().unwrap();
     assert!(
@@ -38,8 +40,18 @@ fn main() {
         connection
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        let mut request = [0; 4096];
-        connection.read(&mut request).unwrap();
+        // Consume the whole GET header before closing. A partial socket read can
+        // leave unread bytes and turn an otherwise valid response into a reset.
+        {
+            let mut request = BufReader::new(&mut connection);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+        }
         let body = fixture::answer().to_string();
         write!(
             connection,

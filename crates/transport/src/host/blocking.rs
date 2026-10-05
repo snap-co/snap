@@ -956,10 +956,10 @@ fn settle<B: Backend, P: Participant<B>>(
     let mut failure = None;
     loop {
         let changes = context.take_changes();
-        if !changes.is_empty() {
-            if let Err(error) = participant.committed(context, &changes, &Value::Null) {
-                failure.get_or_insert(error);
-            }
+        if !changes.is_empty()
+            && let Err(error) = participant.committed(context, &changes, &Value::Null)
+        {
+            failure.get_or_insert(error);
         }
         match participant.reconcile(context) {
             Ok(true) => {}

@@ -3,7 +3,9 @@
 //! single-response exchange, not a protocol guarantee.
 
 use snap_transport::{
-    Channel, Command, Error, Event, Invocation, Response, client::{Client, Pump}, json,
+    Channel, Command, Error, Event, Invocation, Response,
+    client::{Client, Pump},
+    json,
 };
 use std::{
     collections::VecDeque,
@@ -85,7 +87,11 @@ fn an_invocation_completes_across_separate_frames() {
 
     let id = ready(client.begin("some.thing", json!({}))).unwrap();
     assert_eq!(id, 1);
-    assert_eq!(client.outstanding(), 1, "the call is tracked before any frame");
+    assert_eq!(
+        client.outstanding(),
+        1,
+        "the call is tracked before any frame"
+    );
     let sent = sent.lock().unwrap();
     assert_eq!(sent.len(), 1, "sending must not wait for a reply");
     match &sent[0] {
@@ -330,7 +336,10 @@ fn a_lost_trace_reports_immediately_rather_than_waiting_for_the_channel() {
     let (script, _) = Script::new(vec![completed(1, ok()), accepted(1)]);
     let mut client = Client::new(script);
     let id = ready(client.begin("some.thing", json!({}))).unwrap();
-    assert_eq!(ready(client.await_outcome(id, |_| {})).unwrap_err(), Error::Protocol);
+    assert_eq!(
+        ready(client.await_outcome(id, |_| {})).unwrap_err(),
+        Error::Protocol
+    );
 
     // A frame for someone else's invocation is dropped and never touches this
     // trace, so the call keeps waiting and then reports the unknown outcome.

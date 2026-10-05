@@ -157,12 +157,15 @@ fn frames(tc: &TestCase, id: u64) -> Vec<Response> {
 fn events(frames: &[Response], expected_id: u64) -> Vec<Event> {
     let mut seen = Vec::new();
     for frame in frames {
-        let Response::Event(event) = frame else { continue };
+        let Response::Event(event) = frame else {
+            continue;
+        };
         match event {
             Event::Accepted { id }
             | Event::Progress { id, .. }
             | Event::Bearer { id, .. }
-            | Event::Completed { id, .. } if *id == expected_id => {}
+            | Event::Completed { id, .. }
+                if *id == expected_id => {}
             _ => continue,
         }
         let terminal = matches!(event, Event::Completed { .. });

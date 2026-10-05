@@ -9,13 +9,16 @@ fn production_package_serves_without_publishing_testy_debugger_controls() {
         net::TcpStream,
         process::Stdio,
     };
-    let repository = snap_browser_tests::support::root();
+    // The native route builds snap-cli alongside this Cargo test executable,
+    // including when Cargo selects a nondefault target directory or target triple.
+    let executable = std::env::current_exe().unwrap();
+    let cli = executable.parent().unwrap().parent().unwrap().join("snap");
     let source = snap_app_browser_tests::support::SourceCopy::new().unwrap();
     let root = source.root.join("apps/testy");
     let input = root.join(".deployment/production");
     fs::create_dir_all(&input).unwrap();
     fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='production'\nlisten='0.0.0.0:0'\norigin='https://testy.example.test:443/'\ndata_dir='{}'\n[app]\n", source.path().join("data").display())).unwrap();
-    let result = Command::new(repository.join("target/debug/snap"))
+    let result = Command::new(cli)
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", source.path().join("gate-target"))
         .args(["build", "production"])

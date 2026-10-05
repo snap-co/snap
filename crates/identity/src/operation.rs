@@ -120,6 +120,8 @@ contract!(
 
 pub type Initialize =
     Box<dyn Fn(&mut Transaction<'_>, &Principal, &str) -> Result<(), Error> + Send>;
+pub type LookupPrincipals =
+    Box<dyn Fn(&mut Transaction<'_>, &str) -> Result<Vec<String>, Error> + Send>;
 /// Composition can initialize its own data when a new identity is enrolled.
 /// It cannot replace Identity's contracts, credential policy or response shape.
 pub struct Enrollment {
@@ -131,7 +133,7 @@ pub struct Enrollment {
 /// names and matching email metadata never link accounts.
 pub struct PasskeyLookup {
     pub data: Data,
-    pub lookup: Box<dyn Fn(&mut Transaction<'_>, &str) -> Result<Vec<String>, Error> + Send>,
+    pub lookup: LookupPrincipals,
 }
 #[derive(Default)]
 pub struct Operations {
@@ -437,15 +439,15 @@ pub fn passkey_definitions<C: Crypto, W: crate::passkey::WebAuthn + Clone + Send
                     proof.response.clone(),
                     now(context)?,
                 )?;
-                if context.bearer.is_none() {
-                    if let Some(hook) = &enrollment {
-                        let labels = Credential::summaries(tx, &issued.principal.identity)?;
-                        (hook.initialize)(
-                            tx,
-                            &issued.principal,
-                            &labels.first().ok_or(Error::Invalid)?.label,
-                        )?;
-                    }
+                if context.bearer.is_none()
+                    && let Some(hook) = &enrollment
+                {
+                    let labels = Credential::summaries(tx, &issued.principal.identity)?;
+                    (hook.initialize)(
+                        tx,
+                        &issued.principal,
+                        &labels.first().ok_or(Error::Invalid)?.label,
+                    )?;
                 }
                 context
                     .bearer_changed(Change::Set(Token::new(issued.bearer)))

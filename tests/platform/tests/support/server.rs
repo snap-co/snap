@@ -83,9 +83,7 @@ impl Dispatch for Queues {
             closed: Arc::new(Mutex::new(false)),
             late_reply: Arc::new(Mutex::new(None)),
         };
-        self.0
-            .send(peer.clone())
-            .map_err(|_| Error::Unavailable)?;
+        self.0.send(peer.clone()).map_err(|_| Error::Unavailable)?;
         Ok(Endpoint(peer))
     }
     async fn request(&self, _: Invocation, _: Option<String>) -> snap_transport::bearer::Reply {
