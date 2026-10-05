@@ -190,14 +190,14 @@ fn declared_application_error_rolls_back_all_staged_writes() {
 
 #[test]
 fn bearer_callbacks_are_discarded_on_handler_validation_and_commit_failure() {
-    use snap_store::{Backend, Catalog, CommitError, Row, Store, Table, Write};
+    use snap_store::{Backend, Catalog, CommitError, Program, Row, Store, Table};
     use snap_transport::bearer::{Change, Receiver, Token};
     struct Disk(u8);
     impl Backend for Disk {
         fn load(&mut self, _: &Table) -> Result<Vec<Row>, StoreError> {
             Ok(vec![])
         }
-        fn commit(&mut self, _: &[Write]) -> Result<(), CommitError> {
+        fn commit(&mut self, _: &Program) -> Result<(), CommitError> {
             match self.0 {
                 1 => Err(CommitError::Rejected(StoreError::Unavailable)),
                 2 => Err(CommitError::Indeterminate),

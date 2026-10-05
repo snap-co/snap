@@ -8,7 +8,9 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
-use snap_store::{Backend, Catalog, CommitError, Error, Row, Rows, Table, Value, Write};
+use snap_store::{
+    Backend, Catalog, CommitError, Error, Instruction, Program, Row, Rows, Table, Value,
+};
 
 type Tables = BTreeMap<String, BTreeMap<Vec<Value>, Row>>;
 
@@ -28,32 +30,25 @@ impl Memory {
         Ok(Self { catalog, tables })
     }
 
-    fn apply(&self, tables: &mut Tables, writes: &[Write]) -> Result<(), Error> {
-        for write in writes {
-            let name = match write {
-                Write::Insert { table, .. }
-                | Write::Update { table, .. }
-                | Write::Delete { table, .. } => table,
-            };
+    fn apply(&self, tables: &mut Tables, program: &Program) -> Result<(), Error> {
+        program.validate_schema(&self.catalog)?;
+        for instruction in program.instructions() {
+            let name = instruction.table();
             let schema = self.catalog.table(name)?;
             let rows = tables.get_mut(name).ok_or(Error::Invalid)?;
-            match write {
-                Write::Insert { row, .. } => {
+            match &instruction {
+                Instruction::Insert { row, .. } => {
                     schema.validate_row(row)?;
                     if rows.insert(schema.key(row), row.clone()).is_some() {
                         return Err(Error::Constraint);
                     }
                 }
-                Write::Update { key, row, .. } => {
+                Instruction::Update { key, changes, .. } => {
+                    let row = rows.get_mut(key).ok_or(Error::Constraint)?;
+                    row.extend(changes.clone());
                     schema.validate_row(row)?;
-                    if rows.remove(key).is_none() {
-                        return Err(Error::Constraint);
-                    }
-                    if rows.insert(schema.key(row), row.clone()).is_some() {
-                        return Err(Error::Constraint);
-                    }
                 }
-                Write::Delete { key, .. } => {
+                Instruction::Delete { key, .. } => {
                     if rows.remove(key).is_none() {
                         return Err(Error::Constraint);
                     }
@@ -100,9 +95,9 @@ impl Backend for Memory {
         Ok(self.tables[&table.name].values().cloned().collect())
     }
 
-    fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
+    fn commit(&mut self, program: &Program) -> Result<(), CommitError> {
         let mut staged = self.tables.clone();
-        self.apply(&mut staged, writes)
+        self.apply(&mut staged, program)
             .map_err(CommitError::Rejected)?;
         self.tables = staged;
         Ok(())
@@ -139,10 +134,10 @@ impl<B: Backend> Backend for RejectOnce<B> {
     fn load(&mut self, table: &Table) -> Result<Rows, Error> {
         self.backend.load(table)
     }
-    fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
-        if !writes.is_empty() && self.reject.swap(false, Ordering::SeqCst) {
+    fn commit(&mut self, program: &Program) -> Result<(), CommitError> {
+        if !program.is_empty() && self.reject.swap(false, Ordering::SeqCst) {
             return Err(CommitError::Rejected(Error::Unavailable));
         }
-        self.backend.commit(writes)
+        self.backend.commit(program)
     }
 }

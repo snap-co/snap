@@ -7,10 +7,10 @@ impl Backend for Disk {
     fn load(&mut self, _: &Table) -> Result<Vec<Row>, Error> {
         Ok(self.0.clone())
     }
-    fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
-        for write in writes {
-            if let Write::Insert { row, .. } = write {
-                self.0.push(row.clone());
+    fn commit(&mut self, program: &Program) -> Result<(), CommitError> {
+        for instruction in program.instructions() {
+            if let Instruction::Insert { row, .. } = instruction {
+                self.0.push(row);
             }
         }
         Ok(())
@@ -38,7 +38,7 @@ fn unknown_commit_outcome_fences_reads_loads_and_further_writes() {
         fn load(&mut self, _: &Table) -> Result<Vec<Row>, Error> {
             Ok(vec![])
         }
-        fn commit(&mut self, _: &[Write]) -> Result<(), CommitError> {
+        fn commit(&mut self, _: &Program) -> Result<(), CommitError> {
             Err(CommitError::Indeterminate)
         }
     }
@@ -82,7 +82,7 @@ fn a_backend_panic_during_commit_fences_the_unknown_outcome() {
         fn load(&mut self, _: &Table) -> Result<Vec<Row>, Error> {
             Ok(vec![])
         }
-        fn commit(&mut self, _: &[Write]) -> Result<(), CommitError> {
+        fn commit(&mut self, _: &Program) -> Result<(), CommitError> {
             panic!("host lost control after issuing a commit")
         }
     }

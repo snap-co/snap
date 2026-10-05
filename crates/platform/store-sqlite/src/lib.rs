@@ -5,7 +5,10 @@
 mod migration;
 pub use migration::{MigrationError, MigrationReport, migrate, status};
 use rusqlite::{Connection, params_from_iter};
-use snap_store::{Backend, Catalog, CommitError, Error, Store, Table, Write};
+use snap_store::{
+    Backend, Catalog, CommitError, Error, Instruction, LoggedProgram, Program, ProgramLog, Store,
+    Table,
+};
 use snap_store::{Kind, Row, Rows, Value};
 use std::path::Path;
 
@@ -149,16 +152,22 @@ impl Backend for Sqlite {
             .map_err(sql_error)
     }
 
-    fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
+    fn commit(&mut self, program: &Program) -> Result<(), CommitError> {
+        program
+            .validate_schema(&self.catalog)
+            .map_err(CommitError::Rejected)?;
+        if program.is_empty() {
+            return Ok(());
+        }
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
             .map_err(|e| CommitError::Rejected(sql_error(e)))?;
-        for write in writes {
+        for instruction in program.instructions() {
             let result = (|| {
-                let (name, key) = match write {
-                    Write::Insert { table, .. } => (table, None),
-                    Write::Update { table, key, .. } | Write::Delete { table, key } => {
+                let (name, key) = match &instruction {
+                    Instruction::Insert { table, .. } => (table, None),
+                    Instruction::Update { table, key, .. } | Instruction::Delete { table, key } => {
                         (table, Some(key))
                     }
                 };
@@ -171,8 +180,8 @@ impl Backend for Sqlite {
                     .collect::<Vec<_>>()
                     .join(" AND ");
                 let mut values = Vec::new();
-                let sql = match write {
-                    Write::Insert { row, .. } => {
+                let sql = match &instruction {
+                    Instruction::Insert { row, .. } => {
                         schema.validate_row(row)?;
                         values.extend(names.iter().map(|c| sql_value(&row[c])));
                         format!(
@@ -182,9 +191,9 @@ impl Backend for Sqlite {
                             vec!["?"; names.len()].join(",")
                         )
                     }
-                    Write::Update { row, .. } => {
-                        schema.validate_row(row)?;
-                        values.extend(names.iter().map(|c| sql_value(&row[c])));
+                    Instruction::Update { changes, .. } => {
+                        let names: Vec<_> = changes.keys().cloned().collect();
+                        values.extend(names.iter().map(|c| sql_value(&changes[c])));
                         format!(
                             "UPDATE {} SET {} WHERE {condition}",
                             quote(name),
@@ -195,7 +204,7 @@ impl Backend for Sqlite {
                                 .join(",")
                         )
                     }
-                    Write::Delete { .. } => {
+                    Instruction::Delete { .. } => {
                         format!("DELETE FROM {} WHERE {condition}", quote(name))
                     }
                 };
@@ -218,6 +227,17 @@ impl Backend for Sqlite {
                 };
             }
         }
+        // SQLite is the one durability authority. The program and all of its
+        // materialized changes either commit together or roll back together.
+        if let Err(error) = tx.execute(
+            "INSERT INTO _snap_store_programs (program) VALUES (?)",
+            [program.as_bytes()],
+        ) {
+            return match tx.rollback() {
+                Ok(()) => Err(CommitError::Rejected(sql_error(error))),
+                Err(_) => Err(CommitError::Indeterminate),
+            };
+        }
         // Deferred FK constraints fail at COMMIT. Explicit SQL keeps the tx alive
         // so rollback can be checked, rather than silently ignored by Drop.
         match tx.execute_batch("COMMIT") {
@@ -233,5 +253,30 @@ impl Backend for Sqlite {
                 }
             }
         }
+    }
+}
+
+impl ProgramLog for Sqlite {
+    fn programs(&mut self, after: u64, limit: usize) -> Result<Vec<LoggedProgram>, Error> {
+        let after = i64::try_from(after).map_err(|_| Error::Invalid)?;
+        if limit == 0 || limit > 4096 {
+            return Err(Error::Invalid);
+        }
+        let mut query = self.connection.prepare(
+            "SELECT position, program FROM _snap_store_programs WHERE position > ? ORDER BY position LIMIT ?"
+        ).map_err(sql_error)?;
+        let rows = query
+            .query_map([after, limit as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(sql_error)?;
+        rows.map(|row| {
+            let (position, bytes) = row.map_err(sql_error)?;
+            Ok(LoggedProgram {
+                position: u64::try_from(position).map_err(|_| Error::Invalid)?,
+                program: Program::from_bytes(&self.catalog, &bytes)?,
+            })
+        })
+        .collect()
     }
 }

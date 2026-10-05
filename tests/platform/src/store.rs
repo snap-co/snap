@@ -58,6 +58,112 @@ pub fn catalog() -> Catalog {
     migrations()[0].apply(&Catalog::default()).unwrap()
 }
 
+/// Programs execute the same transformations without invoking the authoring
+/// handler. Reloaded reads independently exercise each backend's interpreter.
+pub fn mutation_programs_replay_ordered_partial_updates_without_handlers<B: Backend>(
+    store: &mut Store<B>,
+) {
+    for table in ["identity.accounts", "access.grants"] {
+        store.load(table).unwrap();
+    }
+    let committed = store
+        .run("author", |tx| {
+            tx.insert("access.grants", Row::from([("account".into(), 1.into())]))?;
+            tx.insert("identity.accounts", row(1, "alice"))?;
+            tx.update(
+                "identity.accounts",
+                &[1.into()],
+                Row::from([("email".into(), "bob".into())]),
+            )?;
+            assert_eq!(
+                tx.get("identity.accounts", &[1.into()])?,
+                Some(row(1, "bob"))
+            );
+            tx.update(
+                "identity.accounts",
+                &[1.into()],
+                Row::from([("email".into(), "carol".into())]),
+            )?;
+            tx.insert("identity.accounts", row(2, "temporary"))?;
+            tx.delete("identity.accounts", &[2.into()])?;
+            Ok(())
+        })
+        .unwrap();
+    let bytes = committed.program.as_bytes().to_vec();
+    drop(committed);
+    store
+        .run("reset", |tx| {
+            tx.delete("access.grants", &[1.into()])?;
+            tx.delete("identity.accounts", &[1.into()])?;
+            Ok(())
+        })
+        .unwrap();
+    let program = snap_store::Program::from_bytes(store.catalog(), &bytes).unwrap();
+    store.replay(&program).unwrap();
+    for table in ["identity.accounts", "access.grants"] {
+        store.load(table).unwrap();
+    }
+    assert_eq!(
+        store
+            .inspect("accounts", |tx| tx.find(
+                "identity.accounts",
+                "primary",
+                &[]
+            ))
+            .unwrap(),
+        vec![row(1, "carol")]
+    );
+    assert_eq!(
+        store
+            .inspect("grants", |tx| tx.find("access.grants", "primary", &[]))
+            .unwrap(),
+        vec![Row::from([("account".into(), 1.into())])]
+    );
+    assert_eq!(
+        store
+            .inspect("email", |tx| tx.find(
+                "identity.accounts",
+                "email",
+                &["carol".into()]
+            ))
+            .unwrap(),
+        vec![row(1, "carol")]
+    );
+
+    // A replay failure after staging an earlier instruction publishes nothing.
+    let failed = store
+        .run("author failure program", |tx| {
+            tx.insert("identity.accounts", row(3, "dave"))?;
+            tx.update(
+                "identity.accounts",
+                &[1.into()],
+                Row::from([("email".into(), "eve".into())]),
+            )
+        })
+        .unwrap()
+        .program;
+    store
+        .run("remove replay target", |tx| {
+            tx.delete("identity.accounts", &[3.into()])?;
+            tx.delete("access.grants", &[1.into()])?;
+            tx.delete("identity.accounts", &[1.into()])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(store.replay(&failed), Err(Error::NotFound)));
+    store.load("identity.accounts").unwrap();
+    assert!(
+        store
+            .inspect("failed replay", |tx| tx.find(
+                "identity.accounts",
+                "primary",
+                &[]
+            ))
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn row(id: i64, email: &str) -> Row {
     Row::from([("id".into(), id.into()), ("email".into(), email.into())])
 }

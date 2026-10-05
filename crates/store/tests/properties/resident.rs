@@ -265,13 +265,13 @@ fn rejection_and_lost_commit_acknowledgement_never_serve_stale_memory(tc: TestCa
         fn load(&mut self, _: &Table) -> Result<Vec<Row>, Error> {
             Ok(self.durable.borrow().clone())
         }
-        fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
+        fn commit(&mut self, program: &Program) -> Result<(), CommitError> {
             if self.fault == 1 {
                 return Err(CommitError::Rejected(Error::Unavailable));
             }
-            for write in writes {
-                if let Write::Insert { row, .. } = write {
-                    self.durable.borrow_mut().push(row.clone());
+            for instruction in program.instructions() {
+                if let Instruction::Insert { row, .. } = instruction {
+                    self.durable.borrow_mut().push(row);
                 }
             }
             if self.fault == 2 {

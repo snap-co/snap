@@ -68,6 +68,18 @@ fn abrupt_process_exit_preserves_commits_and_discards_uncommitted_attempts() {
             .unwrap()
             .value;
         assert_eq!(row.is_some(), phase == "after");
+        let programs = store.programs(0, 10).unwrap();
+        assert_eq!(programs.len(), usize::from(phase == "after"));
+        if let Some(entry) = programs.first() {
+            assert_eq!(entry.position, 1);
+            assert_eq!(
+                entry.program.instructions().collect::<Vec<_>>(),
+                vec![Instruction::Insert {
+                    table: "ledger.entries".into(),
+                    row: Row::from([("id".into(), 1.into())]),
+                }]
+            );
+        }
         drop(store);
         std::fs::remove_file(path).unwrap();
     }

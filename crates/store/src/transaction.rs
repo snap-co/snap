@@ -2,7 +2,7 @@
 //! a backend. A miss poisons the attempt, even if its Result is caught. There is
 //! no suspension or implicit retry. Hosts explicitly load, then callers may retry.
 //! This is cooperative IO isolation, not a sandbox for arbitrary Rust callbacks.
-use crate::{Catalog, Row, Rows, Table, Value, kind};
+use crate::{Catalog, Instruction, Program, Row, Rows, Table, Value, kind};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,
@@ -34,23 +34,6 @@ impl core::fmt::Display for Error {
 }
 impl core::error::Error for Error {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Write {
-    Insert {
-        table: String,
-        row: Row,
-    },
-    Update {
-        table: String,
-        key: Vec<Value>,
-        row: Row,
-    },
-    Delete {
-        table: String,
-        key: Vec<Value>,
-    },
-}
-
 pub enum CommitError {
     /// Backend guarantees no write from this transaction committed.
     Rejected(Error),
@@ -59,13 +42,29 @@ pub enum CommitError {
 
 /// Host IO seam. The backend owns exclusive write authority for its lifetime.
 /// `load` returns the COMPLETE table from that authority, never a partial page.
-/// `commit` atomically persists all writes, in order, before returning success.
+/// `commit` atomically executes the binary program, in order, before returning
+/// success. It must reject programs for another schema. A durable program log,
+/// when supplied, commits in the same transaction as its materialized data.
 /// Failure must distinguish confirmed rollback from an unknown commit outcome.
 /// No other connection, process, or out-of-band writer may modify the database
 /// while resident data is served. The SQLite adapter enforces an exclusive lock.
 pub trait Backend {
     fn load(&mut self, table: &Table) -> Result<Rows, Error>;
-    fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError>;
+    fn commit(&mut self, program: &Program) -> Result<(), CommitError>;
+}
+
+/// Host access to private committed programs. Positions belong to this log,
+/// not a cluster-wide ordering. Programs can contain secret material.
+pub trait ProgramLog: Backend {
+    /// Return at most `limit` entries in ascending position, strictly after
+    /// `after`. No handler or controller is invoked while reading the log.
+    fn programs(&mut self, after: u64, limit: usize) -> Result<Vec<LoggedProgram>, Error>;
+}
+
+#[derive(Debug)]
+pub struct LoggedProgram {
+    pub position: u64,
+    pub program: Program,
 }
 
 #[derive(Clone, Default)]
@@ -112,6 +111,9 @@ pub struct MissRecord {
 #[derive(Debug)]
 pub struct Committed<T> {
     pub value: T,
+    /// The exact committed instructions, before client authorization/filtering.
+    /// Empty for read-only transactions. Never broadcast this wholesale.
+    pub program: Program,
     /// Net row changes, available only after successful commit and publication.
     /// This is an in-process notification, not a durable delivery log.
     pub changes: Vec<RowChange>,
@@ -129,6 +131,7 @@ pub struct RowChange {
 
 pub struct Store<B> {
     catalog: Catalog,
+    schema_id: [u8; 32],
     backend: B,
     residents: BTreeMap<String, Resident>,
     misses: Misses,
@@ -138,7 +141,9 @@ pub struct Store<B> {
 impl<B: Backend> Store<B> {
     pub fn new(catalog: Catalog, backend: B) -> Result<Self, Error> {
         catalog.validate()?;
+        let schema_id = crate::program::schema_id(&catalog)?;
         Ok(Self {
+            schema_id,
             residents: catalog
                 .tables
                 .iter()
@@ -169,7 +174,7 @@ impl<B: Backend> Store<B> {
     ) -> Result<T, Error> {
         self.run(operation, |tx| {
             let value = read(tx)?;
-            if !tx.writes.is_empty() {
+            if !tx.program.is_empty() {
                 return Err(Error::Invalid);
             }
             Ok(value)
@@ -287,7 +292,7 @@ impl<B: Backend> Store<B> {
         let mut tx = Transaction {
             catalog: &self.catalog,
             residents: self.residents.clone(),
-            writes: Vec::new(),
+            program: Program::empty(self.schema_id),
             failed: None,
         };
         let result = handler(&mut tx);
@@ -315,15 +320,18 @@ impl<B: Backend> Store<B> {
         // Allocate the feed before commit, just like resident indexes. Observers
         // receive it only after the backend confirms the entire transaction.
         let keys: BTreeSet<_> = tx
-            .writes
-            .iter()
-            .map(|write| match write {
-                Write::Insert { table, row } => (
+            .program
+            .instructions()
+            .map(|instruction| match instruction {
+                Instruction::Insert { table, row } => (
                     table.clone(),
-                    self.catalog.table(table).expect("validated table").key(row),
+                    self.catalog
+                        .table(&table)
+                        .expect("validated table")
+                        .key(&row),
                 ),
-                Write::Update { table, key, .. } | Write::Delete { table, key } => {
-                    (table.clone(), key.clone())
+                Instruction::Update { table, key, .. } | Instruction::Delete { table, key } => {
+                    (table, key)
                 }
             })
             .collect();
@@ -340,11 +348,11 @@ impl<B: Backend> Store<B> {
                 })
             })
             .collect();
-        if !tx.writes.is_empty() {
+        if !tx.program.is_empty() {
             // Also fence unwinding out of a host commit: its effects may already
             // be durable even though the host never returned a classified result.
             self.fenced = true;
-            match self.backend.commit(&tx.writes) {
+            match self.backend.commit(&tx.program) {
                 Ok(()) => self.fenced = false,
                 Err(CommitError::Rejected(error)) => {
                     self.fenced = false;
@@ -360,14 +368,52 @@ impl<B: Backend> Store<B> {
         // All allocations/index construction happened BEFORE durable commit.
         // Exclusive borrowing prevents a reader between commit and publication.
         self.residents = tx.residents;
-        Ok(Committed { value, changes })
+        Ok(Committed {
+            value,
+            changes,
+            program: tx.program,
+        })
+    }
+
+    /// Apply a trusted program without the original handler. Hosts must prepare
+    /// resident data first, supply the matching checkpoint/schema, and apply
+    /// each committed position once, in order. This is not duplicate suppression
+    /// or concurrent-snapshot validation. Replaying commits through this Store's
+    /// backend and produces its normal post-commit change feed. It does not run
+    /// application handlers, controllers or their external effects.
+    pub fn replay(&mut self, program: &Program) -> Result<Committed<()>, Error> {
+        if self.fenced {
+            return Err(Error::Indeterminate);
+        }
+        if !program.matches(&self.schema_id) {
+            return Err(Error::Invalid);
+        }
+        self.run("store.replay", |tx| {
+            tx.program = program.clone();
+            for instruction in program.instructions() {
+                tx.apply(instruction)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+impl<B: ProgramLog> Store<B> {
+    pub fn programs(&mut self, after: u64, limit: usize) -> Result<Vec<LoggedProgram>, Error> {
+        if self.fenced {
+            return Err(Error::Indeterminate);
+        }
+        if limit == 0 || limit > 4096 {
+            return Err(Error::Invalid);
+        }
+        self.backend.programs(after, limit)
     }
 }
 
 pub struct Transaction<'a> {
     catalog: &'a Catalog,
     residents: BTreeMap<String, Resident>,
-    writes: Vec<Write>,
+    program: Program,
     failed: Option<Error>,
 }
 
@@ -452,43 +498,23 @@ impl Transaction<'_> {
     /// A complete insert requires no resident read. Database constraints validate
     /// cold-key uniqueness at commit. Reads of this staged primary key are hits.
     pub fn insert(&mut self, table: &str, row: Row) -> Result<(), Error> {
-        self.check(|this| {
-            let schema = this.catalog.table(table)?;
-            schema.validate_row(&row)?;
-            let key = schema.key(&row);
-            let resident = this.residents.get_mut(table).ok_or(Error::Invalid)?;
-            if resident.rows.contains_key(&key) {
-                return Err(Error::Constraint);
-            }
-            resident.absent.remove(&key);
-            resident.rows.insert(key, row.clone());
-            resident.reindex(schema);
-            this.writes.push(Write::Insert {
-                table: table.into(),
-                row,
-            });
-            Ok(())
+        self.emit(Instruction::Insert {
+            table: table.into(),
+            row,
         })
     }
 
     pub fn update(&mut self, table: &str, key: &[Value], changes: Row) -> Result<(), Error> {
         self.check(|this| {
-            let mut row = this.get(table, key)?.ok_or(Error::NotFound)?;
-            let schema = this.catalog.table(table)?;
-            if changes.keys().any(|c| schema.primary.contains(c)) {
-                return Err(Error::Invalid);
+            if changes.is_empty() {
+                this.get(table, key)?.ok_or(Error::NotFound)?;
+                return Ok(());
             }
-            row.extend(changes);
-            schema.validate_row(&row)?;
-            let resident = this.residents.get_mut(table).ok_or(Error::Invalid)?;
-            resident.rows.insert(key.into(), row.clone());
-            resident.reindex(schema);
-            this.writes.push(Write::Update {
+            this.emit(Instruction::Update {
                 table: table.into(),
                 key: key.into(),
-                row,
-            });
-            Ok(())
+                changes,
+            })
         })
     }
 
@@ -497,16 +523,62 @@ impl Transaction<'_> {
             let Some(_) = this.get(table, key)? else {
                 return Ok(false);
             };
-            let schema = this.catalog.table(table)?;
-            let resident = this.residents.get_mut(table).ok_or(Error::Invalid)?;
-            resident.rows.remove(key);
-            resident.absent.insert(key.into());
-            resident.reindex(schema);
-            this.writes.push(Write::Delete {
+            this.emit(Instruction::Delete {
                 table: table.into(),
                 key: key.into(),
-            });
+            })?;
             Ok(true)
+        })
+    }
+
+    // Authoring and replay use this one executor. Append before applying so an
+    // encoding failure poisons/discards the attempt just like a state failure.
+    fn emit(&mut self, instruction: Instruction) -> Result<(), Error> {
+        self.check(|this| {
+            instruction.validate(this.catalog)?;
+            let instruction = this.program.push(instruction)?;
+            this.apply(instruction)
+        })
+    }
+
+    fn apply(&mut self, instruction: Instruction) -> Result<(), Error> {
+        self.check(|this| {
+            instruction.validate(this.catalog)?;
+            let table: String = instruction.table().into();
+            let catalog = this.catalog;
+            let schema = catalog.table(&table)?;
+            match instruction {
+                Instruction::Insert { row, .. } => {
+                    let key = schema.key(&row);
+                    let resident = this.residents.get_mut(&table).ok_or(Error::Invalid)?;
+                    if resident.rows.contains_key(&key) {
+                        return Err(Error::Constraint);
+                    }
+                    resident.absent.remove(&key);
+                    resident.rows.insert(key, row);
+                }
+                Instruction::Update { key, changes, .. } => {
+                    let mut row = this.get(&table, &key)?.ok_or(Error::NotFound)?;
+                    row.extend(changes);
+                    schema.validate_row(&row)?;
+                    this.residents
+                        .get_mut(&table)
+                        .ok_or(Error::Invalid)?
+                        .rows
+                        .insert(key, row);
+                }
+                Instruction::Delete { key, .. } => {
+                    this.get(&table, &key)?.ok_or(Error::NotFound)?;
+                    let resident = this.residents.get_mut(&table).ok_or(Error::Invalid)?;
+                    resident.rows.remove(&key);
+                    resident.absent.insert(key);
+                }
+            }
+            this.residents
+                .get_mut(&table)
+                .ok_or(Error::Invalid)?
+                .reindex(schema);
+            Ok(())
         })
     }
 }

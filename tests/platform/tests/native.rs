@@ -52,6 +52,7 @@ macro_rules! all_storage_cases {
             cold_insert_does_not_claim_other_keys_or_a_complete_index,
             committed_changes_coalesce_and_publish_only_the_net_state,
             releasing_residency_does_not_delete_rows_or_claim_complete_indexes,
+            mutation_programs_replay_ordered_partial_updates_without_handlers,
         );
     };
 }

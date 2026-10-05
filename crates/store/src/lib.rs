@@ -8,10 +8,12 @@ pub mod migration;
 pub mod residency;
 pub mod resource;
 pub use data::Data;
+pub mod program;
 mod schema;
 mod transaction;
 
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
+pub use program::{Instruction, Program};
 pub use schema::*;
 pub use transaction::*;
 

@@ -92,10 +92,10 @@ fn session_histories_match_authority_model(tc: TestCase) {
 
 #[hegel::test]
 fn failed_issuance_never_returns_a_credential_or_partial_authority(tc: TestCase) {
-    use snap_store::{Backend, Catalog, CommitError, Row, Store, Table, Write};
+    use snap_store::{Backend, Catalog, CommitError, Instruction, Program, Row, Store, Table};
     use std::sync::{Arc, Mutex};
     struct Disk {
-        writes: Arc<Mutex<Vec<Write>>>,
+        writes: Arc<Mutex<Vec<Instruction>>>,
         fault: u8,
     }
     impl Backend for Disk {
@@ -106,16 +106,18 @@ fn failed_issuance_never_returns_a_credential_or_partial_authority(tc: TestCase)
                 .unwrap()
                 .iter()
                 .filter_map(|write| match write {
-                    Write::Insert { table: name, row } if *name == table.name => Some(row.clone()),
+                    Instruction::Insert { table: name, row } if *name == table.name => {
+                        Some(row.clone())
+                    }
                     _ => None,
                 })
                 .collect())
         }
-        fn commit(&mut self, writes: &[Write]) -> Result<(), CommitError> {
+        fn commit(&mut self, program: &Program) -> Result<(), CommitError> {
             if self.fault == 1 {
                 return Err(CommitError::Rejected(Error::Unavailable));
             }
-            self.writes.lock().unwrap().extend_from_slice(writes);
+            self.writes.lock().unwrap().extend(program.instructions());
             if self.fault == 2 {
                 Err(CommitError::Indeterminate)
             } else {

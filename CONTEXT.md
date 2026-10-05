@@ -59,6 +59,15 @@ Application or module behavior invoked through Transport that reads and stages c
 **Attempt**:
 One execution of an operation against private transactional state. A failed attempt discards its staged writes rather than retaining a suspended application stack.
 
+**Mutation instruction**:
+A resolved transformation of Store-managed data. It describes the change without requiring the original operation or application code to execute again.
+
+**Mutation program**:
+An ordered, schema-bound binary representation of one transaction's mutation instructions. The transaction observes those transformations locally before the host commits them atomically.
+
+**Commit log**:
+The ordered durable record of committed mutation programs. Recovery applies programs after a known checkpoint position; the log is private and is not automatically a client replication stream.
+
 **Controller**:
 Behavior that responds to committed Store changes and can perform external effects through platform-supplied capabilities.
 

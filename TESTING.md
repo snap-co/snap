@@ -83,6 +83,16 @@ The native target runs shared Store cases against the reusable controlled memory
 backend, ephemeral SQLite and file-backed SQLite. SQLite in memory is still the
 SQLite driver, not the controlled memory driver.
 
+Those shared cases also replay binary mutation programs without authoring handlers,
+including ordered partial updates, read-your-writes, backend reloads and failed
+replay rollback. `crates/store/tests/program.rs` owns the versioned wire contract
+with independently authored bytes and malformed-input rejection. SQLite's
+`tests/programs.rs` owns atomic data/log persistence and reconstruction from a
+closed-database checkpoint plus its ordered log tail. The process-crash case in
+`tests/recovery.rs` checks both rows and programs after abrupt exit. These proofs
+do not establish power-loss durability, schema-crossing replay, automatic position
+deduplication or authorized client replication. The full log is private.
+
 Transport cases use a duplex observation interface plus separate client/server
 controls. Native adapters currently exercise TCP/TLS and JSON WebSocket servers,
 and the production TCP client with a raw peer. Host queues supply output frames

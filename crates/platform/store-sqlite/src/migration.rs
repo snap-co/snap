@@ -109,6 +109,13 @@ fn shape(connection: &Connection) -> Result<String, MigrationError> {
 }
 
 pub(crate) fn verify_shape(connection: &Connection) -> Result<(), MigrationError> {
+    // No adoption path for pre-program spike databases. Their rows have no
+    // mutation history; recreate them explicitly rather than inventing a log.
+    connection
+        .prepare("SELECT position, program FROM _snap_store_programs LIMIT 0")
+        .map_err(|_| {
+            MigrationError("mutation program log is missing; recreate the spike database".into())
+        })?;
     let recorded: String = connection.query_row(
         "SELECT definition FROM _snap_store_shape WHERE id=1",
         [],
@@ -138,7 +145,7 @@ pub(crate) fn apply(
                 "refusing to adopt an unmanaged database".into(),
             ));
         }
-        tx.execute_batch("CREATE TABLE _snap_store_history (id TEXT PRIMARY KEY NOT NULL, definition TEXT NOT NULL) STRICT; CREATE TABLE _snap_store_shape (id INTEGER PRIMARY KEY CHECK(id=1), definition TEXT NOT NULL) STRICT;")?;
+        tx.execute_batch("CREATE TABLE _snap_store_history (id TEXT PRIMARY KEY NOT NULL, definition TEXT NOT NULL) STRICT; CREATE TABLE _snap_store_shape (id INTEGER PRIMARY KEY CHECK(id=1), definition TEXT NOT NULL) STRICT; CREATE TABLE _snap_store_programs (position INTEGER PRIMARY KEY AUTOINCREMENT, program BLOB NOT NULL) STRICT;")?;
         tx.execute("INSERT INTO _snap_store_shape VALUES (1, ?)", [shape(&tx)?])?;
     }
     verify_shape(&tx)?;
