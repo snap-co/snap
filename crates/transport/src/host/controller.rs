@@ -261,12 +261,15 @@ impl<B: Backend> ControllerContext<'_, '_, B> {
         handler: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let value = self.commits.transact(operation, handler)?;
-        let changes = self.commits.take_changes();
-        let selected = self.pending.changed(self.commits, &changes);
-        let observed = self
-            .participant
-            .committed(self.commits, &changes, &Value::Null);
-        selected.and(observed)?;
+        for (changes, program) in self.commits.take_commits() {
+            let selected = self.pending.changed(self.commits, &changes);
+            self.commits.program = Some(program);
+            let observed = self
+                .participant
+                .committed(self.commits, &changes, &Value::Null);
+            self.commits.program = None;
+            selected.and(observed)?;
+        }
         Ok(value)
     }
     pub fn finalize(&mut self, resource: &Resource, key: &str) -> Result<(), Error> {

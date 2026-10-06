@@ -93,6 +93,24 @@ closed-database checkpoint plus its ordered log tail. The process-crash case in
 do not establish power-loss durability, schema-crossing replay, automatic position
 deduplication or authorized client replication. The full log is private.
 
+Store's production volatile backend now supplies the shared memory setup and
+client replicas; the controlled platform wrapper only injects commit rejection.
+`crates/store/tests/replica.rs` owns ordered replica application, reset checkpoints,
+duplicate positions and atomic failure. `crates/transport/tests/replication.rs`
+owns automatic operation/controller program publication with composite keys and
+binary fields and fail-closed queued delivery when policy is unavailable, without
+Document. Authy's `tests/accounts.rs` owns its Access
+policy, two-client profile updates, queued-byte redaction, denied/stale requests
+and restart/bootstrap. Its browser account journey owns actual Wasm execution,
+cross-tab delivery, forms and cookie lifecycle. This first replication path uses
+whole records, server-side full-table loading, explicit key subscriptions and
+fresh reconnect snapshots. It does not promise sparse payload loading, durable
+client holdings, log catch-up or optimistic mutation overlays.
+
+Testy's browser login/session journey also owns development wire-log redaction.
+Authentication spans several frames; the logger hides the complete correlated
+Request exchange and always hides bearer handoffs, even for unexpected IDs.
+
 Transport cases use a duplex observation interface plus separate client/server
 controls. Native adapters currently exercise TCP/TLS and JSON WebSocket servers,
 and the production TCP client with a raw peer. Host queues supply output frames

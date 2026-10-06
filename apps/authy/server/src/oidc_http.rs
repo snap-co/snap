@@ -547,12 +547,9 @@ fn claims(app: &App, tx: &mut Transaction<'_>, token: &str) -> Result<oidc::Clai
         });
     };
     let account = authy::profile_info(tx, &subject)?;
-    let document = authy::document().read(tx, &account.profile, Some(&subject))?;
+    let profile = authy::Profile::read(tx, &account.profile)?;
     Ok(oidc::Claims {
-        name: document.value["name"]
-            .as_str()
-            .ok_or(Error::Invalid)?
-            .into(),
+        name: profile.display_name(),
         email: account.email,
         email_verified: false,
         updated_at: 0,

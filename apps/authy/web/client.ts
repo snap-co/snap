@@ -4,7 +4,7 @@ import { bindIdentity, type IdentityBinding } from "../../../kits/react/identity
 import { bindPasskeys, type PasskeyBinding } from "../../../kits/browser/passkey";
 
 export interface Account { identity: string; email: string; profile: string; authenticated_at: number }
-export interface ProfileView { name: string; bio: string; revision: string }
+export interface ProfileView { first_name: string; last_name: string; revision: string }
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 export type LogoutScope = "current" | "others" | "all";
 export interface SessionSummary { id: string; expires: number; current: boolean }
@@ -25,12 +25,12 @@ interface AuthyBinding {
   connect_command(id: string): string;
   invoke(operation: string, input: string): string;
   receive(frame: string): string;
-  enqueue_edit(name: string, bio: string): string;
+  enqueue_edit(first: string, last: string): string;
   free(): void;
 }
 export interface WasmResult extends Publication {
   snapshot: {
-    profile: { revision: string; value: { name: string; bio: string } } | null;
+    profile: { revision: string; value: { first_name: string; last_name: string } } | null;
     pending: number;
     revision: string;
     reconciling: boolean;
@@ -64,7 +64,7 @@ export class AuthyClient {
         connect: (id: string) => binding.connect_command(id),
         invoke: (operation: string, input: string) => binding.invoke(operation, input),
         receive: (frame: string) => binding.receive(frame),
-        enqueue_edit: (name: string, bio: string) => binding.enqueue_edit(name, bio),
+        enqueue_edit: (first: string, last: string) => binding.enqueue_edit(first, last),
         free: () => binding.free(),
       };
     },
@@ -134,8 +134,8 @@ export class AuthyClient {
     ]);
     if (epoch === this.runtime.getSnapshot().epoch) this.set({ sessions, credentials });
   }
-  saveProfile(name: string, bio: string) {
-    try { this.runtime.mutate(binding => binding.enqueue_edit(name, bio)); }
+  saveProfile(first: string, last: string) {
+    try { this.runtime.mutate(binding => binding.enqueue_edit(first, last)); }
     catch (error) { this.set({ error: String(error) }); }
   }
   retryConnection() { void this.runtime.refresh(); }

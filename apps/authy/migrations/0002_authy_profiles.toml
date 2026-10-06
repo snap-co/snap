@@ -1,0 +1,9 @@
+id = "0002_authy_profiles"
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "authy.profiles"
+primary = ["id"]
+columns = [{ name = "id", kind = "text" }, { name = "identity", kind = "text" }, { name = "first_name", kind = "text" }, { name = "last_name", kind = "text" }, { name = "revision", kind = "integer" }]
+foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }]

@@ -16,7 +16,6 @@ authy.workspace = true
 snap-store.workspace = true
 snap-identity.workspace = true
 snap-access.workspace = true
-snap-document.workspace = true
 snap-oidc.workspace = true
 snap-transport = { path = "../../../crates/transport", features = ["native-server"] }
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }

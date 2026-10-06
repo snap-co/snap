@@ -123,7 +123,7 @@ async fn create_account(ui: &Ui, email: &str, password: &str) -> Result<()> {
     ui.label("Email").fill(email).await?;
     ui.label("Password").fill(password).await?;
     ui.button("Create account").click().await?;
-    ui.label("Name").visible().await
+    ui.label("First name").visible().await
 }
 
 async fn fetch_enable(page: &chromiumoxide::Page, pattern: &str) -> Result<()> {
@@ -259,7 +259,7 @@ async fn identity_failure_retry(browser: &Browser) -> Result<()> {
     session.finish(result).await
 }
 
-/// "account, optimistic Document profile, reload, logout and login".
+/// Account Store replication across tabs, reload, logout and login.
 async fn account_profile(browser: &Browser) -> Result<()> {
     let mut host = AuthyHost::start("http://127.0.0.1:9", json!({})).await?;
     let session = Session::new(browser).await?;
@@ -319,7 +319,7 @@ async fn account_profile(browser: &Browser) -> Result<()> {
             .fill("a test password for Authy")
             .await?;
         ui.button("Create account").click().await?;
-        ui.label("Name").visible().await?;
+        ui.label("First name").visible().await?;
         support::poll("identity then connect", 10, || {
             let events = events.clone();
             async move { Ok(events.lock().unwrap().len() >= 2) }
@@ -344,10 +344,13 @@ async fn account_profile(browser: &Browser) -> Result<()> {
             "session cookie must be SameSite=Lax"
         );
         ui.text("This session").visible().await?;
-        for (index, (width, height, name)) in [(1100,900,"Desktop Person"),(390,844,"Document Person")].into_iter().enumerate() {
+        let second = session.page().await?;
+        second.goto(&host.base).await?;
+        second.label("First name").visible().await?;
+        for (index, (width, height, name)) in [(1100,900,"Desktop"),(390,844,"Mobile")].into_iter().enumerate() {
             set_viewport(&ui.page, width, height, false).await?;
-            ui.label("Name").fill(name).await?;
-            ui.label("Bio").fill("Persistent, private profile").await?;
+            ui.label("First name").fill(name).await?;
+            ui.label("Last name").fill("Person").await?;
             ui.eval(r#"(() => {
               const field=document.querySelector('#profile-name'), shell=document.querySelector('.auth-shell');
               const button=field.form.querySelector('button[type=submit]');
@@ -375,6 +378,9 @@ async fn account_profile(browser: &Browser) -> Result<()> {
             held?;
             ui.text(&format!("Saved revision {}", index+2)).visible().await?;
             ui.button("Save profile").enabled(true).await?;
+            second.label("First name").value(name).await?;
+            second.label("Last name").value("Person").await?;
+            screenshot(&ui.page, if index == 0 { "authy-store-profile-desktop" } else { "authy-store-profile-mobile" }, width, height, false).await?;
             let changes=ui.eval("window.__saveStability.observer.disconnect(); window.__saveStability.result").await?;
             ensure!(changes["removed"] == false, "Saving unmounted editor: {changes}");
             for key in ["shellHeightChange","buttonWidthChange","sessionsPositionChange"] {
@@ -382,20 +388,18 @@ async fn account_profile(browser: &Browser) -> Result<()> {
             }
         }
         ui.reload().await?;
-        ui.label("Name").value("Document Person").await?;
-        ui.label("Bio").value("Persistent, private profile").await?;
-        let second = session.page().await?;
-        second.goto(&host.base).await?;
-        second.label("Name").value("Document Person").await?;
+        ui.label("First name").value("Mobile").await?;
+        ui.label("Last name").value("Person").await?;
+        second.label("First name").value("Mobile").await?;
         ui.button("Sign out").click().await?;
         ui.label("Email").visible().await?;
-        second.label("Name").hidden().await?;
+        second.label("First name").hidden().await?;
         ui.label("Email").fill(&email).await?;
         ui.label("Password")
             .fill("a test password for Authy")
             .await?;
         ui.button("Sign in").click().await?;
-        ui.label("Name").value("Document Person").await?;
+        ui.label("First name").value("Mobile").await?;
         Ok(())
     }
     .await

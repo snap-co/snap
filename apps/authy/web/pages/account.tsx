@@ -8,35 +8,36 @@ function accountError(error: unknown): string {
   if (/connecting|Disconnected/i.test(message)) return "Authy is reconnecting. Wait for the connection, then try again.";
   if (/Session check failed/i.test(message)) return "We couldn't check your session. Check your connection and reload the page.";
   if (/Session expired|InvalidBearer|Account session ended/i.test(message)) return "Your session has ended. Sign in again to continue.";
-  if (/Edit rejected|Profile out of sync|Profile is still loading|Sign in before saving/i.test(message)) return message;
+  if (/Conflict/.test(message)) return "Your profile changed in another session. Review the current values and save again.";
+  if (/Denied/.test(message)) return "You no longer have access to this profile.";
+  if (/Invalid/.test(message)) return "Enter a first name and keep each name under 101 characters.";
+  if (/outcome unknown/.test(message)) return "The connection ended before the save completed. Check the current values before saving again.";
   return "We couldn't complete that action. Check your connection and try again. If it keeps happening, reload the page.";
 }
 
 function ProfileEditor({ client }: { client: AuthyClient }) {
   const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const server = snapshot.profile;
-  const [name, setName] = useState(server?.name ?? "");
-  const [bio, setBio] = useState(server?.bio ?? "");
+  const [firstName, setFirstName] = useState(server?.first_name ?? "");
+  const [lastName, setLastName] = useState(server?.last_name ?? "");
   const [lastSyncedRevision, setLastSyncedRevision] = useState<string | null>(
     server ? server.revision : null,
   );
 
   // Adopt the authoritative view when it first loads or when a new revision
-  // arrives that this editor did not just optimistically project. After an
-  // "edit rejected: profile changed" error the current view stays on screen,
-  // so the user can review it and retry the save.
+  // arrives. Saving retains the form while awaiting authoritative replication.
   useEffect(() => {
     if (!server) return;
     if (lastSyncedRevision === null || server.revision !== lastSyncedRevision) {
-      setName(server.name);
-      setBio(server.bio);
+      setFirstName(server.first_name);
+      setLastName(server.last_name);
       setLastSyncedRevision(server.revision);
     }
   }, [server, lastSyncedRevision]);
 
   const save = (event: FormEvent) => {
     event.preventDefault();
-    client.saveProfile(name, bio);
+    client.saveProfile(firstName, lastName);
   };
 
   return (
@@ -44,22 +45,24 @@ function ProfileEditor({ client }: { client: AuthyClient }) {
       <h2>Your profile</h2>
       {server ? (
         <form onSubmit={save}>
-          <label htmlFor="profile-name">Name</label>
+          <label htmlFor="profile-name">First name</label>
           <input
             id="profile-name"
-            name="name"
-            value={name}
+            name="first_name"
+            autoComplete="given-name"
+            value={firstName}
             maxLength={100}
             required
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => setFirstName(e.target.value)}
           />
-          <label htmlFor="profile-bio">Bio</label>
-          <textarea
-            id="profile-bio"
-            name="bio"
-            value={bio}
-            maxLength={2000}
-            onChange={(e) => setBio(e.target.value)}
+          <label htmlFor="profile-last-name">Last name</label>
+          <input
+            id="profile-last-name"
+            name="last_name"
+            autoComplete="family-name"
+            value={lastName}
+            maxLength={100}
+            onChange={(e) => setLastName(e.target.value)}
           />
           <p className="muted" role="status">
             {snapshot.saving ? "Saving revision " : "Saved revision "}{server.revision}
@@ -72,8 +75,8 @@ function ProfileEditor({ client }: { client: AuthyClient }) {
               type="button"
               className="secondary"
               onClick={() => {
-                setName(server.name);
-                setBio(server.bio);
+                setFirstName(server.first_name);
+                setLastName(server.last_name);
               }}
             >
               Reload current values

@@ -225,11 +225,11 @@ dependencies = [
  "serde",
  "serde_json",
  "snap-access",
- "snap-document",
  "snap-identity",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -252,7 +252,6 @@ dependencies = [
  "snap-access",
  "snap-config",
  "snap-crypto",
- "snap-document",
  "snap-identity",
  "snap-identity-native",
  "snap-oidc",
@@ -272,9 +271,7 @@ name = "authy-wasm"
 version = "0.0.0"
 dependencies = [
  "authy",
- "serde",
  "serde_json",
- "snap-document",
  "snap-react-bindings",
  "snap-transport",
  "snap-wasm-browser",

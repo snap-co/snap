@@ -1,10 +1,12 @@
-//! Server-side resident storage and durable cross-module transactions.
+//! Portable resident storage, authoritative replicas and cross-module transactions.
 #![no_std]
 extern crate alloc;
 
 mod data;
 pub mod inbox;
+pub mod memory;
 pub mod migration;
+pub mod replica;
 pub mod residency;
 pub mod resource;
 pub use data::Data;

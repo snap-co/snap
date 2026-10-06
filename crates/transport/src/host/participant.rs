@@ -63,7 +63,9 @@ pub struct CommitContext<'a, B: Backend> {
     pub data: &'a Data,
     pub invocation: Option<InvocationScope<'a>>,
     pub residency: &'a mut Residency,
-    changes: Vec<RowChange>,
+    /// The current private commit, available only during commit notification.
+    pub program: Option<snap_store::Program>,
+    commits: Vec<(Vec<RowChange>, snap_store::Program)>,
 }
 impl<'a, B: Backend> CommitContext<'a, B> {
     pub(crate) fn new(
@@ -83,7 +85,8 @@ impl<'a, B: Backend> CommitContext<'a, B> {
             data,
             invocation,
             residency,
-            changes: Vec::new(),
+            program: None,
+            commits: Vec::new(),
         }
     }
     pub fn transact<T>(
@@ -92,14 +95,16 @@ impl<'a, B: Backend> CommitContext<'a, B> {
         handler: impl FnOnce(&mut Transaction<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let committed = self.store.run(operation, handler)?;
-        self.changes.extend(committed.changes);
+        if !committed.program.is_empty() {
+            self.commits.push((committed.changes, committed.program));
+        }
         Ok(committed.value)
     }
-    pub fn take_changes(&mut self) -> Vec<RowChange> {
-        core::mem::take(&mut self.changes)
+    pub fn take_commits(&mut self) -> Vec<(Vec<RowChange>, snap_store::Program)> {
+        core::mem::take(&mut self.commits)
     }
     pub(crate) fn has_changes(&self) -> bool {
-        !self.changes.is_empty()
+        !self.commits.is_empty()
     }
 }
 

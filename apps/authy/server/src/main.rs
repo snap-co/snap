@@ -12,7 +12,10 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<
+    B,
+    snap_transport::host::Controllers<B, snap_transport::replication::Replications>,
+>;
 use snap_identity::Identity;
 use snap_store::{Error, Transaction};
 use snap_transport::native::web::{HttpOperation, WriteCookie};
@@ -75,9 +78,9 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut migrations: Vec<_> = [
         snap_identity::MIGRATION,
         snap_access::MIGRATION,
-        snap_document::server::MIGRATION,
         snap_store::resource::MIGRATION,
         authy::MIGRATION,
+        authy::PROFILE_MIGRATION,
         snap_oidc::MIGRATION,
         keys::MIGRATION,
     ]
@@ -150,7 +153,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Identity::default().data().prepare(&mut store)?;
     for table in snap_access::TABLES
         .iter()
-        .chain(snap_document::server::TABLES.iter())
         .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(authy::TABLES.iter())
         .chain(snap_oidc::TABLES.iter())
@@ -170,15 +172,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|rp| snap_identity_native::passkey::Native::new(rp, &origin))
         .transpose()?;
     let passkeys_enabled = webauthn.is_some();
-    let document = Arc::new(authy::document());
-    let mut registry = snap_transport::operation::Registry::default();
-    for definition in snap_document::operations::definitions(document.clone()) {
-        registry = registry.with_request(definition);
-    }
+    let replication = authy::replication();
+    let registry = snap_transport::operation::Registry::default()
+        .with_request(replication.operation())
+        .with_request(authy::operations::edit_profile());
     let registry = operations::register(registry, webauthn);
     let host = Host::new(
         store,
-        snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
+        snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
+            replication,
+        )),
         registry,
         Arc::new(snap_identity::authentication::Authentication::new(
             Arc::new(Identity::default().provider(snap_crypto::Native)),

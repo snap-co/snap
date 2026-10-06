@@ -724,7 +724,13 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 Some(scope),
                 &mut self.residency,
             );
-            complete_commit(&mut self.participant, &mut context, &changes, &publication)
+            complete_commit(
+                &mut self.participant,
+                &mut context,
+                &changes,
+                &publication,
+                completed.program.as_ref(),
+            )
         } else {
             Ok(())
         };
@@ -824,6 +830,7 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 &mut context,
                 &committed.changes,
                 &Value::Null,
+                Some(&committed.program),
             )?;
             Ok(committed.value)
         })();
@@ -939,10 +946,13 @@ fn complete_commit<B: Backend, P: Participant<B>>(
     context: &mut CommitContext<'_, B>,
     changes: &[snap_store::RowChange],
     publication: &Value,
+    program: Option<&snap_store::Program>,
 ) -> Result<(), snap_store::Error> {
     // Notification may queue passes before failing. Successful persistence still
     // owns the gate until those passes drain, regardless of notification errors.
+    context.program = program.cloned();
     let notified = participant.committed(context, changes, publication);
+    context.program = None;
     let settled = settle(participant, context);
     notified.and(settled)
 }
@@ -955,11 +965,12 @@ fn settle<B: Backend, P: Participant<B>>(
     // first error, drain accepted reconciliation, then report it to the caller.
     let mut failure = None;
     loop {
-        let changes = context.take_changes();
-        if !changes.is_empty()
-            && let Err(error) = participant.committed(context, &changes, &Value::Null)
-        {
-            failure.get_or_insert(error);
+        for (changes, program) in context.take_commits() {
+            context.program = Some(program);
+            if let Err(error) = participant.committed(context, &changes, &Value::Null) {
+                failure.get_or_insert(error);
+            }
+            context.program = None;
         }
         match participant.reconcile(context) {
             Ok(true) => {}

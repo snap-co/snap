@@ -24,6 +24,7 @@ pub mod lane;
 ))]
 pub mod native;
 pub mod operation;
+pub mod replication;
 pub mod runtime;
 pub mod server;
 pub mod subscription;

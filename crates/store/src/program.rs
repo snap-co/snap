@@ -96,6 +96,21 @@ pub(crate) fn schema_id(catalog: &Catalog) -> Result<[u8; 32], Error> {
 }
 
 impl Program {
+    /// Assemble resolved instructions for a checkpoint or authorized replica.
+    /// This validates schema and operands, not execution authority or row state.
+    pub fn from_instructions(
+        catalog: &Catalog,
+        instructions: impl IntoIterator<Item = Instruction>,
+    ) -> Result<Self, Error> {
+        catalog.validate()?;
+        let mut program = Self::empty(schema_id(catalog)?);
+        for instruction in instructions {
+            instruction.validate(catalog)?;
+            program.push(instruction)?;
+        }
+        Ok(program)
+    }
+
     pub(crate) fn empty(schema: [u8; 32]) -> Self {
         let mut bytes = Vec::from(MAGIC.as_slice());
         bytes.extend_from_slice(&1u16.to_le_bytes());

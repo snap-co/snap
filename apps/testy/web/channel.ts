@@ -15,9 +15,10 @@ export class WebChannel {
     resolve: (value: string) => void;
     reject: (error: Error) => void;
   };
-  // Connect and Request carry credentials. Each produces exactly one response
-  // frame, so a count is enough to keep the development log from printing them.
-  private redacted = 0;
+  // Request spans acceptance, credential handoff and completion. Correlate the
+  // whole exchange; a frame count would expose its second authentication frame.
+  private authentication = new Set<number>();
+  private connecting = false;
   readonly ready: Promise<void>;
   constructor(
     private observe: (frame: string) => void,
@@ -36,21 +37,26 @@ export class WebChannel {
       );
       this.waiter = undefined;
       this.queue.length = 0;
+      this.authentication.clear();
+      this.connecting = false;
       this.lost();
     };
     this.socket.onmessage = ({ data }) => {
-      if (this.redacted > 0) {
-        this.redacted -= 1;
-        this.observe("← [authentication response redacted]");
-      } else {
-        this.observe(data);
-      }
+      let decoded;
       try {
-        JSON.parse(data);
+        decoded = JSON.parse(data);
       } catch (error) {
         this.fail(error instanceof Error ? error : new Error(String(error)));
         return;
       }
+      const event = decoded?.Event;
+      const id = event?.Accepted?.id ?? event?.Progress?.id ?? event?.Bearer?.id ?? event?.Completed?.id;
+      const handshake = this.connecting && typeof decoded === "object" && decoded !== null && ("Attached" in decoded || "Failed" in decoded);
+      // Bearer handoffs are always private, including unexpected IDs.
+      const redact = Boolean(event?.Bearer) || this.authentication.has(id) || handshake;
+      this.observe(redact ? "← [authentication response redacted]" : data);
+      if (event?.Completed) this.authentication.delete(event.Completed.id);
+      if (handshake) this.connecting = false;
       const waiter = this.waiter;
       if (!waiter) {
         this.queue.push(data);
@@ -68,9 +74,10 @@ export class WebChannel {
     if (this.socket.readyState !== WebSocket.OPEN)
       throw new Error("Channel unavailable");
     const decoded = JSON.parse(command);
-    if (decoded.Connect || decoded.Request) this.redacted += 1;
+    if (decoded.Connect) this.connecting = true;
+    if (decoded.Request) this.authentication.add(decoded.Request.invocation.id);
     this.observe(
-      this.redacted > 0 ? "→ [authentication request redacted]" : `→ ${command}`,
+      decoded.Connect || decoded.Request ? "→ [authentication request redacted]" : `→ ${command}`,
     );
     this.socket.send(command);
   }

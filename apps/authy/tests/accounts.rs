@@ -1,967 +1,501 @@
-use authy::Account;
-const SESSION_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
+//! Authy journeys through the portable client and real execution host. No
+//! Document definitions or tables are needed for account-profile synchronization.
+use authy::{Account, client::Profiles};
 use serde_json::json;
-use snap_access::Role;
-use snap_document::{
-    Intent, Manifest, Reconciliation, ServerMessage,
-    client::{Client, Outcome},
-};
 use snap_identity::{Crypto, Identity};
-use snap_store::{Error as StoreError, Value};
+use snap_store::{Error, replica::Publication};
+use snap_transport::{Command, Event, Invocation, Operation, Response};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
-#[derive(Default)]
-struct Fake(u64);
+#[derive(Clone, Default)]
+struct Fake(Arc<AtomicU64>);
 impl Crypto for Fake {
-    fn random(&mut self) -> Result<[u8; 32], StoreError> {
-        self.0 += 1;
+    fn random(&mut self) -> Result<[u8; 32], Error> {
         let mut bytes = [0; 32];
-        bytes[..8].copy_from_slice(&self.0.to_be_bytes());
+        bytes[..8].copy_from_slice(&(self.0.fetch_add(1, Ordering::SeqCst) + 1).to_be_bytes());
         Ok(bytes)
     }
-    fn hash_password(&mut self, password: &str) -> Result<String, StoreError> {
+    fn hash_password(&mut self, password: &str) -> Result<String, Error> {
         Ok(format!("fake:{password}"))
     }
-    fn verify_password(&self, password: &str, hash: &str) -> Result<bool, StoreError> {
+    fn verify_password(&self, password: &str, hash: &str) -> Result<bool, Error> {
         Ok(hash == format!("fake:{password}"))
     }
     fn digest(&self, secret: &str) -> Vec<u8> {
         secret.as_bytes().to_vec()
     }
 }
-
 fn migrations() -> Vec<snap_store::migration::Migration> {
-    let mut all = vec![
-        toml::from_str(snap_identity::MIGRATION).unwrap(),
-        toml::from_str(snap_access::MIGRATION).unwrap(),
-        toml::from_str(snap_document::server::MIGRATION).unwrap(),
-        toml::from_str(snap_store::resource::MIGRATION).unwrap(),
-        toml::from_str(authy::MIGRATION).unwrap(),
-    ];
+    let mut all: Vec<_> = [
+        snap_identity::MIGRATION,
+        snap_access::MIGRATION,
+        snap_store::resource::MIGRATION,
+        authy::MIGRATION,
+        authy::PROFILE_MIGRATION,
+    ]
+    .into_iter()
+    .map(|m| toml::from_str(m).unwrap())
+    .collect();
     all.sort_by(|a: &snap_store::migration::Migration, b| a.id.cmp(&b.id));
     all
 }
+type Host = snap_transport::host::Blocking<
+    snap_store_sqlite::Sqlite,
+    snap_transport::host::Controllers<
+        snap_store_sqlite::Sqlite,
+        snap_transport::replication::Replications,
+    >,
+>;
 
-fn all_tables() -> Vec<&'static str> {
-    let mut tables = Vec::new();
-    tables.extend(snap_identity::TABLES.iter().copied());
-    tables.extend(snap_access::TABLES.iter().copied());
-    tables.extend(snap_document::server::TABLES.iter().copied());
-    tables.push(snap_store::resource::TABLE);
-    tables.extend(authy::TABLES.iter().copied());
-    tables
-}
-
-type Store = snap_store::Store<snap_store_sqlite::Sqlite>;
-
-fn dispatch_profile(
-    store: &mut Store,
-    lifetime: &str,
-    actor: &str,
-    intent: Intent,
-) -> snap_transport::Outcome {
-    use snap_transport::operation::{Context, Runtime};
-    let mut runtime = Runtime::default();
-    for definition in snap_document::operations::definitions(std::sync::Arc::new(authy::document()))
-    {
-        runtime.register(definition).unwrap();
-    }
-    let selection = runtime.definitions().resolve("document.mutate")?;
-    runtime.enqueue(
-        (),
-        snap_transport::Invocation {
-            id: 1,
-            operation: "document.mutate".into(),
-            input: json!(intent),
-        },
-        selection,
-    )?;
-    let (work, call, selection) = runtime.acquire().unwrap();
-    let context = Context {
-        actor: Some(actor.into()),
-        lifetime: Some(lifetime.into()),
-        ..Context::default()
-    };
-    if let Err((_, error)) = runtime.accept(store, work, call, selection, context) {
-        runtime.reject();
-        return Err(error);
-    }
-    let outcome = runtime.execute(store).unwrap().outcome;
-    runtime.finish();
-    outcome
-}
-
-fn store_loaded() -> (Store, Fake) {
-    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
-    for table in all_tables() {
-        store.load(table).unwrap();
-    }
-    (store, Fake::default())
-}
-
-fn dispatch_account(
-    store: &mut Store,
-    operation: &str,
-    input: serde_json::Value,
-) -> Result<(serde_json::Value, snap_transport::bearer::Change), snap_transport::Error> {
-    use snap_transport::operation::{Context, Runtime};
-    let app = snap_identity::operation::definitions(
+fn host(mut store: snap_store::Store<snap_store_sqlite::Sqlite>, crypto: Fake) -> Host {
+    Identity::default().data().prepare(&mut store).unwrap();
+    snap_store::resource::data().prepare(&mut store).unwrap();
+    let replication = authy::replication();
+    let mut registry = snap_transport::operation::Registry::default()
+        .with_request(replication.operation())
+        .with_request(authy::operations::edit_profile());
+    let operations = snap_identity::operation::definitions(
         Identity::default(),
-        Fake::default,
+        {
+            let crypto = crypto.clone();
+            move || crypto.clone()
+        },
         Some(snap_identity::operation::Enrollment {
             data: authy::enrollment_data(),
-            initialize: Box::new(|tx, principal, email| {
-                authy::initialize_account(tx, &principal.identity, email)
-            }),
+            initialize: Box::new(|tx, p, email| authy::initialize_account(tx, &p.identity, email)),
         }),
     );
-    let mut runtime = Runtime::default();
-    for definition in app.preconnection.into_iter().chain(app.requests) {
-        runtime.register(definition).unwrap();
+    for definition in operations.preconnection {
+        registry = registry.with_preconnection_request(definition);
     }
-    let selection = runtime.definitions().resolve(operation)?;
-    runtime.enqueue(
-        (),
-        snap_transport::Invocation {
-            id: 1,
-            operation: operation.into(),
-            input,
-        },
-        selection,
-    )?;
-    let (work, call, selection) = runtime.acquire().unwrap();
-    if let Err((_, error)) = runtime.accept(
+    for definition in operations.requests {
+        registry = registry.with_request(definition);
+    }
+    for definition in authy::operations::declarations() {
+        registry = registry.with_preconnection_request(definition);
+    }
+    let mut host = Host::new(
         store,
-        work,
-        call,
-        selection,
-        Context {
-            inputs: [("clock".into(), json!(1_000))].into_iter().collect(),
-            ..Context::default()
-        },
-    ) {
-        runtime.reject();
-        return Err(error);
-    }
-    let completed = runtime.execute(store).unwrap();
-    runtime.finish();
-    Ok((completed.outcome?, completed.context.bearer_change.unwrap()))
-}
-
-fn compose_enroll(
-    tx: &mut snap_store::Transaction<'_>,
-    crypto: &mut Fake,
-    email: &str,
-    password: &str,
-    now: i64,
-) -> Result<snap_identity::Issued, StoreError> {
-    let issued = Identity::default().enroll(tx, crypto, email, password, now)?;
-    authy::initialize_account(
-        tx,
-        &issued.principal.identity,
-        &email.trim().to_ascii_lowercase(),
-    )?;
-    Ok(issued)
-}
-fn compose_current(
-    tx: &mut snap_store::Transaction<'_>,
-    crypto: &Fake,
-    bearer: &str,
-    now: i64,
-) -> Result<Account, StoreError> {
-    let principal = Identity::default().resolve(tx, crypto, bearer, now)?;
-    authy::account_by_identity(tx, &principal.identity, principal.authenticated_at)
-}
-fn enroll(
-    store: &mut Store,
-    crypto: &mut Fake,
-    email: &str,
-    password: &str,
-    now: i64,
-) -> snap_identity::Issued {
-    store
-        .run("enroll", |tx| {
-            let issued = Identity::default().enroll(tx, crypto, email, password, now)?;
-            authy::initialize_account(
-                tx,
-                &issued.principal.identity,
-                &email.trim().to_ascii_lowercase(),
-            )?;
-            Ok(issued)
-        })
-        .unwrap()
-        .value
-}
-
-fn current(store: &mut Store, crypto: &Fake, bearer: &str, now: i64) -> Account {
-    store
-        .run("current", |tx| {
-            let principal = Identity::default().resolve(tx, crypto, bearer, now)?;
-            authy::account_by_identity(tx, &principal.identity, principal.authenticated_at)
-        })
-        .unwrap()
-        .value
-}
-
-fn edit_intent(id: u64, document: &str, name: &str, bio: &str, revision: u64) -> Intent {
-    Intent {
-        id,
-        document: document.into(),
-        version: "1".into(),
-        mutation: "edit".into(),
-        args: json!({"name": name, "bio": bio, "revision": revision}),
-    }
-}
-
-#[test]
-fn enroll_creates_session_profile_grant_and_metadata_atomically() {
-    let (mut store, crypto) = store_loaded();
-    let (result, change) = dispatch_account(
-        &mut store,
-        "identity.enroll",
-        json!({"email":" Alice@Example.com ", "password":"password1"}),
+        snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
+            replication,
+        )),
+        registry,
+        Arc::new(snap_identity::authentication::Authentication::new(
+            Arc::new(Identity::default().provider(crypto)),
+            Arc::new(|| 1000),
+        )),
+        snap_transport::server::Config::default(),
+        "authy-test".into(),
     )
-    .unwrap();
-    let snap_transport::bearer::Change::Set(token) = change else {
-        panic!("missing bearer update");
+    .with_inputs(|key| match key {
+        "clock" => Ok(json!(1000)),
+        _ => Err(snap_transport::Error::Unavailable),
+    });
+    host.recover().unwrap();
+    host
+}
+fn fresh() -> Host {
+    host(
+        snap_store_sqlite::Sqlite::memory(&migrations()).unwrap(),
+        Fake::default(),
+    )
+}
+fn enroll(host: &mut Host, email: &str) -> (String, Account) {
+    let reply = host.preconnection_reply(
+        Invocation {
+            id: 1,
+            operation: "identity.enroll".into(),
+            input: json!({"email":email,"password":"password1"}),
+        },
+        None,
+    );
+    reply.outcome.unwrap();
+    let snap_transport::bearer::Change::Set(token) = reply.bearer.unwrap() else {
+        panic!("missing session");
     };
     let bearer = token.expose().to_owned();
-    assert!(result.get("bearer").is_none());
-    assert!(result.get("session").is_none());
-    let session = store
-        .inspect("persisted session", |tx| {
-            Identity::default().resolve(tx, &crypto, &bearer, 1_000)
-        })
+    let value = host
+        .preconnection_request(
+            Invocation {
+                id: 2,
+                operation: authy::operations::FetchAccount::NAME.into(),
+                input: json!(null),
+            },
+            Some(bearer.clone()),
+        )
         .unwrap();
-    let issued = snap_identity::Issued {
-        bearer,
-        principal: session,
+    (bearer, serde_json::from_value(value).unwrap())
+}
+
+fn pump(host: &mut Host, peer: u64, client: &mut Profiles) -> Vec<Response> {
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        while host.step() {}
+        let frames = host.drain(peer).unwrap();
+        if frames.is_empty() {
+            return seen;
+        }
+        for frame in frames {
+            let update = client.receive(frame.clone()).unwrap();
+            assert!(update.error.is_none(), "{:?}", update.error);
+            seen.push(frame);
+            for command in update.send {
+                host.submit(peer, command, 0).unwrap();
+            }
+        }
+    }
+    panic!("client exchange did not settle")
+}
+fn attach(host: &mut Host, bearer: &str, account: &Account, name: &str) -> (u64, Profiles) {
+    let mut client = Profiles::new(account.profile.clone()).unwrap();
+    let peer = host.open().unwrap();
+    let mut command = client.connect(name).unwrap();
+    let Command::Connect {
+        bearer: credential, ..
+    } = &mut command
+    else {
+        unreachable!()
     };
-    assert_eq!(issued.bearer.len(), 64);
-    assert_eq!(issued.principal.identity.len(), 64);
-    assert_eq!(issued.principal.authenticated_at, 1_000);
+    *credential = bearer.into();
+    host.submit(peer, command, 0).unwrap();
+    pump(host, peer, &mut client);
+    assert!(client.ready());
+    (peer, client)
+}
+fn publications(frames: &[Response]) -> Vec<Publication> {
+    frames
+        .iter()
+        .filter_map(|r| match r {
+            Response::Global { kind, input } if kind == snap_transport::replication::TOPIC => {
+                Some(serde_json::from_value(input.clone()).unwrap())
+            }
+            _ => None,
+        })
+        .collect()
+}
 
-    let profile = authy::profile_id(&issued.principal.identity).unwrap();
-    // First-32-hex grouping: deterministic UUID shape.
-    assert_eq!(profile.len(), 36);
-    assert_eq!(
-        [
-            &profile[8..9],
-            &profile[13..14],
-            &profile[18..19],
-            &profile[23..24]
-        ],
-        ["-", "-", "-", "-"]
-    );
-
-    let account = current(&mut store, &crypto, &issued.bearer, 1_001);
-    assert_eq!(account.identity, issued.principal.identity);
+#[test]
+fn account_profiles_replicate_binary_updates_to_two_clients_without_document() {
+    let mut host = fresh();
+    let (bearer, account) = enroll(&mut host, "Alice@Example.com");
     assert_eq!(account.email, "alice@example.com");
-    assert_eq!(account.profile, profile);
-    assert_eq!(account.authenticated_at, 1_000);
-    assert_eq!(result, json!(issued.principal));
-
-    // Initial profile value preserves the email local part with empty bio.
-    let snapshot = store
-        .run("read", |tx| {
-            authy::document().read(tx, &profile, Some(&issued.principal.identity))
-        })
-        .unwrap()
-        .value;
-    assert_eq!(snapshot.kind, "authy-profile");
-    assert_eq!(snapshot.version, "1");
-    assert_eq!(snapshot.revision, 1);
-    assert_eq!(snapshot.value, json!({"name": "alice", "bio": ""}));
-
-    // Owner holds the pre-change Owner grant; nobody else can read.
-    let role = store
-        .run("role", |tx| {
-            snap_access::Access::new(vec![snap_access::KindDefinition::kind("document").unwrap()])
-                .unwrap()
-                .role(
-                    tx,
-                    &snap_access::Resource::new("document", &profile).unwrap(),
-                    Some(&issued.principal.identity),
-                    true,
-                )
-        })
-        .unwrap()
-        .value;
-    assert_eq!(role, Some(Role::Owner));
-
-    // OIDC path resolves the same metadata with caller-supplied current time.
-    let by_identity = store
-        .run("by-identity", |tx| {
-            authy::account_by_identity(tx, &issued.principal.identity, 5_000)
-        })
-        .unwrap()
-        .value;
-    assert_eq!(by_identity.email, "alice@example.com");
-    assert_eq!(by_identity.profile, profile);
-    assert_eq!(by_identity.authenticated_at, 5_000);
-    let info = store
-        .run("info", |tx| {
-            authy::profile_info(tx, &issued.principal.identity)
-        })
-        .unwrap()
-        .value;
-    assert_eq!(info.email, "alice@example.com");
-    assert_eq!(info.profile, profile);
-
-    // Account serializes with exactly the coordinated fields.
-    let value = serde_json::to_value(&account).unwrap();
+    let (p1, mut one) = attach(&mut host, &bearer, &account, "one");
+    let (p2, mut two) = attach(&mut host, &bearer, &account, "two");
+    assert_eq!(one.profile().unwrap().unwrap().first_name, "alice");
+    assert_eq!(two.profile().unwrap().unwrap().revision, 1);
+    let command = one.edit("  Ada  ", "  Lovelace  ").unwrap();
+    assert_eq!(one.pending(), 1);
     assert_eq!(
-        value,
-        json!({
-            "identity": issued.principal.identity,
-            "email": "alice@example.com",
-            "profile": profile,
-            "authenticated_at": 1_000,
-        })
+        one.profile().unwrap().unwrap().first_name,
+        "alice",
+        "no optimistic overlay in this spike"
     );
-}
-
-#[test]
-fn late_failure_after_enroll_discards_everything() {
-    let (mut store, mut crypto) = store_loaded();
-    let failed = store.run("signup", |tx| {
-        compose_enroll(tx, &mut crypto, "late@example.com", "password1", 0)?;
-        // Simulate a late caller failure after all module writes staged.
-        Err::<(), _>(StoreError::Unavailable)
-    });
-    assert!(matches!(failed, Err(StoreError::Unavailable)));
-
-    // Nothing persisted: login cannot find the credential.
-    let identity = Identity::default();
-    assert!(matches!(
-        store.run("login", |tx| identity.acquire(
-            tx,
-            &mut crypto,
-            "late@example.com",
-            "password1",
-            1
-        )),
-        Err(StoreError::NotFound)
-    ));
-    // Metadata absent as well.
-    assert!(matches!(
-        store.run("missing", |tx| authy::profile_info(
-            tx,
-            "0000000000000000000000000000000000000000000000000000000000000000"
-        )),
-        Err(StoreError::NotFound)
-    ));
-
-    // An explicit retry after the failure commits cleanly.
-    let issued = enroll(&mut store, &mut crypto, "late@example.com", "password1", 2);
-    let account = current(&mut store, &crypto, &issued.bearer, 3);
-    assert_eq!(account.email, "late@example.com");
-}
-
-#[test]
-fn cold_tables_report_miss_and_stage_nothing() {
-    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
-    let mut crypto = Fake::default();
-    assert!(matches!(
-        store.run("cold-enroll", |tx| compose_enroll(
-            tx,
-            &mut crypto,
-            "cold@example.com",
-            "password1",
-            0
-        )),
-        Err(StoreError::Miss(_))
-    ));
-    // A miss poisons the attempt even when caught.
-    let poisoned = store.run("poison", |tx| {
-        let _ = compose_enroll(tx, &mut crypto, "cold@example.com", "password1", 0);
+    host.submit(p1, command, 0).unwrap();
+    let origin = pump(&mut host, p1, &mut one);
+    let subscriber = pump(&mut host, p2, &mut two);
+    let expected = authy::Profile {
+        id: account.profile.clone(),
+        identity: account.identity.clone(),
+        first_name: "Ada".into(),
+        last_name: "Lovelace".into(),
+        revision: 2,
+    };
+    assert_eq!(one.profile().unwrap(), Some(expected.clone()));
+    assert_eq!(two.profile().unwrap(), Some(expected));
+    assert_eq!(one.pending(), 0);
+    let wire = publications(&subscriber);
+    assert_eq!(wire.len(), 1);
+    assert!(!wire[0].reset);
+    let program =
+        snap_store::Program::from_bytes(&authy::profile_catalog(), &wire[0].program).unwrap();
+    assert_eq!(
+        program.instructions().collect::<Vec<_>>(),
+        vec![snap_store::Instruction::Update {
+            table: authy::PROFILES.into(),
+            key: vec![account.profile.clone().into()],
+            changes: snap_store::Row::from([
+                ("first_name".into(), "Ada".into()),
+                ("last_name".into(), "Lovelace".into()),
+                ("revision".into(), 2.into()),
+            ]),
+        }]
+    );
+    assert_eq!(publications(&origin)[0].program, wire[0].program);
+    // Physical reconnect reloads a checkpoint and never reruns the edit.
+    host.lost(p2, 1);
+    let p2 = host.open().unwrap();
+    let mut command = two.connect("two").unwrap();
+    let Command::Connect {
+        bearer: credential, ..
+    } = &mut command
+    else {
+        unreachable!()
+    };
+    *credential = bearer;
+    host.submit(p2, command, 2).unwrap();
+    let reconnected = pump(&mut host, p2, &mut two);
+    assert!(publications(&reconnected)[0].reset);
+    assert_eq!(two.profile().unwrap().unwrap().revision, 2);
+    let journals = host.transact("journal", |store_tx| {
+        assert!(store_tx.find("identity.credentials", "primary", &[])?.len() == 1);
         Ok(())
     });
-    assert!(matches!(poisoned, Err(StoreError::Miss(_))));
-    for table in all_tables() {
-        store.load(table).unwrap();
-    }
-    // Nothing from the cold attempts survived; enrollment works after loading.
-    let issued = enroll(&mut store, &mut crypto, "cold@example.com", "password1", 0);
-    assert_eq!(
-        current(&mut store, &crypto, &issued.bearer, 1).email,
-        "cold@example.com"
-    );
+    journals.unwrap();
 }
 
 #[test]
-fn duplicate_email_rejected_without_new_profile() {
-    let (mut store, mut crypto) = store_loaded();
-    let first = enroll(
-        &mut store,
-        &mut crypto,
-        "person@example.test",
-        "original password",
-        10,
-    );
-    let duplicate = store.run("duplicate", |tx| {
-        compose_enroll(
-            tx,
-            &mut crypto,
-            " PERSON@example.test ",
-            "different password",
-            11,
-        )
-    });
-    assert!(matches!(duplicate, Err(StoreError::Constraint)));
-
-    // Original session still resolves; no second identity was created.
-    let account = current(&mut store, &crypto, &first.bearer, 12);
-    assert_eq!(account.identity, first.principal.identity);
-    let rows = store
-        .run("list", |tx| tx.find(authy::TABLES[0], "primary", &[]))
-        .unwrap()
-        .value;
-    assert_eq!(rows.len(), 1);
-
-    // Invalid enrollment does not claim the address either.
-    assert!(matches!(
-        store.run("short", |tx| compose_enroll(
-            tx,
-            &mut crypto,
-            "fresh@example.test",
-            "short",
-            13
-        )),
-        Err(StoreError::Invalid)
-    ));
-    let retry = enroll(
-        &mut store,
-        &mut crypto,
-        "fresh@example.test",
-        "password sessions",
-        14,
-    );
-    assert_ne!(retry.principal.identity, first.principal.identity);
-}
-
-#[test]
-fn profile_is_private_and_owner_edit_succeeds() {
-    let (mut store, mut crypto) = store_loaded();
-    let alice = enroll(
-        &mut store,
-        &mut crypto,
-        "alice@example.com",
-        "password1",
-        100,
-    );
-    let bob = enroll(&mut store, &mut crypto, "bob@example.com", "password1", 100);
-    let alice_profile = authy::profile_id(&alice.principal.identity).unwrap();
-
-    // Bob's synchronization policy excludes Alice's private profile. Resident
-    // reads inside accepted handlers do not reinterpret the caller's authority.
-    let manifest = store
-        .run("manifest", |tx| {
-            authy::document().access_guard().manifest(
-                tx,
-                "boot:bob",
-                &bob.principal.identity,
-                &Manifest::default(),
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(manifest.documents.iter().all(|d| d.id != alice_profile));
-
-    // Bob's edit is denied without a document write (completion carries Denied).
-    let denied = dispatch_profile(
-        &mut store,
-        "boot:bob",
-        &bob.principal.identity,
-        edit_intent(1, &alice_profile, "Bob", "hi", 1),
-    );
-    assert_eq!(
-        denied,
-        Err(snap_transport::Error::Application(json!(
-            snap_document::Error::Denied
-        )))
-    );
-
-    // Owner edit succeeds and advances exactly one revision.
-    let edited = store
-        .run("edit", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:alice",
-                &alice.principal.identity,
-                &edit_intent(1, &alice_profile, "  Alice Cooper  ", "Singer", 1),
-            )
-        })
-        .unwrap()
-        .value;
-    let next = edited.completion.result.unwrap().unwrap();
-    assert_eq!(next.revision, 2);
-    assert_eq!(next.value, json!({"name": "Alice Cooper", "bio": "Singer"}));
-    assert!(edited.replication.is_some());
-
-    // Invalid edits are domain Invalid completions, not Store misuse. They use
-    // the current revision so the guard passes and the apply is exercised.
-    // Each case uses a distinct lifetime+id so receipts never conflict.
-    for (index, (name, bio)) in [("", "x"), ("   ", "x"), (&"a".repeat(101), "x")]
-        .iter()
-        .enumerate()
-    {
-        let rejected = store
-            .run("invalid-name", |tx| {
-                authy::document().mutate(
-                    tx,
-                    &format!("boot:alice-invalid-{index}"),
-                    &alice.principal.identity,
-                    &edit_intent(10 + index as u64, &alice_profile, name, bio, 2),
-                )
-            })
-            .unwrap()
-            .value;
-        assert!(
-            matches!(
-                rejected.completion.result,
-                Err(snap_document::Error::Invalid)
-            ),
-            "{name:?}"
-        );
-    }
-    // Missing revision fails the app guard, so it reports Denied (no write);
-    // the unguarded apply never runs.
-    let missing_revision = dispatch_profile(
-        &mut store,
-        "boot:alice-2b",
-        &alice.principal.identity,
-        Intent {
-            id: 7,
-            document: alice_profile.clone(),
-            version: "1".into(),
-            mutation: "edit".into(),
-            args: json!({"name": "Alice", "bio": "x"}),
-        },
-    );
-    assert_eq!(
-        missing_revision,
-        Err(snap_transport::Error::Application(json!(
-            snap_document::Error::Denied
-        )))
-    );
-    let long_bio = "b".repeat(2001);
-    let rejected = store
-        .run("invalid-bio", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:alice-3",
-                &alice.principal.identity,
-                &edit_intent(3, &alice_profile, "Alice", &long_bio, 2),
-            )
-        })
-        .unwrap()
-        .value;
-    assert!(matches!(
-        rejected.completion.result,
-        Err(snap_document::Error::Invalid)
-    ));
-
-    // Failed edits left the committed value at the successful edit.
-    let kept = store
-        .run("read", |tx| {
-            authy::document().read(tx, &alice_profile, Some(&alice.principal.identity))
-        })
-        .unwrap()
-        .value;
-    assert_eq!(kept.revision, 2);
-    assert_eq!(kept.value, json!({"name": "Alice Cooper", "bio": "Singer"}));
-}
-
-#[test]
-fn stale_profile_edit_is_rejected_without_a_write() {
-    let (mut store, mut crypto) = store_loaded();
-    let alice = enroll(
-        &mut store,
-        &mut crypto,
-        "stale@example.com",
-        "password1",
-        100,
-    );
-    let profile = authy::profile_id(&alice.principal.identity).unwrap();
-
-    // First causal edit at revision 1 commits revision 2.
-    let first = store
-        .run("edit-1", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:stale",
-                &alice.principal.identity,
-                &edit_intent(1, &profile, "First", "one", 1),
-            )
-        })
-        .unwrap()
-        .value;
-    assert_eq!(
-        first
-            .completion
-            .result
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .revision,
-        2
-    );
-
-    // A concurrent edit still carrying revision 1 is stale: the app guard
-    // denies it without a document write, even though the actor is the owner.
-    // Document itself keeps its latest-state policy; this freshness check is
-    // app-specific.
-    let stale = dispatch_profile(
-        &mut store,
-        "boot:stale",
-        &alice.principal.identity,
-        edit_intent(2, &profile, "Stale", "late", 1),
-    );
-    assert_eq!(
-        stale,
-        Err(snap_transport::Error::Application(json!(
-            snap_document::Error::Denied
-        )))
-    );
-
-    // The committed value is untouched by the stale attempt.
-    let kept = store
-        .run("read", |tx| {
-            authy::document().read(tx, &profile, Some(&alice.principal.identity))
-        })
-        .unwrap()
-        .value;
-    assert_eq!(kept.revision, 2);
-    assert_eq!(kept.value, json!({"name": "First", "bio": "one"}));
-
-    // The next causal edit carries the fresh revision 2 and commits revision 3,
-    // so ACK-paced consecutive edits stay causal.
-    let second = store
-        .run("edit-2", |tx| {
-            authy::document().mutate(
-                tx,
-                "boot:stale",
-                &alice.principal.identity,
-                &edit_intent(3, &profile, "Second", "two", 2),
-            )
-        })
-        .unwrap()
-        .value;
-    let next = second.completion.result.unwrap().unwrap();
-    assert_eq!(next.revision, 3);
-    assert_eq!(next.value, json!({"name": "Second", "bio": "two"}));
-}
-
-#[test]
-fn client_sdk_drives_optimistic_profile_edits() {
-    let (mut store, mut crypto) = store_loaded();
-    let alice = enroll(&mut store, &mut crypto, "sdk@example.com", "password1", 50);
-    let profile = authy::profile_id(&alice.principal.identity).unwrap();
-    let registry = authy::registry();
-
-    let base = store
-        .run("read", |tx| {
-            authy::document().read(tx, &profile, Some(&alice.principal.identity))
-        })
-        .unwrap()
-        .value;
-
-    // Install authoritative state, enqueue an optimistic edit, and observe the
-    // projected view before the server commits. The revision comes from the
-    // projected snapshot, keeping ACK-paced edits causal.
-    let mut client = Client::new(alice.principal.identity.clone());
-    let outcome = client
-        .handle(
-            &registry,
-            ServerMessage::Manifest(Reconciliation {
-                unchanged: vec![],
-                documents: vec![base],
-                completed: vec![],
+fn private_tables_denials_stale_edits_and_revocation_never_export_private_programs() {
+    let mut host = fresh();
+    let (a_token, alice) = enroll(&mut host, "alice@example.com");
+    let (b_token, bob) = enroll(&mut host, "bob@example.com");
+    let (a_peer, mut a) = attach(&mut host, &a_token, &alice, "alice");
+    let (b_peer, mut b) = attach(&mut host, &b_token, &bob, "bob");
+    for input in [
+        json!({"tables":{"identity.credentials":[["alice@example.com"]]}}),
+        json!({"tables":{authy::PROFILES:[[alice.profile]]}}),
+    ] {
+        host.submit(
+            b_peer,
+            Command::Invoke(Invocation {
+                id: 90,
+                operation: "store.subscribe".into(),
+                input,
             }),
+            0,
         )
         .unwrap();
-    assert!(matches!(outcome, Outcome::Reconciled { .. }));
-    let base_revision = client.get(&profile).unwrap().revision;
-    let id = client
-        .enqueue(
-            &registry,
-            &profile,
-            "edit",
-            json!({"name": "Sdk", "bio": "optimistic", "revision": base_revision}),
-        )
-        .unwrap();
-    assert_eq!(
-        client.get(&profile).unwrap().value,
-        json!({"name": "Sdk", "bio": "optimistic"})
-    );
-    let submission = client.next_submission().unwrap();
-    let intent = match submission {
-        snap_document::ClientMessage::Mutate(intent) => intent,
-        other => panic!("unexpected submission: {other:?}"),
-    };
-    assert_eq!(intent.id, id);
-    assert_eq!(intent.document, profile);
-
-    // Commit through the server, then apply the authoritative completion as one
-    // coherent publication without double-applying the optimistic entry.
-    let result = store
-        .run("commit", |tx| {
-            authy::document().mutate(tx, "boot:sdk", &alice.principal.identity, &intent)
-        })
-        .unwrap()
-        .value;
-    assert!(!result.replayed);
-    let outcome = client
-        .handle(&registry, ServerMessage::Completed(result.completion))
-        .unwrap();
-    assert!(matches!(outcome, Outcome::Completed { .. }));
-    assert!(client.pending().is_empty());
-    assert_eq!(client.get(&profile).unwrap().revision, 2);
-    assert_eq!(
-        client.get(&profile).unwrap().value,
-        json!({"name": "Sdk", "bio": "optimistic"})
-    );
-
-    // A second causal edit takes the fresh revision 2 from the projected view
-    // and commits revision 3.
-    let fresh = client.get(&profile).unwrap().revision;
-    client
-        .enqueue(
-            &registry,
-            &profile,
-            "edit",
-            json!({"name": "Sdk2", "bio": "again", "revision": fresh}),
-        )
-        .unwrap();
-    let intent = match client.next_submission().unwrap() {
-        snap_document::ClientMessage::Mutate(intent) => intent,
-        other => panic!("unexpected submission: {other:?}"),
-    };
-    let result = store
-        .run("commit-2", |tx| {
-            authy::document().mutate(tx, "boot:sdk", &alice.principal.identity, &intent)
-        })
-        .unwrap()
-        .value;
-    assert!(result.completion.result.is_ok());
-    let outcome = client
-        .handle(&registry, ServerMessage::Completed(result.completion))
-        .unwrap();
-    assert!(matches!(outcome, Outcome::Completed { .. }));
-    assert_eq!(client.get(&profile).unwrap().revision, 3);
-    assert_eq!(
-        client.get(&profile).unwrap().value,
-        json!({"name": "Sdk2", "bio": "again"})
-    );
-}
-
-#[test]
-fn current_login_logout_and_expiry_follow_session_lifetime() {
-    let (mut store, mut crypto) = store_loaded();
-    let identity = Identity::default();
-    let first = enroll(
-        &mut store,
-        &mut crypto,
-        "session@example.com",
-        "password1",
-        100,
-    );
-    let second = store
-        .run("login", |tx| {
-            identity.acquire(tx, &mut crypto, "SESSION@example.com", "password1", 101)
-        })
-        .unwrap()
-        .value;
-    assert_eq!(first.principal.identity, second.principal.identity);
-    assert_ne!(first.bearer, second.bearer);
-
-    // Both bearers resolve to the same account; auth time tracks issuance.
-    let a = current(&mut store, &crypto, &first.bearer, 102);
-    let b = current(&mut store, &crypto, &second.bearer, 102);
-    assert_eq!(a.identity, b.identity);
-    assert_eq!(a.profile, b.profile);
-    assert_eq!(a.authenticated_at, 100);
-    assert_eq!(b.authenticated_at, 101);
-
-    // Logout revokes only the supplied session; the other bearer keeps working.
-    store
-        .run("logout", |tx| {
-            identity.revoke(tx, &crypto, &first.bearer, 103)
-        })
-        .unwrap();
-    assert!(matches!(
-        store.run("revoked", |tx| compose_current(
-            tx,
-            &crypto,
-            &first.bearer,
-            103
-        )),
-        Err(StoreError::NotFound)
-    ));
-    assert_eq!(
-        current(&mut store, &crypto, &second.bearer, 103).identity,
-        second.principal.identity
-    );
-
-    // Expiry at now >= expires grants no authority.
-    assert!(matches!(
-        store.run("expired", |tx| compose_current(
-            tx,
-            &crypto,
-            &second.bearer,
-            101 + SESSION_LIFETIME_SECONDS
-        )),
-        Err(StoreError::NotFound)
-    ));
-    // Unknown bearer and unknown identity are NotFound, not Miss.
-    assert!(matches!(
-        store.run("unknown", |tx| compose_current(
-            tx,
-            &crypto,
-            &"0".repeat(64),
-            103
-        )),
-        Err(StoreError::NotFound)
-    ));
-    assert!(matches!(
-        store.run("unknown-id", |tx| authy::account_by_identity(
-            tx,
-            &"f".repeat(64),
-            103
-        )),
-        Err(StoreError::NotFound)
-    ));
-}
-
-#[test]
-fn sessions_and_profiles_survive_reopen() {
-    let path = std::path::PathBuf::from(format!(
-        "/tmp/opencode/snap-authy-{}.sqlite",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
-    snap_store_sqlite::migrate(&path, &migrations()).unwrap();
-    let (bearer, identity_id, profile) = {
-        let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
-        for table in all_tables() {
-            store.load(table).unwrap();
-        }
-        let mut crypto = Fake::default();
-        let issued = enroll(
-            &mut store,
-            &mut crypto,
-            "persist@example.com",
-            "password1",
-            7,
-        );
-        let profile = authy::profile_id(&issued.principal.identity).unwrap();
-        store
-            .run("edit", |tx| {
-                authy::document().mutate(
-                    tx,
-                    "boot:persist",
-                    &issued.principal.identity,
-                    &edit_intent(1, &profile, "Persisted", "kept", 1),
-                )
+        while host.step() {}
+        let denied = host.drain(b_peer).unwrap();
+        assert!(denied.iter().any(|r| matches!(
+            r,
+            Response::Event(Event::Completed {
+                outcome: Err(_),
+                ..
             })
-            .unwrap();
-        (issued.bearer, issued.principal.identity, profile)
-    };
-    {
-        let mut store = snap_store_sqlite::Sqlite::open(&path).unwrap();
-        for table in all_tables() {
-            store.load(table).unwrap();
-        }
-        let crypto = Fake::default();
-        let account = current(&mut store, &crypto, &bearer, 8);
-        assert_eq!(account.identity, identity_id);
-        assert_eq!(account.profile, profile);
-        let snapshot = store
-            .run("read", |tx| {
-                authy::document().read(tx, &profile, Some(&identity_id))
-            })
-            .unwrap()
-            .value;
-        assert_eq!(snapshot.value, json!({"name": "Persisted", "bio": "kept"}));
-        // Second login after restart still maps to the same profile.
-        let mut crypto = Fake::default();
-        let identity = Identity::default();
-        let second = store
-            .run("login", |tx| {
-                identity.acquire(tx, &mut crypto, "persist@example.com", "password1", 9)
-            })
-            .unwrap()
-            .value;
-        assert_eq!(second.principal.identity, identity_id);
+        )));
+        assert!(publications(&denied).is_empty());
     }
-    std::fs::remove_file(&path).unwrap();
+    let input = authy::operations::EditInput {
+        profile: alice.profile.clone(),
+        first_name: "Hacked".into(),
+        last_name: String::new(),
+        revision: 1,
+    };
+    host.submit(
+        b_peer,
+        Command::Invoke(Invocation {
+            id: 91,
+            operation: "authy.profile.edit".into(),
+            input: json!(input),
+        }),
+        0,
+    )
+    .unwrap();
+    while host.step() {}
+    assert!(host.drain(b_peer).unwrap().iter().any(|r| matches!(r, Response::Event(Event::Completed { outcome: Err(snap_transport::Error::Application(e)), .. }) if *e == json!(authy::operations::EditError::Denied))));
+
+    // One durable program touches a replicated profile and a private credential.
+    host.transact("mixed public/private", |tx| {
+        tx.update(
+            authy::PROFILES,
+            &[alice.profile.clone().into()],
+            snap_store::Row::from([
+                ("first_name".into(), "SecretQueueName".into()),
+                ("revision".into(), 2.into()),
+            ]),
+        )?;
+        tx.update(
+            "identity.credentials",
+            &["alice@example.com".into()],
+            snap_store::Row::from([("material".into(), "NEVER-EXPORT-THIS".into())]),
+        )
+    })
+    .unwrap();
+    // Revoke before a carrier drains the queued profile update.
+    let queued = host.output(a_peer).unwrap().front().unwrap();
+    let projected = publications(&[queued]);
+    assert_eq!(projected.len(), 1);
+    let projected =
+        snap_store::Program::from_bytes(&authy::profile_catalog(), &projected[0].program).unwrap();
+    assert_eq!(
+        projected.instructions().count(),
+        1,
+        "the private credential instruction was not exported"
+    );
+    let resource = snap_access::Resource::new(authy::PROFILE_KIND, &alice.profile).unwrap();
+    host.transact("revoke", |tx| {
+        let mut changes = snap_access::ChangeSet::new(snap_access::Actor::System);
+        changes.grants.push(snap_access::GrantChange {
+            resource: resource.clone(),
+            identity: alice.identity.clone(),
+            role: None,
+        });
+        authy::access().change(tx, &changes).map(|_| ())
+    })
+    .unwrap();
+    let output = host.output(a_peer).unwrap();
+    let mut redacted = Vec::new();
+    while let Some(frame) = output.pop_front() {
+        redacted.push(frame);
+    }
+    assert_eq!(publications(&redacted).len(), 1);
+    let program = snap_store::Program::from_bytes(
+        &authy::profile_catalog(),
+        &publications(&redacted)[0].program,
+    )
+    .unwrap();
+    assert!(program.is_empty());
+    for frame in redacted {
+        a.receive(frame).unwrap();
+    }
+    assert!(a.profile().unwrap().is_none());
+    assert!(a.edit("Ada", "Lovelace").is_err());
+    assert!(
+        pump(&mut host, b_peer, &mut b)
+            .iter()
+            .all(|r| !matches!(r, Response::Global { .. }))
+    );
+    assert_eq!(b.profile().unwrap().unwrap().first_name, "bob");
+    host.transact("restore access", |tx| {
+        let mut changes = snap_access::ChangeSet::new(snap_access::Actor::System);
+        changes.grants.push(snap_access::GrantChange {
+            resource,
+            identity: alice.identity.clone(),
+            role: Some(snap_access::Role::Owner),
+        });
+        authy::access().change(tx, &changes).map(|_| ())
+    })
+    .unwrap();
+    let frames = pump(&mut host, a_peer, &mut a);
+    assert!(publications(&frames)[0].reset);
+    assert_eq!(a.profile().unwrap().unwrap().first_name, "SecretQueueName");
+    let stale = authy::operations::EditInput {
+        profile: alice.profile.clone(),
+        first_name: "Stale".into(),
+        last_name: String::new(),
+        revision: 1,
+    };
+    host.submit(
+        a_peer,
+        Command::Invoke(Invocation {
+            id: 92,
+            operation: "authy.profile.edit".into(),
+            input: json!(stale),
+        }),
+        0,
+    )
+    .unwrap();
+    while host.step() {}
+    let frames = host.drain(a_peer).unwrap();
+    assert!(frames.iter().any(|r| matches!(r, Response::Event(Event::Completed { outcome: Err(snap_transport::Error::Application(e)), .. }) if *e == json!(authy::operations::EditError::Conflict))));
+    assert!(publications(&frames).is_empty());
+    let kept = host
+        .transact("read", |tx| authy::Profile::read(tx, &alice.profile))
+        .unwrap();
+    assert_eq!(kept.revision, 2);
 }
 
 #[test]
-fn profile_id_derivation_is_stable_grouped_and_hex_validated() {
-    let identity = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    assert_eq!(
-        authy::profile_id(identity).unwrap(),
-        "01234567-89ab-cdef-0123-456789abcdef"
-    );
-    // Same 32-hex prefix collides by design; different suffixes share a profile.
-    // A sibling differing inside the first 32 hex chars maps elsewhere.
-    let sibling = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let twin = format!("{}{}", &identity[..32], "f".repeat(32));
-    assert_eq!(
-        authy::profile_id(&twin).unwrap(),
-        authy::profile_id(identity).unwrap()
-    );
-    assert_ne!(
-        authy::profile_id(sibling).unwrap(),
-        authy::profile_id(identity).unwrap()
-    );
-    // Malformed identities are rejected, never mapped.
-    assert!(authy::profile_id("").is_none());
-    assert!(authy::profile_id("not-hex").is_none());
-    assert!(authy::profile_id(&"0".repeat(63)).is_none());
-    assert!(authy::profile_id(&"0".repeat(65)).is_none());
-    assert!(authy::profile_id(&"z".repeat(64)).is_none());
-}
-
-#[test]
-fn authy_migration_applies_cleanly() {
-    let parsed: snap_store::migration::Migration = toml::from_str(authy::MIGRATION).unwrap();
-    assert_eq!(parsed.id, "0001_authy");
-    assert_eq!(parsed.changes.len(), 1);
-    let mut store = snap_store_sqlite::Sqlite::memory(&[parsed]).unwrap();
-    for table in authy::TABLES {
+fn failed_enrollment_and_misses_leave_no_account_profile_or_authority() {
+    let mut store = snap_store_sqlite::Sqlite::memory(&migrations()).unwrap();
+    let mut crypto = Fake::default();
+    let create = |tx: &mut snap_store::Transaction<'_>, crypto: &mut Fake| {
+        let issued =
+            Identity::default().enroll(tx, crypto, "alice@example.com", "password1", 1000)?;
+        authy::initialize_account(tx, &issued.principal.identity, "alice@example.com")?;
+        Ok::<_, Error>(issued)
+    };
+    assert!(matches!(
+        store.run("cold", |tx| create(tx, &mut crypto)),
+        Err(Error::Miss(_))
+    ));
+    for table in snap_identity::TABLES
+        .into_iter()
+        .chain(snap_access::TABLES)
+        .chain(authy::TABLES)
+    {
         store.load(table).unwrap();
     }
-    assert!(store.catalog().table("authy.accounts").is_ok());
-    // Unique profile index exists in the declared catalog.
-    let table = store.catalog().table("authy.accounts").unwrap();
-    assert!(
-        table
-            .indexes
-            .iter()
-            .any(|i| i.name == "profile" && i.unique)
+    assert!(matches!(
+        store.run("late failure", |tx| {
+            create(tx, &mut crypto)?;
+            Err::<(), _>(Error::Unavailable)
+        }),
+        Err(Error::Unavailable)
+    ));
+    assert!(store.programs(0, 10).unwrap().is_empty());
+    for table in snap_identity::TABLES
+        .into_iter()
+        .chain(snap_access::TABLES)
+        .chain(authy::TABLES)
+    {
+        assert!(
+            store
+                .inspect("empty", |tx| tx.find(table, "primary", &[]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let issued = store
+        .run("retry", |tx| create(tx, &mut crypto))
+        .unwrap()
+        .value;
+    let profile = authy::profile_id(&issued.principal.identity).unwrap();
+    assert_eq!(
+        store
+            .inspect("profile", |tx| authy::Profile::read(tx, &profile))
+            .unwrap()
+            .first_name,
+        "alice"
+    );
+    let before = store.programs(0, 10).unwrap().len();
+    assert!(matches!(
+        store.run("duplicate", |tx| create(tx, &mut crypto)),
+        Err(Error::Constraint)
+    ));
+    assert_eq!(store.programs(0, 10).unwrap().len(), before);
+    assert_eq!(
+        store
+            .inspect("accounts", |tx| tx.find(authy::ACCOUNTS, "primary", &[]))
+            .unwrap()
+            .len(),
+        1
     );
 }
 
 #[test]
-fn missing_metadata_reports_not_found_not_a_profile_leak() {
-    let (mut store, mut crypto) = store_loaded();
-    let alice = enroll(&mut store, &mut crypto, "leak@example.com", "password1", 0);
-    // Delete the metadata row out-of-band of Document to simulate a partial
-    // host state: current reports NotFound without revealing profile data.
-    store
-        .run("delete-meta", |tx| {
-            tx.delete(
-                authy::TABLES[0],
-                &[Value::Text(alice.principal.identity.clone())],
-            )
-            .map(|_| ())
-        })
+fn profile_update_survives_restart_and_new_client_bootstrap() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("authy.sqlite");
+    snap_store_sqlite::migrate(&path, &migrations()).unwrap();
+    let mut running = host(
+        snap_store_sqlite::Sqlite::open(&path).unwrap(),
+        Fake::default(),
+    );
+    let (token, account) = enroll(&mut running, "restart@example.com");
+    let (peer, mut client) = attach(&mut running, &token, &account, "before");
+    running
+        .submit(peer, client.edit("Ada", "Lovelace").unwrap(), 0)
         .unwrap();
-    assert!(matches!(
-        store.run("gone", |tx| compose_current(tx, &crypto, &alice.bearer, 1)),
-        Err(StoreError::NotFound)
-    ));
+    pump(&mut running, peer, &mut client);
+    drop(running);
+    let mut reopened = snap_store_sqlite::Sqlite::open(&path).unwrap();
+    let journal = reopened.programs(0, 100).unwrap();
+    assert_eq!(journal.len(), 2, "only enrollment and edit write programs");
+    assert!(
+        journal[0]
+            .program
+            .instructions()
+            .any(|i| i.table() == "identity.credentials")
+    );
+    assert_eq!(journal[1].program.instructions().count(), 1);
+    let mut running = host(reopened, Fake::default());
+    let (_, mut client) = attach(&mut running, &token, &account, "after");
+    assert_eq!(
+        client.profile().unwrap().unwrap().display_name(),
+        "Ada Lovelace"
+    );
 }

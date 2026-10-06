@@ -352,6 +352,8 @@ pub struct Completed<W> {
     pub context: Context,
     pub outcome: crate::Outcome,
     pub changes: Vec<RowChange>,
+    /// Private durable program. Publication policy must project it before delivery.
+    pub program: Option<snap_store::Program>,
     pub storage_failure: Option<snap_store::Error>,
 }
 impl<W> Runtime<W> {
@@ -500,8 +502,13 @@ impl<W> Runtime<W> {
             }
             Ok(value)
         });
-        let (outcome, changes, storage_failure) = match result {
-            Ok(committed) => (Ok(committed.value), committed.changes, None),
+        let (outcome, changes, program, storage_failure) = match result {
+            Ok(committed) => (
+                Ok(committed.value),
+                committed.changes,
+                Some(committed.program),
+                None,
+            ),
             Err(error) => {
                 let storage = (!invalid && rejected.is_none()).then_some(error.clone());
                 (
@@ -513,6 +520,7 @@ impl<W> Runtime<W> {
                         }
                     })),
                     Vec::new(),
+                    None,
                     storage,
                 )
             }
@@ -526,6 +534,7 @@ impl<W> Runtime<W> {
             context,
             outcome,
             changes,
+            program,
             storage_failure,
         })
     }
