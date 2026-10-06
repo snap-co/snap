@@ -258,37 +258,64 @@ pub fn unique_index_failure_discards_earlier_statements_and_allows_the_next_oper
 >(
     store: &mut Store<B>,
 ) {
-    store.load("identity.accounts").unwrap();
     store
         .run("alice", |tx| {
             tx.insert("identity.accounts", row(1, "alice"))
         })
         .unwrap();
-    let failed = store.run("duplicate email", |tx| {
-        tx.insert("identity.accounts", row(2, "bob"))?;
-        tx.insert("identity.accounts", row(3, "alice"))
-    });
-    assert!(matches!(failed, Err(Error::Constraint)));
-    assert_eq!(
+    for cold in [false, true] {
+        store.load("identity.accounts").unwrap();
+        if cold {
+            store
+                .retain_keys("identity.accounts", &BTreeSet::new())
+                .unwrap();
+            assert!(matches!(
+                store.inspect("cold original", |tx| tx
+                    .get("identity.accounts", &[1.into()])),
+                Err(Error::Miss(_))
+            ));
+        }
+        let mut staged = false;
+        let failed = store.run("duplicate email", |tx| {
+            tx.insert("identity.accounts", row(2, "bob"))?;
+            tx.insert("identity.accounts", row(3, "alice"))?;
+            staged = true;
+            Ok(())
+        });
+        assert!(matches!(failed, Err(Error::Constraint)));
+        if cold {
+            assert!(
+                staged,
+                "cold duplicate must reach backend commit, not fail during resident insertion"
+            );
+        } else {
+            assert_eq!(
+                store
+                    .inspect("resident", |tx| tx.find(
+                        "identity.accounts",
+                        "primary",
+                        &[]
+                    ))
+                    .unwrap(),
+                vec![row(1, "alice")]
+            );
+        }
+        store.load("identity.accounts").unwrap();
+        assert_eq!(
+            store
+                .inspect("backend", |tx| tx.find("identity.accounts", "primary", &[]))
+                .unwrap(),
+            vec![row(1, "alice")]
+        );
         store
-            .inspect("resident", |tx| tx.find(
-                "identity.accounts",
-                "primary",
-                &[]
-            ))
-            .unwrap(),
-        vec![row(1, "alice")]
-    );
-    store.load("identity.accounts").unwrap();
-    assert_eq!(
+            .run("bob", |tx| tx.insert("identity.accounts", row(2, "bob")))
+            .unwrap();
         store
-            .inspect("backend", |tx| tx.find("identity.accounts", "primary", &[]))
-            .unwrap(),
-        vec![row(1, "alice")]
-    );
-    store
-        .run("bob", |tx| tx.insert("identity.accounts", row(2, "bob")))
-        .unwrap();
+            .run("reset next variant", |tx| {
+                tx.delete("identity.accounts", &[2.into()])
+            })
+            .unwrap();
+    }
 }
 
 pub fn cross_module_constraints_roll_back_every_write_including_memory<B: Backend>(

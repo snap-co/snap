@@ -1,5 +1,7 @@
 //! Paired composition proof missing from the independent Store/carrier suites:
 //! real client SDK -> TCP/TLS -> native host -> file SQLite -> client SDK.
+#[path = "../support/host.rs"]
+mod host;
 #[path = "../support/tcp_sqlite.rs"]
 mod setup;
 

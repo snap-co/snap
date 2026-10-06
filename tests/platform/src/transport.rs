@@ -141,3 +141,62 @@ pub async fn physical_loss_is_an_error<T: Client>(transport: &mut T) {
         "EOF is not a successful exchange"
     );
 }
+
+/// TCP setup policy, not a requirement on every carrier. Operation failures are
+/// correlated Completed events and do not themselves retire the attachment.
+pub async fn refusal_ends_physical_connection<C: snap_transport::Channel>(channel: C) {
+    let mut client = snap_transport::client::Client::new(channel);
+    assert_eq!(
+        client.connect("invalid", "refusal").await,
+        Err(snap_transport::Error::InvalidBearer)
+    );
+    assert_eq!(
+        client.connect("alice", "refusal").await,
+        Err(snap_transport::Error::Unavailable)
+    );
+}
+
+/// Carrier-only dependency outputs, not a substitute for operation execution.
+/// The setup supplies these frames and retirement at the host/carrier seam.
+pub async fn retirement_drains_output_before_loss<C: snap_transport::Channel>(
+    mut channel: C,
+    final_output: bool,
+) {
+    channel
+        .send(Command::Connect {
+            bearer: "unused".into(),
+            client_id: "retirement".into(),
+        })
+        .await
+        .unwrap();
+    if final_output {
+        assert_eq!(
+            channel.receive().await.unwrap(),
+            Some(Response::Event(Event::Progress {
+                id: 9,
+                value: json!("waiting")
+            }))
+        );
+        assert_eq!(
+            channel.receive().await.unwrap(),
+            Some(Response::Event(Event::Completed {
+                id: 9,
+                outcome: Ok(json!("committed"))
+            }))
+        );
+    }
+    assert!(
+        channel.receive().await.is_err(),
+        "retired stream must lose the physical connection after draining output"
+    );
+    assert!(
+        channel
+            .send(Command::Connect {
+                bearer: "unused".into(),
+                client_id: "reuse".into()
+            })
+            .await
+            .is_err(),
+        "observed physical loss must fence reuse"
+    );
+}

@@ -1,9 +1,8 @@
 //! Native paired setup: production TCP/TLS and dispatch, file-backed SQLite,
 //! and the portable cartridge SDK journey. No transport observations are faked.
-#[path = "host.rs"]
-mod host;
+use super::host;
 #[path = "../../../crates/transport/tests/support/mod.rs"]
-mod tls_support;
+pub(crate) mod tls_support;
 
 use snap_platform_tests::{cartridge, journey};
 use snap_store_sqlite::Sqlite;
@@ -17,9 +16,20 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // Host-level adaptation to Channel. Framing and verified TLS remain in the
 // production driver. A physical failure fences this channel; it never retries.
-struct TcpChannel {
+pub(crate) struct TcpChannel {
     driver: snap_transport::native::TcpClient,
     usable: bool,
+}
+impl TcpChannel {
+    pub(crate) async fn open(
+        address: &str,
+        tls: &snap_transport::native::tls::ClientTls,
+    ) -> Result<Self> {
+        Ok(Self {
+            driver: snap_transport::native::TcpClient::open(address, tls).await?,
+            usable: true,
+        })
+    }
 }
 impl Channel for TcpChannel {
     async fn send(&mut self, command: Command) -> std::result::Result<(), Error> {
@@ -152,15 +162,8 @@ pub async fn run(
 ) -> Result<[i64; 2]> {
     let server = Server::start(database).await?;
     let execution = tokio::time::timeout(Duration::from_secs(30), async {
-        let driver = snap_transport::native::TcpClient::open(
-            &server.address.to_string(),
-            &server.client_tls,
-        )
-        .await?;
-        let mut client = Client::new(TcpChannel {
-            driver,
-            usable: true,
-        });
+        let channel = TcpChannel::open(&server.address.to_string(), &server.client_tls).await?;
+        let mut client = Client::new(channel);
         let resumed = client
             .connect("alice", "plumbing-client")
             .await

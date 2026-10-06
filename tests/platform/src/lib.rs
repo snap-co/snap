@@ -9,5 +9,6 @@ pub mod cartridge;
 pub mod dispatch;
 pub mod journey;
 pub mod memory;
+pub mod simulation;
 pub mod store;
 pub mod transport;

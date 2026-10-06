@@ -1,4 +1,6 @@
 //! Visible native cartridge runner. The same setup is exercised by Cargo tests.
+#[path = "../support/host.rs"]
+mod host;
 #[path = "../support/tcp_sqlite.rs"]
 mod setup;
 

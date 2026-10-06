@@ -92,6 +92,10 @@ closed-database checkpoint plus its ordered log tail. The process-crash case in
 `tests/recovery.rs` checks both rows and programs after abrupt exit. These proofs
 do not establish power-loss durability, schema-crossing replay, automatic position
 deduplication or authorized client replication. The full log is private.
+The unique-index rollback case runs with the original row both resident and
+evicted. In the cold variant both inserts must finish staging before commit
+rejects the duplicate, forcing constraint handling into the selected backend.
+Reloads check complete rollback, original-row preservation and subsequent writes.
 
 Store's production volatile backend now supplies the shared memory setup and
 client replicas; the controlled platform wrapper only injects commit rejection.
@@ -167,6 +171,55 @@ links are rejected without changes, assuming no concurrent directory modificatio
 cartridge identity is a fixed fixture, not an authentication-flow test. Reopening
 after orderly teardown is not process-crash or power-loss durability proof.
 
+The `simulation` target runs the unchanged client journey and cartridge assembly
+through the reusable `no_std` testing platform in `tests/platform/src/simulation/`.
+Its Transport link queues owned structured commands and delivers actual host
+observations. A single-threaded event scheduler jumps virtual time to deadlines,
+orders ties by insertion sequence and preserves each link's FIFO order under
+seeded delay jitter. The host still owns admission, execution and transactions.
+Decoded receipt and worker submission are separate events, with their own delays.
+The host gate can be paused between calls while carrier receipt, output delivery
+and teardown continue. Pending command-count reservations remain held through
+that wait; handoff overflow closes the physical link without admitting overflow.
+Wire-byte budgets and OS backpressure are not modeled.
+The simulated Store wraps the production volatile program interpreter with
+virtual load/commit latency and confirmed commit rejection. It is not a second
+oracle or a SQLite emulator. Backend IO is synchronous, so no other event runs
+inside a load or commit; latency advances virtual time while the host step blocks.
+No restart or fsync durability is promised.
+
+The selected carrier policy defaults to TCP's terminal refusals; reusable
+WebSocket-style refusals can be selected separately. Frame terminal metadata and
+host retirement seal the physical outbox. Queued final observations drain before
+physical loss is reported, later output is suppressed and the retired link cannot
+be reused. Explicit disconnect/drop retains the existing abort policy, which
+discards unread buffered output. That policy does not model every socket buffer.
+Client polling follows actual wakeups rather than every scheduler event, with
+separate event and poll budgets. Self-waking tasks can progress without network
+events; missing wakes cannot pass through unconditional polling. Explicit idle
+time advancement drives host maintenance without requiring another command.
+
+Shared assembly lives in `tests/platform/support/simulation.rs`. The default-run
+integration compares model-checked SDK observations with real TCP/TLS and SQLite,
+checks seeded schedule replay, queue-only sends, early acceptance, commit rejection,
+observer loss, explicit teardown and competing peers. Paired lifecycle cases run
+against simulation and real TCP with production dispatch, including authentication
+refusal and idle credential revocation. Carrier-only cases supply retirement and
+final frames at the Loop dependency seam, not fake operation outcomes. Native
+dispatch and simulation also exercise gate-held handoff, Close and count overflow.
+Lifecycle support lives in `tests/platform/tests/support/lifecycle.rs`.
+All shared Store cases run against the simulated backend. Event/poll/time limits
+and deadlock detection bound scheduler work,
+not arbitrary non-returning application callbacks. The `simulation` Cargo example
+prints the same journey's virtual event trace without real IO. Trace records omit
+credentials and payloads. The framework runner discovers these cases under the
+Interface layer in both fast and full selections; the existing nine native matrix
+rows remain separate. This is one host with multiple supported physical peers,
+not yet a multi-server simulation runtime or a fault/workload generator.
+`ResponsePublished` trace times record when the carrier observes queued host
+frames, not their publication instant inside a synchronous callback. Progress
+delivery during such a callback remains outside this scheduler's guarantees.
+
 The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
 carriers, client-side durable module recovery and a full Transport/Store matrix
@@ -237,7 +290,11 @@ condition or a wait for external input.
 Seeded exploration should retain the seed, setup and failing action sequence.
 Controlling action selection alone does not make real IO deterministic. Claim
 deterministic reproduction only for the inputs and scheduling the testing
-platform actually controls; strict deterministic simulation remains deferred.
+platform actually controls; general multi-server deterministic simulation remains deferred.
+The cartridge simulator controls structured delivery, host-step scheduling and
+virtual dependency latency for its supported IO-free host. That guarantee does
+not extend to physical IO, arbitrary callbacks, mid-commit interleaving or the
+other module and application setups.
 
 ## Direct server interfaces and controllers
 
@@ -356,6 +413,7 @@ transfer ownership of an app scenario to Snap.
 | Snap property consumers | `tests/properties/Cargo.toml` selects cases beside their owning modules; it is a compilation/execution consumer, not a second owner of their contracts |
 | Snap Transport-to-Store cartridge | Portable cartridge/model in `tests/platform/src/{cartridge,dispatch}.rs`; real-host setup in `tests/platform/tests/support/dispatch.rs`; fixed examples in `tests/platform/tests/dispatch.rs` and Hegel inputs in `tests/platform/tests/properties/dispatch.rs` |
 | Paired cartridge client and physical IO | Portable SDK journey in `tests/platform/src/journey.rs`; shared native assembly in `tests/platform/support/{host,tcp_sqlite}.rs`; default-run integration in `tests/platform/tests/cartridge_tcp.rs` and visible runner in `tests/platform/examples/plumbing.rs` |
+| Deterministic cartridge simulation | Reusable scheduler and simulated drivers in `tests/platform/src/simulation/`; shared assembly in `tests/platform/support/simulation.rs`; fidelity/scheduling cases in `tests/platform/tests/simulation.rs`; visible runner in `tests/platform/examples/simulation.rs` |
 | App controlled execution | `apps/testy/server/src/memory.rs` and `apps/testy/tests/` contain app examples, not the owner of Snap platform conformance |
 | Snap browser and React adapters | Fixtures in `kits/browser/tests/` and `kits/react/tests/`; Rust assertions in `tests/browser/src/client.rs` and `kits/react/tests/router.rs` |
 | App SDK scenarios and properties | `apps/*/tests/` and app-owned `apps/*/properties/Cargo.toml` consumers |
