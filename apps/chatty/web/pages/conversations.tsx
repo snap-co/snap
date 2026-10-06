@@ -4,7 +4,8 @@ import { Chatty, randomID, type Thread, type View } from "../client";
 import { Text } from "./text";
 
 export function ConversationsPage({ sdk }: { sdk: Chatty }) {
-  const session = useSyncExternalStore(sdk.subscribe, sdk.getSnapshot).session;
+  const snapshot = useSyncExternalStore(sdk.subscribe, sdk.getSnapshot);
+  const session = snapshot.session;
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { thread?: string };
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -27,7 +28,7 @@ export function ConversationsPage({ sdk }: { sdk: Chatty }) {
   useEffect(() => {
     const update = () => {
       const snapshot = sdk.getSnapshot();
-      setThreads(snapshot.documents.map(d => ({ id: d.id, ...d.value })).sort((a,b) => b.updated - a.updated || a.id.localeCompare(b.id)));
+      setThreads(snapshot.threads);
       setView(selection.current.id ? sdk.view(selection.current.id) : null);
       if (snapshot.error) setError(snapshot.error);
     };
@@ -40,7 +41,8 @@ export function ConversationsPage({ sdk }: { sdk: Chatty }) {
     setView(selected ? sdk.view(selected) : null);
     setError(""); setSidebar(false); nearBottom.current = true;
   }, [selected]);
-  useEffect(() => { if (nearBottom.current) end.current?.scrollIntoView({ behavior: "instant" }); }, [view?.turns]);
+  useEffect(() => { if (snapshot.ready && snapshot.connected) sdk.select(selected); }, [selected, snapshot.ready, snapshot.connected, sdk]);
+  useEffect(() => { if (nearBottom.current) end.current?.scrollIntoView({ behavior: "instant" }); }, [view?.messages]);
   const choose = (id: string | null) => {
     if (selection.current.id === id) { setSidebar(false); return; }
     selection.current = { id, generation: selection.current.generation + 1 };
@@ -50,13 +52,13 @@ export function ConversationsPage({ sdk }: { sdk: Chatty }) {
   async function action(work: () => Promise<void>) { setBusy(true); setError(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   const create = async () => {
     const chosen = selection.current;
-    const thread = await api<{ id: string }>("chatty.create", { id: randomID(), title: "New thread", created: Math.floor(Date.now() / 1000) });
+    const thread = await api<{ id: string }>("chatty.create", { id: randomID(), title: "New thread" });
     if (selection.current === chosen) choose(thread.id); return thread.id;
   };
-  async function editThread(thread: Thread, title: string, effort: string) {
+  async function editThread(thread: Thread, title: string) {
     const chosen = selection.current;
     if (chosen.id !== thread.id) return;
-    await client.current?.rename(thread.id, title, effort);
+    await client.current?.rename(thread.id, title);
   }
   async function deleteThread() {
     const chosen = selection.current;
@@ -88,25 +90,16 @@ export function ConversationsPage({ sdk }: { sdk: Chatty }) {
     <aside className={sidebar ? "open" : ""}>
       <header><span className="wordmark"><span className="mark">c</span>chatty</span><button className="icon mobile" aria-label="Close sidebar" onClick={() => setSidebar(false)}>×</button></header>
       <button className="new-thread" disabled={busy} onClick={() => void action(async () => { await create(); })}><span>＋</span> New conversation</button>
-      <h2 className="eyebrow">YOUR CONVERSATIONS</h2>
-      <nav>{threads.map(t => <button key={t.id} className={selected === t.id ? "selected" : ""} onClick={() => choose(t.id)}><span>{t.title}</span>{t.active_turn && <i aria-label="Reply in progress" />}</button>)}{!threads.length && <p className="muted empty-nav">Your first conversation starts here.</p>}</nav>
+      <nav aria-label="Threads">{threads.map(t => <button key={t.id} className={selected === t.id ? "selected" : ""} onClick={() => choose(t.id)}><span>{t.title}</span></button>)}{!threads.length && <p className="muted empty-nav">Create a thread to start a conversation.</p>}</nav>
       <div className="account"><div className="avatar">{(session.account?.name || "You").slice(0, 1).toUpperCase()}</div><div><strong>{session.account?.name}</strong><small>{session.account?.email}</small></div><button title="Sign out" aria-label="Sign out" className="icon" disabled={busy} onClick={() => void logout()}>↗</button></div>
     </aside>
     {sidebar && <button className="scrim" aria-label="Close sidebar" onClick={() => setSidebar(false)} />}
     <main className="conversation">
-      <header className="topbar"><button className="icon mobile" aria-label="Open sidebar" onClick={() => setSidebar(true)}>☰</button><div><strong>{view?.thread.title ?? "New conversation"}</strong><small>Connected conversation</small></div>{selected && <div className="thread-actions"><button className="quiet" disabled={busy || !view} onClick={() => { if (!view) return; const title = prompt("Conversation title", view.thread.title); if (title) void action(() => editThread(view.thread, title, view.thread.effort)); }}>Rename</button><button className="quiet" disabled={busy} onClick={() => { if (confirm("Delete this conversation from active views?")) void action(deleteThread); }}>Delete</button></div>}</header>
+      <header className="topbar shared-thread"><button className="icon mobile" aria-label="Open sidebar" onClick={() => setSidebar(true)}>☰</button><div><strong>{view?.thread.title ?? "New conversation"}</strong><small>{snapshot.connected ? "Shared thread" : "Reconnecting"}</small></div>{selected && <div className="thread-actions"><button className="quiet" disabled={busy || !view} onClick={() => { const identity = prompt("Chatty identity to add as a member"); if (identity) void action(async () => { await api("chatty.member", { thread_id:selected, identity, role:"editor" }); }); }}>Add member</button><button className="quiet" disabled={busy || !view} onClick={() => { const identity = prompt("Chatty identity to remove"); if (identity) void action(async () => { await api("chatty.member", { thread_id:selected, identity, role:null }); }); }}>Remove member</button><button className="quiet" disabled={busy || !view} onClick={() => { if (!view) return; const title = prompt("Conversation title", view.thread.title); if (title) void action(() => editThread(view.thread, title)); }}>Rename</button><button className="quiet" disabled={busy} onClick={() => { if (confirm("Permanently delete this thread and all its messages?")) void action(deleteThread); }}>Delete</button></div>}</header>
       <div className="messages" onScroll={e => { const node = e.currentTarget; nearBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 140; }}>
-        {!view?.turns.length && <section className="empty"><div className="spark">✳</div><h1>What's on your mind?</h1><p>Work through a question, explore an idea, or make something worth keeping.</p><div className="suggestions">{["Help me think through a decision", "Create a plan for my week", "Find a useful starting point"].map(text => <button key={text} onClick={() => setDraft(text)}>{text}<span>↗</span></button>)}</div></section>}
-        <div className="transcript">{view?.turns.map(turn => <article key={turn.id}>
-          <div className="user-message"><span className="label">YOU</span><p>{turn.user}</p></div>
-          {(turn.text || turn.summary || turn.tools.length > 0 || turn.error) && <div className="assistant-message"><span className="label">SAVED REPLY</span>
-            {turn.summary && <details className="reasoning"><summary>Reasoning summary</summary><div className="prose"><Text value={turn.summary} /></div></details>}
-            {turn.tools.map(tool => <details className="tool" key={tool.call_id}><summary>{tool.name.replaceAll("_", " ")} <span>{tool.status === "running" ? "Running…" : "Finished"}</span></summary><pre>{JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2)}</pre></details>)}
-            <div className="prose"><Text value={turn.text} /></div>
-            {turn.error && <p className="turn-error" role="status">{turn.error}</p>}
-            {!!turn.usage.output_tokens && <small className="usage">{turn.usage.input_tokens?.toLocaleString()} input · {turn.usage.output_tokens.toLocaleString()} output{turn.usage.reasoning_tokens ? ` · ${turn.usage.reasoning_tokens.toLocaleString()} reasoning` : ""}</small>}
-            {!!turn.usage.context_omitted && <small className="usage">{turn.usage.context_omitted} earlier turns were omitted from this request's context.</small>}
-          </div>}
+        {!view?.messages.length && <section className="empty"><h1>{selected ? "Start the conversation" : "A place to talk"}</h1><p>People and agents post here as members. Add a member to share a thread.</p></section>}
+        <div className="transcript">{view?.messages.map(message => <article key={message.sequence} className={message.sender === session.account?.owner ? "own-message" : "peer-message"}>
+          <div className="user-message"><span className="label" title={message.sender}>{message.sender === session.account?.owner ? "You" : message.sender.slice(0,12)}</span><div className="prose"><Text value={message.body} /></div></div>
         </article>)}<div ref={end} /></div>
       </div>
       <div className="composer-area">{error && <div className="error" role="alert">{error}<button className="icon" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}

@@ -27,6 +27,7 @@ members = [
     "apps/chatty",
     "apps/chatty/server",
     "apps/chatty/web/wasm",
+    "apps/chatty/cli",
     "crates/identity",
     "crates/platform/crypto",
     "tests/properties",

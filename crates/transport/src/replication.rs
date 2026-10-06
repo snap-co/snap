@@ -3,7 +3,8 @@
 //! No declaration means no export. The private durable program is never sent.
 //!
 //! This spike loads declared tables in full on the server. Clients request exact
-//! keys, not arbitrary queries. Reconnect gets a fresh snapshot, not log catch-up.
+//! keys or module-declared collections, never arbitrary queries. Reconnect gets a
+//! fresh snapshot, not log catch-up. Collections are reselected after every commit.
 //! Foreign keys and indexes stay authoritative-server constraints; the replica
 //! catalog contains only exported table shapes. No partial-column export yet.
 use crate::host::{CommitContext, Participant};
@@ -27,6 +28,9 @@ pub const TOPIC: &str = "store.replication";
 const SUBSCRIBE: &str = "store.subscribe";
 type Authorize =
     dyn Fn(&mut Transaction<'_>, &str, &[snap_store::Value]) -> Result<bool, Error> + Send + Sync;
+type Select = dyn Fn(&mut Transaction<'_>, &str, &Value) -> Result<BTreeSet<Vec<snap_store::Value>>, Error>
+    + Send
+    + Sync;
 
 /// Runtime declaration attached to an exported table, separate from SQL DDL.
 /// Every column is exported. Put private material in non-exported tables.
@@ -34,6 +38,7 @@ pub struct Declaration {
     pub table: Table,
     pub data: Data,
     authorize: Box<Authorize>,
+    select: Option<Box<Select>>,
 }
 impl Declaration {
     pub fn new(
@@ -48,7 +53,24 @@ impl Declaration {
             table,
             data,
             authorize: Box::new(authorize),
+            select: None,
         }
+    }
+    /// Parameters describe module-owned interest, not SQL or client authority.
+    /// The host intersects every selected key with the table's live read policy.
+    pub fn with_collection(
+        mut self,
+        select: impl Fn(
+            &mut Transaction<'_>,
+            &str,
+            &Value,
+        ) -> Result<BTreeSet<Vec<snap_store::Value>>, Error>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.select = Some(Box::new(select));
+        self
     }
 }
 
@@ -58,6 +80,8 @@ impl Declaration {
 /// Only full rows are supported; listing stubs and payload residency are separate.
 pub struct Subscription {
     pub tables: BTreeMap<String, BTreeSet<Vec<snap_store::Value>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collections: BTreeMap<String, Value>,
 }
 
 pub struct Subscribe;
@@ -135,11 +159,54 @@ impl Registry {
                         }
                     }
                 }
+                if manifest.collections.len() > registry.declarations.len() {
+                    return Err(Error::Invalid.into());
+                }
+                for (table, parameters) in &manifest.collections {
+                    let declaration = registry
+                        .declarations
+                        .iter()
+                        .find(|d| d.table.name == *table)
+                        .ok_or(Error::Invalid)?;
+                    registry.keys(tx, declaration, actor, Some(parameters), None)?;
+                }
                 context.publication =
                     crate::json!({SUBSCRIBE: {"lifetime":lifetime,"subscription":manifest}});
                 Ok::<_, TypedFailure<()>>(())
             },
         )
+    }
+    fn keys(
+        &self,
+        tx: &mut Transaction<'_>,
+        declaration: &Declaration,
+        actor: &str,
+        parameters: Option<&Value>,
+        exact: Option<&BTreeSet<Vec<snap_store::Value>>>,
+    ) -> Result<BTreeSet<Vec<snap_store::Value>>, Error> {
+        let mut candidates = exact.cloned().unwrap_or_default();
+        if let Some(parameters) = parameters {
+            candidates.extend(declaration.select.as_ref().ok_or(Error::Invalid)?(
+                tx, actor, parameters,
+            )?);
+        }
+        if candidates.len() > 4096 {
+            return Err(Error::Invalid);
+        }
+        let mut permitted = BTreeSet::new();
+        for key in candidates {
+            Program::from_instructions(
+                &self.catalog,
+                [Instruction::Delete {
+                    table: declaration.table.name.clone(),
+                    key: key.clone(),
+                }],
+            )?;
+            if (declaration.authorize)(tx, actor, &key)? {
+                permitted.insert(key);
+            }
+        }
+        Ok(permitted)
     }
 }
 
@@ -199,13 +266,16 @@ impl Replications {
             }
             let mut rows = Holdings::new();
             for declaration in &self.registry.declarations {
-                if let Some(keys) = manifest.tables.get(&declaration.table.name) {
-                    for key in keys {
-                        if (declaration.authorize)(tx, actor, key)?
-                            && let Some(row) = tx.get(&declaration.table.name, key)?
-                        {
-                            rows.insert(Resource::new(&declaration.table.name, key), row);
-                        }
+                let keys = self.registry.keys(
+                    tx,
+                    declaration,
+                    actor,
+                    manifest.collections.get(&declaration.table.name),
+                    manifest.tables.get(&declaration.table.name),
+                )?;
+                for key in keys {
+                    if let Some(row) = tx.get(&declaration.table.name, &key)? {
+                        rows.insert(Resource::new(&declaration.table.name, &key), row);
                     }
                 }
             }
@@ -239,20 +309,16 @@ impl Replications {
         }
         for connection in ctx.connections.values() {
             for declaration in &self.registry.declarations {
-                let keys = self
-                    .desired
-                    .get(&connection.lifetime)
-                    .and_then(|m| m.tables.get(&declaration.table.name));
-                let mut permitted = BTreeSet::new();
-                if let Some(keys) = keys {
-                    for key in keys {
-                        if ctx.store.inspect("store.replication.residency", |tx| {
-                            (declaration.authorize)(tx, &connection.actor, key)
-                        })? {
-                            permitted.insert(key.clone());
-                        }
-                    }
-                }
+                let manifest = self.desired.get(&connection.lifetime);
+                let permitted = ctx.store.inspect("store.replication.residency", |tx| {
+                    self.registry.keys(
+                        tx,
+                        declaration,
+                        &connection.actor,
+                        manifest.and_then(|m| m.collections.get(&declaration.table.name)),
+                        manifest.and_then(|m| m.tables.get(&declaration.table.name)),
+                    )
+                })?;
                 ctx.residency.set(
                     &declaration.table.name,
                     alloc::format!("store.replication:{}", connection.lifetime),
@@ -450,6 +516,9 @@ impl<B: Backend> Participant<B> for Replications {
         if let Response::Global { kind, input } = response
             && kind == TOPIC
         {
+            // Residency may have narrowed the tables since publication. A
+            // collection must be reselected from current complete server data.
+            self.prepare(ctx)?;
             let mut publication: Publication =
                 serde_json::from_value(input.clone()).map_err(|_| Error::Invalid)?;
             let rows = self.snapshot(ctx, peer)?;

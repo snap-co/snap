@@ -1,6 +1,9 @@
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::json;
-type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
+type Host<B> = snap_transport::host::Blocking<
+    B,
+    snap_transport::host::Controllers<B, snap_transport::replication::Replications>,
+>;
 use snap_identity::oauth as rp;
 use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
@@ -22,13 +25,11 @@ async fn session(
 }
 
 fn operations(
-    document: Arc<snap_document::server::Document>,
+    replication: &Arc<snap_transport::replication::Registry>,
 ) -> snap_transport::operation::Registry {
-    let mut operations = snap_transport::operation::Registry::default();
-    for definition in snap_document::operations::definitions(document)
-        .into_iter()
-        .chain(chatty::operations::declarations())
-    {
+    let mut operations =
+        snap_transport::operation::Registry::default().with_request(replication.operation());
+    for definition in chatty::operations::declarations() {
         operations = operations.with_request(definition);
     }
     operations
@@ -38,11 +39,11 @@ fn operations(
 #[serde(deny_unknown_fields)]
 struct Settings {
     oauth: snap_identity_native::oauth::Settings,
+    tcp: Option<snap_config::Tcp>,
 }
 fn migrations() -> Vec<snap_store::migration::Migration> {
     let mut values: Vec<snap_store::migration::Migration> = [
         snap_access::MIGRATION,
-        snap_document::server::MIGRATION,
         snap_store::resource::MIGRATION,
         snap_identity::MIGRATION,
         snap_identity_native::oauth::MIGRATION,
@@ -85,7 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
-        .chain(snap_document::server::TABLES.iter())
         .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(rp::TABLES.iter())
         .chain(chatty::TABLES.iter())
@@ -93,14 +93,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "chatty", origin.starts_with("https:"))?;
-    let document = Arc::new(chatty::document());
-    let operations = operations(document.clone());
+    let replication = chatty::replication();
+    let jwks = snap_identity_native::assertion::authy_keys(&config.app.oauth.issuer).await?;
+    let operations =
+        operations(&replication).with_preconnection_request(snap_identity::assertion::operation(
+            config.app.oauth.issuer.clone(),
+            config.app.oauth.client_id.clone(),
+            jwks,
+            || snap_crypto::Native,
+        ));
+    let tcp = config
+        .app
+        .tcp
+        .as_ref()
+        .map(|tcp| -> Result<_, Box<dyn std::error::Error>> {
+            Ok((
+                PendingListener::reserve(tcp.listen)?,
+                snap_transport::native::tls::ServerTls::new(
+                    &config.path(&tcp.cert_file),
+                    &config.path(&tcp.key_file),
+                )?,
+            ))
+        })
+        .transpose()?;
     let host = Host::new(
         store,
-        snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
+        snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
+            replication,
+        )),
         operations,
         Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
-            |tx, bearer| rp::lease(tx, &rp::digest(bearer), now()).map(|s| s.owner),
+            |tx, bearer| {
+                let principal = snap_identity::Identity::default().resolve(
+                    tx,
+                    &snap_crypto::Native,
+                    bearer,
+                    now(),
+                )?;
+                // OAuth sessions must retain upstream access policy. Assertion
+                // sessions have no upstream refresh grant and expire in five minutes.
+                if tx
+                    .get("identity.oauth_grants", &[rp::digest(bearer).into()])?
+                    .is_some()
+                {
+                    rp::lease(tx, &rp::digest(bearer), now())?;
+                }
+                Ok(principal.identity)
+            },
         ))),
         snap_transport::server::Config::default(),
         random(),
@@ -135,10 +174,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     let listener = listener.listen()?;
     println!("Chatty http://{address}");
-    server
-        .run_http(axum::serve(listener, router).with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        }))
-        .await?;
+    let http = axum::serve(listener, router).with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    });
+    if let Some((listener, tls)) = tcp {
+        println!("Chatty tls://{}", listener.local_addr()?);
+        server.run(listener.listen()?, tls, None, http).await?;
+    } else {
+        server.run_http(http).await?;
+    }
     Ok(())
 }

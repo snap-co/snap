@@ -8,13 +8,13 @@ publish.workspace = true
 snap-transport = { path = "../../crates/transport" }
 snap-store.workspace = true
 snap-access.workspace = true
-snap-document.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 snap-store-sqlite = { path = "../../crates/platform/store-sqlite" }
 toml = "0.9"
+tempfile = "3"
 
 [lints]
 workspace = true

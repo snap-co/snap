@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+snap-identity.workspace = true
 snap-transport = { path = "../../crates/transport" }
 snap-store.workspace = true
 snap-access.workspace = true

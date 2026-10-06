@@ -176,6 +176,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_request(replication.operation())
         .with_request(authy::operations::edit_profile());
     let registry = operations::register(registry, webauthn);
+    let mut registry = registry;
+    for definition in authy::agents::definitions(|| snap_crypto::Native) {
+        registry = registry.with_preconnection_request(definition);
+    }
+    let signing_keys = keys.clone();
+    registry = registry.with_preconnection_request(authy::agents::login(
+        origin.clone(),
+        config
+            .app
+            .clients
+            .iter()
+            .map(|client| client.id.clone())
+            .collect(),
+        move |claims| signing_keys.sign(claims),
+    ));
+    let tcp = config
+        .app
+        .tcp
+        .as_ref()
+        .map(|tcp| -> Result<_, Box<dyn std::error::Error>> {
+            Ok((
+                PendingListener::reserve(tcp.listen)?,
+                snap_transport::native::tls::ServerTls::new(
+                    &config.path(&tcp.cert_file),
+                    &config.path(&tcp.key_file),
+                )?,
+            ))
+        })
+        .transpose()?;
     let host = Host::new(
         store,
         snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
@@ -247,10 +276,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the kernel can acknowledge a client's TCP connection.
     let listener = listener.listen()?;
     println!("Authy http://{address}");
-    server
-        .run_http(axum::serve(listener, router).with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        }))
-        .await?;
+    let http = axum::serve(listener, router).with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    });
+    if let Some((listener, tls)) = tcp {
+        println!("Authy tls://{}", listener.local_addr()?);
+        server.run(listener.listen()?, tls, None, http).await?;
+    } else {
+        server.run_http(http).await?;
+    }
     Ok(())
 }

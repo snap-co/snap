@@ -78,16 +78,24 @@ fn committed_operations_and_controller_programs_replicate_in_order_but_failed_at
     let policy_available = Arc::new(AtomicBool::new(true));
     let policy = policy_available.clone();
     let replication = Arc::new(
-        Registry::new(vec![Declaration::new(
-            table(),
-            Data::new(&["work.items"]),
-            move |_, actor, key| {
+        Registry::new(vec![
+            Declaration::new(table(), Data::new(&["work.items"]), move |_, actor, key| {
                 if !policy.load(Ordering::SeqCst) {
                     return Err(snap_store::Error::Unavailable);
                 }
                 Ok(key.first() == Some(&actor.into()))
-            },
-        )])
+            })
+            .with_collection(|tx, _, parameters| {
+                if !parameters.is_null() {
+                    return Err(snap_store::Error::Invalid);
+                }
+                Ok(tx
+                    .find("work.items", "primary", &[])?
+                    .iter()
+                    .map(|row| vec![row["owner"].clone(), row["id"].clone()])
+                    .collect())
+            }),
+        ])
         .unwrap(),
     );
     let registry = operation::Registry::default()
@@ -165,6 +173,7 @@ fn committed_operations_and_controller_programs_replicate_in_order_but_failed_at
         )]
         .into_iter()
         .collect(),
+        ..Default::default()
     };
     let mut replica = Replica::new(replication.catalog().clone()).unwrap();
     let submit = |host: &mut Blocking<_, _>, id, operation: &str, input| {
@@ -244,12 +253,62 @@ fn committed_operations_and_controller_programs_replicate_in_order_but_failed_at
             ("payload".into(), snap_store::Value::Bytes(vec![42])),
         ]))
     );
+    // A declared collection can discover future rows. Its selector deliberately
+    // includes another actor's rows; table policy still excludes those bytes.
+    let collection = replication::Subscription {
+        collections: [("work.items".into(), json!(null))].into_iter().collect(),
+        ..Default::default()
+    };
+    for response in submit(&mut host, 4, "store.subscribe", json!(collection)) {
+        if let Response::Global { input, .. } = response {
+            replica
+                .apply(&serde_json::from_value(input).unwrap())
+                .unwrap();
+        }
+    }
+    host.transact("future-items", |tx| {
+        for owner in ["alice", "bob"] {
+            tx.insert(
+                "work.items",
+                Row::from([
+                    ("owner".into(), owner.into()),
+                    ("id".into(), 8.into()),
+                    ("amount".into(), 17.into()),
+                    ("status".into(), "done".into()),
+                    ("payload".into(), snap_store::Value::Bytes(vec![99])),
+                ]),
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    for response in host.drain(peer).unwrap() {
+        if let Response::Global { input, .. } = response {
+            replica
+                .apply(&serde_json::from_value(input).unwrap())
+                .unwrap();
+        }
+    }
+    assert_eq!(replica.rows("work.items").unwrap().len(), 2);
+    assert_eq!(
+        replica
+            .get("work.items", &["alice".into(), 8.into()])
+            .unwrap()
+            .unwrap()["amount"],
+        17.into()
+    );
+    assert!(
+        replica
+            .get("work.items", &["bob".into(), 8.into()])
+            .unwrap()
+            .is_none()
+    );
     // Policy failure must also redact the independent carrier queue, not just
     // make direct host drain return an error while old bytes remain available.
     host.submit(
         peer,
         Command::Invoke(Invocation {
-            id: 4,
+            id: 5,
             operation: Change::NAME.into(),
             input: json!(false),
         }),

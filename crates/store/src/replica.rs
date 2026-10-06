@@ -71,4 +71,9 @@ impl Replica {
     pub fn sequence(&self) -> Option<u64> {
         self.sequence
     }
+    /// Scan currently held rows. Replica catalogs deliberately omit server indexes.
+    pub fn rows(&mut self, table: &str) -> Result<Vec<Row>, Error> {
+        self.store
+            .inspect("replica.list", |tx| tx.find(table, "primary", &[]))
+    }
 }

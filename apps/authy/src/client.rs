@@ -118,6 +118,7 @@ impl Profiles {
                     )]
                     .into_iter()
                     .collect(),
+                    ..Default::default()
                 };
                 let command = self.ids.invoke(
                     snap_transport::replication::Subscribe::NAME,

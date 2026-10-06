@@ -4,6 +4,7 @@ use snap_config::{SecretRef, Secrets};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
+    pub tcp: Option<snap_config::Tcp>,
     #[serde(default)]
     pub app_domain: Option<String>,
     #[serde(default)]

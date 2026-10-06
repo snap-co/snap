@@ -107,6 +107,20 @@ whole records, server-side full-table loading, explicit key subscriptions and
 fresh reconnect snapshots. It does not promise sparse payload loading, durable
 client holdings, log catch-up or optimistic mutation overlays.
 
+Declared Store collections reselect future keys after commits and intersect them
+with live table policy. Transport's replication case also selects foreign-owner
+rows deliberately to verify that this intersection cannot export them. Chatty's
+portable client cases own shared thread membership, sender attribution, durable
+message request IDs, revocation/backlog redaction and SQLite restart history.
+Its app-owned `cli/tests/agents.rs` gate runs the production Authy/Chatty binaries
+and external CLI over TCP/TLS, including assertion signatures, audience isolation,
+live message discovery, cursor-based reconnect and removal from a watched thread.
+Identity's assertion tests own claim and bounded-session policy, not cryptography.
+Authy's account cases own sponsored account declaration and key rotation/revocation.
+The CLI reads secrets from stdin or environment, never arguments; issuing a new
+key is its only credential-bearing output. One-shot Requests use separate physical
+sockets from the subsequent logical attachment. Renewal remains explicit.
+
 Testy's browser login/session journey also owns development wire-log redaction.
 Authentication spans several frames; the logger hides the complete correlated
 Request exchange and always hides bearer handoffs, even for unexpected IDs.

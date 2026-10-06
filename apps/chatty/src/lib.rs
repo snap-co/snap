@@ -1,225 +1,283 @@
-//! Conversation Documents. Clients append messages; Chatty does no model or tool IO.
+//! Shared messaging through ordinary Store rows and Transport operations.
+//! Humans and external agents are clients. Chatty performs no model or tool IO.
 #![no_std]
 extern crate alloc;
-
+pub mod client;
 pub mod operations;
-use alloc::{string::String, vec, vec::Vec};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use snap_access::{Audience, Role};
-use snap_document::{Definition, Intent, Mutation, Registry, Snapshot};
-use snap_store::{Error, Transaction};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
+use snap_access::{Access, Audience, DirectGrant, KindDefinition, Resource, Role, TransferPolicy};
+use snap_store::{Catalog, Data, Error, Row, Transaction, Value};
 
-// Retain the existing tables and schema so old conversations can still be read.
 pub const MIGRATION: &str = include_str!("../migrations/0001_chatty.toml");
-pub const TABLES: [&str; 2] = ["chatty.threads", "chatty.turns"];
+pub const TABLES: [&str; 2] = ["chatty.threads", "chatty.messages"];
+pub const THREADS: &str = TABLES[0];
+pub const MESSAGES: &str = TABLES[1];
 pub const KIND: &str = "chatty-thread";
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Conversation {
+pub fn data() -> Data {
+    Data::new(&TABLES).and(Data::new(&snap_access::TABLES))
+}
+pub fn access() -> Access {
+    Access::new(vec![
+        KindDefinition::new(KIND, TransferPolicy::Forbidden).expect("thread kind"),
+    ])
+    .expect("thread access")
+}
+pub(crate) fn text<'a>(row: &'a Row, name: &str) -> Result<&'a str, Error> {
+    match row.get(name) {
+        Some(Value::Text(value)) => Ok(value),
+        _ => Err(Error::Invalid),
+    }
+}
+fn number(row: &Row, name: &str) -> Result<i64, Error> {
+    match row.get(name) {
+        Some(Value::Integer(value)) => Ok(*value),
+        _ => Err(Error::Invalid),
+    }
+}
+fn bounded(value: &str, max: usize) -> Result<(), Error> {
+    if value.trim().is_empty() || value.len() > max || value.contains('\0') {
+        Err(Error::Invalid)
+    } else {
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Thread {
+    pub id: String,
     pub title: String,
-    pub effort: String,
     pub created: i64,
     pub updated: i64,
-    pub active_turn: String,
-    pub turns: Vec<Turn>,
+    pub next_sequence: i64,
 }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Turn {
-    pub id: String,
-    pub request_id: String,
-    #[serde(default)]
-    pub sender: String,
-    pub user: String,
-    pub text: String,
-    pub summary: String,
-    pub tools: Vec<Value>,
-    pub usage: Value,
-    pub status: String,
-    pub error: String,
-    pub created: i64,
+impl Thread {
+    pub fn from_row(row: &Row) -> Result<Self, Error> {
+        Ok(Self {
+            id: text(row, "id")?.into(),
+            title: text(row, "title")?.into(),
+            created: number(row, "created")?,
+            updated: number(row, "updated")?,
+            next_sequence: number(row, "next_sequence")?,
+        })
+    }
+    pub fn read(tx: &mut Transaction<'_>, id: &str) -> Result<Self, Error> {
+        Self::from_row(&tx.get(THREADS, &[id.into()])?.ok_or(Error::NotFound)?)
+    }
 }
-
-fn valid_title(title: &str) -> bool {
-    !title.trim().is_empty() && title.chars().count() <= 100
-}
-fn validate(value: &Value) -> bool {
-    serde_json::from_value::<Conversation>(value.clone()).is_ok_and(|c| {
-        valid_title(&c.title)
-            && c.turns.len() <= 200
-            && c.created >= 0
-            && c.updated >= 0
-            && c.turns.iter().all(|t| {
-                !t.user.is_empty()
-                    && t.user.len() <= 32768
-                    && t.text.len() + t.summary.len() <= 512 * 1024
-            })
-    })
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
-    pub id: String,
-    pub message: String,
+    pub thread: String,
+    pub sequence: i64,
+    pub sender: String,
+    pub request: String,
+    pub body: String,
     pub created: i64,
 }
-
-fn append(value: &Value, args: &Value, actor: &str) -> Result<Value, snap_document::Error> {
-    let input: Message =
-        serde_json::from_value(args.clone()).map_err(|_| snap_document::Error::Invalid)?;
-    if input.id.is_empty()
-        || input.id.len() > 100
-        || input.created < 0
-        || input.message.trim().is_empty()
-        || input.message.len() > 32768
-    {
-        return Err(snap_document::Error::Invalid);
+impl Message {
+    pub fn from_row(row: &Row) -> Result<Self, Error> {
+        Ok(Self {
+            thread: text(row, "thread")?.into(),
+            sequence: number(row, "sequence")?,
+            sender: text(row, "sender")?.into(),
+            request: text(row, "request")?.into(),
+            body: text(row, "body")?.into(),
+            created: number(row, "created")?,
+        })
     }
-    let mut c: Conversation =
-        serde_json::from_value(value.clone()).map_err(|_| snap_document::Error::Invalid)?;
-    if let Some(existing) = c.turns.iter().find(|turn| turn.id == input.id) {
-        return if existing.user == input.message && existing.sender == actor {
-            Ok(value.clone())
-        } else {
-            Err(snap_document::Error::Invalid)
-        };
-    }
-    if c.turns.len() >= 200 {
-        return Err(snap_document::Error::Rejected(
-            "Conversation is full".into(),
-        ));
-    }
-    if c.title == "New thread" {
-        c.title = input.message.chars().take(60).collect();
-    }
-    c.updated = c.updated.max(input.created);
-    c.active_turn.clear();
-    c.turns.push(Turn {
-        id: input.id.clone(),
-        request_id: input.id,
-        sender: actor.into(),
-        user: input.message,
-        text: String::new(),
-        summary: String::new(),
-        tools: vec![],
-        usage: json!({}),
-        status: "complete".into(),
-        error: String::new(),
-        created: input.created,
-    });
-    serde_json::to_value(c).map_err(|_| snap_document::Error::Invalid)
 }
-
-pub fn registry() -> Registry {
-    Registry::new(vec![Definition {
-        kind: KIND.into(),
-        version: "1".into(),
-        validate,
-        mutations: vec![
-            Mutation {
-                name: "send".into(),
-                minimum: Role::Editor,
-                guard: None,
-                apply: append,
-            },
-            Mutation {
-                name: "rename".into(),
-                minimum: Role::Editor,
-                guard: None,
-                apply: |value, args, _| {
-                    let title = args["title"]
-                        .as_str()
-                        .ok_or(snap_document::Error::Invalid)?
-                        .trim();
-                    if !valid_title(title) {
-                        return Err(snap_document::Error::Invalid);
-                    }
-                    let mut next = value.clone();
-                    next["title"] = title.into();
-                    Ok(next)
-                },
-            },
-        ],
-    }])
-    .expect("conversation definitions")
+pub fn require(
+    tx: &mut Transaction<'_>,
+    actor: &str,
+    thread: &str,
+    minimum: Role,
+) -> Result<(), Error> {
+    if !snap_access::allows(
+        access().role(tx, &Resource::new(KIND, thread)?, Some(actor), true)?,
+        minimum,
+    ) {
+        return Err(Error::NotFound);
+    }
+    Ok(())
 }
-
-pub fn document() -> snap_document::server::Document {
-    snap_document::server::Document::new(registry())
-}
-
-#[derive(Deserialize, Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Create {
     pub id: String,
     pub title: String,
-    pub created: i64,
 }
-
-pub fn create(tx: &mut Transaction<'_>, owner: &str, input: &Create) -> Result<(), Error> {
-    if owner.is_empty() || !valid_title(&input.title) || input.created < 0 {
+pub fn create(
+    tx: &mut Transaction<'_>,
+    actor: &str,
+    input: &Create,
+    now: i64,
+) -> Result<(), Error> {
+    bounded(&input.title, 200)?;
+    if now < 0 {
         return Err(Error::Invalid);
     }
-    if tx.find(TABLES[0], "owner", &[owner.into()])?.len() >= 200 {
-        return Err(Error::Constraint);
-    }
-    document().create(
-        tx,
-        &Snapshot {
-            id: input.id.clone(),
-            kind: KIND.into(),
-            version: "1".into(),
-            revision: 1,
-            value: serde_json::to_value(Conversation {
-                title: input.title.trim().into(),
-                effort: "medium".into(),
-                created: input.created,
-                updated: input.created,
-                active_turn: String::new(),
-                turns: vec![],
-            })
-            .map_err(|_| Error::Invalid)?,
-        },
-        Audience::Restricted,
-        owner,
-    )?;
+    let resource = Resource::new(KIND, &input.id)?;
     tx.insert(
-        TABLES[0],
-        [
+        THREADS,
+        Row::from([
             ("id".into(), input.id.clone().into()),
-            ("owner".into(), owner.into()),
-        ]
-        .into_iter()
-        .collect(),
-    )
-}
-
-/// Composite application calls use the same named mutations as Document clients.
-pub fn mutate(
-    tx: &mut Transaction<'_>,
-    owner: &str,
-    id: &str,
-    mutation: &str,
-    args: Value,
-) -> Result<(), Error> {
-    let result = document().apply(
-        tx,
-        owner,
-        &Intent {
-            id: 1,
-            document: id.into(),
-            version: "1".into(),
-            mutation: mutation.into(),
-            args,
-        },
+            ("title".into(), input.title.trim().into()),
+            ("created".into(), now.into()),
+            ("updated".into(), now.into()),
+            ("next_sequence".into(), 1.into()),
+        ]),
     )?;
-    result
-        .completion
-        .result
-        .map(|_| ())
-        .map_err(|_| Error::Invalid)
+    access().register(
+        tx,
+        &resource,
+        Audience::Restricted,
+        &[DirectGrant::new(actor, Role::Owner)?],
+        None,
+    )?;
+    Ok(())
+}
+/// Requests are idempotent within thread and sender, independently of invocation
+/// IDs. Reusing a request for different content fails, including after restart.
+pub fn send(
+    tx: &mut Transaction<'_>,
+    actor: &str,
+    thread: &str,
+    request: &str,
+    body: &str,
+    now: i64,
+) -> Result<Message, Error> {
+    require(tx, actor, thread, Role::Editor)?;
+    bounded(request, 128)?;
+    bounded(body, 32768)?;
+    if now < 0 {
+        return Err(Error::Invalid);
+    }
+    if let Some(row) = tx
+        .find(
+            MESSAGES,
+            "request",
+            &[thread.into(), actor.into(), request.into()],
+        )?
+        .first()
+    {
+        let message = Message::from_row(row)?;
+        if message.body != body {
+            return Err(Error::Constraint);
+        }
+        return Ok(message);
+    }
+    let current = Thread::read(tx, thread)?;
+    let sequence = current.next_sequence;
+    let next = sequence.checked_add(1).ok_or(Error::Invalid)?;
+    tx.insert(
+        MESSAGES,
+        Row::from([
+            ("thread".into(), thread.into()),
+            ("sequence".into(), sequence.into()),
+            ("sender".into(), actor.into()),
+            ("request".into(), request.into()),
+            ("body".into(), body.into()),
+            ("created".into(), now.into()),
+        ]),
+    )?;
+    tx.update(
+        THREADS,
+        &[thread.into()],
+        Row::from([
+            ("updated".into(), now.max(current.updated).into()),
+            ("next_sequence".into(), next.into()),
+        ]),
+    )?;
+    Ok(Message {
+        thread: thread.into(),
+        sequence,
+        sender: actor.into(),
+        request: request.into(),
+        body: body.into(),
+        created: now,
+    })
+}
+pub fn catalog() -> Catalog {
+    use snap_store::{Column, Kind, Table};
+    let table = |name: &str, columns: &[(&str, Kind)], primary: &[&str]| Table {
+        name: name.into(),
+        columns: columns
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                kind: *kind,
+            })
+            .collect(),
+        primary: primary.iter().map(|name| (*name).into()).collect(),
+        indexes: vec![],
+        foreign: vec![],
+    };
+    Catalog::new(vec![
+        table(
+            THREADS,
+            &[
+                ("id", Kind::Text),
+                ("title", Kind::Text),
+                ("created", Kind::Integer),
+                ("updated", Kind::Integer),
+                ("next_sequence", Kind::Integer),
+            ],
+            &["id"],
+        ),
+        table(
+            MESSAGES,
+            &[
+                ("thread", Kind::Text),
+                ("sequence", Kind::Integer),
+                ("sender", Kind::Text),
+                ("request", Kind::Text),
+                ("body", Kind::Text),
+                ("created", Kind::Integer),
+            ],
+            &["thread", "sequence"],
+        ),
+    ])
+    .expect("Chatty replica schema")
+}
+pub fn replication() -> Arc<snap_transport::replication::Registry> {
+    let mut declarations = Vec::new();
+    for table in catalog().tables {
+        let name = table.name.clone();
+        declarations.push(
+            snap_transport::replication::Declaration::new(table, data(), |tx, actor, key| {
+                let Some(Value::Text(thread)) = key.first() else {
+                    return Err(Error::Invalid);
+                };
+                Ok(snap_access::allows(
+                    access().role(tx, &Resource::new(KIND, thread)?, Some(actor), true)?,
+                    Role::Viewer,
+                ))
+            })
+            .with_collection(move |tx, actor, parameters| {
+                if name == THREADS {
+                    if !parameters.is_null() {
+                        return Err(Error::Invalid);
+                    }
+                    Ok(access()
+                        .accessible(tx, Some(actor), true)?
+                        .into_iter()
+                        .filter(|item| item.resource.kind == KIND)
+                        .map(|item| vec![item.resource.id.into()])
+                        .collect())
+                } else {
+                    let thread = parameters.as_str().ok_or(Error::Invalid)?;
+                    Resource::new(KIND, thread)?;
+                    match require(tx, actor, thread, Role::Viewer) {
+                        Ok(()) => {}
+                        Err(Error::NotFound) => return Ok(Default::default()),
+                        Err(error) => return Err(error),
+                    }
+                    Ok(tx
+                        .find(MESSAGES, "primary", &[thread.into()])?
+                        .iter()
+                        .map(|row| Ok(vec![thread.into(), number(row, "sequence")?.into()]))
+                        .collect::<Result<_, Error>>()?)
+                }
+            }),
+        );
+    }
+    Arc::new(snap_transport::replication::Registry::new(declarations).expect("Chatty replication"))
 }

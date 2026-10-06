@@ -11,15 +11,21 @@ sdk = "web/client.ts"
 manifest = "server/Cargo.toml"
 targets = ["host"]
 
+[build.clients.agent]
+kind = "native"
+manifest = "cli/Cargo.toml"
+binary = "chatty-agent"
+targets = ["host"]
+
 [check]
-rust = ["Cargo.toml", "server/Cargo.toml", "web/wasm/Cargo.toml"]
+rust = ["Cargo.toml", "server/Cargo.toml", "web/wasm/Cargo.toml", "cli/Cargo.toml"]
 typescript = ["web/tsconfig.json"]
 
 [test.memory]
-commands = [["cargo", "test", "-p", "chatty"], ["cargo", "test", "-p", "chatty-server", "--test", "responses"]]
+commands = [["cargo", "test", "-p", "chatty"]]
 
 [test.browser]
 commands = [["../../bin/browser-tests", "chatty"]]
 
 [test.native]
-commands = [["cargo", "test", "-p", "chatty-server", "--", "--ignored"], ["cargo", "test", "-p", "snap-crypto", "--", "--ignored"]]
+commands = [["cargo", "build", "-p", "authy-server", "-p", "chatty-server"], ["cargo", "test", "-p", "chatty-cli", "--test", "agents", "--", "--ignored"], ["cargo", "test", "-p", "snap-crypto", "--", "--ignored"]]

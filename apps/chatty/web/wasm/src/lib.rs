@@ -1,147 +1,70 @@
-//! Browser IO stays in JavaScript. This binding uses the real Document client,
-//! shared thread mutations and wire correlation for snapshots and optimistic edits.
-use snap_document::{
-    ClientMessage, ServerMessage,
-    client::{Client, Outcome},
-    wire::Wire,
-};
+//! Thin browser binding of the same Store-backed client used by native agents.
 use wasm_bindgen::prelude::*;
 fn error(value: impl std::fmt::Debug) -> JsValue {
     JsValue::from_str(&format!("{value:?}"))
 }
 #[wasm_bindgen]
 pub struct ChattyClient {
-    client: Client,
-    wire: Wire,
-    ids: snap_transport::client::InvocationIds,
-    registry: snap_document::Registry,
+    client: chatty::client::Client,
 }
 #[wasm_bindgen]
 impl ChattyClient {
     #[wasm_bindgen(constructor)]
-    pub fn new(actor: String) -> Self {
-        Self {
-            client: Client::new(actor),
-            wire: Wire::default(),
-            ids: Default::default(),
-            registry: chatty::registry(),
-        }
+    pub fn new(_actor: String) -> Result<Self, JsValue> {
+        Ok(Self {
+            client: chatty::client::Client::new().map_err(error)?,
+        })
     }
     pub fn connect(&mut self, id: &str) -> Result<String, JsValue> {
-        self.wire.reconnect();
-        serde_json::to_string(&snap_transport::Command::Connect {
-            bearer: String::new(),
-            client_id: id.into(),
-        })
-        .map_err(error)
+        serde_json::to_string(&self.client.connect(String::new(), id.into())).map_err(error)
     }
     pub fn invoke(&mut self, operation: &str, input: &str) -> Result<String, JsValue> {
-        let command = self
-            .ids
-            .invoke(operation, serde_json::from_str(input).map_err(error)?)
-            .map_err(error)?;
-        serde_json::to_string(&command).map_err(error)
+        serde_json::to_string(
+            &self
+                .client
+                .invoke(operation, serde_json::from_str(input).map_err(error)?)
+                .map_err(error)?,
+        )
+        .map_err(error)
     }
-    pub fn rename(&mut self, id: &str, title: &str, effort: &str) -> Result<String, JsValue> {
-        self.client
-            .enqueue(
-                &self.registry,
-                id,
-                "rename",
-                serde_json::json!({"title":title,"effort":effort}),
-            )
-            .map_err(error)?;
-        let send = self.submit(false)?;
+    pub fn select(&mut self, thread: Option<String>) -> Result<String, JsValue> {
+        let send = self
+            .client
+            .select(thread)
+            .map_err(error)?
+            .into_iter()
+            .collect();
         self.result(send, None)
     }
-    pub fn receive(&mut self, text: &str) -> Result<String, JsValue> {
-        let response: snap_transport::Response = serde_json::from_str(text).map_err(error)?;
-        if let snap_transport::Response::Attached { resumed } = response {
-            if resumed {
-                self.client.begin_reconnect();
-            } else {
-                self.client
-                    .handle(&self.registry, ServerMessage::Reset)
-                    .map_err(error)?;
-            }
-            let send = self.submit(true)?;
-            return self.result(send, None);
-        }
-        if let snap_transport::Response::Failed(failure) = response {
-            return self.result(vec![], Some(format!("{failure:?}")));
-        }
-        if matches!(response, snap_transport::Response::Detached) {
-            return self.result(vec![], None);
-        }
-        let mut manifest = false;
-        let mut failure = None;
-        // One frame carries at most one message now. Acceptance and progress
-        // produce none, so there is nothing to loop over.
-        if let Some(message) = self.wire.receive(response).map_err(error)? {
-            manifest |= matches!(message, ServerMessage::Reset);
-            match self.client.handle(&self.registry, message).map_err(error)? {
-                Outcome::NeedManifest { error, .. } => {
-                    manifest = true;
-                    failure = Some(format!("Synchronization diverged: {error:?}"));
-                }
-                Outcome::Rejected { error, .. } => {
-                    failure = Some(format!("Edit rejected: {error:?}"))
-                }
-                Outcome::Forbidden { .. } => failure = Some("Document access ended".into()),
-                Outcome::Reconciled {
-                    outcomes,
-                    replay_error,
-                    ..
-                } => {
-                    for outcome in outcomes {
-                        match outcome {
-                            Outcome::Rejected { error, .. } => {
-                                failure = Some(format!("Edit rejected: {error:?}"))
-                            }
-                            Outcome::Forbidden { .. } => {
-                                failure = Some("Document access ended".into())
-                            }
-                            _ => {}
-                        }
-                    }
-                    if failure.is_none() {
-                        failure = replay_error.map(|error| format!("Replay failed: {error:?}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        let send = self.submit(manifest)?;
-        self.result(send, failure)
+    pub fn receive(&mut self, frame: &str) -> Result<String, JsValue> {
+        let update = self
+            .client
+            .receive(serde_json::from_str(frame).map_err(error)?)
+            .map_err(error)?;
+        self.result(update.send, update.error)
     }
 }
 impl ChattyClient {
-    fn submit(&mut self, manifest: bool) -> Result<Vec<String>, JsValue> {
-        let message = if manifest {
-            Some(ClientMessage::Manifest(self.client.manifest()))
-        } else if !self.client.is_reconciling() && !self.client.needs_recovery() {
-            self.client.next_submission()
-        } else {
-            None
-        };
-        message
-            .map(|message| {
-                self.wire
-                    .submit(&mut self.ids, message)
-                    .map_err(error)
-                    .and_then(|command| serde_json::to_string(&command).map_err(error))
-            })
-            .transpose()
-            .map(|frame| frame.into_iter().collect())
-    }
-    fn result(&self, send: Vec<String>, error: Option<String>) -> Result<String, JsValue> {
-        // Revisions are rendered as strings rather than lossy JavaScript numbers.
-        let documents:Vec<_>=self.client.view().values().map(|s|serde_json::json!({"id":s.id,"revision":s.revision.to_string(),"value":s.value})).collect();
-        serde_json::to_string(&serde_json::json!({"documents":documents,"pending":self.client.pending().len(),"send":send,"error":error,"ready":!self.client.is_reconciling() && !self.client.needs_recovery()})).map_err(crate::error)
+    fn result(
+        &mut self,
+        commands: Vec<snap_transport::Command>,
+        failure: Option<String>,
+    ) -> Result<String, JsValue> {
+        let send = commands
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(error)?;
+        let threads = self.client.threads().map_err(error)?;
+        let messages = self.client.messages().map_err(error)?;
+        serde_json::to_string(
+            &serde_json::json!({"threads":threads,"messages":messages,"send":send,
+            "error":failure,"ready":self.client.ready()}),
+        )
+        .map_err(error)
     }
 }
-
-#[wasm_bindgen::prelude::wasm_bindgen]
-pub async fn identity_fetch(origin: String) -> Result<String, wasm_bindgen::JsValue> {
+#[wasm_bindgen]
+pub async fn identity_fetch(origin: String) -> Result<String, JsValue> {
     snap_react_bindings::oauth_fetch(&origin).await
 }

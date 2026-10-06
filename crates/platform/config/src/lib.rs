@@ -33,6 +33,14 @@ pub struct Host {
     #[serde(default)]
     pub dev_client_origins: BTreeMap<String, Vec<String>>,
 }
+/// Optional native binary listener. Credentials always travel over verified TLS.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tcp {
+    pub listen: SocketAddr,
+    pub cert_file: PathBuf,
+    pub key_file: PathBuf,
+}
 fn database_name() -> PathBuf {
     "store.sqlite".into()
 }

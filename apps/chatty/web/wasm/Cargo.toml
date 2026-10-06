@@ -11,7 +11,6 @@ crate-type = ["cdylib", "rlib"]
 snap-react-bindings = { path = "../../../../kits/react/wasm" }
 wasm-bindgen-futures = "=0.4.78"
 chatty.workspace = true
-snap-document.workspace = true
 snap-transport = { path = "../../../../crates/transport" }
 wasm-bindgen.workspace = true
 serde_json.workspace = true

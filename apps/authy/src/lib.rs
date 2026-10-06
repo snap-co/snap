@@ -2,6 +2,7 @@
 //! authentication; profiles use ordinary Transport operations and Store programs.
 #![no_std]
 extern crate alloc;
+pub mod agents;
 pub mod client;
 pub mod operations;
 
@@ -16,7 +17,7 @@ use snap_access::{Access, Audience, DirectGrant, KindDefinition, Resource, Role,
 use snap_store::{Catalog, Column, Data, Error, Kind, Row, Table, Transaction, Value};
 
 pub const MIGRATION: &str = include_str!("../migrations/0001_profiles_authy.toml");
-pub const TABLES: [&str; 2] = ["authy.accounts", "authy.profiles"];
+pub const TABLES: [&str; 3] = ["authy.accounts", "authy.profiles", "authy.agents"];
 pub const ACCOUNTS: &str = TABLES[0];
 pub const PROFILES: &str = TABLES[1];
 pub const PROFILE_KIND: &str = "account-profile";

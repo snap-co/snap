@@ -1,0 +1,32 @@
+[package]
+name = "chatty-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "chatty-agent"
+path = "src/main.rs"
+
+[dependencies]
+chatty.workspace = true
+authy.workspace = true
+snap-identity.workspace = true
+snap-transport = { path = "../../../crates/transport", features = ["native-client"] }
+serde_json.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "process", "io-util"] }
+
+[dev-dependencies]
+snap-config.workspace = true
+snap-transport = { path = "../../../crates/transport", features = ["native-server"] }
+tempfile = "3"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[lints]
+workspace = true
+
+[package.metadata.snap]
+role = "host"

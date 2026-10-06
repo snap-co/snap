@@ -2,6 +2,7 @@
 //! in the caller's Store transaction; Transport publishes credentials after commit.
 #![no_std]
 extern crate alloc;
+pub mod assertion;
 mod attempt;
 pub mod authentication;
 pub mod client;
@@ -65,6 +66,17 @@ impl Default for Identity {
     }
 }
 impl Identity {
+    /// Trusted account declaration without a password, email or issued session.
+    /// The composing module owns its enrollment policy and authentication proof.
+    pub fn declare(
+        &self,
+        tx: &mut Transaction<'_>,
+        crypto: &mut impl Crypto,
+    ) -> Result<String, Error> {
+        let identity = hex(&crypto.random()?);
+        tx.insert(TABLES[0], row([("id", identity.clone().into())]))?;
+        Ok(identity)
+    }
     pub fn new(lifetime_seconds: i64) -> Result<Self, Error> {
         if lifetime_seconds <= 0 {
             return Err(Error::Invalid);

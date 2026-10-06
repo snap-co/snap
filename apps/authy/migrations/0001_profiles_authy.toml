@@ -16,3 +16,12 @@ name = "authy.profiles"
 primary = ["id"]
 columns = [{ name = "id", kind = "text" }, { name = "identity", kind = "text" }, { name = "first_name", kind = "text" }, { name = "last_name", kind = "text" }, { name = "revision", kind = "integer" }]
 foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }]
+
+[[changes]]
+action = "create_table"
+[changes.table]
+name = "authy.agents"
+primary = ["identity"]
+columns = [{ name = "identity", kind = "text" }, { name = "owner", kind = "text" }, { name = "key_digest", kind = "text" }, { name = "active", kind = "integer" }]
+indexes = [{ name = "owner", columns = ["owner"] }]
+foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }, { columns = ["owner"], table = "identity.identities", references = ["id"] }]

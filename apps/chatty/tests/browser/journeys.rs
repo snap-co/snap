@@ -1,4 +1,4 @@
-//! Native Chatty OAuth and synchronized private-conversation journey.
+//! Native Chatty OAuth and synchronized Store-backed conversation journey.
 //!
 //! Owned by the host-only `snap-browser-tests` runner through
 //! `tests/browser/src/apps.rs`; Cargo never builds this file standalone. The

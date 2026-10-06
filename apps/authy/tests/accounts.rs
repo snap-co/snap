@@ -76,6 +76,15 @@ fn host(mut store: snap_store::Store<snap_store_sqlite::Sqlite>, crypto: Fake) -
     for definition in authy::operations::declarations() {
         registry = registry.with_preconnection_request(definition);
     }
+    let agent_crypto = crypto.clone();
+    for definition in authy::agents::definitions(move || agent_crypto.clone()) {
+        registry = registry.with_preconnection_request(definition);
+    }
+    registry = registry.with_preconnection_request(authy::agents::login(
+        "https://authy.test".into(),
+        vec!["chatty".into()],
+        |claims| serde_json::to_string(claims).map_err(|_| Error::Invalid),
+    ));
     let mut host = Host::new(
         store,
         snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
@@ -174,6 +183,92 @@ fn publications(frames: &[Response]) -> Vec<Publication> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn sponsored_agents_have_independent_accounts_private_rotatable_keys_and_bounded_assertions() {
+    let mut host = fresh();
+    let (owner, account) = enroll(&mut host, "sponsor@example.test");
+    let (stranger, _) = enroll(&mut host, "stranger@example.test");
+    let call = |host: &mut Host, bearer: Option<String>, name: &str, input| {
+        host.preconnection_request(
+            Invocation {
+                id: 5,
+                operation: name.into(),
+                input,
+            },
+            bearer,
+        )
+    };
+    let created = call(
+        &mut host,
+        Some(owner.clone()),
+        "authy.agent-create",
+        json!({"name":"Helper"}),
+    )
+    .unwrap();
+    let id = created["identity"].as_str().unwrap().to_owned();
+    let key = created["key"].as_str().unwrap().to_owned();
+    assert_ne!(id, account.identity);
+    assert_eq!(key.len(), 64);
+    let list = call(&mut host, Some(owner.clone()), "authy.agents", json!(null)).unwrap();
+    assert_eq!(list, json!([{"identity":id,"name":"Helper","active":true}]));
+    let login = json!({"identity":id,"key":key,"audience":"chatty"});
+    let assertion = call(&mut host, None, "authy.agent-login", login.clone()).unwrap();
+    let claims: serde_json::Value =
+        serde_json::from_str(assertion["assertion"].as_str().unwrap()).unwrap();
+    assert_eq!(claims["sub"], id);
+    assert_eq!(claims["aud"], "chatty");
+    assert_eq!(claims["exp"], 1300);
+    assert!(!claims.to_string().contains(&key));
+    assert!(!claims.to_string().contains(&account.identity));
+    assert!(
+        call(
+            &mut host,
+            None,
+            "authy.agent-login",
+            json!({"identity":id,"key":"0".repeat(64),"audience":"chatty"})
+        )
+        .is_err()
+    );
+    assert!(
+        call(
+            &mut host,
+            None,
+            "authy.agent-login",
+            json!({"identity":id,"key":key,"audience":"unregistered"})
+        )
+        .is_err()
+    );
+    assert!(
+        call(
+            &mut host,
+            Some(stranger),
+            "authy.agent-revoke",
+            json!({"identity":id})
+        )
+        .is_err()
+    );
+    let rotated = call(
+        &mut host,
+        Some(owner.clone()),
+        "authy.agent-rotate",
+        json!({"identity":id}),
+    )
+    .unwrap();
+    assert_eq!(rotated["identity"], id);
+    assert_ne!(rotated["key"], key);
+    assert!(call(&mut host, None, "authy.agent-login", login).is_err());
+    let current = json!({"identity":id,"key":rotated["key"],"audience":"chatty"});
+    call(&mut host, None, "authy.agent-login", current.clone()).unwrap();
+    call(
+        &mut host,
+        Some(owner),
+        "authy.agent-revoke",
+        json!({"identity":id}),
+    )
+    .unwrap();
+    assert!(call(&mut host, None, "authy.agent-login", current).is_err());
 }
 
 #[test]
