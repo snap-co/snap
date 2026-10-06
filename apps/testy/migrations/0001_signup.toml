@@ -4,7 +4,10 @@ id = "0001_signup"
 action = "create_table"
 [changes.table]
 name = "signup.accounts"
-columns = [{ name = "id", kind = "integer" }, { name = "email", kind = "text" }]
+columns = [
+  { name = "id", kind = "integer" },
+  { name = "email", kind = "text" },
+]
 primary = ["id"]
 indexes = [{ name = "email", columns = ["email"], unique = true }]
 
@@ -12,7 +15,10 @@ indexes = [{ name = "email", columns = ["email"], unique = true }]
 action = "create_table"
 [changes.table]
 name = "signup.grants"
-columns = [{ name = "account", kind = "integer" }, { name = "role", kind = "text" }]
+columns = [
+  { name = "account", kind = "integer" },
+  { name = "role", kind = "text" },
+]
 primary = ["account"]
 foreign = [{ columns = ["account"], table = "signup.accounts", references = ["id"] }]
 
@@ -20,7 +26,10 @@ foreign = [{ columns = ["account"], table = "signup.accounts", references = ["id
 action = "create_table"
 [changes.table]
 name = "signup.documents"
-columns = [{ name = "owner", kind = "integer" }, { name = "title", kind = "text" }]
+columns = [
+  { name = "owner", kind = "integer" },
+  { name = "title", kind = "text" },
+]
 primary = ["owner"]
 foreign = [{ columns = ["owner"], table = "signup.accounts", references = ["id"] }]
 
@@ -28,7 +37,10 @@ foreign = [{ columns = ["owner"], table = "signup.accounts", references = ["id"]
 action = "create_table"
 [changes.table]
 name = "signup.outbox"
-columns = [{ name = "id", kind = "integer" }, { name = "kind", kind = "text" }]
+columns = [
+  { name = "id", kind = "integer" },
+  { name = "kind", kind = "text" },
+]
 primary = ["id"]
 foreign = [{ columns = ["id"], table = "signup.accounts", references = ["id"] }]
 
@@ -36,5 +48,8 @@ foreign = [{ columns = ["id"], table = "signup.accounts", references = ["id"] }]
 action = "create_table"
 [changes.table]
 name = "signup.policy"
-columns = [{ name = "id", kind = "integer" }, { name = "enabled", kind = "integer" }]
+columns = [
+  { name = "id", kind = "integer" },
+  { name = "enabled", kind = "integer" },
+]
 primary = ["id"]

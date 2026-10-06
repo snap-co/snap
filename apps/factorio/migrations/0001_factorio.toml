@@ -4,19 +4,31 @@ id = "0001_factorio"
 action = "create_table"
 [changes.table]
 name = "factorio.agents"
-columns = [{ name = "id", kind = "text" }, { name = "session", kind = "text" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "session", kind = "text" },
+]
 primary = ["id"]
 
 [[changes]]
 action = "create_table"
 [changes.table]
 name = "factorio.cli"
-columns = [{ name = "id", kind = "text" }, { name = "session", kind = "text" }, { name = "expires", kind = "integer" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "session", kind = "text" },
+  { name = "expires", kind = "integer" },
+]
 primary = ["id"]
 
 [[changes]]
 action = "create_table"
 [changes.table]
 name = "factorio.cli_login"
-columns = [{ name = "id", kind = "text" }, { name = "proof", kind = "text" }, { name = "session", kind = "text" }, { name = "expires", kind = "integer" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "proof", kind = "text" },
+  { name = "session", kind = "text" },
+  { name = "expires", kind = "integer" },
+]
 primary = ["id"]

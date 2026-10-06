@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Format migration record arrays by item count, using Python 3.11+.
+
+Only columns, indexes and foreign arrays change. Ordering, nested lists and
+inline-table contents stay intact. Commented arrays retain their authored layout.
+Parsed TOML values must remain identical before any file is written.
+"""
+import argparse
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tomllib
+
+
+ENTRY = re.compile(r"(?m)^([ \t]*)(?:columns|indexes|foreign)[ \t]*=[ \t]*(\[)")
+
+
+def punctuation(text):
+    """Structural tokens only; brackets/commas inside strings are not separators."""
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char in "\"'":
+            delimiter = char * (3 if text.startswith(char * 3, i) else 1)
+            i += len(delimiter)
+            while not text.startswith(delimiter, i):
+                if char == '"' and text[i] == "\\":
+                    i += 2
+                else:
+                    i += 1
+            i += len(delimiter)
+        elif char == "#":
+            yield i, char
+            end = text.find("\n", i)
+            i = len(text) if end == -1 else end
+        else:
+            if char in "[]{},":
+                yield i, char
+            i += 1
+
+
+def format_text(text):
+    before = tomllib.loads(text)
+    tokens = list(punctuation(text))
+    positions = {pos: index for index, (pos, _) in enumerate(tokens)}
+    edits = []
+    for match in ENTRY.finditer(text):
+        start = match.start(2)
+        if start not in positions:
+            continue  # Entry-shaped text inside a string or comment.
+        depth, begin, items, commented = 0, start + 1, [], False
+        for pos, char in tokens[positions[start]:]:
+            if char == "#":
+                commented = True
+            elif char in "[{":
+                depth += 1
+            elif char in "]}":
+                depth -= 1
+                if depth == 0:
+                    last = text[begin:pos].strip()
+                    if last:
+                        items.append(last)
+                    end = pos + 1
+                    break
+            elif char == "," and depth == 1:
+                items.append(text[begin:pos].strip())
+                begin = pos + 1
+        if commented:
+            continue
+        indent = match.group(1)
+        if len(items) > 1:
+            replacement = "[\n" + "".join(f"{indent}  {item},\n" for item in items) + indent + "]"
+        else:
+            replacement = "[" + ", ".join(items) + "]"
+        edits.append((start, end, replacement))
+    for start, end, replacement in reversed(edits):
+        text = text[:start] + replacement + text[end:]
+    if tomllib.loads(text) != before:
+        raise ValueError("formatter changed migration values")
+    return text
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="report formatting changes without writing")
+    parser.add_argument("files", nargs="*", type=Path, help="migration TOML paths; defaults to repository migrations")
+    args = parser.parse_args()
+    files = args.files
+    if not files:
+        root = Path(__file__).resolve().parent.parent
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.toml"],
+            cwd=root,
+        )
+        files = [root / path.decode() for path in tracked.split(b"\0") if path]
+        files = [path for path in files if path.parent.name == "migrations"]
+    pending = []
+    for path in files:
+        if path.parent.name != "migrations" or path.suffix != ".toml":
+            parser.error(f"not a migration TOML file: {path}")
+        text = path.read_bytes().decode("utf-8")
+        formatted = format_text(text)
+        if formatted != text:
+            pending.append((path, formatted))
+    # Validate the entire selection before writing any file.
+    for path, formatted in pending:
+        print(path)
+        if not args.check:
+            path.write_bytes(formatted.encode("utf-8"))
+    return int(args.check and bool(pending))
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))

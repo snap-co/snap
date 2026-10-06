@@ -1,0 +1,8 @@
+# Migration layout is normalized by bin/format-migrations. Preserve it in editors.
+[[rule]]
+include = ["**/migrations/*.toml"]
+
+[rule.formatting]
+array_auto_expand = false
+array_auto_collapse = false
+inline_table_expand = false

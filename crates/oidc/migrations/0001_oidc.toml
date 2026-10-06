@@ -5,19 +5,35 @@ action = "create_table"
 [changes.table]
 name = "oidc.flows"
 primary = ["id"]
-columns = [{ name = "id", kind = "bytes" }, { name = "kind", kind = "text" }, { name = "data", kind = "text" }, { name = "expires", kind = "integer" }]
+columns = [
+  { name = "id", kind = "bytes" },
+  { name = "kind", kind = "text" },
+  { name = "data", kind = "text" },
+  { name = "expires", kind = "integer" },
+]
 
 [[changes]]
 action = "create_table"
 [changes.table]
 name = "oidc.grants"
 primary = ["id"]
-columns = [{ name = "id", kind = "bytes" }, { name = "data", kind = "text" }, { name = "active", kind = "integer" }, { name = "expires", kind = "integer" }]
+columns = [
+  { name = "id", kind = "bytes" },
+  { name = "data", kind = "text" },
+  { name = "active", kind = "integer" },
+  { name = "expires", kind = "integer" },
+]
 
 [[changes]]
 action = "create_table"
 [changes.table]
 name = "oidc.tokens"
 primary = ["id"]
-columns = [{ name = "id", kind = "bytes" }, { name = "grant", kind = "bytes" }, { name = "kind", kind = "text" }, { name = "used", kind = "integer" }, { name = "expires", kind = "integer" }]
+columns = [
+  { name = "id", kind = "bytes" },
+  { name = "grant", kind = "bytes" },
+  { name = "kind", kind = "text" },
+  { name = "used", kind = "integer" },
+  { name = "expires", kind = "integer" },
+]
 indexes = [{ name = "grant", columns = ["grant"] }]

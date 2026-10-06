@@ -5,7 +5,11 @@ action = "create_table"
 [changes.table]
 name = "access.resources"
 primary = ["id"]
-columns = [{ name = "id", kind = "text" }, { name = "kind", kind = "text" }, { name = "audience", kind = "text" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "kind", kind = "text" },
+  { name = "audience", kind = "text" },
+]
 indexes = [{ name = "kind", columns = ["kind"] }]
 
 [[changes]]
@@ -13,7 +17,11 @@ action = "create_table"
 [changes.table]
 name = "access.grants"
 primary = ["resource", "identity"]
-columns = [{ name = "resource", kind = "text" }, { name = "identity", kind = "text" }, { name = "role", kind = "text" }]
+columns = [
+  { name = "resource", kind = "text" },
+  { name = "identity", kind = "text" },
+  { name = "role", kind = "text" },
+]
 indexes = [{ name = "identity", columns = ["identity"] }]
 foreign = [{ columns = ["resource"], table = "access.resources", references = ["id"] }]
 
@@ -22,6 +30,12 @@ action = "create_table"
 [changes.table]
 name = "access.links"
 primary = ["child", "parent"]
-columns = [{ name = "child", kind = "text" }, { name = "parent", kind = "text" }]
+columns = [
+  { name = "child", kind = "text" },
+  { name = "parent", kind = "text" },
+]
 indexes = [{ name = "parent", columns = ["parent"] }]
-foreign = [{ columns = ["child"], table = "access.resources", references = ["id"] }, { columns = ["parent"], table = "access.resources", references = ["id"] }]
+foreign = [
+  { columns = ["child"], table = "access.resources", references = ["id"] },
+  { columns = ["parent"], table = "access.resources", references = ["id"] },
+]

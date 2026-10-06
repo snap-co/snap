@@ -12,7 +12,13 @@ action = "create_table"
 [changes.table]
 name = "identity.credentials"
 primary = ["locator"]
-columns = [{ name = "locator", kind = "text" }, { name = "identity", kind = "text" }, { name = "material", kind = "text" }, { name = "kind", kind = "text" }, { name = "label", kind = "text" }]
+columns = [
+  { name = "locator", kind = "text" },
+  { name = "identity", kind = "text" },
+  { name = "material", kind = "text" },
+  { name = "kind", kind = "text" },
+  { name = "label", kind = "text" },
+]
 foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }]
 
 [[changes]]
@@ -20,7 +26,12 @@ action = "create_table"
 [changes.table]
 name = "identity.sessions"
 primary = ["digest"]
-columns = [{ name = "digest", kind = "bytes" }, { name = "identity", kind = "text" }, { name = "expires", kind = "integer" }, { name = "issued", kind = "integer" }]
+columns = [
+  { name = "digest", kind = "bytes" },
+  { name = "identity", kind = "text" },
+  { name = "expires", kind = "integer" },
+  { name = "issued", kind = "integer" },
+]
 foreign = [{ columns = ["identity"], table = "identity.identities", references = ["id"] }]
 
 [[changes]]
@@ -28,11 +39,17 @@ action = "create_table"
 [changes.table]
 name = "identity.attempts"
 primary = ["id"]
-columns = [{ name = "id", kind = "text" }, { name = "data", kind = "text" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "data", kind = "text" },
+]
 
 [[changes]]
 action = "create_table"
 [changes.table]
 name = "identity.oauth_grants"
 primary = ["id"]
-columns = [{ name = "id", kind = "text" }, { name = "data", kind = "text" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "data", kind = "text" },
+]

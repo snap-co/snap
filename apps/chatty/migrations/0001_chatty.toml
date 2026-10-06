@@ -5,7 +5,13 @@ action = "create_table"
 [changes.table]
 name = "chatty.threads"
 primary = ["id"]
-columns = [{ name = "id", kind = "text" }, { name = "title", kind = "text" }, { name = "created", kind = "integer" }, { name = "updated", kind = "integer" }, { name = "next_sequence", kind = "integer" }]
+columns = [
+  { name = "id", kind = "text" },
+  { name = "title", kind = "text" },
+  { name = "created", kind = "integer" },
+  { name = "updated", kind = "integer" },
+  { name = "next_sequence", kind = "integer" },
+]
 indexes = [{ name = "updated", columns = ["updated"] }]
 
 [[changes]]
@@ -13,6 +19,13 @@ action = "create_table"
 [changes.table]
 name = "chatty.messages"
 primary = ["thread", "sequence"]
-columns = [{ name = "thread", kind = "text" }, { name = "sequence", kind = "integer" }, { name = "sender", kind = "text" }, { name = "request", kind = "text" }, { name = "body", kind = "text" }, { name = "created", kind = "integer" }]
+columns = [
+  { name = "thread", kind = "text" },
+  { name = "sequence", kind = "integer" },
+  { name = "sender", kind = "text" },
+  { name = "request", kind = "text" },
+  { name = "body", kind = "text" },
+  { name = "created", kind = "integer" },
+]
 indexes = [{ name = "request", columns = ["thread", "sender", "request"], unique = true }]
 foreign = [{ columns = ["thread"], table = "chatty.threads", references = ["id"] }]
