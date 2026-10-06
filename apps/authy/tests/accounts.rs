@@ -34,7 +34,6 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_access::MIGRATION,
         snap_store::resource::MIGRATION,
         authy::MIGRATION,
-        authy::PROFILE_MIGRATION,
     ]
     .into_iter()
     .map(|m| toml::from_str(m).unwrap())

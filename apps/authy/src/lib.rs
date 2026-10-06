@@ -15,8 +15,7 @@ use alloc::{
 use snap_access::{Access, Audience, DirectGrant, KindDefinition, Resource, Role, TransferPolicy};
 use snap_store::{Catalog, Column, Data, Error, Kind, Row, Table, Transaction, Value};
 
-pub const MIGRATION: &str = include_str!("../migrations/0001_authy.toml");
-pub const PROFILE_MIGRATION: &str = include_str!("../migrations/0002_authy_profiles.toml");
+pub const MIGRATION: &str = include_str!("../migrations/0001_profiles_authy.toml");
 pub const TABLES: [&str; 2] = ["authy.accounts", "authy.profiles"];
 pub const ACCOUNTS: &str = TABLES[0];
 pub const PROFILES: &str = TABLES[1];

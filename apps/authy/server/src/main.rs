@@ -80,7 +80,6 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_access::MIGRATION,
         snap_store::resource::MIGRATION,
         authy::MIGRATION,
-        authy::PROFILE_MIGRATION,
         snap_oidc::MIGRATION,
         keys::MIGRATION,
     ]

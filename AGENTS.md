@@ -1,6 +1,9 @@
 # Snap Rust spike
 
 - Keep portable behavior `no_std` with `alloc`; hosts own execution and external IO.
+- This project is undeployed. Edit initial version-1 schemas in place and recreate
+  affected local development databases when needed. Prefer fresh schemas over
+  upgrade migrations or compatibility paths; keep deployment secrets separate.
 - Document non-obvious guarantees beside the interface that promises them.
 - Read implementation, configuration, tests and command help directly.
 - Before adding, changing, moving or reviewing tests, harnesses, fixtures, test

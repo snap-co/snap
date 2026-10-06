@@ -1,9 +1,0 @@
-id = "0001_authy"
-
-[[changes]]
-action = "create_table"
-[changes.table]
-name = "authy.accounts"
-primary = ["identity"]
-columns = [{ name = "identity", kind = "text" }, { name = "profile", kind = "text" }, { name = "email", kind = "text" }]
-indexes = [{ name = "profile", columns = ["profile"], unique = true }]
