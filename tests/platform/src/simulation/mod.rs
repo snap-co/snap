@@ -7,8 +7,10 @@ mod transport;
 pub use store::{CommitFault, Store};
 pub use transport::{CarrierPolicy, Channel, Failure, Simulation};
 
-use alloc::{rc::Rc, string::String, vec::Vec};
+use crate::runner::Fingerprint;
+use alloc::{collections::VecDeque, rc::Rc, string::String, vec::Vec};
 use core::cell::RefCell;
+use serde::Serialize;
 
 /// All durations are virtual milliseconds. Jitter is drawn independently for
 /// each dependency boundary from this schedule seed, not a workload seed.
@@ -26,6 +28,8 @@ pub struct Schedule {
     pub max_events: usize,
     pub max_polls: usize,
     pub max_time_ms: u64,
+    /// Recent event history only. Fingerprinting continues after records expire.
+    pub trace_capacity: usize,
 }
 impl Default for Schedule {
     fn default() -> Self {
@@ -41,6 +45,7 @@ impl Default for Schedule {
             max_events: 10_000,
             max_polls: 10_000,
             max_time_ms: 1_000_000,
+            trace_capacity: 10_000,
         }
     }
 }
@@ -48,12 +53,12 @@ impl Default for Schedule {
 /// Diagnostics omit credentials and application payloads. They record when the
 /// driver observes host output and when it delivers, not invented outcomes.
 /// Output observation is at a scheduler boundary, not inside a host callback.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Record {
     pub at_ms: u64,
     pub action: Action,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Action {
     CommandQueued {
         peer: u64,
@@ -103,7 +108,9 @@ struct Time {
     schedule: Schedule,
     now: u64,
     random: u64,
-    trace: Vec<Record>,
+    trace: VecDeque<Record>,
+    discarded: u64,
+    fingerprint: Fingerprint,
 }
 impl Timeline {
     pub fn new(schedule: Schedule) -> Self {
@@ -111,14 +118,24 @@ impl Timeline {
             schedule,
             now: 0,
             random: schedule.seed,
-            trace: Vec::new(),
+            trace: VecDeque::new(),
+            discarded: 0,
+            fingerprint: Fingerprint::new(b"snap-simulation-events-v1"),
         })))
     }
     pub fn now(&self) -> u64 {
         self.0.borrow().now
     }
     pub fn trace(&self) -> Vec<Record> {
-        self.0.borrow().trace.clone()
+        self.0.borrow().trace.iter().cloned().collect()
+    }
+    pub fn discarded_records(&self) -> u64 {
+        self.0.borrow().discarded
+    }
+    /// Includes event order and virtual observation times, even for discarded
+    /// trace records. Not a hash of internal state or unobserved backend programs.
+    pub fn events_sha256(&self) -> [u8; 32] {
+        self.0.borrow().fingerprint.finish()
     }
     pub fn schedule(&self) -> Schedule {
         self.0.borrow().schedule
@@ -148,6 +165,16 @@ impl Timeline {
     fn record(&self, action: Action) {
         let mut time = self.0.borrow_mut();
         let at_ms = time.now;
-        time.trace.push(Record { at_ms, action });
+        let record = Record { at_ms, action };
+        time.fingerprint.record(&record);
+        if time.schedule.trace_capacity == 0 {
+            time.discarded += 1;
+        } else {
+            if time.trace.len() == time.schedule.trace_capacity {
+                time.trace.pop_front();
+                time.discarded += 1;
+            }
+            time.trace.push_back(record);
+        }
     }
 }

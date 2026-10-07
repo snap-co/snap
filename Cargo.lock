@@ -2824,6 +2824,7 @@ dependencies = [
  "rcgen",
  "serde",
  "serde_json",
+ "sha2",
  "snap-access",
  "snap-document",
  "snap-store",

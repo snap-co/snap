@@ -1,4 +1,5 @@
 use super::{Action, Timeline};
+use crate::runner::{Drive, Host};
 use alloc::{
     collections::{BTreeMap, VecDeque},
     rc::Rc,
@@ -498,29 +499,70 @@ impl<L: Loop> Simulation<L> {
     /// without wakes or scheduler events is a diagnosed deadlock. Completion drains
     /// queued events, but deliberately paused host work remains paused.
     pub fn run<F: Future>(&mut self, future: F) -> Result<F::Output, Failure> {
+        match self.drive_until(future, None)? {
+            Drive::Complete(result) => {
+                self.finish()?;
+                Ok(result)
+            }
+            Drive::Deadline => unreachable!("no deadline selected"),
+        }
+    }
+    fn drive_until<F: Future>(
+        &mut self,
+        future: F,
+        deadline_ms: Option<u64>,
+    ) -> Result<Drive<F::Output>, Failure> {
         let wake = Arc::new(RunWake(AtomicBool::new(true)));
         let waker = Waker::from(wake.clone());
         let mut context = Context::from_waker(&waker);
         let mut future = pin!(future);
         loop {
             self.check_time()?;
+            if deadline_ms.is_some_and(|deadline| self.timeline.now() >= deadline) {
+                return Ok(Drive::Deadline);
+            }
             if wake.0.swap(false, Ordering::SeqCst) {
                 if self.polls >= self.timeline.schedule().max_polls {
                     return Err(Failure::PollLimit);
                 }
                 self.polls += 1;
                 if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                    self.finish()?;
-                    return Ok(result);
+                    return Ok(Drive::Complete(result));
                 }
                 if wake.0.load(Ordering::SeqCst) {
                     continue;
+                }
+            }
+            if let Some(deadline) = deadline_ms {
+                let next = self
+                    .network
+                    .borrow()
+                    .events
+                    .first_key_value()
+                    .map(|((at, _), _)| *at);
+                if next.is_some_and(|at| at >= deadline) {
+                    self.timeline.advance_to(deadline);
+                    self.check_time()?;
+                    return Ok(Drive::Deadline);
                 }
             }
             if !self.step()? {
                 return Err(Failure::Deadlock);
             }
         }
+    }
+}
+impl<L: Loop> Host for Simulation<L> {
+    type Error = Failure;
+    fn now(&self) -> u64 {
+        self.timeline.now()
+    }
+    fn drive<F: Future>(
+        &mut self,
+        future: F,
+        deadline_ms: Option<u64>,
+    ) -> Result<Drive<F::Output>, Failure> {
+        self.drive_until(future, deadline_ms)
     }
 }
 fn command_tag(command: &Command) -> (&'static str, Option<u64>) {

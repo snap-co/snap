@@ -220,6 +220,25 @@ not yet a multi-server simulation runtime or a fault/workload generator.
 frames, not their publication instant inside a synchronous callback. Progress
 delivery during such a callback remains outside this scheduler's guarantees.
 
+`tests/platform/src/runner.rs` coordinates application-owned headless SDK
+workloads through a host-supplied executor. It knows no application schema or
+fault policy. Named seed streams separate workload generation from host scheduling
+and world generation. Operation budgets count completed workload actions, excluding
+setup; applications define what one action does. Time budgets are relative to the
+end of setup. Simulation stops without draining pending events at the horizon and
+does not cancel accepted work. Synchronous callbacks may overrun it; the report
+exposes the actual clock and overrun rather than claiming an exact cutoff.
+Deadline-stopped SDK futures are abandoned and the workload cannot be resumed.
+Host watchdog exhaustion is failure, not successful budget completion.
+Recent traces have a configurable capacity. Full event fingerprints continue
+after old records expire. Streaming SHA-256 fingerprints separately cover generated
+actions, successful Channel sends, Channel observations and timed scheduler events.
+Records use versioned domains and length-framed, key-sorted JSON, not wire bytes or
+backend mutation programs. Matching fingerprints provide replay evidence for the
+same revision, encodings, seeds and configuration, not a correctness proof.
+Runner contracts live in `tests/platform/tests/simulation/runner.rs`, discovered
+through the existing simulation target.
+
 The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
 carriers, client-side durable module recovery and a full Transport/Store matrix
