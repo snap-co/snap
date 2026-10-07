@@ -82,6 +82,171 @@ fn executor() -> (Executor<App>, Rc<Cell<usize>>) {
     host.open(Scope(1)).unwrap();
     (host, entries)
 }
+
+#[test]
+fn private_operations_reject_wrong_commands_before_preparation() {
+    use snap_transport::{Command, Invocation, Response, server::Server};
+    let (executor, _) = executor();
+    let mut host = Runtime::new(
+        Server::new(|_: &str| Some("alice".into()), Default::default()),
+        executor,
+    )
+    .with_operations(
+        |name| match name {
+            "private.connected" => Some(OperationMode::Connected),
+            "private.preconnection" => Some(OperationMode::Preconnection),
+            _ => None,
+        },
+        |_, _| panic!("wrong command reached private preparation"),
+    );
+    let mut peer = Peer::default();
+    for command in [
+        Command::Request {
+            bearer: Some("valid".into()),
+            invocation: Invocation {
+                id: 1,
+                operation: "private.connected".into(),
+                input: Value::Null,
+            },
+        },
+        Command::Invoke(Invocation {
+            id: 2,
+            operation: "private.preconnection".into(),
+            input: Value::Null,
+        }),
+    ] {
+        assert!(matches!(
+            host.submit(&mut peer, command, 0),
+            Submission::Ready(Response::Failed(Error::Protocol))
+        ));
+    }
+    assert!(matches!(
+        host.submit(
+            &mut peer,
+            Command::Invoke(Invocation {
+                id: 3,
+                operation: "private.connected".into(),
+                input: Value::Null
+            }),
+            0
+        ),
+        Submission::Ready(Response::Event(snap_transport::Event::Completed {
+            outcome: Err(Error::IdentityRequired),
+            ..
+        }))
+    ));
+    assert!(host.step().is_none());
+}
+
+#[test]
+fn private_connected_retirement_discards_queued_work_but_drains_accepted_work_once() {
+    use snap_transport::{
+        Command, Invocation, Response,
+        server::{Config, Server},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    for accepted in [false, true] {
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let executed = Arc::new(AtomicUsize::new(0));
+        let prepare_count = prepared.clone();
+        let execute_count = executed.clone();
+        let mut host = Runtime::new(
+            Server::new(
+                |_: &str| Some("alice".into()),
+                Config {
+                    reconnect_ms: 0,
+                    capacity: 1,
+                },
+            ),
+            Executor::new(App::new(Rc::new(Cell::new(0)), 1, 1), 8).unwrap(),
+        )
+        .with_operations(
+            |_| Some(OperationMode::Connected),
+            move |_, bearer| {
+                assert_eq!(bearer, Some("valid"));
+                prepare_count.fetch_add(1, Ordering::SeqCst);
+                let execute_count = execute_count.clone();
+                Some(Ok(Box::new(move || {
+                    execute_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!(42)).into()
+                })))
+            },
+        );
+        let mut peer = Peer::default();
+        assert!(matches!(
+            host.submit(
+                &mut peer,
+                Command::Connect {
+                    bearer: "valid".into(),
+                    client_id: "tab".into()
+                },
+                0
+            ),
+            Submission::Ready(Response::Attached { resumed: false })
+        ));
+        for id in 1..=2 {
+            assert!(matches!(
+                host.submit(
+                    &mut peer,
+                    Command::Invoke(Invocation {
+                        id,
+                        operation: "private.connected".into(),
+                        input: Value::Null
+                    }),
+                    0
+                ),
+                Submission::Pending(_)
+            ));
+        }
+        if accepted {
+            assert!(matches!(
+                host.step(),
+                Some(Observation::Event {
+                    event: snap_transport::Event::Accepted { id: 1 },
+                    private: true,
+                    bearer: None,
+                    ..
+                })
+            ));
+            assert_eq!(executed.load(Ordering::SeqCst), 0);
+        }
+        assert!(matches!(
+            host.submit(&mut peer, Command::Close, 0),
+            Submission::Ready(Response::Detached)
+        ));
+        assert_eq!(host.residents(), usize::from(accepted));
+        for id in 1..=2 {
+            let expected = if accepted && id == 1 {
+                Ok(json!(42))
+            } else {
+                Err(Error::IdentityRequired)
+            };
+            match host.step() {
+                Some(Observation::Event {
+                    event:
+                        snap_transport::Event::Completed {
+                            id: actual,
+                            outcome,
+                        },
+                    private: true,
+                    ..
+                }) => {
+                    assert_eq!(actual, id);
+                    assert_eq!(outcome, expected);
+                }
+                _ => panic!("expected private completion"),
+            }
+        }
+        assert!(host.step().is_none());
+        assert_eq!(host.residents(), 0);
+        assert!(host.inspect().states.is_empty());
+        assert_eq!(prepared.load(Ordering::SeqCst), usize::from(accepted));
+        assert_eq!(executed.load(Ordering::SeqCst), usize::from(accepted));
+    }
+}
 fn run(host: &mut Executor<App>, amount: i64) -> Value {
     let ticket = host.submit(Some(Scope(1)), call(amount, "")).unwrap();
     assert_eq!(host.step(), Some(Event::Accepted(ticket)));

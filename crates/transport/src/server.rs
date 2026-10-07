@@ -143,6 +143,14 @@ impl<R: Authority> Server<R> {
     pub fn resident_count(&self) -> usize {
         self.residents.len()
     }
+    /// Authenticate an HTTP upgrade without creating a logical connection.
+    pub fn identify(&self, bearer: &str) -> Result<String, Error> {
+        let identity = self.authority.identify(bearer)?;
+        if identity.is_empty() {
+            return Err(Error::InvalidBearer);
+        }
+        Ok(identity)
+    }
     /// Resolve the bearer for every attachment. The returned flag is true only
     /// when reconnecting to retained logical state. An occupied owner is untouched.
     pub fn connect(
@@ -152,10 +160,7 @@ impl<R: Authority> Server<R> {
         now: u64,
     ) -> Result<(Attachment, bool), Error> {
         self.tick(now);
-        let identity = self.authority.identify(bearer)?;
-        if identity.is_empty() {
-            return Err(Error::InvalidBearer);
-        }
+        let identity = self.identify(bearer)?;
         if client_id.is_empty() || client_id.len() > 128 {
             return Err(Error::InvalidInput);
         }
@@ -203,6 +208,10 @@ impl<R: Authority> Server<R> {
                 !entry.closing && entry.attached && entry.generation == attachment.generation
             })
             .ok_or(Error::StaleConnection)
+    }
+    /// Private execution input for the current attachment, never wire output.
+    pub(crate) fn bearer(&mut self, attachment: &Attachment) -> Result<&str, Error> {
+        Ok(&self.resident(attachment)?.bearer)
     }
     /// Detach without retiring resident state until the reconnect deadline.
     pub fn disconnect(&mut self, attachment: &Attachment, now: u64) -> Result<(), Error> {
@@ -257,16 +266,7 @@ impl<R: Authority> Server<R> {
     /// Non-connection requests resolve credentials on every invocation. Their
     /// execution state is temporary and must not become a resident connection.
     pub fn request(&self, bearer: Option<&str>, invocation: Invocation) -> Result<Verified, Error> {
-        let identity = bearer
-            .map(|token| {
-                let identity = self.authority.identify(token)?;
-                if identity.is_empty() {
-                    Err(Error::InvalidBearer)
-                } else {
-                    Ok(identity)
-                }
-            })
-            .transpose()?;
+        let identity = bearer.map(|token| self.identify(token)).transpose()?;
         Ok(Verified {
             identity,
             connection: None,

@@ -13,7 +13,20 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::oneshot,
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
+
+fn request(address: std::net::SocketAddr) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    let mut request = format!("ws://{address}/transport")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", "token".parse().unwrap());
+    request
+}
 
 struct Empty;
 impl Program for Empty {
@@ -62,7 +75,12 @@ async fn start(host: Development<Empty, Auth>) -> (Stop, std::net::SocketAddr) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     (
-        Stop(tokio::spawn(serve(listener, host, String::new()))),
+        Stop(tokio::spawn(serve(
+            listener,
+            host,
+            String::new(),
+            Arc::new(|headers| headers.get("cookie")?.to_str().ok().map(str::to_owned)),
+        ))),
         address,
     )
 }
@@ -85,9 +103,7 @@ async fn inspect_peers(address: std::net::SocketAddr) -> Value {
 async fn natural_retirement_releases_the_physical_peer_and_full_reopen_capacity() {
     let valid = Arc::new(AtomicBool::new(true));
     let (_server, address) = start(development(runtime(valid.clone()))).await;
-    let (mut socket, _) = connect_async(format!("ws://{address}/transport"))
-        .await
-        .unwrap();
+    let (mut socket, _) = connect_async(request(address)).await.unwrap();
     socket
         .send(Message::Text(
             serde_json::to_string(&Command::Connect {
@@ -118,7 +134,7 @@ async fn natural_retirement_releases_the_physical_peer_and_full_reopen_capacity(
     valid.store(true, Ordering::Release);
     let mut reopened = Vec::new();
     for _ in 0..128 {
-        let (socket, _) = connect_async(format!("ws://{address}/transport"))
+        let (socket, _) = connect_async(request(address))
             .await
             .expect("retired peer consumed a physical slot");
         reopened.push(socket);
@@ -175,8 +191,10 @@ async fn socket_executor_progresses_while_host_preparation_holds_the_gate() {
     let (entered, waiting) = oneshot::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let mut prepare = Some((entered, released));
-    let runtime = runtime(Arc::new(AtomicBool::new(true))).with_requests(
-        |name| name == "fixture.held",
+    let runtime = runtime(Arc::new(AtomicBool::new(true))).with_operations(
+        |name| {
+            (name == "fixture.held").then_some(snap_transport::execution::OperationMode::Connected)
+        },
         move |_, _| {
             let (entered, released) = prepare.take().unwrap();
             let finished = finished.clone();
@@ -189,19 +207,30 @@ async fn socket_executor_progresses_while_host_preparation_holds_the_gate() {
         },
     );
     let (_server, address) = start(development(runtime)).await;
-    let (mut socket, _) = connect_async(format!("ws://{address}/transport"))
-        .await
-        .unwrap();
+    let (mut socket, _) = connect_async(request(address)).await.unwrap();
     socket
         .send(Message::Text(
-            serde_json::to_string(&Command::Request {
-                bearer: None,
-                invocation: Invocation {
-                    id: 1,
-                    operation: "fixture.held".into(),
-                    input: Value::Null,
-                },
+            serde_json::to_string(&Command::Connect {
+                bearer: String::new(),
+                client_id: "held".into(),
             })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let attached = socket.next().await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Response>(attached.to_text().unwrap()).unwrap(),
+        Response::Attached { resumed: false }
+    );
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&Command::Invoke(Invocation {
+                id: 1,
+                operation: "fixture.held".into(),
+                input: Value::Null,
+            }))
             .unwrap()
             .into(),
         ))

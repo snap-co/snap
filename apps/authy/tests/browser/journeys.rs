@@ -92,7 +92,9 @@ async fn passkey_ceremony(browser: &Browser) -> Result<()> {
         ui.button("Create account with a passkey").click().await?;
         ui.heading("You're signed in").visible().await?;
         contains_text(ui, &email).await?;
-        contains_text(ui, "passkey").await?;
+        ui.text(&format!("Signed in with {email} (passkey)."))
+            .visible()
+            .await?;
         ui.button("Sign out").click().await?;
         ui.heading("Sign in").visible().await?;
         // Nonresident hardware must be recoverable by server-side account lookup,
@@ -267,8 +269,19 @@ async fn account_profile(browser: &Browser) -> Result<()> {
         let ui = &session.ui;
         ui.init(r#"{
           const NativeSocket = WebSocket;
+          const nativeFetch = window.fetch;
+          window.__identityCarriers = {http:[], connected:[]};
+          window.fetch = (...args) => {
+            window.__identityCarriers.http.push(String(args[0] instanceof Request ? args[0].url : args[0]));
+            return nativeFetch(...args);
+          };
           window.__heldSave = {hold:false, frames:[]};
           window.WebSocket = class extends NativeSocket {
+            send(frame) {
+              const command = JSON.parse(frame);
+              if (command.Invoke) window.__identityCarriers.connected.push(command.Invoke.operation);
+              return super.send(frame);
+            }
             set onmessage(handler) {
               this.__handler = handler;
               super.onmessage = handler && (event => {
@@ -344,6 +357,22 @@ async fn account_profile(browser: &Browser) -> Result<()> {
             "session cookie must be SameSite=Lax"
         );
         ui.text("This session").visible().await?;
+        let carriers = ui
+            .eval("window.__identityCarriers")
+            .await?;
+        for operation in ["identity.sessions", "identity.credentials"] {
+            ensure!(
+                carriers["connected"].as_array().unwrap().iter().any(|v| v == operation),
+                "{operation} must use the identified connection: {carriers}"
+            );
+        }
+        ensure!(
+            !carriers["http"].as_array().unwrap().iter().any(|v| {
+                let url = v.as_str().unwrap();
+                url.ends_with("/identity/sessions") || url.ends_with("/identity/credentials")
+            }),
+            "ordinary Identity queries must not use HTTP: {carriers}"
+        );
         let second = session.page().await?;
         second.goto(&host.base).await?;
         second.label("First name").visible().await?;
@@ -391,6 +420,9 @@ async fn account_profile(browser: &Browser) -> Result<()> {
         ui.label("First name").value("Mobile").await?;
         ui.label("Last name").value("Person").await?;
         second.label("First name").value("Mobile").await?;
+        ui.text(&format!("Signed in with {email} (password)."))
+            .visible()
+            .await?;
         ui.button("Sign out").click().await?;
         ui.label("Email").visible().await?;
         second.label("First name").hidden().await?;

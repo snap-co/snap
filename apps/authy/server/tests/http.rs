@@ -243,14 +243,11 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
             .status(),
         200
     );
-    let sessions = value(
-        host.request("/identity/sessions", &first)
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    let sessions = sessions["Completed"]["outcome"]["Ok"].as_array().unwrap();
+    let sessions = host
+        .invoke(&first, "identity.sessions", json!(null))
+        .await
+        .unwrap();
+    let sessions = sessions.as_array().unwrap();
     assert_eq!(sessions.len(), 2);
     assert_eq!(
         sessions
@@ -260,13 +257,9 @@ async fn account_operations_preserve_credential_cookie_and_session_authority() {
         1
     );
     assert_eq!(
-        value(
-            host.request("/identity/credentials", &first)
-                .send()
-                .await
-                .unwrap()
-        )
-        .await["Completed"]["outcome"]["Ok"],
+        host.invoke(&first, "identity.credentials", json!(null))
+            .await
+            .unwrap(),
         json!([{"locator":"account@example.test","label":"account@example.test","kind":"password","removable":false}])
     );
     assert_ne!(

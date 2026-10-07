@@ -12,9 +12,28 @@ use alloc::{
 /// adapter owns physical commit and keeps credential data out of JSON traces.
 pub type PreparedRequest = Result<Box<dyn FnOnce() -> crate::bearer::Reply + Send>, Error>;
 type Prepare = Box<dyn FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest> + Send>;
+/// Admission path for a private operation. Connected operations require a live
+/// logical scope; preconnection operations can run before a client attaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationMode {
+    Preconnection,
+    Connected,
+}
+type Classify = Box<dyn Fn(&str) -> Option<OperationMode> + Send>;
 struct Requests {
-    recognizes: fn(&str) -> bool,
+    classify: Classify,
     prepare: Prepare,
+}
+struct QueuedRequest {
+    invocation: crate::Invocation,
+    bearer: Option<String>,
+    scope: Option<Scope>,
+    failure: Option<Error>,
+}
+struct ActiveRequest {
+    ticket: Ticket,
+    scope: Option<Scope>,
+    run: Box<dyn FnOnce() -> crate::bearer::Reply + Send>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -105,8 +124,8 @@ pub struct Executor<P: Program> {
     paused: bool,
     capacity: usize,
     requests: Option<Requests>,
-    queued_requests: BTreeMap<Ticket, (crate::Invocation, Option<String>)>,
-    active_request: Option<(Ticket, Box<dyn FnOnce() -> crate::bearer::Reply + Send>)>,
+    queued_requests: BTreeMap<Ticket, QueuedRequest>,
+    active_request: Option<ActiveRequest>,
     private_observation: Option<Ticket>,
     private_bearer: Option<crate::bearer::Change>,
 }
@@ -140,39 +159,68 @@ impl<P: Program> Executor<P> {
         })
     }
     pub fn with_requests(
-        mut self,
+        self,
         recognizes: fn(&str) -> bool,
+        prepare: impl FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest>
+        + Send
+        + 'static,
+    ) -> Self {
+        self.with_operations(
+            move |name| recognizes(name).then_some(OperationMode::Preconnection),
+            prepare,
+        )
+    }
+    pub fn with_operations(
+        mut self,
+        classify: impl Fn(&str) -> Option<OperationMode> + Send + 'static,
         prepare: impl FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest>
         + Send
         + 'static,
     ) -> Self {
         assert!(self.idle(), "assemble before traffic");
         self.requests = Some(Requests {
-            recognizes,
+            classify: Box::new(classify),
             prepare: Box::new(prepare),
         });
         self
     }
     pub fn recognizes_private(&self, name: &str) -> bool {
+        self.classify_private(name).is_some()
+    }
+    pub fn classify_private(&self, name: &str) -> Option<OperationMode> {
         self.requests
             .as_ref()
-            .is_some_and(|requests| (requests.recognizes)(name))
+            .and_then(|requests| (requests.classify)(name))
     }
     pub fn private_request(&self, ticket: Ticket) -> bool {
         self.queued_requests.contains_key(&ticket)
             || self
                 .active_request
                 .as_ref()
-                .is_some_and(|(active, _)| *active == ticket)
+                .is_some_and(|active| active.ticket == ticket)
             || self.private_observation == Some(ticket)
     }
     pub fn submit_request(
         &mut self,
         invocation: crate::Invocation,
         bearer: Option<String>,
+        scope: Option<Scope>,
     ) -> Result<Ticket, Error> {
+        if scope
+            .is_some_and(|scope| !self.states.contains_key(&scope) || self.closing.contains(&scope))
+        {
+            return Err(Error::IdentityRequired);
+        }
         let ticket = self.reserve()?;
-        self.queued_requests.insert(ticket, (invocation, bearer));
+        self.queued_requests.insert(
+            ticket,
+            QueuedRequest {
+                invocation,
+                bearer,
+                scope,
+                failure: None,
+            },
+        );
         Ok(ticket)
     }
     fn validate_program(program: &P) -> Result<(), Error> {
@@ -212,9 +260,13 @@ impl<P: Program> Executor<P> {
     /// through completion, including held dependencies; release follows it.
     pub fn discard(&mut self, scope: Scope) {
         let draining = self
-            .active
+            .active_request
             .as_ref()
-            .is_some_and(|job| job.scope == Some(scope) && job.accepted);
+            .is_some_and(|active| active.scope == Some(scope))
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|job| job.scope == Some(scope) && job.accepted);
         if !draining {
             self.states.remove(&scope);
             self.closing.remove(&scope);
@@ -233,6 +285,11 @@ impl<P: Program> Executor<P> {
         for entry in self.queue.iter_mut() {
             if let Queued::Run(job) = entry {
                 fail(job);
+            }
+        }
+        for request in self.queued_requests.values_mut() {
+            if request.scope == Some(scope) {
+                request.failure = Some(Error::IdentityRequired);
             }
         }
         if draining {
@@ -350,7 +407,7 @@ impl<P: Program> Executor<P> {
     }
     pub fn step(&mut self) -> Option<Event> {
         self.private_observation = None;
-        if let Some((ticket, run)) = self.active_request.take() {
+        if let Some(ActiveRequest { ticket, run, .. }) = self.active_request.take() {
             let reply = run();
             self.private_bearer = if reply.outcome.is_ok() {
                 reply.bearer
@@ -364,6 +421,27 @@ impl<P: Program> Executor<P> {
         }
         if self.reserved.is_some() {
             return None;
+        }
+        if let Some(ticket) = self
+            .queued_requests
+            .iter()
+            .find_map(|(ticket, request)| request.failure.as_ref().map(|_| *ticket))
+        {
+            let request = self
+                .queued_requests
+                .remove(&ticket)
+                .expect("queued request");
+            let index = self
+                .queue
+                .iter()
+                .position(|entry| matches!(entry, Queued::Reserved(id) if *id == ticket))
+                .expect("queued slot");
+            self.queue.remove(index);
+            self.private_observation = Some(ticket);
+            return Some(Event::Completed {
+                ticket,
+                outcome: Err(request.failure.expect("retired request")),
+            });
         }
         // Discarded queued work is already terminal. Deliver its failure even
         // while another scope owns the application gate and waits for input.
@@ -390,19 +468,29 @@ impl<P: Program> Executor<P> {
                 }
                 Queued::Reserved(ticket) => {
                     self.reserved = Some(ticket);
-                    if let Some((invocation, bearer)) = self.queued_requests.remove(&ticket) {
+                    if let Some(request) = self.queued_requests.remove(&ticket) {
                         self.private_observation = Some(ticket);
-                        let result = (self
-                            .requests
-                            .as_mut()
-                            .expect("configured capabilities")
-                            .prepare)(
-                            &invocation, bearer.as_deref()
-                        )
-                        .unwrap_or(Err(Error::UnknownOperation));
+                        let result = if request.scope.is_some_and(|scope| {
+                            !self.states.contains_key(&scope) || self.closing.contains(&scope)
+                        }) {
+                            Err(Error::IdentityRequired)
+                        } else {
+                            (self
+                                .requests
+                                .as_mut()
+                                .expect("configured capabilities")
+                                .prepare)(
+                                &request.invocation, request.bearer.as_deref()
+                            )
+                            .unwrap_or(Err(Error::UnknownOperation))
+                        };
                         return Some(match result {
                             Ok(run) => {
-                                self.active_request = Some((ticket, run));
+                                self.active_request = Some(ActiveRequest {
+                                    ticket,
+                                    scope: request.scope,
+                                    run,
+                                });
                                 Event::Accepted(ticket)
                             }
                             Err(error) => {

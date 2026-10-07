@@ -5,10 +5,14 @@ use snap_store::{Backend, Store};
 use snap_transport::{
     Error, Invocation,
     bearer::{Provider, Reply},
+    execution::OperationMode,
     operation::{Context, Runtime},
     server::{Authority, Config, Server},
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 struct CryptoHandle<C>(Arc<Mutex<C>>);
 impl<C> Clone for CryptoHandle<C> {
@@ -52,6 +56,7 @@ impl<C: Crypto> Crypto for CryptoHandle<C> {
 struct State<B, C> {
     store: Store<B>,
     requests: Runtime<()>,
+    ingress: BTreeMap<String, OperationMode>,
     provider: Arc<dyn Provider>,
     _crypto: CryptoHandle<C>,
     clock: Box<dyn Fn() -> i64 + Send>,
@@ -74,17 +79,22 @@ impl<B: Backend, C: Crypto + Send + 'static> Sessions<B, C> {
         let factory = crypto.clone();
         let operations =
             snap_identity::operation::definitions(identity, move || factory.clone(), None);
-        let mut requests = Runtime::default();
-        for definition in operations
-            .preconnection
-            .into_iter()
-            .chain(operations.requests)
-        {
-            requests.register(definition).expect("Identity declaration");
+        let mut registry = snap_transport::operation::Registry::default();
+        let mut ingress = BTreeMap::new();
+        for definition in operations.preconnection {
+            ingress.insert(definition.name.clone(), OperationMode::Preconnection);
+            registry
+                .register_preconnection(definition)
+                .expect("Identity declaration");
+        }
+        for definition in operations.requests {
+            ingress.insert(definition.name.clone(), OperationMode::Connected);
+            registry.register(definition).expect("Identity declaration");
         }
         Self(Arc::new(Mutex::new(State {
             store,
-            requests,
+            requests: Runtime::new(registry),
+            ingress,
             provider: Arc::new(identity.provider(crypto.clone())),
             _crypto: crypto,
             clock: Box::new(clock),
@@ -97,9 +107,6 @@ impl<B: Backend + Send + 'static, C: Crypto + Send + 'static> Sessions<B, C> {
         invocation: &Invocation,
         bearer: Option<&str>,
     ) -> Option<snap_transport::execution::PreparedRequest> {
-        if !snap_identity::operation::recognizes(&invocation.operation) {
-            return None;
-        }
         let prepared = (|| {
             let mut state = self.0.lock().map_err(|_| Error::Unavailable)?;
             let State {
@@ -190,6 +197,14 @@ pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
     sessions: Sessions<B, C>,
 ) -> snap_transport::execution::Runtime<testy::App, Sessions<B, C>> {
     let requests = sessions.clone();
+    // Freeze classification from the declarations before accepting traffic.
+    // A poisoned runtime lock cannot redirect credential input into diagnostics.
+    let ingress = sessions
+        .0
+        .lock()
+        .expect("Identity assembly")
+        .ingress
+        .clone();
     snap_transport::execution::Runtime::new(
         Server::new(
             sessions,
@@ -201,8 +216,8 @@ pub fn platform<B: Backend + Send + 'static, C: Crypto + Send + 'static>(
         .with_live_authority(),
         snap_transport::execution::Executor::new(testy::App::default(), 128).unwrap(),
     )
-    .with_requests(
-        snap_identity::operation::recognizes,
+    .with_operations(
+        move |name| ingress.get(name).copied(),
         move |invocation, bearer| requests.prepare(invocation, bearer),
     )
 }

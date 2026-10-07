@@ -1,7 +1,7 @@
 //! Portable session-to-executor adapter. Physical drivers submit commands, drain
 //! observations and supply external inputs; this module owns no IO or clock.
 use crate::execution;
-use crate::execution::{Call, Executor, PreparedRequest, Program, Scope, Ticket};
+use crate::execution::{Call, Executor, OperationMode, PreparedRequest, Program, Scope, Ticket};
 use crate::{
     Command, Error, Event, Response,
     server::{Attachment, Authority, ConnectionId, Server, Verified},
@@ -66,6 +66,22 @@ impl<P: Program, R: Authority> Runtime<P, R> {
             .as_ref()
             .is_some_and(|attachment| self.transport.attached(attachment))
     }
+    pub fn authorize_upgrade(&self, bearer: &str) -> Result<(), Error> {
+        self.transport.identify(bearer).map(|_| ())
+    }
+    /// Assemble private module operations from the registered contracts.
+    /// Classification separates preconnection flows from connected work; it does
+    /// not make those carriers interchangeable or expose credentials in traces.
+    pub fn with_operations(
+        mut self,
+        classify: impl Fn(&str) -> Option<OperationMode> + Send + 'static,
+        requests: impl FnMut(&crate::Invocation, Option<&str>) -> Option<PreparedRequest>
+        + Send
+        + 'static,
+    ) -> Self {
+        self.execution = self.execution.with_operations(classify, requests);
+        self
+    }
     /// Private capability requests must not enter debugger submission traces.
     pub fn private_request(&self, ticket: Ticket) -> bool {
         self.execution.private_request(ticket)
@@ -116,8 +132,11 @@ impl<P: Program, R: Authority> Runtime<P, R> {
             }
             Command::Request { bearer, invocation } => {
                 let id = invocation.id;
-                if self.execution.recognizes_private(&invocation.operation) {
-                    return match self.execution.submit_request(invocation, bearer) {
+                if let Some(mode) = self.execution.classify_private(&invocation.operation) {
+                    if mode != OperationMode::Preconnection {
+                        return Submission::Ready(Response::Failed(Error::Protocol));
+                    }
+                    return match self.execution.submit_request(invocation, bearer, None) {
                         Ok(ticket) => {
                             self.invocations.insert(ticket, id);
                             Submission::Pending(ticket)
@@ -133,7 +152,8 @@ impl<P: Program, R: Authority> Runtime<P, R> {
             Command::Invoke(invocation) => {
                 // Request-only operations must never enter the execution queue or
                 // its inspectable trace, even when sent over the wrong command kind.
-                if self.execution.recognizes_private(&invocation.operation) {
+                let private = self.execution.classify_private(&invocation.operation);
+                if private == Some(OperationMode::Preconnection) {
                     return Submission::Ready(Response::Failed(Error::Protocol));
                 }
                 let id = invocation.id;
@@ -141,6 +161,28 @@ impl<P: Program, R: Authority> Runtime<P, R> {
                     Some(attachment) => self.transport.invoke(attachment, invocation),
                     None => Err(Error::IdentityRequired),
                 };
+                if private == Some(OperationMode::Connected) {
+                    let result = dispatch.and_then(|dispatch| {
+                        let attachment = peer.attachment.as_ref().ok_or(Error::IdentityRequired)?;
+                        let bearer = self.transport.bearer(attachment)?.into();
+                        let connection = dispatch.connection.ok_or(Error::IdentityRequired)?;
+                        let ticket = self.execution.submit_request(
+                            dispatch.invocation,
+                            Some(bearer),
+                            Some(Scope(connection.0)),
+                        )?;
+                        self.invocations.insert(ticket, id);
+                        self.connections.insert(ticket, connection);
+                        Ok(ticket)
+                    });
+                    return match result {
+                        Ok(ticket) => Submission::Pending(ticket),
+                        Err(error) => Submission::Ready(Response::Event(Event::Completed {
+                            id,
+                            outcome: Err(error),
+                        })),
+                    };
+                }
                 return self.enqueue(id, dispatch);
             }
             Command::Disconnect | Command::Close => {
