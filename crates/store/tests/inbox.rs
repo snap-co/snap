@@ -44,6 +44,74 @@ fn budget_is_a_window_not_a_total() {
 }
 
 #[test]
+fn maximum_budget_does_not_allow_charge_overflow() {
+    let channel = Channel::new(4, usize::MAX);
+    assert!(channel.push(1, usize::MAX).is_ok());
+    assert_eq!(channel.push(2, 1), Err((2, Rejected::Full)));
+    assert_eq!(channel.pop(), Some((1, usize::MAX)));
+    assert!(channel.push(3, usize::MAX).is_ok());
+}
+
+#[test]
+fn concurrent_callers_transfer_owned_values_and_restore_budget() {
+    const COUNT: usize = 128;
+    let channel = Arc::new(Channel::new(8, 7));
+    let barrier = Arc::new(Barrier::new(4));
+    thread::scope(|scope| {
+        for producer in 0..2 {
+            let (channel, barrier) = (channel.clone(), barrier.clone());
+            scope.spawn(move || {
+                barrier.wait();
+                for index in 0..COUNT {
+                    let mut value = format!("{producer}:{index}");
+                    loop {
+                        match channel.push(value, 1) {
+                            Ok(()) => break,
+                            Err((returned, Rejected::Full)) => value = returned,
+                        }
+                        thread::yield_now();
+                    }
+                }
+            });
+        }
+        let consumers: Vec<_> = (0..2)
+            .map(|_| {
+                let (channel, barrier) = (channel.clone(), barrier.clone());
+                scope.spawn(move || {
+                    barrier.wait();
+                    let mut received = Vec::new();
+                    while received.len() < COUNT {
+                        if let Some((value, bytes)) = channel.pop() {
+                            assert_eq!(bytes, 1);
+                            received.push(value);
+                        } else {
+                            thread::yield_now();
+                        }
+                    }
+                    received
+                })
+            })
+            .collect();
+        let mut received: Vec<_> = consumers
+            .into_iter()
+            .flat_map(|consumer| consumer.join().unwrap())
+            .collect();
+        received.sort();
+        let mut expected: Vec<_> = (0..2)
+            .flat_map(|producer| (0..COUNT).map(move |index| format!("{producer}:{index}")))
+            .collect();
+        expected.sort();
+        assert_eq!(received, expected);
+    });
+    assert!(channel.is_empty());
+    assert!(channel.push(String::from("entire budget"), 7).is_ok());
+    assert_eq!(
+        channel.push(String::from("over budget"), 1),
+        Err((String::from("over budget"), Rejected::Full))
+    );
+}
+
+#[test]
 fn slot_limit_bounds_a_zero_budget() {
     let channel = Arc::new(Channel::<u64>::new(4, usize::MAX));
     for value in 1..=4 {

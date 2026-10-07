@@ -8,13 +8,10 @@ publish.workspace = true
 serde = { workspace = true, default-features = false, features = ["derive", "alloc"] }
 serde_json.workspace = true
 sha2 = { version = "0.10", default-features = false }
+spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
-[lints.rust]
-# The inbox is a hand-rolled single-producer ring. Slot reuse cannot be expressed
-# to the borrow checker, so it is asserted here: each slot is written by the
-# producer alone and read by the consumer alone, never concurrently. The public
-# surface stays safe, so no other crate needs this exemption.
-unsafe_code = "allow"
+[lints]
+workspace = true
 
 [package.metadata.snap]
 role = "interface"

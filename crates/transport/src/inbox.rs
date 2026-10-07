@@ -5,7 +5,7 @@
 //! executes the other's code, and neither side holds the other's state.
 //!
 //! The queue itself is [`snap_store::inbox::Channel`], a platform-agnostic
-//! single-producer ring in the Store interface. This type adds only what Transport
+//! synchronized bounded queue in the Store interface. This type adds only what Transport
 //! needs on top of it: the carrier's [`Connection`] contract, and the two lifecycle
 //! flags that separate a dead socket from a closed session.
 //!
