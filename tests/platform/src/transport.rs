@@ -185,9 +185,10 @@ pub async fn retirement_drains_output_before_loss<C: snap_transport::Channel>(
             }))
         );
     }
+    let after = channel.receive().await;
     assert!(
-        channel.receive().await.is_err(),
-        "retired stream must lose the physical connection after draining output"
+        after.is_err(),
+        "retired stream must lose the physical connection after draining output, got {after:?}"
     );
     assert!(
         channel

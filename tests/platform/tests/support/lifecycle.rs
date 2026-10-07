@@ -71,7 +71,6 @@ pub struct Retirement {
     retired: bool,
     host_retirement: bool,
     frames: Vec<Frame>,
-    late: bool,
     pub submissions: Arc<Mutex<usize>>,
 }
 impl Retirement {
@@ -106,7 +105,6 @@ impl Retirement {
             retired: false,
             host_retirement: !terminal,
             frames,
-            late: false,
             submissions: Default::default(),
         }
     }
@@ -127,20 +125,16 @@ impl Loop for Retirement {
         }
     }
     fn step(&mut self) -> bool {
-        if *self.submissions.lock().unwrap() != 0 && !self.late {
-            self.late = true;
-            self.output.push_back(Response::Global {
-                kind: "late".into(),
-                input: snap_transport::json!(true),
-            });
-            return true;
-        }
         false
     }
     fn submit(&mut self, _: u64, _: Command, _: u64) -> Result<(), Error> {
         *self.submissions.lock().unwrap() += 1;
         for frame in self.frames.drain(..) {
-            self.output.push_frame(frame);
+            if frame.terminal {
+                self.output.seal(Some(frame));
+            } else {
+                self.output.push_frame(frame);
+            }
         }
         self.retired = self.host_retirement;
         Ok(())

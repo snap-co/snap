@@ -518,7 +518,9 @@ async fn tcp_refusal_policy_matches_simulation() {
 #[tokio::test]
 async fn retirement_drains_final_frames_and_seals_late_output_in_both_setups() {
     for (final_output, terminal) in [(true, true), (true, false), (false, false)] {
-        let real = lifecycle::Tcp::start(lifecycle::Retirement::new(final_output, terminal)).await;
+        let host = lifecycle::Retirement::new(final_output, terminal);
+        let output = snap_transport::runtime::Loop::output(&host, 1).unwrap();
+        let real = lifecycle::Tcp::start(host).await;
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
             snap_platform_tests::transport::retirement_drains_output_before_loss(
@@ -528,6 +530,16 @@ async fn retirement_drains_final_frames_and_seals_late_output_in_both_setups() {
         )
         .await
         .unwrap();
+        // Publish only after the carrier has reported physical loss. A fixture
+        // step racing the native retirement sweep is not post-retirement output.
+        output.push_back(snap_transport::Response::Global {
+            kind: "late".into(),
+            input: json!(true),
+        });
+        assert!(
+            output.is_empty(),
+            "native retired outbox must reject later publication"
+        );
         real.stop().await;
         for seed in [0, 42, u64::MAX] {
             let timeline = snap_platform_tests::simulation::Timeline::new(Schedule {
@@ -535,10 +547,9 @@ async fn retirement_drains_final_frames_and_seals_late_output_in_both_setups() {
                 jitter_ms: 50,
                 ..Default::default()
             });
-            let mut simulation = snap_platform_tests::simulation::Simulation::new(
-                lifecycle::Retirement::new(final_output, terminal),
-                timeline,
-            );
+            let host = lifecycle::Retirement::new(final_output, terminal);
+            let output = snap_transport::runtime::Loop::output(&host, 1).unwrap();
+            let mut simulation = snap_platform_tests::simulation::Simulation::new(host, timeline);
             let channel = simulation.open().unwrap();
             simulation
                 .run(
@@ -548,6 +559,14 @@ async fn retirement_drains_final_frames_and_seals_late_output_in_both_setups() {
                     ),
                 )
                 .unwrap();
+            output.push_back(snap_transport::Response::Global {
+                kind: "late".into(),
+                input: json!(true),
+            });
+            assert!(
+                output.is_empty(),
+                "simulated retired outbox must reject later publication"
+            );
         }
     }
 }
