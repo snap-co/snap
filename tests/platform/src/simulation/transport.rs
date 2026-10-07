@@ -1,6 +1,7 @@
 use super::{Action, Timeline};
 use crate::runner::{Drive, Host};
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, VecDeque},
     rc::Rc,
     sync::Arc,
@@ -9,6 +10,7 @@ use alloc::{
 use core::{
     cell::RefCell,
     future::{Future, poll_fn},
+    pin::Pin,
     pin::pin,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
@@ -36,13 +38,117 @@ impl Default for CarrierPolicy {
     }
 }
 enum Event {
-    Command { peer: u64, command: Command },
-    Admit { peer: u64 },
+    Command {
+        peer: u64,
+        command: Command,
+    },
+    Admit {
+        peer: u64,
+    },
     Execute,
-    Deliver { peer: u64, response: Response },
-    End { peer: u64 },
-    Disconnect { peer: u64, close: bool },
+    Deliver {
+        peer: u64,
+        response: Response,
+    },
+    End {
+        peer: u64,
+    },
+    Disconnect {
+        peer: u64,
+        close: bool,
+    },
     Maintenance,
+    Timer {
+        id: u64,
+        state: Rc<RefCell<Option<Waker>>>,
+    },
+    Task {
+        id: u64,
+    },
+}
+
+/// Cloneable access to the shared event scheduler, not a wall-clock timer.
+#[derive(Clone)]
+pub struct Clock {
+    network: Rc<RefCell<Network>>,
+    timeline: Timeline,
+}
+pub struct Sleep {
+    clock: Clock,
+    key: (u64, u64),
+    waiter: Rc<RefCell<Option<Waker>>>,
+}
+impl Clock {
+    pub fn now(&self) -> u64 {
+        self.timeline.now()
+    }
+    pub fn sleep(&self, milliseconds: u64) -> Sleep {
+        let at = self
+            .now()
+            .checked_add(milliseconds)
+            .expect("timer deadline overflow");
+        let waiter = Rc::new(RefCell::new(None));
+        let mut network = self.network.borrow_mut();
+        let id = network
+            .sequence
+            .checked_add(1)
+            .expect("timer sequence overflow");
+        network.queue(
+            at,
+            Event::Timer {
+                id,
+                state: waiter.clone(),
+            },
+        );
+        self.timeline.record(Action::TimerScheduled {
+            id,
+            deadline_ms: at,
+        });
+        Sleep {
+            clock: self.clone(),
+            key: (at, id),
+            waiter,
+        }
+    }
+}
+impl crate::runner::Timer for Clock {
+    fn sleep(&self, milliseconds: u64) -> impl Future<Output = ()> {
+        Clock::sleep(self, milliseconds)
+    }
+}
+impl Future for Sleep {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        if self.clock.now() >= self.key.0 {
+            Poll::Ready(())
+        } else {
+            *self.waiter.borrow_mut() = Some(context.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        if self
+            .clock
+            .network
+            .borrow_mut()
+            .events
+            .remove(&self.key)
+            .is_some()
+        {
+            self.clock
+                .timeline
+                .record(Action::TimerCanceled { id: self.key.1 });
+        }
+    }
+}
+
+type Callback<L> = Box<dyn FnMut(&mut L, u64)>;
+struct Task<L> {
+    label: &'static str,
+    period_ms: Option<u64>,
+    callback: Callback<L>,
 }
 struct Peer {
     output: Output,
@@ -178,6 +284,8 @@ pub struct Simulation<L: Loop> {
     work_pending: bool,
     events: usize,
     polls: usize,
+    tasks: BTreeMap<u64, Task<L>>,
+    next_task: u64,
 }
 impl<L: Loop> Simulation<L> {
     pub fn new(host: L, timeline: Timeline) -> Self {
@@ -193,7 +301,53 @@ impl<L: Loop> Simulation<L> {
             work_pending: false,
             events: 0,
             polls: 0,
+            tasks: Default::default(),
+            next_task: 0,
         }
+    }
+    pub fn clock(&self) -> Clock {
+        Clock {
+            network: self.network.clone(),
+            timeline: self.timeline.clone(),
+        }
+    }
+    /// Schedule actual host work between synchronous steps. Callbacks may submit
+    /// real operations; they must not fabricate observations. Repeated tasks use
+    /// fixed delay from callback completion, avoiding unbounded catch-up bursts.
+    /// A periodic task keeps finish() non-idle until canceled; use Host::drive for
+    /// bounded campaigns, then cancel it before draining teardown.
+    pub fn schedule_task(
+        &mut self,
+        at_ms: u64,
+        period_ms: Option<u64>,
+        label: &'static str,
+        callback: impl FnMut(&mut L, u64) + 'static,
+    ) -> u64 {
+        assert!(period_ms != Some(0), "periodic task must advance time");
+        self.next_task = self
+            .next_task
+            .checked_add(1)
+            .expect("task sequence overflow");
+        let id = self.next_task;
+        self.tasks.insert(
+            id,
+            Task {
+                label,
+                period_ms,
+                callback: Box::new(callback),
+            },
+        );
+        self.network
+            .borrow_mut()
+            .queue(at_ms.max(self.timeline.now()), Event::Task { id });
+        id
+    }
+    pub fn cancel_task(&mut self, id: u64) {
+        self.tasks.remove(&id);
+        self.network
+            .borrow_mut()
+            .events
+            .retain(|_, event| !matches!(event, Event::Task { id: queued } if *queued == id));
     }
     pub fn open(&mut self) -> Result<Channel, Error> {
         let peer = self.host.open()?;
@@ -450,6 +604,43 @@ impl<L: Loop> Simulation<L> {
             Event::End { peer } => self.lose(peer, false, true),
             Event::Disconnect { peer, close } => self.lose(peer, close, false),
             Event::Maintenance => {}
+            Event::Timer { id, state } => {
+                self.timeline.record(Action::TimerFired { id });
+                let waiter = state.borrow_mut().take();
+                if let Some(waiter) = waiter {
+                    waiter.wake();
+                }
+            }
+            Event::Task { id } => {
+                if let Some(mut task) = self.tasks.remove(&id) {
+                    if self.paused {
+                        let at = self
+                            .timeline
+                            .now()
+                            .checked_add(task.period_ms.unwrap_or(1))
+                            .expect("task deadline overflow");
+                        self.tasks.insert(id, task);
+                        self.network.borrow_mut().queue(at, Event::Task { id });
+                        return Ok(true);
+                    }
+                    self.timeline.record(Action::TaskFired {
+                        id,
+                        label: task.label,
+                    });
+                    (task.callback)(&mut self.host, self.timeline.now());
+                    self.work_pending = true;
+                    self.execute_later();
+                    if let Some(period) = task.period_ms {
+                        let at = self
+                            .timeline
+                            .now()
+                            .checked_add(period)
+                            .expect("task deadline overflow");
+                        self.tasks.insert(id, task);
+                        self.network.borrow_mut().queue(at, Event::Task { id });
+                    }
+                }
+            }
         }
         if !self.paused {
             self.host.tick(self.timeline.now());

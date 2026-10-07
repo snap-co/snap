@@ -10,6 +10,8 @@ use crate::{
 use serde::Serialize;
 use snap_transport::{Channel, client::Client, json};
 
+pub mod concurrent;
+
 /// Valid cartridge state. Create it through real operations instead of populating
 /// a sidecar or bypassing guards. Richer applications define their own world model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -48,6 +50,9 @@ impl<C: Channel> Probe<C> {
     }
     pub fn expected_value(&self) -> i64 {
         self.value
+    }
+    pub fn into_client(self) -> Client<C> {
+        self.client
     }
     pub async fn initialize(&mut self, world: &World) {
         self.execute(Action::Change(Edit {

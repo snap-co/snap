@@ -254,6 +254,46 @@ persisted rows after orderly reopening. This does not make native IO determinist
 Fingerprinting is intended for synthetic workloads, not secret redaction or safe
 publication of real credentials.
 
+`runner::run_many` runs one SDK action per actor in bounded concurrent rounds.
+Actors have independent generation streams and child wakeups; a parent wake does
+not poll an unrelated sleeping child. Seeded actor order controls initial polling,
+while the host's existing deadline/FIFO rules control delivery. The server remains
+single-actor. Operation budgets count completions across all clients, and reserve
+no more actions than the remaining budget. A final round can use fewer clients.
+Started counts are reservations, which may still be waiting on virtual think time.
+Time horizons abandon pending actions without draining or canceling accepted work;
+per-action checks run on completed calls, but round checks only run on complete
+rounds. The reported model is the last checked round, not an assertion about
+unfinished work. Actor-indexed stream summaries and a completion-order fingerprint
+distinguish identical local invocation IDs on different clients.
+
+The simulation's `Clock` implements the host-neutral `runner::Timer`. Timers and
+scheduled host callbacks use the same event queue as carrier delivery and host
+execution. Dropping a timer removes its pending event; sleeping clients do not
+prevent host work. Callbacks respect the host gate and cannot run inside a blocking
+operation. Repeated callbacks use fixed delay from callback completion, not a
+catch-up burst. Periodic callbacks must be canceled before `finish` can drain to
+idle. This timer is for workloads; it does not replace application wall-clock
+sources or make arbitrary module timers deterministic.
+
+`workload/concurrent.rs` owns the cartridge's contention model. Mutation rounds
+use one baseline compare and positive, actor-distinct amounts, so at most one
+commit can win. Outcomes identify the possible winner; expected values come from
+its input, never from returned rows. SDK call intervals constrain the possible
+ordering, including a writer that starts after the winner finishes.
+Verification rounds reload both rows through
+each SDK. Fault input credits bound allowed confirmed rejections. This bounded
+oracle does not cover arbitrary histories, same-client parallel awaits or unknown
+outcomes after carrier loss. `support/campaign.rs` assembles the clients and queues
+server-owned periodic Read operations through real dispatch. Optional periodic
+commit rejection uses the simulation Store's existing dependency fault capability.
+Those server checks and setup are excluded from SDK operation budgets.
+The `campaign` example defaults to two clients, accepts `--clients 1..127`, and
+enables periodic rejection with `--faults`. One production physical peer is reserved
+for scheduled checks. The concurrent contracts in `tests/simulation/concurrent.rs`
+cover overlapping real SDK calls, global budgets, timer cancellation, child wake
+isolation, host-gated callbacks, replay with faults and real TCP/SQLite execution.
+
 The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
 carriers, client-side durable module recovery and a full Transport/Store matrix

@@ -1,8 +1,14 @@
 //! Seeded SDK workload coordination, independent of any application or host.
 //! Applications own world generation, legal actions and invariant checks. Hosts
 //! own execution, clocks, dependency faults and safety watchdogs.
-use alloc::rc::Rc;
-use core::{cell::RefCell, future::Future};
+use alloc::{boxed::Box, rc::Rc, sync::Arc, task::Wake, vec::Vec};
+use core::{
+    cell::RefCell,
+    future::{Future, poll_fn},
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Context, Poll, Waker},
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use snap_transport::{Channel, Command, Error, Response};
@@ -46,6 +52,78 @@ pub trait Workload {
     type Action: Serialize;
     fn generate(&mut self, random: &mut Random) -> Self::Action;
     fn execute(&mut self, action: Self::Action) -> impl Future<Output = ()>;
+    /// Application-owned validation after a fully completed concurrent round.
+    /// Not called for partial rounds abandoned at a time horizon.
+    fn check_round(_actors: &mut [Self])
+    where
+        Self: Sized,
+    {
+    }
+}
+
+/// Platform-owned timer. Application workloads need no simulation imports.
+pub trait Timer: Clone {
+    fn sleep(&self, milliseconds: u64) -> impl Future<Output = ()>;
+}
+
+struct TaskWake {
+    ready: AtomicBool,
+    parent: Waker,
+}
+impl Wake for TaskWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.ready.store(true, Ordering::SeqCst);
+        self.parent.wake_by_ref();
+    }
+}
+
+/// Poll each child only after its own wake. Children may borrow application SDKs;
+/// no thread, runtime dependency or unconditional polling hides missing wakeups.
+/// Dropping this future drops all children, including any pending timer handles.
+pub async fn join<'a>(tasks: Vec<Pin<Box<dyn Future<Output = ()> + 'a>>>) {
+    let mut tasks: Vec<_> = tasks
+        .into_iter()
+        .map(|task| (Some(task), None::<Arc<TaskWake>>))
+        .collect();
+    poll_fn(|context| {
+        let mut pending = false;
+        for (task, wake) in &mut tasks {
+            let Some(future) = task else {
+                continue;
+            };
+            if wake
+                .as_ref()
+                .is_none_or(|wake| !wake.parent.will_wake(context.waker()))
+            {
+                *wake = Some(Arc::new(TaskWake {
+                    ready: AtomicBool::new(true),
+                    parent: context.waker().clone(),
+                }));
+            }
+            let wake = wake.as_ref().unwrap();
+            if wake.ready.swap(false, Ordering::SeqCst) {
+                let waker = Waker::from(wake.clone());
+                if future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_ready()
+                {
+                    *task = None;
+                    continue;
+                }
+            }
+            pending = true;
+        }
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
 }
 
 /// A host can stop between scheduler boundaries without draining pending work.
@@ -140,6 +218,121 @@ pub fn run<H: Host, W: Workload>(
     })
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActorReport {
+    pub started: u64,
+    pub completed: u64,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct ConcurrentReport {
+    pub campaign: Report,
+    pub actors: Vec<ActorReport>,
+    pub rounds: u64,
+    pub max_in_flight: u64,
+    pub completion_sha256: [u8; 32],
+}
+
+/// Bounded concurrent rounds, one action per actor per round. All selected actors
+/// can wait on SDK IO simultaneously; the host remains free to serialize work.
+/// Operation budgets count actions across ALL actors. Reserve no more than the
+/// remaining budget, so the final round may contain fewer actors. Selection rotates
+/// fairly and poll order is seeded. Each actor has its own generation stream.
+/// Completion order and actor identity are fingerprinted. Checkpoints between
+/// rounds permit independent application checks with O(actor count) memory.
+pub fn run_many<H: Host, W: Workload>(
+    host: &mut H,
+    actors: &mut [W],
+    config: Config,
+) -> Result<ConcurrentReport, H::Error> {
+    assert!(!actors.is_empty(), "campaign needs at least one actor");
+    let start_ms = host.now();
+    let deadline_ms = match config.budget {
+        Budget::Operations(_) => None,
+        Budget::TimeMs(duration) => Some(
+            start_ms
+                .checked_add(duration)
+                .expect("campaign deadline overflow"),
+        ),
+    };
+    let mut random: Vec<_> = (0..actors.len())
+        .map(|actor| Random::stream(config.seed, &alloc::format!("workload/{actor}")))
+        .collect();
+    let mut order = Random::stream(config.seed, "actor-order");
+    let mut actions = Fingerprint::new(b"snap-concurrent-actions-v1");
+    let completions = RefCell::new(Fingerprint::new(b"snap-concurrent-completions-v1"));
+    let reports = RefCell::new(alloc::vec![ActorReport::default(); actors.len()]);
+    let mut started = 0;
+    let mut completed = 0;
+    let mut rounds = 0;
+    let mut cursor = 0;
+    let mut max_in_flight = 0;
+    loop {
+        if match config.budget {
+            Budget::Operations(count) => completed == count,
+            Budget::TimeMs(_) => host.now() >= deadline_ms.unwrap(),
+        } {
+            break;
+        }
+        let count = match config.budget {
+            Budget::Operations(limit) => (limit - completed).min(actors.len() as u64) as usize,
+            Budget::TimeMs(_) => actors.len(),
+        };
+        max_in_flight = max_in_flight.max(count as u64);
+        let mut selected = alloc::vec![false; actors.len()];
+        for offset in 0..count {
+            selected[(cursor + offset) % actors.len()] = true;
+        }
+        cursor = (cursor + count) % actors.len();
+        let mut tasks = Vec::new();
+        for (actor, workload) in actors.iter_mut().enumerate() {
+            if !selected[actor] {
+                continue;
+            }
+            let action = workload.generate(&mut random[actor]);
+            actions.record(&(actor, &action));
+            reports.borrow_mut()[actor].started += 1;
+            started += 1;
+            let reports = &reports;
+            let completions = &completions;
+            tasks.push(Box::pin(async move {
+                workload.execute(action).await;
+                reports.borrow_mut()[actor].completed += 1;
+                completions
+                    .borrow_mut()
+                    .record(&(actor, reports.borrow()[actor].completed));
+            }) as Pin<Box<dyn Future<Output = ()>>>);
+        }
+        for index in (1..tasks.len()).rev() {
+            let other = order.below((index + 1) as u64) as usize;
+            tasks.swap(index, other);
+        }
+        let result = host.drive(join(tasks), deadline_ms)?;
+        completed = reports.borrow().iter().map(|report| report.completed).sum();
+        if matches!(result, Drive::Deadline) {
+            break;
+        }
+        W::check_round(actors);
+        rounds += 1;
+    }
+    let end_ms = host.now();
+    Ok(ConcurrentReport {
+        campaign: Report {
+            seed: config.seed,
+            started,
+            completed,
+            start_ms,
+            end_ms,
+            deadline_ms,
+            overrun_ms: deadline_ms.map_or(0, |deadline| end_ms.saturating_sub(deadline)),
+            actions_sha256: actions.finish(),
+        },
+        actors: reports.into_inner(),
+        rounds,
+        max_in_flight,
+        completion_sha256: completions.into_inner().finish(),
+    })
+}
+
 /// Length-framed, key-sorted JSON, not DefaultHasher or Debug output. Domains and
 /// encoding are versioned. Changing these invalidates old fingerprint comparisons.
 #[derive(Clone)]
@@ -175,12 +368,31 @@ struct Streams {
     sent: u64,
     received: u64,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct TranscriptSummary {
     pub sent: u64,
     pub received: u64,
     pub commands_sha256: [u8; 32],
     pub observations_sha256: [u8; 32],
+}
+impl TranscriptSummary {
+    /// Stable actor-indexed combination. Actor identity prevents equal local IDs
+    /// and identical payloads on different clients from collapsing into one stream.
+    /// Global interleaving is recorded separately by timed host events/completions.
+    pub fn combine(actors: &[Self]) -> Self {
+        let mut commands = Fingerprint::new(b"snap-sdk-actor-commands-v1");
+        let mut observations = Fingerprint::new(b"snap-sdk-actor-observations-v1");
+        for (actor, summary) in actors.iter().enumerate() {
+            commands.record(&(actor, summary.sent, summary.commands_sha256));
+            observations.record(&(actor, summary.received, summary.observations_sha256));
+        }
+        Self {
+            sent: actors.iter().map(|actor| actor.sent).sum(),
+            received: actors.iter().map(|actor| actor.received).sum(),
+            commands_sha256: commands.finish(),
+            observations_sha256: observations.finish(),
+        }
+    }
 }
 impl Default for Transcript {
     fn default() -> Self {

@@ -5,7 +5,7 @@ mod store;
 mod transport;
 
 pub use store::{CommitFault, Store};
-pub use transport::{CarrierPolicy, Channel, Failure, Simulation};
+pub use transport::{CarrierPolicy, Channel, Clock, Failure, Simulation, Sleep};
 
 use crate::runner::Fingerprint;
 use alloc::{collections::VecDeque, rc::Rc, string::String, vec::Vec};
@@ -60,6 +60,20 @@ pub struct Record {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Action {
+    TimerScheduled {
+        id: u64,
+        deadline_ms: u64,
+    },
+    TimerFired {
+        id: u64,
+    },
+    TimerCanceled {
+        id: u64,
+    },
+    TaskFired {
+        id: u64,
+        label: &'static str,
+    },
     CommandQueued {
         peer: u64,
         kind: &'static str,
