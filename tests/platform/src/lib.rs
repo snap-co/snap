@@ -13,3 +13,4 @@ pub mod runner;
 pub mod simulation;
 pub mod store;
 pub mod transport;
+pub mod workload;

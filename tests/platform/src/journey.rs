@@ -39,7 +39,7 @@ pub enum Observation<'a> {
     },
 }
 
-async fn exchange<C: Channel, O: Operation>(
+pub(crate) async fn exchange<C: Channel, O: Operation>(
     client: &mut Client<C>,
     input: &O::Input,
     accepted: bool,

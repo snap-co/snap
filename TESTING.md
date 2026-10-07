@@ -239,6 +239,21 @@ same revision, encodings, seeds and configuration, not a correctness proof.
 Runner contracts live in `tests/platform/tests/simulation/runner.rs`, discovered
 through the existing simulation target.
 
+`tests/platform/src/workload.rs` is the first application-owned workload adapter.
+It generates a bounded scalar world for the existing cartridge and creates it
+through the SDK's ordinary operations. Each subsequent action is one invocation,
+with independent admission/outcome checks; a verification read follows each change.
+Other applications supply their own world generators, SDK workloads and invariant
+monitors instead of modifying the runner or simulation host. The `campaign`
+example assembles these three pieces, accepts operation or virtual-time budgets,
+and captures replay configuration, fingerprints and a recent trace on failure.
+Invariant panics propagate. The world and workload remain bounded in shape, not
+generic schema generation or a full-system entropy/crypto simulation. Seeded world
+and workload replay is also compared with real TCP/TLS and file SQLite, including
+persisted rows after orderly reopening. This does not make native IO deterministic.
+Fingerprinting is intended for synthetic workloads, not secret redaction or safe
+publication of real credentials.
+
 The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
 carriers, client-side durable module recovery and a full Transport/Store matrix
