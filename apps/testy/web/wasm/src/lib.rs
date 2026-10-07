@@ -5,6 +5,18 @@
 use snap_transport::{Channel, Command, Error, Response, json};
 use wasm_bindgen::prelude::*;
 
+snap_react_bindings::export_identity!();
+
+#[wasm_bindgen]
+pub async fn health() -> Result<String, JsValue> {
+    use snap_transport::client::Operations;
+    let value = snap_wasm_browser::Client::default()
+        .call::<testy::Health>(&())
+        .await
+        .map_err(error)?;
+    Ok(value.to_string())
+}
+
 #[wasm_bindgen]
 extern "C" {
     pub type BrowserChannel;
@@ -92,38 +104,19 @@ pub struct Client {
 impl Client {
     #[wasm_bindgen(constructor)]
     pub fn new(channel: BrowserChannel) -> Self {
-        Self {
-            inner: testy::Client::new(Connection(channel)),
-        }
+        let mut inner = testy::Client::new(Connection(channel));
+        // Browser cookies authenticate the upgrade. Connect carries no credential.
+        inner.use_session("").expect("unattached browser client");
+        Self { inner }
     }
     pub async fn start(&mut self, id: &str) -> Result<(), JsValue> {
         self.inner.start(id).await.map_err(error)
-    }
-    pub fn use_session(&mut self, bearer: &str) -> Result<(), JsValue> {
-        self.inner.use_session(bearer).map_err(error)
-    }
-    pub async fn authenticate(
-        &mut self,
-        enroll: bool,
-        email: &str,
-        password: &str,
-    ) -> Result<String, JsValue> {
-        self.inner
-            .authenticate(enroll, email, password)
-            .await
-            .map_err(error)
-    }
-    pub async fn logout(&mut self) -> Result<(), JsValue> {
-        self.inner.logout().await.map_err(error)
     }
     pub async fn disconnect(&mut self) -> Result<(), JsValue> {
         self.inner.disconnect().await.map_err(error)
     }
     pub async fn close(&mut self) -> Result<(), JsValue> {
         self.inner.close().await.map_err(error)
-    }
-    pub async fn health(&mut self) -> Result<String, JsValue> {
-        Ok(self.inner.health().await.map_err(error)?.to_string())
     }
     pub async fn calculate(&mut self, operation: &str, operand: &str) -> Result<String, JsValue> {
         let operand = operand

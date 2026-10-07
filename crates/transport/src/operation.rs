@@ -109,7 +109,11 @@ type Callback = dyn FnMut(
         &mut Context,
     ) -> Result<Value, Failure>
     + Send;
-pub struct Handler(Box<Callback>);
+struct Completion {
+    request: Validator,
+    run: Box<Callback>,
+}
+pub struct Handler(Box<Callback>, Option<Completion>);
 impl Handler {
     pub fn new(
         mut run: impl FnMut(
@@ -122,9 +126,12 @@ impl Handler {
         + Send
         + 'static,
     ) -> Self {
-        Self(Box::new(move |tx, call, actor, bearer, context| {
-            run(tx, call, actor, bearer, context).map_err(Into::into)
-        }))
+        Self(
+            Box::new(move |tx, call, actor, bearer, context| {
+                run(tx, call, actor, bearer, context).map_err(Into::into)
+            }),
+            None,
+        )
     }
 }
 pub enum TypedFailure<E> {
@@ -139,6 +146,7 @@ impl<E> From<snap_store::Error> for TypedFailure<E> {
 
 pub struct Definition {
     pub name: String,
+    pub http: Option<crate::carrier::HttpRoute>,
     pub identity_required: bool,
     pub input: Validator,
     pub output: Validator,
@@ -177,6 +185,7 @@ impl Definition {
     {
         Self {
             name: O::NAME.into(),
+            http: O::http_route(),
             identity_required,
             guards,
             data,
@@ -185,22 +194,69 @@ impl Definition {
             output: |value| serde_json::from_value::<O::Output>(value.clone()).is_ok(),
             error: |value| serde_json::from_value::<O::Error>(value.clone()).is_ok(),
             progress: |value| serde_json::from_value::<O::Progress>(value.clone()).is_ok(),
-            handler: Handler(Box::new(move |tx, call, _, _, context| {
+            handler: Handler(
+                Box::new(move |tx, call, _, _, context| {
+                    let input = serde_json::from_value(call.input.clone())
+                        .map_err(|_| Failure::Rejected(Error::InvalidInput))?;
+                    typed_value(run(tx, input, context))
+                }),
+                None,
+            ),
+        }
+    }
+    /// Commit a private request, reconcile its effects, then execute the declared
+    /// completion in a fresh transaction under the original admission and FIFO
+    /// lane. `R` never becomes a public result. Completion has no wire endpoint
+    /// and cannot be selected by a caller. Neither stage may perform external IO.
+    /// Hosts must call `Runtime::complete` after successful reconciliation and
+    /// notify participants of its committed changes before terminal publication.
+    pub fn staged<O, R>(
+        identity_required: bool,
+        guards: Vec<Guard>,
+        data: snap_store::Data,
+        inputs: &'static [&'static str],
+        mut begin: impl FnMut(
+            &mut Transaction<'_>,
+            O::Input,
+            &mut Context,
+        ) -> Result<R, TypedFailure<O::Error>>
+        + Send
+        + 'static,
+        mut complete: impl FnMut(
+            &mut Transaction<'_>,
+            R,
+            &mut Context,
+        ) -> Result<O::Output, TypedFailure<O::Error>>
+        + Send
+        + 'static,
+    ) -> Self
+    where
+        O: crate::Operation,
+        R: serde::Serialize + serde::de::DeserializeOwned,
+        O::Input: serde::de::DeserializeOwned,
+        O::Output: serde::Serialize,
+        O::Error: serde::Serialize,
+    {
+        let mut definition =
+            Self::typed::<O>(identity_required, guards, data, inputs, |_, _, _| {
+                Err(snap_store::Error::Unavailable.into())
+            });
+        definition.handler = Handler(
+            Box::new(move |tx, call, _, _, context| {
                 let input = serde_json::from_value(call.input.clone())
                     .map_err(|_| Failure::Rejected(Error::InvalidInput))?;
-                match run(tx, input, context) {
-                    Ok(output) => serde_json::to_value(output)
-                        .map_err(|_| Failure::Rejected(Error::InvalidOutput)),
-                    Err(TypedFailure::Store(error)) => Err(Failure::Store(error)),
-                    Err(TypedFailure::Application(error)) => {
-                        Err(Failure::Rejected(Error::Application(
-                            serde_json::to_value(error)
-                                .map_err(|_| Failure::Rejected(Error::InvalidOutput))?,
-                        )))
-                    }
-                }
-            })),
-        }
+                typed_value(begin(tx, input, context))
+            }),
+            Some(Completion {
+                request: |value| serde_json::from_value::<R>(value.clone()).is_ok(),
+                run: Box::new(move |tx, call, _, _, context| {
+                    let request = serde_json::from_value(call.input.clone())
+                        .map_err(|_| Failure::Rejected(Error::InvalidState))?;
+                    typed_value(complete(tx, request, context))
+                }),
+            }),
+        );
+        definition
     }
     pub fn contract(&self) -> Contract<&str> {
         Contract {
@@ -223,6 +279,20 @@ impl Definition {
             (guard.0)(tx, invocation, context)?;
         }
         Ok(())
+    }
+}
+
+fn typed_value<T: serde::Serialize, E: serde::Serialize>(
+    result: Result<T, TypedFailure<E>>,
+) -> Result<Value, Failure> {
+    match result {
+        Ok(value) => {
+            serde_json::to_value(value).map_err(|_| Failure::Rejected(Error::InvalidOutput))
+        }
+        Err(TypedFailure::Store(error)) => Err(Failure::Store(error)),
+        Err(TypedFailure::Application(error)) => Err(Failure::Rejected(Error::Application(
+            serde_json::to_value(error).map_err(|_| Failure::Rejected(Error::InvalidOutput))?,
+        ))),
     }
 }
 
@@ -275,6 +345,13 @@ impl Registry {
     }
     pub fn get(&self, selection: Selection) -> &Definition {
         &self.definitions[selection.0]
+    }
+    /// Only registered connectionless declarations are mountable at HTTP ingress.
+    /// Hosts cannot accidentally expose every ordinary protected operation.
+    pub fn http_routes(&self) -> impl Iterator<Item = crate::carrier::HttpRoute> + '_ {
+        self.preconnection
+            .iter()
+            .filter_map(|selection| self.get(*selection).http)
     }
     /// Execution may mutate handler captures, not the selected contract or guards.
     fn handler(&mut self, selection: Selection) -> &mut Handler {
@@ -355,6 +432,7 @@ pub struct Completed<W> {
     /// Private durable program. Publication policy must project it before delivery.
     pub program: Option<snap_store::Program>,
     pub storage_failure: Option<snap_store::Error>,
+    completion: Option<(Selection, Invocation)>,
 }
 impl<W> Runtime<W> {
     /// Assembly closes on first submission. Traffic cannot replace handlers or
@@ -464,71 +542,39 @@ impl<W> Runtime<W> {
     pub fn execute<B: Backend>(&mut self, store: &mut Store<B>) -> Option<Completed<W>> {
         let (work, invocation, selection, mut context) = self.active.take()?;
         let definition = self.definitions.get(selection);
-        let output = definition.output;
+        let staged = definition.handler.1.is_some();
+        let output = definition
+            .handler
+            .1
+            .as_ref()
+            .map_or(definition.output, |c| c.request);
         let error_contract = definition.error;
-        let mut invalid = false;
-        let mut rejected = None;
-        let actor = context.actor.clone();
-        let bearer = context.bearer.clone();
         let handler = self.definitions.handler(selection);
-        let result = store.run("transport.execute", |tx| {
-            let value = match (handler.0)(
-                tx,
-                &invocation,
-                actor.as_deref(),
-                bearer.as_deref(),
-                &mut context,
-            ) {
-                Ok(value) => value,
-                Err(Failure::Store(error)) => return Err(error),
-                Err(Failure::Rejected(error)) => {
-                    tx.status()?;
-                    rejected = Some(
-                        if let Error::Application(value) = &error
-                            && !error_contract(value)
-                        {
-                            Error::InvalidOutput
-                        } else {
-                            error
-                        },
-                    );
-                    return Err(snap_store::Error::Invalid);
-                }
-            };
-            tx.status()?;
-            if !output(&value) {
-                invalid = true;
-                return Err(snap_store::Error::Invalid);
-            }
-            Ok(value)
-        });
-        let (outcome, changes, program, storage_failure) = match result {
-            Ok(committed) => (
-                Ok(committed.value),
-                committed.changes,
-                Some(committed.program),
-                None,
-            ),
-            Err(error) => {
-                let storage = (!invalid && rejected.is_none()).then_some(error.clone());
-                (
-                    Err(rejected.unwrap_or_else(|| {
-                        if invalid {
-                            Error::InvalidOutput
-                        } else {
-                            storage_error(error)
-                        }
-                    })),
-                    Vec::new(),
-                    None,
-                    storage,
-                )
-            }
-        };
-        if outcome.is_err() {
-            context.publication = Value::Null;
+        let (mut outcome, changes, program, storage_failure) = run_handler(
+            store,
+            "transport.execute",
+            &mut handler.0,
+            &invocation,
+            &mut context,
+            output,
+            error_contract,
+        );
+        let completion = if staged && outcome.is_ok() {
+            // The committed request is private. Initial bearer changes are not a
+            // completed authentication and must never escape this stage.
             context.bearer_change = None;
-        }
+            let input =
+                core::mem::replace(&mut outcome, Ok(Value::Null)).expect("successful request");
+            Some((
+                selection,
+                Invocation {
+                    input,
+                    ..invocation
+                },
+            ))
+        } else {
+            None
+        };
         Some(Completed {
             work,
             context,
@@ -536,7 +582,45 @@ impl<W> Runtime<W> {
             changes,
             program,
             storage_failure,
+            completion,
         })
+    }
+    /// Complete at most once after controller success. Captured authority and
+    /// inputs survive, but publication and bearer changes are staged afresh.
+    /// A rejected/indeterminate commit clears them; no stage is automatically retried.
+    pub fn complete<B: Backend>(
+        &mut self,
+        store: &mut Store<B>,
+        completed: &mut Completed<W>,
+    ) -> bool {
+        let Some((selection, invocation)) = completed.completion.take() else {
+            return false;
+        };
+        if completed.outcome.is_err() {
+            return false;
+        }
+        completed.context.publication = Value::Null;
+        completed.context.bearer_change = None;
+        let definition = &mut self.definitions.definitions[selection.0];
+        let completion = definition
+            .handler
+            .1
+            .as_mut()
+            .expect("selected staged operation");
+        let (outcome, changes, program, storage_failure) = run_handler(
+            store,
+            "transport.complete",
+            &mut completion.run,
+            &invocation,
+            &mut completed.context,
+            definition.output,
+            definition.error,
+        );
+        completed.outcome = outcome;
+        completed.changes = changes;
+        completed.program = program;
+        completed.storage_failure = storage_failure;
+        true
     }
     /// Platform publication/controller work still owns the lane after commit.
     /// Finish only after its terminal result and logical-resource cleanup.
@@ -544,6 +628,79 @@ impl<W> Runtime<W> {
         self.data = snap_store::Data::default();
         self.reject();
     }
+}
+
+fn run_handler<B: Backend>(
+    store: &mut Store<B>,
+    operation: &str,
+    handler: &mut Box<Callback>,
+    invocation: &Invocation,
+    context: &mut Context,
+    output: Validator,
+    error_contract: Validator,
+) -> (
+    crate::Outcome,
+    Vec<RowChange>,
+    Option<snap_store::Program>,
+    Option<snap_store::Error>,
+) {
+    let mut invalid = false;
+    let mut rejected = None;
+    let actor = context.actor.clone();
+    let bearer = context.bearer.clone();
+    let result = store.run(operation, |tx| {
+        let value = match handler(tx, invocation, actor.as_deref(), bearer.as_deref(), context) {
+            Ok(value) => value,
+            Err(Failure::Store(error)) => return Err(error),
+            Err(Failure::Rejected(error)) => {
+                tx.status()?;
+                rejected = Some(
+                    if let Error::Application(value) = &error
+                        && !error_contract(value)
+                    {
+                        Error::InvalidOutput
+                    } else {
+                        error
+                    },
+                );
+                return Err(snap_store::Error::Invalid);
+            }
+        };
+        tx.status()?;
+        if !output(&value) {
+            invalid = true;
+            return Err(snap_store::Error::Invalid);
+        }
+        Ok(value)
+    });
+    let (outcome, changes, program, storage_failure) = match result {
+        Ok(committed) => (
+            Ok(committed.value),
+            committed.changes,
+            Some(committed.program),
+            None,
+        ),
+        Err(error) => {
+            let storage = (!invalid && rejected.is_none()).then_some(error.clone());
+            (
+                Err(rejected.unwrap_or_else(|| {
+                    if invalid {
+                        Error::InvalidOutput
+                    } else {
+                        storage_error(error)
+                    }
+                })),
+                Vec::new(),
+                None,
+                storage,
+            )
+        }
+    };
+    if outcome.is_err() {
+        context.publication = Value::Null;
+        context.bearer_change = None;
+    }
+    (outcome, changes, program, storage_failure)
 }
 
 pub fn storage_error(error: snap_store::Error) -> Error {

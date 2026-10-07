@@ -2,8 +2,8 @@
 //! stepping, debugger publication and physical-lifetime policy stay here.
 use super::{Host, Shared};
 use snap_transport::{
-    Command, Error, Invocation, Response,
-    carrier::{Connection, Dispatch, Frame, Submission},
+    Command, Error, Event, Invocation, Response,
+    carrier::{Connection, Dispatch, Frame, Physical, Submission},
     execution::Program,
     server::Authority,
 };
@@ -34,6 +34,7 @@ struct State {
     pending: Mutex<(usize, usize)>,
     max_pending_bytes: usize,
     wake: tokio::sync::Notify,
+    output_ready: tokio::sync::Notify,
 }
 // Include the item held by a worker waiting for the execution gate. Removing it
 // from mpsc must not free its ingress count or byte budget before admission.
@@ -108,13 +109,20 @@ impl Connection for Endpoint {
 }
 impl<P: Program + Send + 'static, R: Authority + Send + 'static> Dispatch for Dispatcher<P, R> {
     type Connection = Endpoint;
-    async fn open(&self, _: Option<String>, max_pending_bytes: usize) -> Result<Endpoint, Error> {
+    async fn open(
+        &self,
+        credential: Option<String>,
+        max_pending_bytes: usize,
+    ) -> Result<Endpoint, Error> {
         let shared = self.0.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let peer = shared
-                .change(crate::development::Development::open)
-                .map_err(|_| Error::Capacity)?;
+            let peer = shared.change(|host| {
+                if let Some(bearer) = credential {
+                    host.authorize_upgrade(&bearer)?;
+                }
+                host.open().map_err(|_| Error::Capacity)
+            })?;
             let (sender, receiver) = mpsc::channel(1024);
             let state = Arc::new(State {
                 output: Mutex::new(VecDeque::new()),
@@ -123,6 +131,7 @@ impl<P: Program + Send + 'static, R: Authority + Send + 'static> Dispatch for Di
                 pending: Mutex::new((0, 0)),
                 max_pending_bytes,
                 wake: tokio::sync::Notify::new(),
+                output_ready: tokio::sync::Notify::new(),
             });
             let worker = state.clone();
             runtime.spawn(async move {
@@ -133,8 +142,57 @@ impl<P: Program + Send + 'static, R: Authority + Send + 'static> Dispatch for Di
         .await
         .map_err(|_| Error::Unavailable)?
     }
-    async fn request(&self, _: Invocation, _: Option<String>) -> snap_transport::bearer::Reply {
-        Err(Error::UnknownOperation).into()
+    async fn request(
+        &self,
+        invocation: Invocation,
+        bearer: Option<String>,
+    ) -> snap_transport::bearer::Reply {
+        // HTTP operations use the same Identity declarations and FIFO as native
+        // requests. This temporary observer never opens a WebSocket.
+        let exchange = async {
+            let id = invocation.id;
+            let channel = Physical(self.open(None, 64 * 1024).await?);
+            channel
+                .0
+                .submit(Command::Request { invocation, bearer }, 64 * 1024)?;
+            let mut accepted = false;
+            let mut bearer = None;
+            loop {
+                let ready = channel.0.state.output_ready.notified();
+                let retired = channel.0.retired();
+                while let Some(frame) = channel.0.receive() {
+                    match frame.response {
+                        Response::Event(Event::Accepted { id: observed }) if observed == id => {
+                            accepted = true
+                        }
+                        Response::Event(Event::Bearer {
+                            id: observed,
+                            change,
+                        }) if observed == id => bearer = Some(change),
+                        Response::Event(Event::Completed {
+                            id: observed,
+                            outcome,
+                        }) if observed == id => {
+                            return Ok(snap_transport::bearer::Reply {
+                                accepted,
+                                bearer,
+                                outcome,
+                            });
+                        }
+                        Response::Failed(error) => return Err(error),
+                        _ => {}
+                    }
+                }
+                if retired {
+                    return Err(Error::Unavailable);
+                }
+                ready.await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(60), exchange)
+            .await
+            .unwrap_or(Err(Error::Unavailable))
+            .unwrap_or_else(|error| Err(error).into())
     }
 }
 async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(
@@ -212,7 +270,9 @@ async fn run<P: Program + Send + 'static, R: Authority + Send + 'static>(
         .unwrap_or(true);
         if retired {
             state.retired.store(true, Ordering::Release);
+            state.output_ready.notify_one();
             break;
         }
+        state.output_ready.notify_one();
     }
 }

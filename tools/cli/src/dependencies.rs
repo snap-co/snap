@@ -14,6 +14,9 @@ pub struct Options {
     /// Also consult the advisory database
     #[arg(long)]
     pub audit: bool,
+    /// Limit unused-dependency checks to framework packages; deny policy is workspace-wide
+    #[arg(long)]
+    pub framework: bool,
 }
 
 pub async fn run(options: Options, runner: &Runner) -> Result<()> {
@@ -53,18 +56,11 @@ pub async fn run(options: Options, runner: &Runner) -> Result<()> {
             "Expected cargo-{tool} {expected}, got {actual}; run mise install and use mise exec"
         );
     }
-    let members = metadata["workspace_members"]
-        .as_array()
-        .context("Missing workspace members")?;
-    let packages = metadata["packages"]
-        .as_array()
-        .context("Missing Cargo packages")?;
+    let packages = crate::cargo::workspace_packages(&metadata, options.framework)?;
+    ensure!(!packages.is_empty(), "No workspace packages selected");
     let mut machete = Command::new("cargo");
     machete.current_dir(&root).arg("machete");
-    for package in packages
-        .iter()
-        .filter(|package| members.contains(&package["id"]))
-    {
+    for package in packages {
         machete.arg(
             package["manifest_path"]
                 .as_str()

@@ -5,6 +5,136 @@ use serde_json::{Value, json};
 use support::{CHALLENGE, CLIENT_SECRET, Host, VERIFIER, cookie, destination, query, value};
 
 #[tokio::test]
+#[ignore = "real issuer startup and durable continuation cleanup; prepare Authy web assets"]
+async fn expired_authorization_continuations_are_removed_before_serving() {
+    let mut host = Host::new("http://127.0.0.1:3850", None).await;
+    let response = host
+        .request("/oauth/authorize", "")
+        .query(&[
+            ("client_id", "chatty"),
+            ("redirect_uri", "http://127.0.0.1:3850/auth/callback"),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("state", "abandoned"),
+            ("nonce", "abandoned"),
+            ("code_challenge", CHALLENGE),
+            ("code_challenge_method", "S256"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 303);
+    // Advance the durable deadline while the real server is stopped. The next
+    // process must clean it without another authorize request or test-only timer.
+    {
+        let mut store = host.stopped_store();
+        store.load("oidc.flows").unwrap();
+        store
+            .run("expire abandoned login", |tx| {
+                let rows = tx.find("oidc.flows", "primary", &[])?;
+                assert_eq!(rows.len(), 1);
+                tx.update(
+                    "oidc.flows",
+                    &[rows[0]["id"].clone()],
+                    [("expires".into(), 0i64.into())].into_iter().collect(),
+                )?;
+                // Persist a pre-limit backlog spanning several cleanup batches.
+                // This seeds recovery input while the host has no DB connection.
+                for n in 0i64..600 {
+                    let mut row = rows[0].clone();
+                    row.insert(
+                        "id".into(),
+                        snap_store::Value::Bytes(n.to_be_bytes().to_vec()),
+                    );
+                    row.insert("expires".into(), 0i64.into());
+                    tx.insert("oidc.flows", row)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    host.restart().await;
+    let mut store = host.stopped_store();
+    store.load("oidc.flows").unwrap();
+    let rows = store
+        .inspect("count abandoned logins", |tx| {
+            tx.find("oidc.flows", "primary", &[])
+        })
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "startup retained {} expired authorization continuations",
+        rows.len()
+    );
+}
+
+#[tokio::test]
+#[ignore = "real HTTP admission and idle expiry; prepare Authy web assets"]
+async fn authorization_flood_is_throttled_and_idle_maintenance_reclaims_flows() {
+    let mut host = Host::new("http://127.0.0.1:3850", None).await;
+    let mut accepted = 0;
+    let mut denied = 0;
+    for n in 0..80 {
+        let response = host
+            .client
+            .get(authorize_url(&host, &format!("flood-{n}"), &[]))
+            .header("x-forwarded-for", format!("192.0.2.{n}"))
+            .send()
+            .await
+            .unwrap();
+        match response.status().as_u16() {
+            303 => accepted += 1,
+            429 => {
+                denied += 1;
+                assert_eq!(response.headers()["retry-after"], "1");
+                assert_eq!(response.headers()["cache-control"], "no-store");
+            }
+            status => panic!("unexpected flood response {status}"),
+        }
+    }
+    assert!(accepted > 0 && denied > 0);
+    {
+        let mut store = host.stopped_store();
+        store.load("oidc.flows").unwrap();
+        let deadline = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3;
+        store
+            .run("near-expiry recovery input", |tx| {
+                let rows = tx.find("oidc.flows", "primary", &[])?;
+                assert_eq!(
+                    rows.len(),
+                    accepted,
+                    "throttled requests created durable state"
+                );
+                for row in rows {
+                    tx.update(
+                        "oidc.flows",
+                        &[row["id"].clone()],
+                        [("expires".into(), deadline.into())].into_iter().collect(),
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    host.restart().await;
+    // No OIDC traffic: cleanup must run on its own, not only when another login
+    // arrives. Deadline is in persisted data, never a test-only production clock.
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let mut store = host.stopped_store();
+    store.load("oidc.flows").unwrap();
+    assert!(
+        store
+            .inspect("idle cleanup", |tx| tx.find("oidc.flows", "primary", &[]))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 #[ignore = "real startup/socket gate with a blocked asset read"]
 async fn startup_refuses_connections_until_assets_are_loaded_and_validated() {
     use std::{

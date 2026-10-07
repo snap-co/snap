@@ -64,9 +64,7 @@ impl AuthyClient {
 snap_react_bindings::export_identity!();
 #[wasm_bindgen]
 pub async fn account_fetch() -> Result<String, JsValue> {
-    let mut transport = snap_transport::client::Client::new(snap_wasm_browser::Http::new(
-        authy::operations::http_routes(),
-    ));
+    let mut transport = snap_wasm_browser::Client::default();
     let account = authy::client::account(&mut transport)
         .await
         .map_err(error)?;

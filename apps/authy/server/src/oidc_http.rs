@@ -16,10 +16,48 @@ use sha2::{Digest, Sha256};
 use snap_identity::{Crypto, Identity};
 use snap_oidc as oidc;
 use snap_store::{Error, Transaction};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+struct Bucket {
+    tokens: f64,
+    updated: Instant,
+}
+impl Bucket {
+    fn new(burst: u32) -> Self {
+        Self {
+            tokens: f64::from(burst),
+            updated: Instant::now(),
+        }
+    }
+    fn take(&mut self, burst: u32, per_second: u32) -> bool {
+        let now = Instant::now();
+        self.tokens = (self.tokens
+            + now.duration_since(self.updated).as_secs_f64() * f64::from(per_second))
+        .min(f64::from(burst));
+        self.updated = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
+// Only registered clients get buckets. Untrusted IDs, forwarded IPs and query
+// strings cannot allocate limiter state. The global bucket also covers malformed
+// requests before parsing, signature verification or acquiring the Store gate.
+struct Limits {
+    global: Bucket,
+    clients: BTreeMap<String, Bucket>,
+}
 
 pub struct Issuer {
     pub config: oidc::Config,
+    limits: Mutex<Limits>,
 }
 impl Issuer {
     pub fn new(
@@ -71,11 +109,64 @@ impl Issuer {
         }
         configure_auto_approval(&mut clients, &settings.auto_approve_domain)?;
         Ok(Self {
+            limits: Mutex::new(Limits {
+                global: Bucket::new(128),
+                clients: clients
+                    .iter()
+                    .map(|client| (client.id.clone(), Bucket::new(32)))
+                    .collect(),
+            }),
             config: oidc::Config {
                 issuer: origin.into(),
                 clients,
             },
         })
+    }
+
+    fn admit_client(&self, client: &str) -> bool {
+        self.limits
+            .lock()
+            .unwrap()
+            .clients
+            .get_mut(client)
+            .is_none_or(|bucket| bucket.take(32, 4))
+    }
+}
+
+fn throttled() -> Response {
+    let mut response = problem(StatusCode::TOO_MANY_REQUESTS, "temporarily_unavailable");
+    response
+        .headers_mut()
+        .insert("retry-after", "1".parse().unwrap());
+    response
+}
+
+async fn rate_limit(
+    State(app): State<Arc<App>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !app.issuer.limits.lock().unwrap().global.take(128, 16) {
+        return throttled();
+    }
+    next.run(request).await
+}
+
+/// Run independently of HTTP traffic. A maintenance failure stops serving rather
+/// than silently accumulating expired state. The shared transaction gate orders
+/// pruning against authorization, redemption, refresh and controller commits.
+pub async fn maintain(app: Arc<App>) -> std::io::Result<()> {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            app.run("oauth.prune", |tx| oidc::prune_expired(tx, now()))
+        })
+        .await
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)?;
     }
 }
 
@@ -168,6 +259,9 @@ impl IntoResponse for HttpError {
     }
 }
 fn parse(text: &str) -> Result<Params, HttpError> {
+    if text.len() > 8192 {
+        return Err(HttpError(StatusCode::BAD_REQUEST, "invalid_request"));
+    }
     let mut result = Params::new();
     for (key, value) in url::form_urlencoded::parse(text.as_bytes()) {
         if result
@@ -348,6 +442,9 @@ async fn authorize(
         Ok(p) => p,
         Err(r) => return r.into_response(),
     };
+    if !app.issuer.admit_client(value(&params, "client_id")) {
+        return throttled();
+    }
     let hint_claims = match params.get("id_token_hint") {
         Some(raw) => match hint(&app, raw) {
             Ok(h) => Some(h),
@@ -570,6 +667,9 @@ async fn token(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> 
         Ok(a) => a,
         Err(r) => return r.into_response(),
     };
+    if !app.issuer.admit_client(&auth.id) {
+        return throttled();
+    }
     match value(&params, "grant_type") {
         "authorization_code" => match app.run("oauth.code", |tx| {
             let claims = claims(&app, tx, value(&params, "code"))?;
@@ -668,6 +768,9 @@ async fn revoke(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) ->
         Ok(a) => a,
         Err(r) => return r.into_response(),
     };
+    if !app.issuer.admit_client(&auth.id) {
+        return throttled();
+    }
     match app.run("oauth.revoke", |tx| {
         oidc::revoke(
             tx,
@@ -797,7 +900,10 @@ async fn browser_errors(
         .is_some_and(|value| value.contains("text/html"));
     let response = next.run(request).await;
     let status = response.status();
-    if !wants_html || !(status.is_client_error() || status.is_server_error()) {
+    if !wants_html
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || !(status.is_client_error() || status.is_server_error())
+    {
         return response;
     }
     let message = if status.is_server_error() {
@@ -817,14 +923,18 @@ pub fn routes(app: Arc<App>) -> Router<Arc<App>> {
         .route("/oauth/authorize", get(authorize).post(consent))
         .route("/oauth/resume", get(resume))
         .route("/oauth/logout", get(logout_get).post(logout_post))
-        .route_layer(axum::middleware::from_fn_with_state(app, browser_errors));
+        .route_layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            browser_errors,
+        ));
     Router::new()
         .merge(browser)
-        .route("/.well-known/openid-configuration", get(discovery))
-        .route("/oauth/jwks", get(jwks))
         .route("/oauth/token", axum::routing::post(token))
         .route("/oauth/userinfo", get(userinfo).post(userinfo))
         .route("/oauth/revoke", axum::routing::post(revoke))
+        .route_layer(axum::middleware::from_fn_with_state(app, rate_limit))
+        .route("/.well-known/openid-configuration", get(discovery))
+        .route("/oauth/jwks", get(jwks))
 }
 
 #[cfg(test)]

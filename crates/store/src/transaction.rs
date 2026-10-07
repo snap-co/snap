@@ -53,11 +53,27 @@ pub trait Backend {
     fn commit(&mut self, program: &Program) -> Result<(), CommitError>;
 }
 
+/// Bounded host IO for expiry maintenance before full residency. The index must
+/// contain one integer deadline. Return at most `limit` complete rows ordered by
+/// deadline, with deadlines <= `through`, without loading the
+/// rest of the table. The backend retains exclusive authority during this read.
+pub trait Expiry: Backend {
+    fn expired(
+        &mut self,
+        table: &Table,
+        index: &str,
+        through: i64,
+        limit: usize,
+    ) -> Result<Rows, Error>;
+}
+
 /// Host access to private committed programs. Positions belong to this log,
 /// not a cluster-wide ordering. Programs can contain secret material.
 pub trait ProgramLog: Backend {
     /// Return at most `limit` entries in ascending position, strictly after
     /// `after`. No handler or controller is invoked while reading the log.
+    /// Backends may retain a bounded tail. An older cursor must fail with Invalid,
+    /// never silently skip history. Recovery then requires a newer checkpoint.
     fn programs(&mut self, after: u64, limit: usize) -> Result<Vec<LoggedProgram>, Error>;
 }
 
@@ -67,12 +83,14 @@ pub struct LoggedProgram {
     pub program: Program,
 }
 
+type IndexEntries = BTreeMap<Vec<Value>, BTreeSet<Vec<Value>>>;
+
 #[derive(Clone, Default)]
 struct Resident {
     rows: BTreeMap<Vec<Value>, Row>,
     absent: BTreeSet<Vec<Value>>,
     complete: bool,
-    indexes: BTreeMap<String, BTreeMap<Vec<Value>, BTreeSet<Vec<Value>>>>,
+    indexes: BTreeMap<String, IndexEntries>,
 }
 
 impl Resident {
@@ -410,6 +428,72 @@ impl<B: ProgramLog> Store<B> {
     }
 }
 
+impl<B: Expiry> Store<B> {
+    /// Delete one indexed expiry batch through normal atomic commit/logging.
+    /// Bootstrap can repeat this before loading a table. Temporary residency is
+    /// released after each batch, including failed commits. Live hosts must
+    /// publish the returned changes to their ordinary commit observers.
+    pub fn prune_expired(
+        &mut self,
+        table: &str,
+        index: &str,
+        through: i64,
+        limit: usize,
+    ) -> Result<Committed<usize>, Error> {
+        if self.fenced {
+            return Err(Error::Indeterminate);
+        }
+        let schema = self.catalog.table(table)?;
+        let columns = schema.index(index)?;
+        if limit == 0
+            || limit > 4096
+            || columns.len() != 1
+            || schema.column(&columns[0])?.kind != crate::Kind::Integer
+        {
+            return Err(Error::Invalid);
+        }
+        let rows = self.backend.expired(schema, index, through, limit)?;
+        if rows.len() > limit {
+            return Err(Error::Invalid);
+        }
+        let mut keys = Vec::new();
+        for row in &rows {
+            schema.validate_row(row)?;
+            if row[&columns[0]] > Value::Integer(through) {
+                return Err(Error::Invalid);
+            }
+            keys.push(schema.key(row));
+        }
+        let resident = self.residents.get_mut(table).ok_or(Error::Invalid)?;
+        let mut temporary = Vec::new();
+        if !resident.complete {
+            for row in rows {
+                let key = schema.key(&row);
+                if !resident.rows.contains_key(&key) && !resident.absent.contains(&key) {
+                    temporary.push(key.clone());
+                    resident.rows.insert(key, row);
+                }
+            }
+            resident.reindex(schema);
+        }
+        let result = self.run("store.expire", |tx| {
+            for key in &keys {
+                tx.delete(table, key)?;
+            }
+            Ok(keys.len())
+        });
+        if !self.fenced && !temporary.is_empty() {
+            let resident = self.residents.get_mut(table).ok_or(Error::Invalid)?;
+            for key in temporary {
+                resident.rows.remove(&key);
+                resident.absent.remove(&key);
+            }
+            resident.reindex(self.catalog.table(table)?);
+        }
+        result
+    }
+}
+
 pub struct Transaction<'a> {
     catalog: &'a Catalog,
     residents: BTreeMap<String, Resident>,
@@ -456,6 +540,81 @@ impl Transaction<'_> {
     /// resident set NEVER masquerades as a complete secondary-index result.
     pub fn find(&mut self, table: &str, index: &str, prefix: &[Value]) -> Result<Rows, Error> {
         self.check(|this| this.lookup(table, index, prefix))
+    }
+
+    /// Saturating cardinality for admission limits, without cloning payloads.
+    pub fn count_up_to(
+        &mut self,
+        table: &str,
+        index: &str,
+        prefix: &[Value],
+        limit: usize,
+    ) -> Result<usize, Error> {
+        self.check(|this| {
+            let entries = this.complete_index(table, index, prefix)?;
+            Ok(entries
+                .range(prefix.to_vec()..)
+                .take_while(|(key, _)| key.starts_with(prefix))
+                .flat_map(|(_, keys)| keys.iter())
+                .take(limit)
+                .count())
+        })
+    }
+
+    /// Bounded inclusive integer-index scan. Complete index residency is still
+    /// required; a limit never converts missing data into a complete result.
+    pub fn find_through(
+        &mut self,
+        table: &str,
+        index: &str,
+        through: i64,
+        limit: usize,
+    ) -> Result<Rows, Error> {
+        self.check(|this| {
+            let schema = this.catalog.table(table)?;
+            let columns = schema.index(index)?;
+            if limit == 0
+                || limit > 4096
+                || columns.len() != 1
+                || schema.column(&columns[0])?.kind != crate::Kind::Integer
+            {
+                return Err(Error::Invalid);
+            }
+            Ok(this
+                .complete_index(table, index, &[])?
+                .range(..=alloc::vec![Value::Integer(through)])
+                .flat_map(|(_, keys)| keys.iter())
+                .take(limit)
+                .map(|key| this.residents[table].rows[key].clone())
+                .collect())
+        })
+    }
+
+    fn complete_index(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &[Value],
+    ) -> Result<&IndexEntries, Error> {
+        let schema = self.catalog.table(table)?;
+        let columns = schema.index(index)?;
+        if prefix.len() > columns.len()
+            || columns
+                .iter()
+                .zip(prefix)
+                .any(|(c, v)| schema.column(c).map(|c| c.kind) != Ok(kind(v)))
+        {
+            return Err(Error::Invalid);
+        }
+        let resident = &self.residents[table];
+        if !resident.complete {
+            return Err(Error::Miss(Lookup {
+                table: table.into(),
+                index: index.into(),
+                prefix: prefix.into(),
+            }));
+        }
+        resident.indexes.get(index).ok_or(Error::Invalid)
     }
 
     fn lookup(&self, table: &str, index: &str, prefix: &[Value]) -> Result<Rows, Error> {
@@ -571,7 +730,11 @@ impl Transaction<'_> {
                     this.get(&table, &key)?.ok_or(Error::NotFound)?;
                     let resident = this.residents.get_mut(&table).ok_or(Error::Invalid)?;
                     resident.rows.remove(&key);
-                    resident.absent.insert(key);
+                    // A complete table already proves every missing key absent.
+                    // Keeping tombstones here would grow memory with churn.
+                    if !resident.complete {
+                        resident.absent.insert(key);
+                    }
                 }
             }
             this.residents
@@ -580,5 +743,42 @@ impl Transaction<'_> {
                 .reindex(schema);
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_residency_does_not_retain_deleted_key_history() {
+        let catalog = Catalog::new(alloc::vec![Table {
+            name: "fixture.churn".into(),
+            columns: alloc::vec![crate::Column {
+                name: "id".into(),
+                kind: crate::Kind::Integer
+            }],
+            primary: alloc::vec!["id".into()],
+            indexes: Vec::new(),
+            foreign: Vec::new(),
+        }])
+        .unwrap();
+        let backend = crate::memory::Memory::new(catalog.clone()).unwrap();
+        let mut store = Store::new(catalog, backend).unwrap();
+        store.load("fixture.churn").unwrap();
+        for n in 0i64..1000 {
+            store
+                .run("churn", |tx| {
+                    tx.insert("fixture.churn", Row::from([("id".into(), n.into())]))?;
+                    tx.delete("fixture.churn", &[n.into()])?;
+                    assert_eq!(tx.get("fixture.churn", &[n.into()])?, None);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        // Read results alone cannot detect retained dead-key memory. Keep this
+        // cardinality check private instead of exporting a test-only metric.
+        assert!(store.residents["fixture.churn"].absent.is_empty());
+        assert!(store.residents["fixture.churn"].rows.is_empty());
     }
 }

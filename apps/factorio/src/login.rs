@@ -112,6 +112,7 @@ pub(crate) fn declarations(origin: String) -> Vec<Definition> {
     vec![
         Definition {
             name: "factorio.login-start".into(),
+            http: None,
             identity_required: false,
             input: Value::is_object,
             output: |v| v.is_object() || v.is_null(),
@@ -161,6 +162,7 @@ pub(crate) fn declarations(origin: String) -> Vec<Definition> {
         },
         Definition {
             name: "factorio.login-finish".into(),
+            http: None,
             identity_required: false,
             input: Value::is_object,
             output: |v| v.is_object() || v.is_null(),
@@ -196,6 +198,7 @@ pub(crate) fn declarations(origin: String) -> Vec<Definition> {
         },
         Definition {
             name: "factorio.login".into(),
+            http: None,
             identity_required: true,
             input: Value::is_null,
             output: |v| v["bearer"].is_string() && v["expires"].is_i64() && v["owner"].is_string(),

@@ -82,6 +82,10 @@ pub fn edit_profile() -> Definition {
 pub struct FetchAccount;
 impl Operation for FetchAccount {
     const NAME: &'static str = "authy.account";
+    // Identification projection supplies the profile key before the client can
+    // create its connected replica binding. Ordinary account work uses Invoke.
+    const HTTP: Option<(snap_transport::carrier::HttpMethod, bool)> =
+        Some((snap_transport::carrier::HttpMethod::Get, true));
     type Input = ();
     type Output = crate::Account;
     type Error = ();
@@ -105,12 +109,4 @@ pub fn declarations() -> Vec<Definition> {
             )?)
         },
     )]
-}
-
-pub fn http_routes() -> Vec<snap_transport::carrier::HttpRoute> {
-    vec![snap_transport::carrier::HttpRoute {
-        operation: FetchAccount::NAME,
-        method: snap_transport::carrier::HttpMethod::Get,
-        read_bearer: true,
-    }]
 }

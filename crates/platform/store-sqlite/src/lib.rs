@@ -6,8 +6,8 @@ mod migration;
 pub use migration::{MigrationError, MigrationReport, migrate, status};
 use rusqlite::{Connection, params_from_iter};
 use snap_store::{
-    Backend, Catalog, CommitError, Error, Instruction, LoggedProgram, Program, ProgramLog, Store,
-    Table,
+    Backend, Catalog, CommitError, Error, Expiry, Instruction, LoggedProgram, Program, ProgramLog,
+    Store, Table,
 };
 use snap_store::{Kind, Row, Rows, Value};
 use std::path::Path;
@@ -17,12 +17,58 @@ pub struct Sqlite {
     catalog: Catalog,
 }
 
+/// The materialized SQLite database is the durable current checkpoint. Keep only
+/// a recent replay tail: at most 1024 programs and 8 MiB, except that the newest
+/// program is always retained. Each program is itself bounded to 16 MiB by Store.
+/// Recovery from a cursor outside this tail must obtain a newer checkpoint, e.g.
+/// a copy of the closed database. Log truncation and new writes commit atomically.
+pub const LOG_PROGRAMS: i64 = 1024;
+pub const LOG_BYTES: i64 = 8 * 1024 * 1024;
+
+fn trim_history(connection: &Connection) -> rusqlite::Result<()> {
+    let newest: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(position), 0) FROM _snap_store_programs",
+        [],
+        |row| row.get(0),
+    )?;
+    // Bootstrap may encounter an old unbounded log. Delete in bounded statements
+    // before inspecting byte totals, without ever reading program payloads.
+    loop {
+        let removed = connection.execute("DELETE FROM _snap_store_programs WHERE position IN (SELECT position FROM _snap_store_programs WHERE position <= ? ORDER BY position LIMIT 256)", [newest - LOG_PROGRAMS])?;
+        if removed < 256 {
+            break;
+        }
+    }
+    let mut bytes: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(length(program)), 0) FROM _snap_store_programs",
+        [],
+        |row| row.get(0),
+    )?;
+    while bytes > LOG_BYTES {
+        let (oldest, size): (i64, i64) = connection.query_row(
+            "SELECT position, length(program) FROM _snap_store_programs ORDER BY position LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if oldest == newest {
+            break;
+        }
+        connection.execute(
+            "DELETE FROM _snap_store_programs WHERE position = ?",
+            [oldest],
+        )?;
+        bytes -= size;
+    }
+    Ok(())
+}
+
 impl Sqlite {
     /// Open an explicitly migrated database. No DDL or automatic migration here.
     pub fn open(path: &Path) -> Result<Store<Self>, MigrationError> {
         let connection = connect(path, false)?;
         let (_, catalog) = migration::history(&connection)?;
         migration::verify_shape(&connection)?;
+        trim_history(&connection)?;
         Store::new(
             catalog.clone(),
             Self {
@@ -122,6 +168,56 @@ fn sql_error(error: rusqlite::Error) -> Error {
     }
 }
 
+fn read_row(table: &Table, row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
+    table
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, column)| {
+            let value = match column.kind {
+                Kind::Text => Value::Text(row.get(i)?),
+                Kind::Integer => Value::Integer(row.get(i)?),
+                Kind::Bytes => Value::Bytes(row.get(i)?),
+            };
+            Ok((column.name.clone(), value))
+        })
+        .collect()
+}
+
+impl Expiry for Sqlite {
+    fn expired(
+        &mut self,
+        table: &Table,
+        index: &str,
+        through: i64,
+        limit: usize,
+    ) -> Result<Rows, Error> {
+        let fields = table.index(index)?;
+        if limit == 0
+            || limit > 4096
+            || fields.len() != 1
+            || table.column(&fields[0])?.kind != Kind::Integer
+        {
+            return Err(Error::Invalid);
+        }
+        let names: Vec<_> = table.columns.iter().map(|c| c.name.clone()).collect();
+        let deadline = quote(&fields[0]);
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {} FROM {} WHERE {deadline} <= ? ORDER BY {deadline} LIMIT ?",
+                columns(&names),
+                quote(&table.name)
+            ))
+            .map_err(sql_error)?;
+        statement
+            .query_map([through, limit as i64], |row| read_row(table, row))
+            .map_err(sql_error)?
+            .collect::<Result<_, _>>()
+            .map_err(sql_error)
+    }
+}
+
 impl Backend for Sqlite {
     fn load(&mut self, table: &Table) -> Result<Rows, Error> {
         let names: Vec<_> = table.columns.iter().map(|c| c.name.clone()).collect();
@@ -135,18 +231,7 @@ impl Backend for Sqlite {
             ))
             .map_err(sql_error)?;
         statement
-            .query_map([], |r| {
-                let mut row = Row::new();
-                for (i, column) in table.columns.iter().enumerate() {
-                    let value = match column.kind {
-                        Kind::Text => Value::Text(r.get(i)?),
-                        Kind::Integer => Value::Integer(r.get(i)?),
-                        Kind::Bytes => Value::Bytes(r.get(i)?),
-                    };
-                    row.insert(column.name.clone(), value);
-                }
-                Ok(row)
-            })
+            .query_map([], |row| read_row(table, row))
             .map_err(sql_error)?
             .collect::<Result<_, _>>()
             .map_err(sql_error)
@@ -229,10 +314,13 @@ impl Backend for Sqlite {
         }
         // SQLite is the one durability authority. The program and all of its
         // materialized changes either commit together or roll back together.
-        if let Err(error) = tx.execute(
-            "INSERT INTO _snap_store_programs (program) VALUES (?)",
-            [program.as_bytes()],
-        ) {
+        if let Err(error) = tx
+            .execute(
+                "INSERT INTO _snap_store_programs (program) VALUES (?)",
+                [program.as_bytes()],
+            )
+            .and_then(|_| trim_history(&tx))
+        {
             return match tx.rollback() {
                 Ok(()) => Err(CommitError::Rejected(sql_error(error))),
                 Err(_) => Err(CommitError::Indeterminate),
@@ -260,6 +348,17 @@ impl ProgramLog for Sqlite {
     fn programs(&mut self, after: u64, limit: usize) -> Result<Vec<LoggedProgram>, Error> {
         let after = i64::try_from(after).map_err(|_| Error::Invalid)?;
         if limit == 0 || limit > 4096 {
+            return Err(Error::Invalid);
+        }
+        let oldest: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT MIN(position) FROM _snap_store_programs",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if oldest.is_some_and(|oldest| after < oldest - 1) {
             return Err(Error::Invalid);
         }
         let mut query = self.connection.prepare(

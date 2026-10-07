@@ -30,6 +30,17 @@ pub struct VerifiedCredential {
     pub id: String,
     pub material: Value,
 }
+/// Registration ceremony inputs; the host supplies session proof and time separately.
+pub struct RegistrationInput<'a> {
+    pub binding: &'a str,
+    pub label: &'a str,
+}
+/// Ceremony completion inputs. The binding is the caller secret used at begin.
+pub struct PasskeyProof<'a> {
+    pub attempt: &'a str,
+    pub binding: &'a str,
+    pub response: Value,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Challenge {
@@ -67,10 +78,10 @@ impl Passkeys {
         crypto: &mut impl Crypto,
         webauthn: &impl WebAuthn,
         bearer: Option<&str>,
-        binding: &str,
-        label: &str,
+        input: RegistrationInput<'_>,
         now: i64,
     ) -> Result<Challenge, Error> {
+        let RegistrationInput { binding, label } = input;
         crate::credential::label_input(label)?;
         let identity = match bearer {
             Some(b) => self.identity.fresh(tx, crypto, b, now)?.identity,
@@ -214,12 +225,15 @@ impl Passkeys {
         tx: &mut Transaction<'_>,
         crypto: &mut impl Crypto,
         webauthn: &impl WebAuthn,
-        id: &str,
-        binding: &str,
         bearer: Option<&str>,
-        response: Value,
+        proof: PasskeyProof<'_>,
         now: i64,
     ) -> Result<Issued, Error> {
+        let PasskeyProof {
+            attempt: id,
+            binding,
+            response,
+        } = proof;
         let pending = self.pending(tx, crypto, id, binding, true, now)?;
         let identity = pending.identity.ok_or(Error::Invalid)?;
         match (&pending.bearer_digest, bearer) {
@@ -251,11 +265,14 @@ impl Passkeys {
         tx: &mut Transaction<'_>,
         crypto: &mut impl Crypto,
         webauthn: &impl WebAuthn,
-        id: &str,
-        binding: &str,
-        response: Value,
+        proof: PasskeyProof<'_>,
         now: i64,
     ) -> Result<Issued, Error> {
+        let PasskeyProof {
+            attempt: id,
+            binding,
+            response,
+        } = proof;
         let pending = self.pending(tx, crypto, id, binding, false, now)?;
         let locator = key_locator(&webauthn.response_id(&response)?)?;
         let credential = Credential::lookup(tx, &locator)?.ok_or(Error::NotFound)?;

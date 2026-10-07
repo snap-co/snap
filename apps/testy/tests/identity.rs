@@ -242,6 +242,7 @@ fn shared_identity_sdk_owns_acquisition_management_and_release_without_tracing_s
         block_on(snap_identity::client::Client::new(&mut transport).fetch()),
         Ok(Some(principal))
     );
+    block_on(transport.connect(&bearer, "identity-sdk")).unwrap();
     let summaries =
         block_on(snap_identity::client::Client::new(&mut transport).sessions()).unwrap();
     assert_eq!(summaries.len(), 1);

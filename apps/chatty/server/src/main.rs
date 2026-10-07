@@ -1,12 +1,17 @@
+mod assertion;
+mod authentication;
+#[path = "../../../shared/identity.rs"]
+mod identity_host;
 use axum::{Router, extract::State, http::HeaderMap, response::Response, routing::get};
 use serde_json::json;
 type Host<B> = snap_transport::host::Blocking<
     B,
     snap_transport::host::Controllers<B, snap_transport::replication::Replications>,
 >;
+use identity_host::{OAuth, failure, no_store, now, random};
 use snap_identity::oauth as rp;
-use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
+use snap_transport::native::web::Cookies;
 use snap_transport::native::{PendingListener, Server, WebSocket};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
@@ -38,7 +43,7 @@ fn operations(
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
-    oauth: snap_identity_native::oauth::Settings,
+    oauth: identity_host::Settings,
     tcp: Option<snap_config::Tcp>,
 }
 fn migrations() -> Vec<snap_store::migration::Migration> {
@@ -46,7 +51,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_access::MIGRATION,
         snap_store::resource::MIGRATION,
         snap_identity::MIGRATION,
-        snap_identity_native::oauth::MIGRATION,
+        Cookies::MIGRATION,
         chatty::MIGRATION,
     ]
     .into_iter()
@@ -82,7 +87,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let listener = PendingListener::reserve(config.host.listen)?;
     let address = listener.local_addr()?;
-    let origin = snap_identity_native::oauth::origin(&config.host.public_origin(address))?;
+    let origin = identity_host::origin(&config.host.public_origin(address))?;
+    let oauth_config = identity_host::Config {
+        origin: origin.clone(),
+        ..oauth_config
+    };
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
@@ -93,15 +102,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "chatty", origin.starts_with("https:"))?;
+    // Processing attempts must be discarded before Server scans controller rows.
+    store.run("oauth.recover", |tx| rp::recover(tx, now()))?;
+    let login_operations = oauth_config.operations(cookies.clone())?;
     let replication = chatty::replication();
-    let jwks = snap_identity_native::assertion::authy_keys(&config.app.oauth.issuer).await?;
-    let operations =
+    let jwks = assertion::authy_keys(&config.app.oauth.issuer).await?;
+    let mut operations =
         operations(&replication).with_preconnection_request(snap_identity::assertion::operation(
             config.app.oauth.issuer.clone(),
             config.app.oauth.client_id.clone(),
             jwks,
             || snap_crypto::Native,
         ));
+    for definition in oauth_config.definitions()? {
+        operations = operations.with_preconnection_request(definition);
+    }
+    let mut participant = snap_transport::host::Controllers::around(
+        snap_transport::replication::Replications::new(replication),
+    );
+    for controller in oauth_config.controllers()? {
+        participant = participant.with_controller(controller);
+    }
     let tcp = config
         .app
         .tcp
@@ -118,29 +139,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let host = Host::new(
         store,
-        snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
-            replication,
-        )),
+        participant,
         operations,
-        Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
-            |tx, bearer| {
-                let principal = snap_identity::Identity::default().resolve(
-                    tx,
-                    &snap_crypto::Native,
-                    bearer,
-                    now(),
-                )?;
-                // OAuth sessions must retain upstream access policy. Assertion
-                // sessions have no upstream refresh grant and expire in five minutes.
-                if tx
-                    .get("identity.oauth_grants", &[rp::digest(bearer).into()])?
-                    .is_some()
-                {
-                    rp::lease(tx, &rp::digest(bearer), now())?;
-                }
-                Ok(principal.identity)
-            },
-        ))),
+        Arc::new(snap_identity::authentication::Authentication::new(
+            Arc::new(authentication::Credentials),
+            Arc::new(now),
+        )),
         snap_transport::server::Config::default(),
         random(),
     )
@@ -151,14 +155,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = Server::new(host).await?;
     let transport = WebSocket {
         origin: origin.clone(),
-        cookie: Some(cookies.reader()),
-        require_cookie: false,
+        cookie: cookies.reader(),
     };
     let oauth = OAuth::new(
         server.transactions(),
         cookies,
-        snap_identity_native::oauth::Config {
-            origin,
+        identity_host::Config {
+            origin: origin.clone(),
             ..oauth_config
         },
     )?;
@@ -167,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(|| async { "OK" }))
         .route("/api/session", get(session))
         .with_state(oauth.clone())
-        .merge(oauth.routes())
+        .merge(server.http(transport.clone(), login_operations))
         .merge(server.websocket(transport))
         .fallback_service(
             ServeDir::new(&assets).fallback(ServeFile::new(format!("{assets}/index.html"))),

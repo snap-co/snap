@@ -71,6 +71,92 @@ fn invite(id: i64, recipient: &str) -> Row {
 }
 
 #[test]
+fn bounded_history_rejects_old_cursors_without_losing_durable_state() {
+    let file = path("bounded-log");
+    assert!(!file.exists());
+    migrate(&file, &migrations()).unwrap();
+    let mut store = Sqlite::open(&file).unwrap();
+    store.load("app.invites").unwrap();
+    store
+        .run("initial", |tx| {
+            tx.insert("app.invites", invite(1, "initial"))
+        })
+        .unwrap();
+    for n in 0..1030 {
+        store
+            .run("replace", |tx| {
+                tx.update(
+                    "app.invites",
+                    &[1.into()],
+                    Row::from([("recipient".into(), format!("recipient-{n}").into())]),
+                )
+            })
+            .unwrap();
+    }
+    drop(store);
+    let mut store = Sqlite::open(&file).unwrap();
+    assert!(
+        matches!(store.programs(0, 1), Err(Error::Invalid)),
+        "discarded history must require a newer checkpoint"
+    );
+    let tail = store.programs(7, 4096).unwrap();
+    assert_eq!(tail.len(), 1024);
+    assert_eq!(tail.first().unwrap().position, 8);
+    assert_eq!(tail.last().unwrap().position, 1031);
+    store.load("app.invites").unwrap();
+    assert_eq!(
+        store
+            .inspect("durable state", |tx| tx.get("app.invites", &[1.into()]))
+            .unwrap(),
+        Some(invite(1, "recipient-1029"))
+    );
+    // Byte retention must work independently of the program-count limit.
+    let payload = "x".repeat(1024 * 1024);
+    for _ in 0..10 {
+        store
+            .run("large replacement", |tx| {
+                tx.update(
+                    "app.invites",
+                    &[1.into()],
+                    Row::from([("recipient".into(), payload.clone().into())]),
+                )
+            })
+            .unwrap();
+    }
+    // A deferred constraint fails after log trimming was staged. Neither the
+    // failed write nor its proposed truncation may become durable.
+    let failed = store.run("rejected after trimming", |tx| {
+        tx.update(
+            "app.invites",
+            &[1.into()],
+            Row::from([("recipient".into(), payload.clone().into())]),
+        )?;
+        tx.insert(
+            "app.outbox",
+            Row::from([
+                ("invite".into(), 999i64.into()),
+                ("body".into(), Value::Bytes(vec![])),
+            ]),
+        )
+    });
+    assert!(matches!(failed, Err(Error::Constraint)));
+    drop(store);
+    let mut store = Sqlite::open(&file).unwrap();
+    assert!(matches!(store.programs(1033, 1), Err(Error::Invalid)));
+    let tail = store.programs(1034, 4096).unwrap();
+    assert_eq!(tail.len(), 7);
+    assert_eq!(tail.last().unwrap().position, 1041);
+    assert!(
+        tail.iter()
+            .map(|entry| entry.program.as_bytes().len())
+            .sum::<usize>()
+            <= snap_store_sqlite::LOG_BYTES as usize
+    );
+    drop(store);
+    std::fs::remove_file(file).unwrap();
+}
+
+#[test]
 fn durable_program_log_rebuilds_from_a_checkpoint_and_rolls_back_with_data() {
     let source = path("source");
     let checkpoint = path("checkpoint");

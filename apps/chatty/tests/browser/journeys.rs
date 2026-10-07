@@ -214,6 +214,11 @@ async fn synchronized_conversations(browser: &Browser) -> Result<()> {
         ui.xpath("//button[normalize-space(.) = 'Renamed conversation']")
             .count(0)
             .await?;
+        let old_cookie = super::cookies(&ui.page, &host.base)
+            .await?
+            .into_iter()
+            .find(|cookie| cookie.name == "chatty_session")
+            .context("missing Chatty session cookie")?;
         ui.xpath("//button[@aria-label = 'Sign out']")
             .click()
             .await?;
@@ -221,6 +226,23 @@ async fn synchronized_conversations(browser: &Browser) -> Result<()> {
         ui.xpath("//a[contains(normalize-space(.), 'Continue with Authy')]")
             .visible()
             .await?;
+        // Another tab may retain the revoked signed cookie. It must still be
+        // able to start fresh acquisition, without granting protected access.
+        let stale = format!("{}={}", old_cookie.name, old_cookie.value);
+        let login = direct
+            .get(format!("{}/auth/login", host.base))
+            .header("cookie", &stale)
+            .send()
+            .await?;
+        ensure!(
+            login.status() == reqwest::StatusCode::SEE_OTHER,
+            "revoked session cookie must not block fresh login: {}",
+            login.status()
+        );
+        ensure!(
+            login.headers().get("location").is_some(),
+            "missing fresh authorization redirect"
+        );
         Ok(())
     }
     .await

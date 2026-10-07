@@ -7,14 +7,20 @@ publish.workspace = true
 [dependencies]
 snap-store.workspace = true
 snap-transport = { path = "../transport" }
+snap-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
+url = { version = "2.5.8", default-features = false }
 
 [dev-dependencies]
 snap-store-sqlite = { path = "../platform/store-sqlite" }
 toml = "0.9"
+snap-transport = { path = "../transport", features = ["native-server"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "sync", "time"] }
+tempfile = "3"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [lints]
 workspace = true

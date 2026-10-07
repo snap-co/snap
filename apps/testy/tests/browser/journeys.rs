@@ -100,15 +100,6 @@ impl Fixture {
             "build Testy web assets first (bin/browser-tests builds them)"
         );
         let scratch = support::scratch("testy-web-")?;
-        let database = scratch.path().join("identity.sqlite");
-        let mut migrate = support::command(root.join("target/debug/snap"));
-        migrate
-            .args(["migrate", "--database"])
-            .arg(&database)
-            .arg("--migrations")
-            .arg(root.join("crates/identity/migrations"))
-            .current_dir(&root);
-        support::run(&mut migrate)?;
         let deployment = support::Deployment::create(
             scratch.path(),
             json!({
@@ -123,6 +114,10 @@ impl Fixture {
             }),
             None,
         )?;
+        let mut migrate = support::command(root.join("target/debug/testy-web"));
+        deployment.apply(&mut migrate);
+        migrate.arg("--migrate");
+        support::run(&mut migrate)?;
         let mut server = support::command(root.join("target/debug/testy-web"));
         deployment.apply(&mut server);
         let mut process = support::Process::start(&mut server)?;
@@ -172,7 +167,8 @@ fn accumulator(ui: &Ui) -> crate::ui::Locator {
 }
 
 async fn login_sessions_isolate(browser: &Browser) -> Result<()> {
-    case(browser, async |session, url| {
+    let isolated = Session::new(browser).await?;
+    let result = case(browser, async |session, url| {
         let ui = &session.ui;
         let calc = format!("{url}/calc");
         ui.goto(&calc).await?;
@@ -182,27 +178,29 @@ async fn login_sessions_isolate(browser: &Browser) -> Result<()> {
         ui.button("+").click().await?;
         accumulator(ui).text("12").await?;
         // A second login session gets an isolated calculator.
-        let second = session.page().await?;
+        let second = &isolated.ui;
         second.goto(&calc).await?;
-        login(&second, false).await?;
-        accumulator(&second).text("0").await?;
+        login(second, false).await?;
+        accumulator(second).text("0").await?;
         second.label("Operand").fill("7").await?;
         second.button("+").click().await?;
-        accumulator(&second).text("7").await?;
-        // A sibling tab sharing the first session's bearer reconnects fresh.
-        let token = ui
-            .eval("sessionStorage.getItem(\"testy.session\")")
-            .await?
-            .as_str()
-            .context("missing session token")?
-            .to_owned();
+        accumulator(second).text("7").await?;
+        // Tabs share the browser-managed HttpOnly cookie, never JS credentials.
+        let cookies = crate::apps::cookies(&ui.page, url).await?;
+        let cookie = cookies
+            .iter()
+            .find(|cookie| cookie.name == "testy_session")
+            .context("missing session cookie")?;
+        ensure!(cookie.http_only, "session cookie must be HttpOnly");
+        let token = cookie.value.split('.').next().context("cookie bearer")?;
+        ensure!(
+            ui.eval("document.cookie")
+                .await?
+                .as_str()
+                .is_some_and(|value| !value.contains("testy_session")),
+            "session credential exposed to JavaScript"
+        );
         let sibling = session.page().await?;
-        sibling
-            .init(&format!(
-                "sessionStorage.setItem('testy.session', {})",
-                js(&token)
-            ))
-            .await?;
         sibling.goto(&calc).await?;
         sibling.text("Connected").visible().await?;
         accumulator(&sibling).text("0").await?;
@@ -213,7 +211,7 @@ async fn login_sessions_isolate(browser: &Browser) -> Result<()> {
         sibling.text("Disconnected").visible().await?;
         // The other login session keeps working.
         second.button("Refresh").click().await?;
-        accumulator(&second).text("7").await?;
+        accumulator(second).text("7").await?;
         // Bearer and password material never reaches diagnostics or the wire panel.
         let diagnostics = support::client()?
             .get(format!("{url}/__dev"))
@@ -223,7 +221,7 @@ async fn login_sessions_isolate(browser: &Browser) -> Result<()> {
             .text()
             .await?;
         ensure!(
-            !diagnostics.contains(&token),
+            !diagnostics.contains(token),
             "diagnostics leak the session token"
         );
         ensure!(
@@ -231,14 +229,15 @@ async fn login_sessions_isolate(browser: &Browser) -> Result<()> {
             "diagnostics leak the password"
         );
         let wire = ui.locator(".wire").read_text().await?;
-        ensure!(!wire.contains(&token), "wire panel leaks the session token");
+        ensure!(!wire.contains(token), "wire panel leaks the session token");
         ensure!(
             !wire.contains("testy-password1"),
             "wire panel leaks the password"
         );
         Ok(())
     })
-    .await
+    .await;
+    isolated.finish(result).await
 }
 
 async fn raw_envelopes(browser: &Browser) -> Result<()> {
@@ -269,23 +268,18 @@ async fn raw_envelopes(browser: &Browser) -> Result<()> {
       ws.send(JSON.stringify(command));
     });
   }
+  const health = await (await fetch("/health/up", { headers: { "x-snap-operation-id": "1" } })).json();
+  const enrollment = await (await fetch("/identity/enroll", {
+    method: "POST", headers: { "content-type": "application/json", "x-snap-operation-id": "2" },
+    body: JSON.stringify({ email: "raw@example.com", password: "password1" }),
+  })).json();
+  const completion = enrollment.Completed.outcome.Ok;
+  if (!completion || completion.bearer || completion.session) throw new Error("private bearer handoff");
   const first = await open();
   const second = await open();
-  const health = await exchange(first, {
-    Request: {
-      bearer: null,
-      invocation: { id: 1, operation: "health.up", input: null },
-    },
-  });
-  const enrollment = await exchange(first, { Request: { bearer: null,
-    invocation: { id: 2, operation: "identity.enroll", input: { email: "raw@example.com", password: "password1" } } } });
-  const events = enrollment.map(frame => frame.Event).filter(Boolean);
-  const token = events.find(event => event.Bearer)?.Bearer.change.Set;
-  const completion = events.find(event => event.Completed).Completed.outcome.Ok;
-  if (!token || completion.bearer || completion.session) throw new Error("private bearer handoff");
   const attach = {
     Connect: {
-      bearer: token,
+      bearer: "",
       client_id: "raw-frame-client",
     },
   };
@@ -305,10 +299,7 @@ async fn raw_envelopes(browser: &Browser) -> Result<()> {
         ensure!(
             observations
                 == json!({
-                    "health": [
-                        { "Event": { "Accepted": { "id": 1 } } },
-                        { "Event": { "Completed": { "id": 1, "outcome": { "Ok": { "status": "OK" } } } } },
-                    ],
+                    "health": { "Completed": { "id": 1, "outcome": { "Ok": { "status": "OK" } } } },
                     "attached": [{ "Attached": { "resumed": false } }],
                     "occupied": [{ "Failed": "Occupied" }],
                     "resumed": [{ "Attached": { "resumed": false } }],
@@ -741,6 +732,7 @@ async fn idle_silence(browser: &Browser) -> Result<()> {
         let dev = format!("{url}/__dev");
         let mut requests=ui.page.event_listener::<chromiumoxide::cdp::browser_protocol::network::EventRequestWillBeSent>().await?;
         ui.goto(&calc).await?;
+        ensure!(ui.eval("window.__appSockets").await? == json!(0), "application socket opened before authentication");
         login(ui, true).await?;
         ui.text("Connected").visible().await?;
         ui.text("Debugger: Live").visible().await?;
@@ -764,7 +756,7 @@ async fn idle_silence(browser: &Browser) -> Result<()> {
             "debugger reconnect changed host inspection"
         );
         ensure!(
-            ui.eval("window.__appSockets").await? == json!(2),
+            ui.eval("window.__appSockets").await? == json!(1),
             "unexpected application socket count"
         );
         // Advance virtual time past the old 250ms HTTP poll interval so any

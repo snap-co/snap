@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod benchmark;
 pub mod cartridge;
+pub mod configuration;
 pub mod dispatch;
 pub mod journey;
 pub mod memory;

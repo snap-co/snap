@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Run framework checks and tests, independently of application suites.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 exec "$root/bin/snap" verify-framework --root "$root" "$@"

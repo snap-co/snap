@@ -68,6 +68,33 @@ impl<B, C> Clone for Sessions<B, C> {
     }
 }
 impl<B: Backend, C: Crypto + Send + 'static> Sessions<B, C> {
+    #[cfg(feature = "web")]
+    pub fn browser(
+        &self,
+        secure: bool,
+    ) -> Result<
+        (
+            snap_transport::native::web::Cookies,
+            Vec<snap_transport::native::web::HttpOperation>,
+        ),
+        snap_store::Error,
+    > {
+        use snap_transport::native::web::{Cookies, HttpOperation, WriteCookie};
+        let mut state = self.0.lock().map_err(|_| snap_store::Error::Unavailable)?;
+        let cookies = Cookies::load(&mut state.store, "testy", secure)?;
+        let write: WriteCookie = Arc::new({
+            let cookies = cookies.clone();
+            move |bearer| cookies.encode(bearer, false)
+        });
+        let mut operations: Vec<_> = state
+            .requests
+            .definitions()
+            .http_routes()
+            .map(|route| HttpOperation::from_route(route, write.clone()))
+            .collect();
+        operations.push(HttpOperation::for_operation::<testy::Health>(write));
+        Ok((cookies, operations))
+    }
     /// Store residency is supplied by the host, never loaded inside an operation.
     pub fn new(
         store: Store<B>,

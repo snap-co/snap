@@ -10,6 +10,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 testy = { path = "../.." }
 snap-transport = { path = "../../../../crates/transport" }
+snap-react-bindings = { path = "../../../../kits/react/wasm" }
+snap-wasm-browser = { path = "../../../../crates/platform/wasm-browser" }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures = "0.4"
 serde_json.workspace = true

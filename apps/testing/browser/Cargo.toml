@@ -16,6 +16,7 @@ path = "src/opencode_bridge.rs"
 
 [dependencies]
 snap-browser-tests = { path = "../../../tests/browser" }
+snap-transport = { path = "../../../crates/transport", features = ["native-client"] }
 anyhow = "1"
 chromiumoxide = { version = "=0.9.1", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }

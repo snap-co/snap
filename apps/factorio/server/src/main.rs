@@ -1,6 +1,8 @@
 mod config;
 mod controller;
 mod effects;
+#[path = "../../../shared/identity.rs"]
+mod identity_host;
 mod intake;
 mod login;
 mod operations;
@@ -16,14 +18,15 @@ use axum::{
 use factorio::{Workspace, workspaces as graph};
 use serde_json::{Value, json};
 type Host<B> = snap_transport::host::Blocking<B, snap_transport::host::Application<B>>;
+use identity_host::{Cookies, OAuth, failure, no_store, now, random};
 use snap_identity::oauth as rp;
-use snap_identity_native::oauth::{Cookies, OAuth, failure, no_store, now, random};
 use snap_store::Error;
 use snap_transport::native::{PendingListener, Prepare, Server, WebSocket, tls};
 use std::{path::PathBuf, sync::Arc};
 use tower_http::services::{ServeDir, ServeFile};
 
 struct App {
+    origin: String,
     oauth: Arc<OAuth<Host<snap_store_sqlite::Sqlite>>>,
     tools: config::Tools,
     tcp: std::net::SocketAddr,
@@ -53,8 +56,14 @@ impl App {
                 .await;
         }
         let s = self.oauth.session(headers).await?;
-        if mutation {
-            self.oauth.csrf(headers, &s)?;
+        if mutation
+            && (headers.get("origin").and_then(|v| v.to_str().ok()) != Some(&self.origin)
+                || headers
+                    .get("x-snap-csrf")
+                    .and_then(|v| v.to_str().ok())
+                    .is_none_or(|v| !rp::same_secret(v, &s.csrf)))
+        {
+            return Err(Error::Invalid);
         }
         Ok((s, true))
     }
@@ -74,7 +83,7 @@ fn migrations() -> Vec<snap_store::migration::Migration> {
         snap_document::server::MIGRATION,
         snap_store::resource::MIGRATION,
         snap_identity::MIGRATION,
-        snap_identity_native::oauth::MIGRATION,
+        Cookies::MIGRATION,
         factorio::MIGRATION,
     ]
     .into_iter()
@@ -198,7 +207,11 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     let address = listener.local_addr()?;
     let tcp_listener = PendingListener::reserve(startup.app.tcp.listen)?;
     let tcp_address = tcp_listener.local_addr()?;
-    let origin = snap_identity_native::oauth::origin(&startup.host.public_origin(address))?;
+    let origin = identity_host::origin(&startup.host.public_origin(address))?;
+    let oauth_config = identity_host::Config {
+        origin: origin.clone(),
+        ..oauth_config
+    };
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
     for table in snap_access::TABLES
         .iter()
@@ -212,20 +225,22 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
         store.load(table)?;
     }
     let cookies = Cookies::load(&mut store, "factorio", origin.starts_with("https:"))?;
+    store.run("oauth.recover", |tx| rp::recover(tx, now()))?;
+    let login_operations = oauth_config.operations(cookies.clone())?;
     let document = Arc::new(graph::document());
     let mut registry = snap_transport::operation::Registry::default();
     for definition in snap_document::operations::definitions(document.clone()) {
         registry = registry.with_request(definition);
     }
-    let registry = operations::register(registry, config, origin.clone());
+    let mut registry = operations::register(registry, config, origin.clone());
+    for definition in oauth_config.definitions()? {
+        registry = registry.with_preconnection_request(definition);
+    }
     let host = Host::new(
         store,
         snap_transport::host::Application::new(vec![snap_document::sync::binding(document)]),
         registry,
-        Arc::new(snap_transport::bearer::Callbacks::with_retained(
-            Arc::new(|tx, bearer| operations::session(tx, bearer).map(|(s, _)| s.owner)),
-            Arc::new(operations::retained),
-        )),
+        Arc::new(operations::Authority),
         snap_transport::server::Config {
             reconnect_ms: startup.app.tcp.retention_ms,
             ..Default::default()
@@ -234,21 +249,29 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
     )
     .with_inputs(operations::inputs);
     let host = controller::register(host, tokio::runtime::Handle::current(), tools.clone());
-    let transport = Server::new(host).await?;
-    let websocket = transport.websocket(WebSocket {
-        origin: origin.clone(),
-        cookie: Some(cookies.reader()),
-        require_cookie: false,
+    let controllers = oauth_config.controllers()?;
+    let host = host.map_participant(|mut participant| {
+        for controller in controllers {
+            participant = participant.with_controller(controller);
+        }
+        participant
     });
+    let transport = Server::new(host).await?;
+    let web_options = WebSocket {
+        origin: origin.clone(),
+        cookie: cookies.reader(),
+    };
+    let websocket = transport.websocket(web_options.clone());
     let oauth = OAuth::new(
         transport.transactions(),
         cookies,
-        snap_identity_native::oauth::Config {
-            origin,
+        identity_host::Config {
+            origin: origin.clone(),
             ..oauth_config
         },
     )?;
     let app = Arc::new(App {
+        origin,
         oauth: oauth.clone(),
         tools,
         tcp: std::net::SocketAddr::new(
@@ -281,7 +304,7 @@ async fn serve(options: snap_config::Options) -> Result<(), Box<dyn std::error::
             get(intake::events),
         )
         .with_state(app)
-        .merge(oauth.routes())
+        .merge(transport.http(web_options, login_operations))
         .merge(websocket)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .fallback_service(

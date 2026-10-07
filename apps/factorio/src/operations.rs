@@ -28,6 +28,7 @@ pub(crate) fn request(
 ) -> Definition {
     Definition {
         name: name.into(),
+        http: None,
         identity_required: true,
         input: |v| v.is_object() && v.to_string().len() <= 60000,
         output,

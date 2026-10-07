@@ -3,7 +3,7 @@ use snap_transport::operation::Registry;
 
 pub fn register(
     mut operations: Registry,
-    webauthn: Option<snap_identity_native::passkey::Native>,
+    webauthn: Option<snap_crypto::passkey::Native>,
 ) -> Registry {
     let identity = snap_identity::operation::definitions(
         snap_identity::Identity::default(),

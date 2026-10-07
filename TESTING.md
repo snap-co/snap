@@ -7,28 +7,74 @@ setup already plugs into one harness. Use [CONTEXT.md](CONTEXT.md) for domain te
 
 ## Framework and application ownership
 
-Framework code, test consumers and verification must work without `apps/`.
+Framework code and test consumers should not require application code.
 They must not declare normal, development or build dependencies on applications,
 import application test source or use an app's host as a required framework fixture.
 Apps consume Snap, supply definitions and own their host assembly. App-specific
 scenarios and paired-app integration fixtures stay under `apps/`.
 
-Framework verification uses Cargo and Snap's existing native/browser runners.
+`./bin/test` is the framework-only entrypoint, using Cargo and Snap's existing
+native/browser runners. Its `--help` describes selectors, configurations,
+applicability and retained results; configuration help uses the runtime descriptors.
 Application `snap check`, `snap test` and future `snap ci` commands are app workflows,
 not evidence of complete framework verification. The framework gate's executable
-selection lives in `tools/cli/src/verify.rs`; it verifies a source copy
-with application workspace members and aliases removed and no `apps/` directory.
-Intermediate Rust build artifacts use a checkout-local cache; isolated source
-copies and final outputs remain disposable. Cold verification bypasses that cache
-without deleting it. The IO gate runs the real Cargo cache-reuse regression in
+selection lives in `tools/cli/src/verify.rs`; it selects framework packages from
+Cargo workspace metadata and runs in the existing checkout. Cargo dependency-role
+checks enforce dependency direction, not physical removal of application sources.
+Verification, app builds and ordinary Cargo commands share the workspace build
+cache. Cold verification uses disposable artifacts without deleting the normal
+cache. Native host packaging omits an explicit host target so it can reuse ordinary
+host artifacts; actual cross-compilation retains its target selection. Different
+profiles and feature sets can still require separate compilations. The IO gate
+runs the real Cargo cache-reuse regression in
 `tools/cli/tests/verify.rs`.
 Reusable framework test consumers declare the `tool` role, not the app-owned
 `host` role, so Cargo dependency checks retain the application isolation rule.
 The repository-wide browser wrapper retains app and framework aggregates; the
-isolated framework gate invokes only its framework consumer. Verification owns
+framework gate invokes only its framework consumer. Verification owns
 its subprocess groups and retires descendants on cancellation, not just their leaders.
-Executable routing, source-isolation and cancellation regressions live in `tools/cli/tests/verify.rs`;
+Executable routing, cache reuse and cancellation regressions live in `tools/cli/tests/verify.rs`;
 they drive the wrapper and verifier with external command/listener fixtures.
+
+Verification reports contract ownership first: Interface, Core, Client adapters
+and Tooling. Static checks and shared compilation precede those layers. It builds
+test executables in one Cargo invocation, enumerates their cases, then executes
+independent host jobs with bounded parallelism. Properties are a technique under
+the owning contract, not a separate semantic layer. Existing check/test/property/
+IO/browser selectors remain available; semantic layer selectors are also exposed
+by command help. Unknown targets retain their owner and target name rather than
+silently disappearing from verification. Subprocess-only entrypoints run through
+their parent contracts, never as standalone cases.
+
+The verifier separates planning in `tools/cli/src/verify/plan.rs`, execution in
+`execution.rs` and reporting in `report.rs`. `coverage.rs` owns semantic grouping
+and applicability. The no-build list previews targets and host selections using
+those same rules; exact cases and ignored-case applicability require compiled
+executables. Cases come from actual libtest enumeration, not a copied inventory. Fast matrix
+selection chooses representative host configurations; full selection runs all
+implemented combinations of those same contracts. Excluded combinations are
+reported as not selected, and missing capabilities as not applicable, never as
+passing tests. Passing a selection does not imply the complete intended matrix is
+implemented. Summary artifacts identify configurations, techniques and outcomes;
+case names, command output and failure evidence remain in the per-job logs.
+Verification requires every selected native case to pass. A successful process
+with fewer cases than its discovered selection is incomplete, not passing coverage.
+Native binaries retain Cargo's package working directory and manifest-directory
+environment so relative fixtures behave the same as ordinary Cargo tests.
+Browser client and React jobs share a compiled runner, but each owns its Chromium
+profile and lifecycle. Failure screenshots and HTML are retained alongside that
+job's logs, not in a shared matrix-wide artifact directory.
+Contract jobs have a configurable execution deadline. Expiry retires the owned
+process group and records failure, even if a child handles termination with a
+successful exit. Cancellation remains distinct from failure and preserves signal
+exit status; already-running jobs retire before the verifier returns.
+
+`tests/platform/src/configuration.rs` declares the shared native host choices and
+optional setup promises. Atomic transactions and isolation remain mandatory Store
+contracts, not flags a driver can disable. Process-crash durability is optional and
+belongs to the configured setup: SQLite in memory does not promise persistence.
+Durability cases run only against setups that promise it; this does not establish
+power-loss durability. Capability declarations select proof, they do not replace it.
 
 Interface contract cases run through host-selected platform setups. Drivers do not
 own separate copies of those expectations. Core module scenarios use the same
@@ -91,7 +137,12 @@ with independently authored bytes and malformed-input rejection. SQLite's
 closed-database checkpoint plus its ordered log tail. The process-crash case in
 `tests/recovery.rs` checks both rows and programs after abrupt exit. These proofs
 do not establish power-loss durability, schema-crossing replay, automatic position
-deduplication or authorized client replication. The full log is private.
+deduplication or authorized client replication. The log is private and bounded:
+SQLite retains at most 1024 programs and 8 MiB, always keeping the newest program.
+The materialized database is the current durable checkpoint. Older replay cursors
+fail explicitly and require a newer checkpoint; they never silently skip history.
+The same SQLite program case owns retention and restart coverage. Its expiry case
+owns indexed cold cleanup without establishing complete table residency.
 The unique-index rollback case runs with the original row both resident and
 evicted. In the cold variant both inserts must finish staging before commit
 rejects the duplicate, forcing constraint handling into the selected backend.
@@ -126,8 +177,9 @@ key is its only credential-bearing output. One-shot Requests use separate physic
 sockets from the subsequent logical attachment. Renewal remains explicit.
 
 Testy's browser login/session journey also owns development wire-log redaction.
-Authentication spans several frames; the logger hides the complete correlated
-Request exchange and always hides bearer handoffs, even for unexpected IDs.
+It uses shared Identity HTTP operations and browser-managed HttpOnly cookies.
+Sibling tabs share a cookie; separate browser contexts model separate sessions.
+Credentials must never enter JavaScript storage, diagnostics or the wire panel.
 
 Transport cases use a duplex observation interface plus separate client/server
 controls. Native adapters currently exercise TCP/TLS and JSON WebSocket servers,
@@ -170,6 +222,14 @@ check that existing database files, SQLite companion paths and dangling companio
 links are rejected without changes, assuming no concurrent directory modification. The
 cartridge identity is a fixed fixture, not an authentication-flow test. Reopening
 after orderly teardown is not process-crash or power-loss durability proof.
+
+The `matrix` target additionally runs that same portable client journey against
+the native Cartesian product of controlled memory, SQLite in memory and file
+SQLite with controlled execution, TCP/TLS and WebSocket. All rows use production
+client SDK and host execution, with isolated directories and ephemeral loopback
+ports. `tests/platform/tests/support/matrix.rs` supplies assembly and teardown,
+not operation results. Store-only and carrier-only cases stay independent; they
+do not acquire unrelated drivers merely to fit the composed matrix.
 
 The `simulation` target runs the unchanged client journey and cartridge assembly
 through the reusable `no_std` testing platform in `tests/platform/src/simulation/`.
@@ -373,10 +433,17 @@ fresh-peer isolation, ambiguity resolution, drift rejection, horizon cancellatio
 and seeded network campaign contracts. General network partitions, lost handshakes,
 arbitrary recovery reads and multi-server behavior remain outside this model.
 
+Document's existing manifest holding/digest case in
+`crates/document/tests/server.rs` runs unchanged expectations against the same
+three Store setups. Other Document contracts still use their existing controlled
+client and SQLite/server setups; full mode does not claim that every module case
+has already acquired every platform combination.
+
 The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client
-carriers, client-side durable module recovery and a full Transport/Store matrix
-remain unsupported here. SQLite reopening/locking, migrations, process crashes
+carriers and client-side durable module recovery remain unsupported here. The
+native composition matrix covers the cartridge journey, not every contract in
+every execution environment. SQLite reopening/locking, migrations, process crashes
 and TLS verification retain their distinct adapter-specific cases.
 
 The package is a workspace default member, so its native cases run without ignore
@@ -464,13 +531,16 @@ Transport. Host assembly selects those bindings explicitly. The host owns physic
 observers, queue authorization and logical references; Store owns residency unions.
 Document has no execution-host dependency or execution participant, and Transport's
 engine has no Document dependency. Neither registers modules implicitly.
-Identity's native OAuth adapter consumes Store's host transaction contract and
-Transport's serialized transaction handle, without a Document dependency. Existing
-host cases retain the serialized transaction and controller-ordering guarantees.
+Identity owns OAuth acquisition, linking and release declarations plus verification
+and renewal controllers. App-host assembly in `apps/shared/` supplies configuration,
+HTTP projections, runtime waiters and serialized credential preparation. It performs
+no code exchange or refresh IO. WebAuthn verification is a native Crypto capability;
+Identity owns ceremony records, credentials and sessions.
 
 Factorio's native assembly uses Transport's `native::Server` for controller recovery,
-WebSocket routes, TCP serving and execution pumping. Its OAuth routes use the server's
-transaction handle, not a dispatcher or execution mutex. The existing real CLI gate
+WebSocket routes, TCP serving and execution pumping. Browser OAuth routes enter
+ordinary declared operations. Credential preparation uses the server's transaction
+handle to commit private renewal requests before controller IO. The existing real CLI gate
 uses this composition; app browser journeys exercise the production entrypoint and
 browser-Wasm over WebSocket. Authy and Chatty use the same server's HTTP-only runner
 and transaction handle. Testy's custom development loop and controlled carrier
@@ -532,7 +602,47 @@ visibility, exact mutation receipts, manifest reconciliation and replication enc
 It owns no controller registration, resource cleanup/retry policy or observer/residency
 bookkeeping. Async scheduling remains deferred.
 
+Operations may declare a private staged request and a post-controller completion.
+The host retains the same admitted invocation and FIFO lane across both transactions.
+Completion output is validated before its commit, and its committed changes drain
+through the same participants before bearer and terminal publication. It has no
+client-selectable endpoint. `tests/platform/tests/host.rs` owns final-result and
+bearer ordering plus rejected completion commits. Identity's
+`crates/identity/tests/oauth_acquisition.rs` exercises begin/callback declarations
+through this host with the production OAuth verification controller, controlled
+crypto and a shared HTTP-client fixture. The fixture supplies provider responses,
+not verification decisions or sessions. Cases cover private proof handling,
+provider/endpoint pinning, PKCE and client-auth encoding, incremental body limits,
+uncertain IO without retries, correlation, proof expiry and replay fences.
+Linking cases recheck captured fresh identity after verification, and release cases
+check committed local revocation before upstream return. Renewal scenarios cover
+unchanged local expiry, signature/subject/freshness failure, uncertain rotation and
+interrupted recovery without replay. The TCP case uses the same declarations and
+controller over TLS, supplies correlation bindings directly and reconnects with the
+committed bearer. Controlled provider cases do not establish real provider HTTP or
+signature implementation. HTTP remains a portable interface; native hosts supply its Client and
+the blocking controller's future waiter.
+
+Operation contracts declare optional HTTP metadata shared by typed server
+definitions and browser clients. Registry projection exposes only registered
+connectionless operations; hosts supply query/form and response encoders without
+performing authentication. `crates/transport/tests/native_http.rs` exercises the
+Axum adapter through real blocking execution, including strict fields, origin
+checks, final-result redirects, committed bearer cookies and persisted cookie-key
+reuse. Cookie codecs and the existing `oauth_host.keys` bootstrap belong to native
+HTTP integration, independent of SQLite. The outbound native Client's loopback
+test in `crates/http/tests/native.rs` owns no-redirect/no-retry behavior, body bounds
+and the total stream deadline. Chatty and Factorio browser journeys own actual
+Authy signatures, login, cookie delivery, WebSocket use and application restart.
+Factorio's saved-login journeys also own real concurrent refresh, revoked upstream
+grants and expiry of local CLI credentials.
+
 ## Client interfaces and end-to-end tests
+
+OIDC's module tests own transactional per-client/global pending-flow limits and
+bounded expiry. Authy's native HTTP suite owns unauthenticated admission throttling,
+pre-residency startup cleanup and idle periodic cleanup through the real binary.
+Cleanup retains code/refresh replay fences for their existing grant lifetimes.
 
 Apps own their end-to-end cases and journeys. Drive the interface available to
 the actual consumer, whether human, agent or another application. Focus on
@@ -558,7 +668,7 @@ transfer ownership of an app scenario to Snap.
 | --- | --- |
 | Snap platform conformance and controlled storage | Shared portable cases and memory backend in `tests/platform/src/`; native setup adapters and default-run coverage in `tests/platform/tests/` |
 | Snap interfaces, modules and adapter-specific guarantees | `crates/*/tests/` and `crates/platform/*/tests/`; shared Store and carrier conformance lives in `tests/platform/` rather than provider-local copies |
-| Identity credential flows and private session policy | `crates/identity/tests/{identity,oauth,operations}.rs`; native WebAuthn signatures, origin/counter policy and durable ceremony state in `crates/platform/identity-native/tests/passkey.rs`, selected by the `passkey` feature; Authy's `passkey browser ceremony` journey uses a CDP authenticator to cover browser/Wasm conversion and cookie delivery; OAuth refresh/socket integration remains app-owned in Factorio |
+| Identity credential flows and private session policy | `crates/identity/tests/{identity,oauth,oauth_acquisition,operations}.rs`; native WebAuthn signatures, origin/counter policy and durable ceremony state in `crates/platform/crypto/tests/passkey.rs`, selected by the `passkey` feature; Authy's `passkey browser ceremony` journey uses a CDP authenticator to cover browser/Wasm conversion and cookie delivery; OAuth refresh/socket integration remains app-owned in Factorio |
 | Generic blocking execution and native integration | Document-free cartridge assembly in `tests/platform/support/host.rs`; commit/controller sequencing in `tests/platform/tests/host.rs`; physical TCP cases in `tests/platform/tests/host_tcp.rs` |
 | Store resources and generic host composition | Lifecycle/residency over controlled memory and SQLite, composite-key cleanup, independent controllers and two non-Document subscription topics in `tests/platform/tests/resources.rs` |
 | Document synchronization bindings | Controlled replication, extent, visibility and receipt-recovery cases in `tests/platform/tests/document_sync.rs`; generated histories in `crates/document/tests/properties/sync.rs` via the `document-sync` property target; independent execution/output-lock regressions in `crates/transport/tests/native_dispatch.rs`, selected with `native-server` |

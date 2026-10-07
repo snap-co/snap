@@ -50,8 +50,8 @@ pub trait Connection: Send + Sync + 'static {
 
 pub trait Dispatch: Clone + Send + Sync + 'static {
     type Connection: Connection;
-    /// Host-side opening and optional credential validation. Drivers supply a
-    /// credential only when their configured upgrade policy requires validation.
+    /// Validate any supplied credential to a nonempty identity before allocating
+    /// a peer. WebSocket upgrades always supply one; TCP authenticates in protocol.
     fn open(
         &self,
         credential: Option<String>,
@@ -77,11 +77,12 @@ impl<C: Connection> Drop for Physical<C> {
 
 /// Portable route metadata owned by a module's contracts. Hosts choose physical
 /// HTTP libraries and cookie encoding, without redefining operation names.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HttpMethod {
     Get,
     Post,
 }
+#[derive(Clone, Copy)]
 pub struct HttpRoute {
     pub operation: &'static str,
     pub method: HttpMethod,

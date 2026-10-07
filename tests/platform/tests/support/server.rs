@@ -18,7 +18,10 @@ use std::{
     time::Duration,
 };
 use tokio::{io::AsyncWriteExt, sync::mpsc};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 #[path = "../../../../crates/transport/tests/support/mod.rs"]
 pub(super) mod tls_support;
 
@@ -168,16 +171,21 @@ pub async fn start(driver: Driver) -> Setup {
                 snap_transport::native::web::Service {
                     dispatch: queues,
                     origin: format!("http://{address}"),
-                    cookie: None,
-                    require_cookie: false,
+                    cookie: Arc::new(|headers| {
+                        headers.get("cookie")?.to_str().ok().map(str::to_owned)
+                    }),
                 },
             ));
             let server = Task(tokio::spawn(async move {
                 axum::serve(listener, app).await.unwrap();
             }));
-            let (socket, _) = connect_async(format!("ws://{address}/transport"))
-                .await
+            let mut request = format!("ws://{address}/transport")
+                .into_client_request()
                 .unwrap();
+            request
+                .headers_mut()
+                .insert("cookie", "private".parse().unwrap());
+            let (socket, _) = connect_async(request).await.unwrap();
             (server, Socket::WebSocket(Box::new(socket)))
         }
         Driver::Tcp => {

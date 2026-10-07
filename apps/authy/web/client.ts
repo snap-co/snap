@@ -48,7 +48,7 @@ function safeContinue(value: string | null): string | null {
 
 export class AuthyClient {
   private listeners = new Set<() => void>();
-  private identity = bindIdentity(loadWasm, async module => JSON.parse(await module.account_fetch()) as Account);
+  private identity = bindIdentity(loadWasm, async module => JSON.parse(await module.account_fetch()) as Account, () => this.runtime.operations());
   private passkeys = bindPasskeys(loadWasm, async module => JSON.parse(await module.account_fetch()) as Account);
   private reauth = new URLSearchParams(location.search).get("reauth") === "1";
   private busy = false;

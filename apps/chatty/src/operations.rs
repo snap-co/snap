@@ -27,6 +27,7 @@ fn definition(name: &str, inputs: &'static [&'static str], handler: Handler) -> 
     };
     Definition {
         name: name.into(),
+        http: None,
         identity_required: true,
         input: Value::is_object,
         output: Value::is_object,

@@ -253,7 +253,6 @@ dependencies = [
  "snap-config",
  "snap-crypto",
  "snap-identity",
- "snap-identity-native",
  "snap-oidc",
  "snap-store",
  "snap-store-sqlite",
@@ -520,20 +519,22 @@ name = "chatty-server"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chatty",
  "serde",
  "serde_json",
  "snap-access",
  "snap-config",
  "snap-crypto",
+ "snap-http",
  "snap-identity",
- "snap-identity-native",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tower-http",
+ "url",
 ]
 
 [[package]]
@@ -912,6 +913,7 @@ version = "0.0.0"
 dependencies = [
  "async-stream",
  "axum",
+ "base64 0.22.1",
  "factorio",
  "factorio-cli",
  "nix",
@@ -920,9 +922,10 @@ dependencies = [
  "serde_json",
  "snap-access",
  "snap-config",
+ "snap-crypto",
  "snap-document",
+ "snap-http",
  "snap-identity",
- "snap-identity-native",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
@@ -930,6 +933,7 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tower-http",
+ "url",
  "uuid",
 ]
 
@@ -2653,6 +2657,7 @@ dependencies = [
  "sha2",
  "snap-browser-tests",
  "snap-config",
+ "snap-transport",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -2687,6 +2692,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snap-config",
+ "snap-platform-tests",
  "snap-store",
  "snap-store-sqlite",
  "tempfile",
@@ -2736,10 +2742,16 @@ dependencies = [
  "getrandom 0.3.4",
  "rand 0.8.8",
  "rsa",
+ "serde",
  "serde_json",
  "sha2",
  "snap-identity",
  "snap-store",
+ "snap-store-sqlite",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "webauthn-authenticator-rs",
+ "webauthn-rs",
 ]
 
 [[package]]
@@ -2750,45 +2762,32 @@ dependencies = [
  "serde_json",
  "sha2",
  "snap-access",
+ "snap-platform-tests",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
 name = "snap-http"
 version = "0.0.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "tokio",
+]
 
 [[package]]
 name = "snap-identity"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "rcgen",
  "serde",
  "serde_json",
  "sha2",
- "snap-store",
- "snap-store-sqlite",
- "snap-transport",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "snap-identity-native"
-version = "0.0.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "hmac",
- "rand 0.8.8",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "snap-config",
- "snap-crypto",
- "snap-identity",
+ "snap-http",
  "snap-store",
  "snap-store-sqlite",
  "snap-transport",
@@ -2796,8 +2795,6 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "url",
- "webauthn-authenticator-rs",
- "webauthn-rs",
 ]
 
 [[package]]
@@ -2872,12 +2869,17 @@ name = "snap-transport"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "ciborium",
  "futures-util",
+ "hmac",
+ "percent-encoding",
+ "rand 0.8.8",
  "rcgen",
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "sha2",
  "snap-access",
  "snap-document",
  "snap-store",
@@ -2887,6 +2889,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml 0.9.12+spec-1.1.0",
+ "tower",
  "webpki-roots",
 ]
 
@@ -2894,6 +2897,7 @@ dependencies = [
 name = "snap-wasm-browser"
 version = "0.0.0"
 dependencies = [
+ "js-sys",
  "serde_json",
  "snap-transport",
  "wasm-bindgen",
@@ -3100,7 +3104,9 @@ name = "testy-wasm"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "snap-react-bindings",
  "snap-transport",
+ "snap-wasm-browser",
  "testy",
  "wasm-bindgen",
  "wasm-bindgen-futures",

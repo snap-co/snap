@@ -12,6 +12,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use snap_store::{Error, Transaction};
 
+pub mod acquisition;
+pub mod release;
+pub mod renewal;
+pub mod verification;
+
 // The grant table is not session authority: every read also resolves Identity's
 // private session. Identity's initial migration installs all of these tables.
 pub const TABLES: [&str; 5] = [
@@ -305,6 +310,7 @@ pub fn retained(tx: &mut Transaction<'_>, id: &str, now: i64) -> Result<Grant, E
 /// Run once before opening listeners. Lost exchanges are not replayed and cannot
 /// retain authority through an old access token after restart.
 pub fn recover(tx: &mut Transaction<'_>, now: i64) -> Result<(), Error> {
+    renewal::recover(tx)?;
     for row in tx.find(SESSIONS, "primary", &[])? {
         let Some(snap_store::Value::Text(id)) = row.get("id") else {
             return Err(Error::Invalid);

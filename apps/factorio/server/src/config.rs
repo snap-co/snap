@@ -1,7 +1,7 @@
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    pub oauth: snap_identity_native::oauth::Settings,
+    pub oauth: crate::identity_host::Settings,
     pub repository: factorio::Config,
     #[serde(default)]
     pub tools: Tools,

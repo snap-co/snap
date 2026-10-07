@@ -12,8 +12,8 @@ description = "Build this checkout's snap executable"
 run = "cargo build --target-dir target -p snap-cli"
 
 [tasks.verify-framework]
-description = "Verify Snap without apps: static checks, tests, properties, IO gates and browser adapters"
-run = "exec ./bin/verify-framework"
+description = "Verify framework contracts by layer with selectable host configurations"
+run = "exec ./bin/test"
 
 [tasks.dev]
 description = "Build Testy's browser SDK and start its local development host"

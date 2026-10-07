@@ -1,5 +1,5 @@
 import { Invocations } from "./invocations";
-import { Transport } from "./transport";
+import { Transport, type Connected } from "./transport";
 
 export interface Binding {
   connect(id: string): string;
@@ -188,6 +188,19 @@ export class BrowserRuntime<A, B extends Binding, P extends Publication> impleme
     this.apply(work(this.binding));
   }
   invoke<T>(operation: string, input: unknown): Promise<T> { return this.calls.invoke<T>(operation, input); }
+  /** One SDK call uses this binding's allocator and socket. Capture its epoch
+   * before loading a module so an account change cannot redirect the call. */
+  operations(): Connected {
+    const epoch = this.state.epoch;
+    return async (operation, input) => {
+      try {
+        if (this.closed || epoch !== this.state.epoch || this.state.connection !== "connected") throw new Error("Disconnected");
+        const output = await this.invoke(operation, JSON.parse(input));
+        if (this.closed || epoch !== this.state.epoch) throw new Error("Account session ended");
+        return JSON.stringify(output);
+      } catch (error) { throw error instanceof Error ? error.message : String(error); }
+    };
+  }
   private clear() {
     clearTimeout(this.timer); this.timer = undefined;
     clearTimeout(this.deadline);

@@ -14,10 +14,10 @@ snap-config.workspace = true
 serde.workspace = true
 chatty.workspace = true
 snap-crypto = { path = "../../../crates/platform/crypto" }
-snap-identity-native = { path = "../../../crates/platform/identity-native", features = ["oauth"] }
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-access.workspace = true
 snap-identity.workspace = true
+snap-http = { workspace = true, features = ["native"] }
 snap-store.workspace = true
 snap-transport = { path = "../../../crates/transport", features = ["native-server"] }
 serde_json.workspace = true
@@ -25,6 +25,8 @@ axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "net", "sync"] }
 tower-http = { version = "0.6", features = ["fs"] }
 toml = "0.9"
+url = "2"
+base64 = "0.22"
 
 [lints]
 workspace = true

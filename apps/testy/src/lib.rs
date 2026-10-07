@@ -10,6 +10,17 @@ pub mod store;
 pub use client::{Client, journey};
 pub use program::{App, CEILING};
 
+pub struct Health;
+impl snap_transport::Operation for Health {
+    const NAME: &'static str = "health.up";
+    const HTTP: Option<(snap_transport::carrier::HttpMethod, bool)> =
+        Some((snap_transport::carrier::HttpMethod::Get, false));
+    type Input = ();
+    type Output = snap_transport::Value;
+    type Error = ();
+    type Progress = ();
+}
+
 use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 use snap_transport::{Value, server::Authority};

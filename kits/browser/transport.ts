@@ -1,5 +1,7 @@
 // Browser WebSocket glue. Rust owns HTTP requests and protocol behavior;
 // browser-managed cookies authenticate the socket upgrade.
+export type Connected = (operation: string, input: string) => Promise<string>;
+
 export class Transport {
   private readonly clientId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 

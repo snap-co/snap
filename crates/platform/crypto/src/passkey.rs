@@ -1,4 +1,5 @@
-//! webauthn-rs validation. Serialized ceremony state stays in Identity's Store.
+//! Native WebAuthn proof verification. Ceremony and credential policy stay in
+//! Identity; this capability validates signatures, origins and authenticator data.
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 use snap_identity::passkey::{Ceremony, VerifiedCredential, WebAuthn};

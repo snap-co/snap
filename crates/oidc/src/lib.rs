@@ -1,8 +1,9 @@
 //! Portable OAuth 2.0 / OpenID Connect authorization-code issuer.
 //!
-//! Synchronous, `no_std` with `alloc`, and IO-free. All reads and writes go
-//! through the caller's `&mut snap_store::Transaction`; hosts own randomness,
+//! Synchronous and `no_std` with `alloc`. Protocol reads and writes go
+//! through the caller's IO-free `&mut snap_store::Transaction`; hosts own randomness,
 //! SHA-256 digests, RS256 signing, clocks, session authority, and HTTP mapping.
+//! The host-only [`prepare`] helper performs bootstrap IO through Store.
 //!
 //! Raw handles, codes, and bearer tokens never enter Store: only their digests
 //! are retained. Every function returns `Result<Outcome, snap_store::Error>`:
@@ -14,7 +15,8 @@
 //! `Committed` value; a rejected or fenced commit publishes nothing.
 //!
 //! Host duties per call, in the same Store transaction where noted:
-//! - Load [`TABLES`] (and the Identity tables backing [`Authority`]) before
+//! - Call [`prepare`] before loading issuer tables, then periodically call
+//!   [`prune_expired`]. Load the Identity tables backing [`Authority`] before
 //!   calling; a `Miss` means the host must load and the caller must retry.
 //! - Resolve the browser bearer to a [`BrowserSession`] (subject plus the
 //!   Identity session *digest*, never the raw bearer) and derive `auth_time`
@@ -71,6 +73,15 @@ pub const CONTINUATION_SECONDS: i64 = 300;
 pub const ACCESS_SECONDS: i64 = 600;
 /// Refresh families live 30 days absolute and depend on the login session.
 pub const GRANT_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+/// Pending login, consent, logout and unredeemed code limits. Expired rows count
+/// until cleanup commits, so maintenance failure cannot bypass capacity. Used
+/// code replay fences retain their grant lifetime but consume no pending slot.
+pub const MAX_PENDING: usize = 1024;
+pub const MAX_PENDING_PER_CLIENT: usize = 128;
+/// Maximum removals per table per maintenance transaction. Separate table budgets
+/// prevent a continuation flood from starving token or grant cleanup.
+pub const PRUNE_BATCH: usize = 256;
 
 /// Host randomness, hashing, and signing. Implementations must use
 /// cryptographically secure randomness, real SHA-256 for [`Host::digest`]
@@ -493,7 +504,7 @@ pub fn authorize(
             "Only query response mode is supported",
         ));
     }
-    if !valid_scope(req.scope) {
+    if req.scope.len() > 256 || !valid_scope(req.scope) {
         return Ok(error(
             "invalid_scope",
             "Request openid and supported scopes",
@@ -1019,7 +1030,7 @@ pub fn logout(
     req: &LogoutRequest<'_>,
     now: i64,
 ) -> Result<LogoutOutcome, Error> {
-    if now < 0 {
+    if now < 0 || req.state.len() > 1024 {
         return Err(Error::Invalid);
     }
     let client_id = req
@@ -1201,29 +1212,38 @@ pub fn consent_details(
     )))
 }
 
-/// Delete expired continuations, codes, tokens, and grants. Hosts call this
-/// after loading complete tables; it requires complete residency like any
-/// other scan.
+/// Bootstrap expiry before loading payloads into memory. Each commit loads and
+/// deletes at most PRUNE_BATCH rows via the backend's expiry index. Hosts finish
+/// this before accepting traffic; any failure aborts startup.
+pub fn prepare<B: snap_store::Expiry>(
+    store: &mut snap_store::Store<B>,
+    now: i64,
+) -> Result<(), Error> {
+    if now < 0 {
+        return Err(Error::Invalid);
+    }
+    for table in [FLOWS, TOKENS, GRANTS] {
+        while store
+            .prune_expired(table, "expires", now, PRUNE_BATCH)?
+            .value
+            == PRUNE_BATCH
+        {}
+        store.load(table)?;
+    }
+    Ok(())
+}
+
+/// Delete at most PRUNE_BATCH expired rows per table. Hosts run this periodically
+/// even without requests. Complete residency is required for these indexed reads;
+/// use prepare for cold startup instead of loading an expired backlog.
 pub fn prune_expired(tx: &mut Transaction<'_>, now: i64) -> Result<usize, Error> {
     if now < 0 {
         return Err(Error::Invalid);
     }
     let mut removed = 0;
-    for row in tx.find(FLOWS, "primary", &[])? {
-        if integer(&row, "expires")? <= now {
-            tx.delete(FLOWS, &[row_key(&row, "id")?])?;
-            removed += 1;
-        }
-    }
-    for row in tx.find(TOKENS, "primary", &[])? {
-        if integer(&row, "expires")? <= now {
-            tx.delete(TOKENS, &[row_key(&row, "id")?])?;
-            removed += 1;
-        }
-    }
-    for row in tx.find(GRANTS, "primary", &[])? {
-        if integer(&row, "expires")? <= now {
-            tx.delete(GRANTS, &[row_key(&row, "id")?])?;
+    for table in [FLOWS, TOKENS, GRANTS] {
+        for row in tx.find_through(table, "expires", now, PRUNE_BATCH)? {
+            tx.delete(table, &[row_key(&row, "id")?])?;
             removed += 1;
         }
     }
@@ -1505,11 +1525,25 @@ fn flow_insert(
     data: &Record,
     expires: i64,
 ) -> Result<(), Error> {
+    let pending = kind != "used_code";
+    if pending
+        && (tx.count_up_to(FLOWS, "pending_client", &[1i64.into()], MAX_PENDING)? >= MAX_PENDING
+            || tx.count_up_to(
+                FLOWS,
+                "pending_client",
+                &[1i64.into(), data.client.clone().into()],
+                MAX_PENDING_PER_CLIENT,
+            )? >= MAX_PENDING_PER_CLIENT)
+    {
+        return Err(Error::Unavailable);
+    }
     tx.insert(
         FLOWS,
         row([
             ("id", Value::Bytes(digest.into())),
             ("kind", kind.into()),
+            ("pending", i64::from(pending).into()),
+            ("client", data.client.clone().into()),
             (
                 "data",
                 serde_json::to_string(data)

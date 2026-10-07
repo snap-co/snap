@@ -41,3 +41,29 @@ pub fn selected_package<'a>(metadata: &'a Value, manifest: &Path) -> Result<&'a 
         })
         .context("Manifest must select a Cargo package, not a virtual workspace")
 }
+
+pub fn workspace_packages(metadata: &Value, framework: bool) -> Result<Vec<&Value>> {
+    let members = metadata["workspace_members"]
+        .as_array()
+        .context("Missing workspace members")?;
+    let apps = Path::new(
+        metadata["workspace_root"]
+            .as_str()
+            .context("Missing workspace root")?,
+    )
+    .join("apps");
+    metadata["packages"]
+        .as_array()
+        .context("Missing Cargo packages")?
+        .iter()
+        .filter(|package| members.contains(&package["id"]))
+        .filter_map(|package| {
+            let path = package["manifest_path"].as_str();
+            if framework && path.is_some_and(|path| Path::new(path).starts_with(&apps)) {
+                None
+            } else {
+                Some(path.context("Missing package manifest").map(|_| package))
+            }
+        })
+        .collect()
+}

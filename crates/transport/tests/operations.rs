@@ -6,6 +6,7 @@ use snap_transport::{
 fn definition(name: &str) -> Definition {
     Definition {
         name: name.into(),
+        http: None,
         identity_required: false,
         input: |_| true,
         output: |_| true,

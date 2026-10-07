@@ -7,6 +7,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use snap_identity::Crypto;
 use snap_store::Error;
+#[cfg(feature = "passkey")]
+pub mod passkey;
 
 #[derive(Default)]
 pub struct Native;

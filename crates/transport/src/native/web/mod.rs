@@ -1,5 +1,6 @@
 //! HTTP/WebSocket JSON IO. Transport owns operation execution and logical
 //! connections. Socket tasks only decode, enqueue and write queued observations.
+mod cookies;
 mod http;
 use axum::{
     Router,
@@ -11,8 +12,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+pub use cookies::Cookies;
 use futures_util::{SinkExt, StreamExt};
-pub use http::{HttpOperation, WriteCookie, http_router};
+pub use http::{HttpOperation, Parameters, WriteCookie, cookie, http_router, redirect};
 use snap_transport::carrier::{Connection, Dispatch, Physical, Submission};
 use std::{sync::Arc, time::Duration};
 
@@ -21,8 +23,7 @@ pub type ReadCookie = Arc<dyn Fn(&HeaderMap) -> Option<String> + Send + Sync>;
 pub struct Service<D: Dispatch> {
     pub dispatch: D,
     pub origin: String,
-    pub cookie: Option<ReadCookie>,
-    pub require_cookie: bool,
+    pub cookie: ReadCookie,
 }
 
 pub fn router<D: Dispatch>(service: Arc<Service<D>>) -> Router {
@@ -48,16 +49,16 @@ async fn upgrade<D: Dispatch>(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let bearer = service.cookie.as_ref().and_then(|read| read(&headers));
-    if service.require_cookie && bearer.is_none() {
+    let Some(bearer) = (service.cookie)(&headers).filter(|bearer| !bearer.is_empty()) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    let credential = if service.require_cookie {
-        bearer.clone()
-    } else {
-        None
     };
-    let channel = match service.dispatch.open(credential, 1024 * 64 * 1024).await {
+    // Every upgrade identifies its caller before allocating a peer. There is no
+    // anonymous WebSocket mode; credential acquisition belongs to HTTP.
+    let channel = match service
+        .dispatch
+        .open(Some(bearer.clone()), 1024 * 64 * 1024)
+        .await
+    {
         Ok(channel) => Physical(channel),
         Err(snap_transport::Error::InvalidBearer | snap_transport::Error::IdentityRequired) => {
             return StatusCode::UNAUTHORIZED.into_response();
@@ -68,13 +69,12 @@ async fn upgrade<D: Dispatch>(
     // disconnect without requiring a separate callback or an execution lock.
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| connection(socket, service, bearer, channel))
+        .on_upgrade(move |socket| connection::<D>(socket, bearer, channel))
 }
 
 async fn connection<D: Dispatch>(
     socket: WebSocket,
-    service: Arc<Service<D>>,
-    cookie_bearer: Option<String>,
+    cookie_bearer: String,
     channel: Physical<D::Connection>,
 ) {
     let (mut sink, mut stream) = socket.split();
@@ -85,10 +85,11 @@ async fn connection<D: Dispatch>(
             message = stream.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let Ok(mut command) = serde_json::from_str(&text) else { break; };
-                    if service.require_cookie && matches!(command, snap_transport::Command::Request { .. }) { break; }
-                    if let snap_transport::Command::Connect { bearer, .. } = &mut command
-                        && (service.require_cookie || bearer.is_empty())
-                        && let Some(cookie) = &cookie_bearer { *bearer = cookie.clone(); }
+                    if matches!(command, snap_transport::Command::Request { .. }) { break; }
+                    // Connect names a logical lifetime, never a new authority.
+                    if let snap_transport::Command::Connect { bearer, .. } = &mut command {
+                        *bearer = cookie_bearer.clone();
+                    }
                     if !matches!(channel.0.submit(command, text.len()), Ok(Submission::Queued)) { break; }
                 }
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {},

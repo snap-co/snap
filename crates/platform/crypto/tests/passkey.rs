@@ -1,7 +1,10 @@
 use serde_json::Value;
 use snap_crypto::Native as Crypto;
-use snap_identity::{CredentialKind, Identity, passkey::Passkeys};
-use snap_identity_native::passkey::Native;
+use snap_crypto::passkey::Native;
+use snap_identity::{
+    CredentialKind, Identity,
+    passkey::{PasskeyProof, Passkeys, RegistrationInput},
+};
 use snap_store::{Error, Store};
 use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse, Url};
@@ -42,8 +45,10 @@ fn registration_linking_login_replay_and_private_session_release() {
                 &mut Crypto,
                 &web,
                 Some(&password.bearer),
-                BINDING,
-                "My key",
+                RegistrationInput {
+                    binding: BINDING,
+                    label: "My key",
+                },
                 101,
             )
         })
@@ -62,10 +67,12 @@ fn registration_linking_login_replay_and_private_session_release() {
             tx,
             &mut Crypto,
             &web,
-            &challenge.attempt,
-            "another-caller-secret-with-32-bytes",
             Some(&password.bearer),
-            response.clone(),
+            PasskeyProof {
+                attempt: &challenge.attempt,
+                binding: "another-caller-secret-with-32-bytes",
+                response: response.clone(),
+            },
             102
         )),
         Err(Error::NotFound)
@@ -76,10 +83,12 @@ fn registration_linking_login_replay_and_private_session_release() {
                 tx,
                 &mut Crypto,
                 &web,
-                &challenge.attempt,
-                BINDING,
                 None,
-                response.clone(),
+                PasskeyProof {
+                    attempt: &challenge.attempt,
+                    binding: BINDING,
+                    response: response.clone(),
+                },
                 102
             )),
         Err(Error::NotFound)
@@ -90,10 +99,12 @@ fn registration_linking_login_replay_and_private_session_release() {
                 tx,
                 &mut Crypto,
                 &web,
-                &challenge.attempt,
-                BINDING,
                 Some(&password.bearer),
-                response.clone(),
+                PasskeyProof {
+                    attempt: &challenge.attempt,
+                    binding: BINDING,
+                    response: response.clone(),
+                },
                 102,
             )
         })
@@ -105,10 +116,12 @@ fn registration_linking_login_replay_and_private_session_release() {
             tx,
             &mut Crypto,
             &web,
-            &challenge.attempt,
-            BINDING,
             Some(&password.bearer),
-            response.clone(),
+            PasskeyProof {
+                attempt: &challenge.attempt,
+                binding: BINDING,
+                response: response.clone(),
+            },
             102
         )),
         Err(Error::NotFound)
@@ -136,9 +149,11 @@ fn registration_linking_login_replay_and_private_session_release() {
             tx,
             &mut Crypto,
             &web,
-            &challenge.attempt,
-            "another-caller-secret-with-32-bytes",
-            response.clone(),
+            PasskeyProof {
+                attempt: &challenge.attempt,
+                binding: "another-caller-secret-with-32-bytes",
+                response: response.clone(),
+            },
             104
         )),
         Err(Error::NotFound)
@@ -149,9 +164,11 @@ fn registration_linking_login_replay_and_private_session_release() {
                 tx,
                 &mut Crypto,
                 &web,
-                &challenge.attempt,
-                BINDING,
-                response.clone(),
+                PasskeyProof {
+                    attempt: &challenge.attempt,
+                    binding: BINDING,
+                    response: response.clone(),
+                },
                 104,
             )
         })
@@ -164,9 +181,11 @@ fn registration_linking_login_replay_and_private_session_release() {
             tx,
             &mut Crypto,
             &web,
-            &challenge.attempt,
-            BINDING,
-            response.clone(),
+            PasskeyProof {
+                attempt: &challenge.attempt,
+                binding: BINDING,
+                response: response.clone(),
+            },
             104
         )),
         Err(Error::NotFound)
@@ -231,7 +250,17 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
     let mut client = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let challenge = store
         .run("register", |tx| {
-            passkeys.begin_registration(tx, &mut Crypto, &web, None, BINDING, "My key", 100)
+            passkeys.begin_registration(
+                tx,
+                &mut Crypto,
+                &web,
+                None,
+                RegistrationInput {
+                    binding: BINDING,
+                    label: "My key",
+                },
+                100,
+            )
         })
         .unwrap()
         .value;
@@ -253,10 +282,12 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
                 tx,
                 &mut Crypto,
                 &web,
-                &challenge.attempt,
-                BINDING,
                 None,
-                response.clone(),
+                PasskeyProof {
+                    attempt: &challenge.attempt,
+                    binding: BINDING,
+                    response: response.clone(),
+                },
                 101,
             )
         })
@@ -281,9 +312,11 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
             tx,
             &mut Crypto,
             &web,
-            &wrong.attempt,
-            BINDING,
-            wrong_response.clone(),
+            PasskeyProof {
+                attempt: &wrong.attempt,
+                binding: BINDING,
+                response: wrong_response.clone(),
+            },
             103
         )),
         Err(Error::NotFound)
@@ -308,9 +341,11 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
                 tx,
                 &mut Crypto,
                 &web,
-                &newer.attempt,
-                BINDING,
-                new_response.clone(),
+                PasskeyProof {
+                    attempt: &newer.attempt,
+                    binding: BINDING,
+                    response: new_response.clone(),
+                },
                 104,
             )
         })
@@ -320,9 +355,11 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
             tx,
             &mut Crypto,
             &web,
-            &older.attempt,
-            BINDING,
-            old_response.clone(),
+            PasskeyProof {
+                attempt: &older.attempt,
+                binding: BINDING,
+                response: old_response.clone(),
+            },
             104
         )),
         Err(Error::NotFound)
@@ -339,9 +376,11 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
             tx,
             &mut Crypto,
             &web,
-            &expired.attempt,
-            BINDING,
-            response.clone(),
+            PasskeyProof {
+                attempt: &expired.attempt,
+                binding: BINDING,
+                response: response.clone(),
+            },
             405
         )),
         Err(Error::NotFound)
@@ -352,8 +391,10 @@ fn origin_expiry_and_latest_committed_counter_are_enforced() {
             &mut Crypto,
             &web,
             Some(&issued.bearer),
-            BINDING,
-            "Another key",
+            RegistrationInput {
+                binding: BINDING,
+                label: "Another key",
+            },
             401
         )),
         Err(Error::NotFound)

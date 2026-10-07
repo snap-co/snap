@@ -182,11 +182,7 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
     fs::write(input.join("config.toml"), format!("version=1\n[host]\nmode='development'\nlisten='127.0.0.1:0'\ndata_dir='{}'\n[app.oauth]\nclient_secret_ref='oauth.client_secret'\n", root.join("data").display())).unwrap();
     let identity = snap_config::MasterKey::generate().unwrap();
     let secret = "packaging-test-client-credential-at-least-32-bytes";
-    fs::write(
-        input.join("secrets.key"),
-        identity.encode().expose(),
-    )
-    .unwrap();
+    fs::write(input.join("secrets.key"), identity.encode().expose()).unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(input.join("secrets.key"), fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(input.join("secrets.toml"), secret).unwrap();
@@ -200,9 +196,43 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         .unwrap(),
     )
     .unwrap();
+    // Packaging the native host must reuse a normal workspace build, including
+    // registry dependencies, rather than compiling again under the host triple.
+    let warm = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "fixture-server",
+            "--bin",
+            "fixture-server",
+        ])
+        .env("CARGO_TARGET_DIR", root.join("target"))
+        .env_remove("CARGO_BUILD_BUILD_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    let cargo_bin = root.join("cargo-bin");
+    fs::create_dir(&cargo_bin).unwrap();
+    fs::write(cargo_bin.join("cargo"), "#!/bin/bash\nset -euo pipefail\n\"$PACKAGE_REAL_CARGO\" \"$@\" | tee -a \"$PACKAGE_ARTIFACTS\"\n").unwrap();
+    fs::set_permissions(cargo_bin.join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
+    let cargo_path = std::env::join_paths(
+        std::iter::once(cargo_bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let record = root.join("cargo-artifacts");
     let result = Command::new(env!("CARGO_BIN_EXE_snap"))
         .current_dir(root)
+        .env("PATH", cargo_path)
+        .env("PACKAGE_REAL_CARGO", env!("CARGO"))
+        .env("PACKAGE_ARTIFACTS", &record)
         .env("CARGO_TARGET_DIR", root.join("target"))
+        .env_remove("CARGO_BUILD_BUILD_DIR")
         .arg("build")
         .env_remove("SNAP_MASTER_KEY")
         .output()
@@ -212,6 +242,23 @@ fn native_package_is_relocatable_and_excludes_private_deployment_files() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+    let artifacts = fs::read_to_string(record).unwrap();
+    for name in ["fixture-server", "snap_config", "chacha20poly1305"] {
+        let reported: Vec<_> = artifacts
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| {
+                value["reason"] == "compiler-artifact" && value["target"]["name"] == name
+            })
+            .collect();
+        assert!(!reported.is_empty(), "Cargo must report {name}");
+        for artifact in reported {
+            assert_eq!(
+                artifact["fresh"], true,
+                "native packaging rebuilt {name}: {artifact}"
+            );
+        }
+    }
     let package = root.join("dist/development");
     for name in [
         "secrets.key",

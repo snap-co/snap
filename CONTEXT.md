@@ -90,6 +90,9 @@ A replaceable policy deciding whether dereferenced Store data is unloaded or ret
 **Resident slot**:
 Store's internal metadata and optional loaded value for a primary key. The slot's loading state is distinct from whether residency is desired.
 
+**Store stub**:
+A lightweight representation of a record containing its key, version and declared listing metadata, retained independently of its full payload. Holding a stub does not imply that the payload is loaded or that the record is authorized for replication.
+
 **Client holdings manifest**:
 A client's declaration of the resources and versions it already holds, used by a module to identify missing or stale client data. It is distinct from the server's residency manifest.
 

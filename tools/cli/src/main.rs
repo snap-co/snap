@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Verify framework source independently of applications
+    /// Run Snap framework checks and tests, independently of application suites
     VerifyFramework(verify::Args),
     /// Build the application's configured artifacts
     Build(build::Args),
@@ -61,6 +61,9 @@ enum Command {
         /// Check the entire Cargo workspace, even when invoked from an application
         #[arg(long)]
         workspace: bool,
+        /// Check only framework workspace packages, without application workflows
+        #[arg(long, conflicts_with = "workspace")]
+        framework: bool,
     },
 }
 
@@ -89,7 +92,8 @@ async fn main() -> ExitCode {
                 project,
                 structure_only,
                 workspace,
-            } => check::run(project, &runner, structure_only, workspace).await,
+                framework,
+            } => check::run(project, &runner, structure_only, workspace, framework).await,
         }
     }
     .await;

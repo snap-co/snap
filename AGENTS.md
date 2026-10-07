@@ -6,6 +6,9 @@
   upgrade migrations or compatibility paths; keep deployment secrets separate.
 - Document non-obvious guarantees beside the interface that promises them.
 - Read implementation, configuration, tests and command help directly.
+- Use `./bin/test` from `snap/` for framework checks and tests; application suites
+  use `snap test <app>`. Read `./bin/test --help` for selectors, configurations
+  and execution options.
 - Before adding, changing, moving or reviewing tests, harnesses, fixtures, test
   routing or testing checks, read [TESTING.md](TESTING.md). Update it when harness
   seams or ownership change.

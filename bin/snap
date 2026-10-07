@@ -2,10 +2,24 @@
 # Bootstrap the checkout CLI, preserving its toolchain environment at launch.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+launcher=()
 if command -v mise >/dev/null; then
-  mise exec -- cargo build --manifest-path "$root/Cargo.toml" --target-dir "$root/target" -p snap-cli
-  exec mise exec -- "$root/target/debug/snap" "$@"
-else
-  cargo build --manifest-path "$root/Cargo.toml" --target-dir "$root/target" -p snap-cli
-  exec "$root/target/debug/snap" "$@"
+  launcher=(mise exec --)
 fi
+build=("${launcher[@]}" cargo build --manifest-path "$root/Cargo.toml" --target-dir "$root/target" -p snap-cli)
+if [[ "${1:-}" == verify-framework ]]; then
+  mkdir -p "$root/target/verification"
+  log=$(mktemp "$root/target/verification/bootstrap-XXXXXX.log")
+  echo "Preparing framework verifier..."
+  if "${build[@]}" >"$log" 2>&1; then
+    rm -- "$log"
+  else
+    status=$?
+    cat "$log" >&2
+    echo "Verifier bootstrap failed; log: $log" >&2
+    exit "$status"
+  fi
+else
+  "${build[@]}"
+fi
+exec "${launcher[@]}" "$root/target/debug/snap" "$@"

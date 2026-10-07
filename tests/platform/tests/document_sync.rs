@@ -13,6 +13,20 @@ use std::sync::Arc;
 
 const ID: &str = "018f3c4b-6d2a-7000-8000-000000000001";
 
+fn websocket_request(
+    address: std::net::SocketAddr,
+    cookie: &str,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{address}/transport")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+    request
+}
+
 thread_local! {
     static ADMISSION: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -24,6 +38,7 @@ fn declared_guards_short_circuit_before_acceptance_and_never_repeat_in_execution
         let mut host = fixture_with(snap_transport::operation::Registry::default().with_request(
             Request {
                 name: "fixture.guarded".into(),
+                http: None,
                 identity_required: true,
                 input: |v| v.is_object(),
                 output: |v| v.is_i64(),
@@ -104,6 +119,7 @@ fn invalid_declared_output_rolls_back_and_releases_the_next_operation() {
         let mut host = fixture_with(snap_transport::operation::Registry::default().with_request(
             Request {
                 name: "fixture.invalid-output".into(),
+                http: None,
                 identity_required: true,
                 input: |v| matches!(v.as_str(), Some("output" | "cold" | "invalid")),
                 output: |v| v.is_i64(),
@@ -180,6 +196,7 @@ fn accepted_table_residency_survives_connection_housekeeping_without_readmission
         let mut host = fixture_with(snap_transport::operation::Registry::default().with_request(
             Request {
                 name: "fixture.scan".into(),
+                http: None,
                 identity_required: true,
                 input: |v| v.is_null(),
                 output: |v| v.is_u64(),
@@ -255,6 +272,7 @@ fn http_operations_share_fifo_and_cannot_run_on_connected_carriers() {
     let mut host = fixture_with(
         snap_transport::operation::Registry::default().with_preconnection_request(Request {
             name: "fixture.fetch".into(),
+            http: None,
             identity_required: false,
             input: |value| value.is_null(),
             output: |value| value.is_i64(),
@@ -998,7 +1016,7 @@ fn interrupted_completion_recovers_once_only_inside_surviving_lifetime() {
 
 #[tokio::test]
 #[ignore = "real socket suite"]
-async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_policies() {
+async fn websocket_upgrades_require_authenticated_cookies() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{
         connect_async,
@@ -1010,13 +1028,14 @@ async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_polici
             self.0.abort();
         }
     }
-    for (required, cookie, explicit, allowed) in [
-        (false, None, "alice", true),
-        (false, Some("invalid"), "alice", true),
-        (false, Some("alice"), "", true),
-        (true, None, "alice", false),
-        (true, Some("invalid"), "alice", false),
-        (true, Some("alice"), "invalid", true),
+    for (cookie, explicit, allowed) in [
+        (None, "alice", false),
+        (Some(""), "alice", false),
+        (Some("invalid"), "alice", false),
+        (Some("unidentified"), "alice", false),
+        (Some("alice"), "", true),
+        (Some("alice"), "invalid", true),
+        (Some("alice"), "bob", true),
     ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1026,13 +1045,21 @@ async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_polici
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         });
-        let shared = Shared::new(fixture());
+        let shared = Shared::new(fixture_with_authority(
+            Default::default(),
+            Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+                |_, bearer| match bearer {
+                    "alice" | "bob" => Ok(bearer.into()),
+                    "unidentified" => Ok(String::new()),
+                    _ => Err(snap_store::Error::NotFound),
+                },
+            ))),
+        ));
         let router =
             snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
-                dispatch: Dispatcher::web(shared),
+                dispatch: Dispatcher::web(shared.clone()),
                 origin: format!("http://{address}"),
-                cookie: Some(read),
-                require_cookie: required,
+                cookie: read,
             }));
         let _stop = Stop(tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -1053,6 +1080,12 @@ async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_polici
             match connection {
                 Err(Error::Http(response)) => assert_eq!(response.status(), 401),
                 other => panic!("expected rejected upgrade: {other:?}"),
+            }
+            // Rejection must not reserve application capacity, even before any
+            // cleanup tick. All 128 physical slots remain available.
+            let mut host = shared.host.lock().unwrap();
+            for _ in 0..128 {
+                host.open().expect("rejected upgrade consumed a peer");
             }
             continue;
         }
@@ -1077,7 +1110,49 @@ async fn cookie_required_and_mixed_agent_carriers_keep_distinct_authority_polici
             serde_json::from_str::<Response>(response.to_text().unwrap()).unwrap(),
             Response::Attached { resumed: false }
         ));
-        socket.close(None).await.unwrap();
+        // A valid body credential for another identity cannot replace the cookie.
+        {
+            let mut host = shared.host.lock().unwrap();
+            let peer = host.open().unwrap();
+            host.submit(
+                peer,
+                Command::Connect {
+                    bearer: "alice".into(),
+                    client_id: "policy-fixture".into(),
+                },
+                0,
+            )
+            .unwrap();
+            assert_eq!(
+                host.drain(peer).unwrap(),
+                vec![Response::Failed(snap_transport::Error::Occupied)]
+            );
+        }
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&Command::Request {
+                    bearer: Some("bob".into()),
+                    invocation: Invocation {
+                        id: 1,
+                        operation: "identity.acquire".into(),
+                        input: json!(null),
+                    },
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(Ok(message)) = socket.next().await {
+                assert!(
+                    matches!(message, Message::Close(_)),
+                    "connectionless request entered WebSocket dispatch"
+                );
+            }
+        })
+        .await
+        .expect("WebSocket accepted a connectionless request");
     }
 }
 
@@ -1093,8 +1168,7 @@ async fn websocket_delivers_ack_before_execution_and_serializes_following_accept
         snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
             dispatch: Dispatcher::web(shared.clone()),
             origin: format!("http://{address}"),
-            cookie: None,
-            require_cookie: false,
+            cookie: Arc::new(|headers| headers.get("cookie")?.to_str().ok().map(str::to_owned)),
         }));
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
@@ -1107,7 +1181,7 @@ async fn websocket_delivers_ack_before_execution_and_serializes_following_accept
         }
     }
     let _stop = Stop(server);
-    let (mut socket, _) = connect_async(format!("ws://{address}/transport"))
+    let (mut socket, _) = connect_async(websocket_request(address, "alice"))
         .await
         .unwrap();
     socket
@@ -1236,8 +1310,7 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
         snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
             dispatch: Dispatcher::web(shared.clone()),
             origin: format!("http://{address}"),
-            cookie: None,
-            require_cookie: false,
+            cookie: Arc::new(|headers| headers.get("cookie")?.to_str().ok().map(str::to_owned)),
         }));
     struct Stop(tokio::task::JoinHandle<()>);
     impl Drop for Stop {
@@ -1248,7 +1321,7 @@ async fn websocket_close_drops_socket_while_controller_io_is_held() {
     let _server = Stop(tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     }));
-    let (mut socket, _) = connect_async(format!("ws://{address}/transport"))
+    let (mut socket, _) = connect_async(websocket_request(address, "alice"))
         .await
         .unwrap();
     socket
@@ -1724,6 +1797,7 @@ fn connectionless_bearer_handoff_is_separate_from_output_and_requires_successful
         let mut host = fixture_with(
             snap_transport::operation::Registry::default().with_preconnection_request(Request {
                 name: "fixture.issue".into(),
+                http: None,
                 identity_required: false,
                 input: |v| v.is_null(),
                 output: if failure == 2 {
@@ -1777,6 +1851,7 @@ fn connectionless_reply_preserves_admission_for_failed_execution() {
     let mut host = fixture_with(
         snap_transport::operation::Registry::default().with_preconnection_request(Request {
             name: "fixture.failure".into(),
+            http: None,
             identity_required: false,
             input: |v| v.is_null(),
             output: |v| v.is_null(),

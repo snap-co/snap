@@ -107,6 +107,9 @@ impl<P: Program, R: Authority> Development<P, R> {
         );
         Ok(self.sequence)
     }
+    pub fn authorize_upgrade(&self, bearer: &str) -> Result<(), snap_transport::Error> {
+        self.platform.authorize_upgrade(bearer)
+    }
     pub fn lost(&mut self, id: u64, now: u64) {
         if let Some(mut connection) = self.peers.remove(&id) {
             self.platform.lost(&mut connection.peer, now);

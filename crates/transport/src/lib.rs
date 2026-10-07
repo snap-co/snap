@@ -72,6 +72,17 @@ impl Topic {
 /// may be a shared message type across operations.
 pub trait Operation {
     const NAME: &'static str;
+    /// An explicit HTTP exception, such as identification, cookie publication,
+    /// uploads or external callbacks. Ordinary operations use connected messages.
+    /// Hosts select paths and encoding; this grants no admission authority.
+    const HTTP: Option<(carrier::HttpMethod, bool)> = None;
+    fn http_route() -> Option<carrier::HttpRoute> {
+        Self::HTTP.map(|(method, read_bearer)| carrier::HttpRoute {
+            operation: Self::NAME,
+            method,
+            read_bearer,
+        })
+    }
     type Input: Serialize;
     type Output: serde::de::DeserializeOwned;
     type Error: serde::de::DeserializeOwned;

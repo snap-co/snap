@@ -17,6 +17,7 @@ async fn adjacent_handshake_streamed_observations_and_new_submission_after_detac
     let count = executions.clone();
     let operations = snap_transport::operation::Registry::default().with_request(Request {
         name: "fixture.probe".into(),
+        http: None,
         identity_required: true,
         input: |v| v.is_null(),
         output: |v| v.is_u64(),
@@ -160,6 +161,7 @@ async fn connectionless_tcp_returns_bearer_as_a_private_correlated_packet() {
     let operations =
         snap_transport::operation::Registry::default().with_preconnection_request(Request {
             name: "fixture.acquire".into(),
+            http: None,
             identity_required: false,
             input: |v| v.is_null(),
             output: |v| v.is_null(),

@@ -149,12 +149,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let origin = parsed.origin().ascii_serialization();
     let mut store = snap_store_sqlite::Sqlite::open(&database)?;
+    snap_oidc::prepare(&mut store, now())?;
     Identity::default().data().prepare(&mut store)?;
     for table in snap_access::TABLES
         .iter()
         .chain(core::iter::once(&snap_store::resource::TABLE))
         .chain(authy::TABLES.iter())
-        .chain(snap_oidc::TABLES.iter())
     {
         store.load(table)?;
     }
@@ -168,9 +168,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let webauthn = parsed
         .domain()
         .filter(|domain| parsed.scheme() == "https" || *domain == "localhost")
-        .map(|rp| snap_identity_native::passkey::Native::new(rp, &origin))
+        .map(|rp| snap_crypto::passkey::Native::new(rp, &origin))
         .transpose()?;
-    let passkeys_enabled = webauthn.is_some();
     let replication = authy::replication();
     let registry = snap_transport::operation::Registry::default()
         .with_request(replication.operation())
@@ -205,6 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
         })
         .transpose()?;
+    let http_routes: Vec<_> = registry.http_routes().collect();
     let host = Host::new(
         store,
         snap_transport::host::Controllers::around(snap_transport::replication::Replications::new(
@@ -229,8 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = Server::new(host).await?;
     let transport = WebSocket {
         origin: origin.clone(),
-        cookie: Some(cookie),
-        require_cookie: true,
+        cookie,
     };
     issuer.config.issuer = origin.clone();
     let assets = config.assets().to_string_lossy().into_owned();
@@ -247,14 +246,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let identity_routes = server.http(
         transport.clone(),
-        snap_identity::operation::http_routes()
+        http_routes
             .into_iter()
-            .chain(if passkeys_enabled {
-                snap_identity::operation::passkey_http_routes()
-            } else {
-                Vec::new()
-            })
-            .chain(authy::operations::http_routes())
             .map(|route| HttpOperation::from_route(route, write_cookie.clone()))
             .collect(),
     );
@@ -265,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             axum::routing::any(|| async { StatusCode::NOT_FOUND }),
         )
         .merge(oidc_http::routes(app.clone()))
-        .with_state(app)
+        .with_state(app.clone())
         .merge(identity_routes)
         .merge(server.websocket(transport))
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -279,11 +272,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http = axum::serve(listener, router).with_graceful_shutdown(async {
         let _ = tokio::signal::ctrl_c().await;
     });
-    if let Some((listener, tls)) = tcp {
-        println!("Authy tls://{}", listener.local_addr()?);
-        server.run(listener.listen()?, tls, None, http).await?;
-    } else {
-        server.run_http(http).await?;
+    let serving = async {
+        if let Some((listener, tls)) = tcp {
+            println!("Authy tls://{}", listener.local_addr()?);
+            server.run(listener.listen()?, tls, None, http).await
+        } else {
+            server.run_http(http).await
+        }
+    };
+    tokio::select! {
+        result = serving => result?,
+        result = oidc_http::maintain(app) => result?,
     }
     Ok(())
 }

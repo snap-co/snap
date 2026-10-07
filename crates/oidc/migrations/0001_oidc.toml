@@ -8,8 +8,14 @@ primary = ["id"]
 columns = [
   { name = "id", kind = "bytes" },
   { name = "kind", kind = "text" },
+  { name = "pending", kind = "integer" },
+  { name = "client", kind = "text" },
   { name = "data", kind = "text" },
   { name = "expires", kind = "integer" },
+]
+indexes = [
+  { name = "expires", columns = ["expires"] },
+  { name = "pending_client", columns = ["pending", "client"] },
 ]
 
 [[changes]]
@@ -23,6 +29,7 @@ columns = [
   { name = "active", kind = "integer" },
   { name = "expires", kind = "integer" },
 ]
+indexes = [{ name = "expires", columns = ["expires"] }]
 
 [[changes]]
 action = "create_table"
@@ -36,4 +43,4 @@ columns = [
   { name = "used", kind = "integer" },
   { name = "expires", kind = "integer" },
 ]
-indexes = [{ name = "grant", columns = ["grant"] }]
+indexes = [{ name = "grant", columns = ["grant"] }, { name = "expires", columns = ["expires"] }]

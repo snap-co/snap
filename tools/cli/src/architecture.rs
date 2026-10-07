@@ -70,6 +70,7 @@ pub async fn check(
     runner: &Runner,
     manifests: &[PathBuf],
     workspace: bool,
+    selected_packages: &[String],
 ) -> Result<()> {
     let version = runner.run(Command::new("rustc").arg("-vV"), true).await?;
     let version = String::from_utf8(version)?;
@@ -128,6 +129,16 @@ pub async fn check(
                     .as_array()
                     .context("Missing workspace members")?
                     .iter()
+                    .filter(|id| {
+                        selected_packages.is_empty()
+                            || packages.get(id.as_str().unwrap_or_default()).is_some_and(
+                                |package| {
+                                    package["name"].as_str().is_some_and(|name| {
+                                        selected_packages.iter().any(|selected| selected == name)
+                                    })
+                                },
+                            )
+                    })
                     .filter_map(Value::as_str)
                     .collect()
             } else {

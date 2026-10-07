@@ -7,7 +7,8 @@ use axum::{Form, extract::Path, response::Html};
 /// attachments. Selection never accepts an expired local credential. The shared
 /// dispatcher still revalidates authority when admitting each protected operation.
 /// Renewal may wait behind an accepted controller; waiting does not block Tokio
-/// or shorten the login/recovery lifetime. Network IO never holds the host lock.
+/// or shorten the login/recovery lifetime. Controllers retain the agreed blocking
+/// host lane during IO, but no transaction spans a network request.
 pub async fn prepare(
     oauth: &Arc<OAuth<Host<snap_store_sqlite::Sqlite>>>,
     command: snap_transport::Command,
@@ -117,7 +118,7 @@ pub async fn approve(
         Ok(s) => s,
         Err(e) => return failure(e),
     };
-    if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(&app.oauth.config.origin)
+    if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(&app.origin)
         || !rp::same_secret(&input.csrf, &s.csrf)
     {
         return failure(Error::Invalid);

@@ -68,11 +68,23 @@ macro_rules! contract {
             type Progress = ();
         }
     };
+    ($type:ident, $name:literal, $input:ty, $output:ty, $method:ident, $bearer:literal) => {
+        pub struct $type;
+        impl Operation for $type {
+            const NAME: &'static str = $name;
+            const HTTP: Option<(snap_transport::carrier::HttpMethod, bool)> =
+                Some((snap_transport::carrier::HttpMethod::$method, $bearer));
+            type Input = $input;
+            type Output = $output;
+            type Error = IdentityError;
+            type Progress = ();
+        }
+    };
 }
-contract!(Enroll, "identity.enroll", Proof, Principal);
-contract!(Acquire, "identity.acquire", Proof, Principal);
-contract!(Fetch, "identity.fetch", (), Option<Principal>);
-contract!(Release, "identity.release", ReleaseInput, ());
+contract!(Enroll, "identity.enroll", Proof, Principal, Post, false);
+contract!(Acquire, "identity.acquire", Proof, Principal, Post, false);
+contract!(Fetch, "identity.fetch", (), Option<Principal>, Get, true);
+contract!(Release, "identity.release", ReleaseInput, (), Post, true);
 contract!(ListSessions, "identity.sessions", (), Vec<SessionSummary>);
 contract!(
     RemoveCredential,
@@ -91,25 +103,33 @@ contract!(
     BeginRegistration,
     "identity.passkey-register",
     RegistrationInput,
-    crate::passkey::Challenge
+    crate::passkey::Challenge,
+    Post,
+    true
 );
 contract!(
     FinishRegistration,
     "identity.passkey-registered",
     PasskeyProof,
-    Principal
+    Principal,
+    Post,
+    true
 );
 contract!(
     BeginAuthentication,
     "identity.passkey-authenticate",
     AuthenticationInput,
-    crate::passkey::Challenge
+    crate::passkey::Challenge,
+    Post,
+    false
 );
 contract!(
     FinishAuthentication,
     "identity.passkey-authenticated",
     PasskeyProof,
-    Principal
+    Principal,
+    Post,
+    false
 );
 contract!(
     ListCredentials,
@@ -176,8 +196,7 @@ pub fn definitions<C: Crypto>(
         .map(|hook| hook.data.clone())
         .unwrap_or_default();
     Operations {
-        requests: Vec::new(),
-        preconnection: vec![
+        requests: vec![
             Definition::typed::<RemoveCredential>(
                 true,
                 vec![],
@@ -228,6 +247,34 @@ pub fn definitions<C: Crypto>(
                     Ok(())
                 },
             ),
+            Definition::typed::<ListSessions>(
+                true,
+                vec![],
+                identity.data(),
+                &["clock"],
+                move |tx, _, context| {
+                    let crypto = sessions_crypto();
+                    let current = crypto.digest(context.bearer.as_deref().ok_or(Error::NotFound)?);
+                    Ok(Sessions::summaries(
+                        tx,
+                        &crypto,
+                        &principal(context)?.identity,
+                        &current,
+                        now(context)?,
+                    )?)
+                },
+            ),
+            Definition::typed::<ListCredentials>(
+                true,
+                vec![],
+                Credential::data(),
+                &[],
+                |tx, _, context| Ok(Credential::summaries(tx, &principal(context)?.identity)?),
+            ),
+        ],
+        // These flows identify the client or publish/clear browser-managed
+        // credentials. They must work without an identified connection.
+        preconnection: vec![
             Definition::typed::<Enroll>(
                 false,
                 vec![anonymous()],
@@ -305,30 +352,6 @@ pub fn definitions<C: Crypto>(
                     Ok(())
                 },
             ),
-            Definition::typed::<ListSessions>(
-                true,
-                vec![],
-                identity.data(),
-                &["clock"],
-                move |tx, _, context| {
-                    let crypto = sessions_crypto();
-                    let current = crypto.digest(context.bearer.as_deref().ok_or(Error::NotFound)?);
-                    Ok(Sessions::summaries(
-                        tx,
-                        &crypto,
-                        &principal(context)?.identity,
-                        &current,
-                        now(context)?,
-                    )?)
-                },
-            ),
-            Definition::typed::<ListCredentials>(
-                true,
-                vec![],
-                Credential::data(),
-                &[],
-                |tx, _, context| Ok(Credential::summaries(tx, &principal(context)?.identity)?),
-            ),
         ],
     }
 }
@@ -349,32 +372,6 @@ pub fn recognizes(name: &str) -> bool {
             | BeginAuthentication::NAME
             | FinishAuthentication::NAME
     )
-}
-
-/// Identity owns the HTTP mapping as well as the native operation contracts.
-pub fn http_routes() -> Vec<snap_transport::carrier::HttpRoute> {
-    use snap_transport::carrier::{
-        HttpMethod::{Get, Post},
-        HttpRoute,
-    };
-    [
-        (Enroll::NAME, Post, false),
-        (Acquire::NAME, Post, false),
-        (Fetch::NAME, Get, true),
-        (Release::NAME, Post, true),
-        (ListSessions::NAME, Get, true),
-        (ListCredentials::NAME, Get, true),
-        (RemoveCredential::NAME, Post, true),
-        (RenameCredential::NAME, Post, true),
-        (LinkPassword::NAME, Post, true),
-    ]
-    .into_iter()
-    .map(|(operation, method, read_bearer)| HttpRoute {
-        operation,
-        method,
-        read_bearer,
-    })
-    .collect()
 }
 
 /// Hosts select passkey operations independently of password and OAuth flows.
@@ -414,8 +411,10 @@ pub fn passkey_definitions<C: Crypto, W: crate::passkey::WebAuthn + Clone + Send
                     &mut begin_crypto(),
                     &begin_web,
                     context.bearer.as_deref(),
-                    &input.binding,
-                    &input.label,
+                    crate::passkey::RegistrationInput {
+                        binding: &input.binding,
+                        label: &input.label,
+                    },
                     now(context)?,
                 )?)
             },
@@ -433,10 +432,12 @@ pub fn passkey_definitions<C: Crypto, W: crate::passkey::WebAuthn + Clone + Send
                     tx,
                     &mut register_crypto(),
                     &register_web,
-                    &proof.attempt,
-                    &proof.binding,
                     context.bearer.as_deref(),
-                    proof.response.clone(),
+                    crate::passkey::PasskeyProof {
+                        attempt: &proof.attempt,
+                        binding: &proof.binding,
+                        response: proof.response.clone(),
+                    },
                     now(context)?,
                 )?;
                 if context.bearer.is_none()
@@ -500,9 +501,11 @@ pub fn passkey_definitions<C: Crypto, W: crate::passkey::WebAuthn + Clone + Send
                     tx,
                     &mut crypto(),
                     &webauthn,
-                    &proof.attempt,
-                    &proof.binding,
-                    proof.response.clone(),
+                    crate::passkey::PasskeyProof {
+                        attempt: &proof.attempt,
+                        binding: &proof.binding,
+                        response: proof.response.clone(),
+                    },
                     now(context)?,
                 )?;
                 context
@@ -512,20 +515,4 @@ pub fn passkey_definitions<C: Crypto, W: crate::passkey::WebAuthn + Clone + Send
             },
         ),
     ]
-}
-pub fn passkey_http_routes() -> Vec<snap_transport::carrier::HttpRoute> {
-    use snap_transport::carrier::{HttpMethod::Post, HttpRoute};
-    [
-        (BeginRegistration::NAME, true),
-        (FinishRegistration::NAME, true),
-        (BeginAuthentication::NAME, false),
-        (FinishAuthentication::NAME, false),
-    ]
-    .into_iter()
-    .map(|(operation, read_bearer)| HttpRoute {
-        operation,
-        method: Post,
-        read_bearer,
-    })
-    .collect()
 }

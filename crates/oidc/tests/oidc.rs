@@ -2291,3 +2291,104 @@ fn expired_rows_prune() {
         .value;
     assert!(removed >= 1);
 }
+
+#[test]
+fn abandoned_authorizations_have_per_client_and_global_capacity() {
+    let mut store = store();
+    let mut host = TestHost::new();
+    let authority = TestAuthority {
+        identity: snap_identity::Identity::default(),
+    };
+    let config = Config {
+        issuer: ISSUER.into(),
+        clients: (0..9)
+            .map(|n| {
+                Client::public(&format!("client-{n}"), "Client", CALLBACK, LOGGED_OUT).unwrap()
+            })
+            .collect(),
+    };
+    for client in &config.clients[..8] {
+        for n in 0..129 {
+            let result = store.run("abandoned login", |tx| {
+                snap_oidc::authorize(
+                    tx,
+                    &mut host,
+                    &authority,
+                    &config,
+                    &AuthorizeRequest {
+                        client_id: &client.id,
+                        ..authorize_request()
+                    },
+                    None,
+                    NOW,
+                )
+            });
+            if n == 128 {
+                assert!(
+                    matches!(result, Err(Error::Unavailable)),
+                    "per-client capacity did not reject another allocation"
+                );
+            } else {
+                assert!(matches!(
+                    result.unwrap().value,
+                    AuthorizeOutcome::RequireLogin { .. }
+                ));
+            }
+        }
+    }
+    let result = store.run("global capacity", |tx| {
+        snap_oidc::authorize(
+            tx,
+            &mut host,
+            &authority,
+            &config,
+            &AuthorizeRequest {
+                client_id: "client-8",
+                ..authorize_request()
+            },
+            None,
+            NOW,
+        )
+    });
+    assert!(matches!(result, Err(Error::Unavailable)));
+    assert_eq!(
+        store
+            .inspect("no overflow rows", |tx| tx.find(
+                "oidc.flows",
+                "primary",
+                &[]
+            ))
+            .unwrap()
+            .len(),
+        1024
+    );
+    for _ in 0..4 {
+        let removed = store
+            .run("bounded prune", |tx| {
+                snap_oidc::prune_expired(tx, NOW + 300)
+            })
+            .unwrap()
+            .value;
+        assert_eq!(removed, 256);
+    }
+    let result = store
+        .run("capacity recovered", |tx| {
+            snap_oidc::authorize(
+                tx,
+                &mut host,
+                &authority,
+                &config,
+                &AuthorizeRequest {
+                    client_id: "client-8",
+                    ..authorize_request()
+                },
+                None,
+                NOW + 300,
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        result.value,
+        AuthorizeOutcome::RequireLogin { .. }
+    ));
+}

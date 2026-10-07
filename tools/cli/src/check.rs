@@ -17,11 +17,17 @@ struct Selection {
     manifest: PathBuf,
     workspace: bool,
     members: BTreeSet<PathBuf>,
+    packages: Vec<String>,
     projects: Vec<Project>,
 }
 
 impl Selection {
-    async fn discover(start: Option<PathBuf>, workspace: bool, runner: &Runner) -> Result<Self> {
+    async fn discover(
+        start: Option<PathBuf>,
+        workspace: bool,
+        framework: bool,
+        runner: &Runner,
+    ) -> Result<Self> {
         let start = start.unwrap_or(std::env::current_dir()?);
         let start = start
             .canonicalize()
@@ -38,12 +44,16 @@ impl Selection {
             .find(|root| root.join("snap.toml").symlink_metadata().is_ok())
             .map(|root| Project::discover(Some(root.to_owned())))
             .transpose()?;
-        if !workspace && let Some(project) = application {
+        if !workspace
+            && !framework
+            && let Some(project) = application
+        {
             return Ok(Self {
                 manifest: primary_manifest(&project)?,
                 root: project.root.clone(),
                 workspace: false,
                 members: BTreeSet::new(),
+                packages: Vec::new(),
                 projects: vec![project],
             });
         }
@@ -79,7 +89,29 @@ impl Selection {
             .context("Workspace manifest has no parent")?
             .to_owned();
         let metadata = metadata(&root, &manifest, runner).await?;
-        let packages = member_packages(&metadata)?;
+        let packages = cargo::workspace_packages(&metadata, framework)?;
+        if framework {
+            ensure!(
+                !packages.is_empty(),
+                "No framework workspace packages selected"
+            );
+            return Ok(Self {
+                root,
+                manifest,
+                workspace: true,
+                members: BTreeSet::new(),
+                packages: packages
+                    .iter()
+                    .map(|package| {
+                        package["name"]
+                            .as_str()
+                            .context("Missing package name")
+                            .map(str::to_owned)
+                    })
+                    .collect::<Result<_>>()?,
+                projects: Vec::new(),
+            });
+        }
         let mut members = BTreeSet::new();
         let mut roots = BTreeSet::new();
         for package in packages {
@@ -123,6 +155,7 @@ impl Selection {
             manifest,
             workspace: true,
             members,
+            packages: Vec::new(),
             projects,
         })
     }
@@ -156,25 +189,14 @@ async fn metadata(root: &Path, manifest: &Path, runner: &Runner) -> Result<Value
         .await?;
     serde_json::from_slice(&output).context("Invalid Cargo metadata")
 }
-fn member_packages(metadata: &Value) -> Result<Vec<&Value>> {
-    let members = metadata["workspace_members"]
-        .as_array()
-        .context("Missing workspace members")?;
-    Ok(metadata["packages"]
-        .as_array()
-        .context("Missing Cargo packages")?
-        .iter()
-        .filter(|p| members.contains(&p["id"]))
-        .collect())
-}
-
 pub async fn run(
     start: Option<PathBuf>,
     runner: &Runner,
     structure_only: bool,
     workspace: bool,
+    framework: bool,
 ) -> Result<()> {
-    let selected = Selection::discover(start, workspace, runner).await?;
+    let selected = Selection::discover(start, workspace, framework, runner).await?;
     let mut manifests = BTreeSet::new();
     if selected.workspace {
         manifests.insert(selected.manifest.clone());
@@ -209,13 +231,15 @@ pub async fn run(
             runner,
             &structural_manifests,
             selected.workspace,
+            &selected.packages,
         )
         .await?;
         println!("Structural checks passed: {}", selected.root.display());
         return Ok(());
     }
     if selected.workspace {
-        rust(&selected.root, &selected.manifest, None, None, runner).await?;
+        let packages: Vec<_> = selected.packages.iter().map(String::as_str).collect();
+        rust(&selected.root, &selected.manifest, &packages, None, runner).await?;
     }
     let package_manifests = if selected.workspace {
         &extra_manifests
@@ -227,7 +251,7 @@ pub async fn run(
         let name = cargo::selected_package(&meta, manifest)?["name"]
             .as_str()
             .context("Missing package name")?;
-        rust(&selected.root, manifest, Some(name), None, runner).await?;
+        rust(&selected.root, manifest, &[name], None, runner).await?;
     }
     for project in &selected.projects {
         for variant in &project.config.check.variants {
@@ -236,7 +260,7 @@ pub async fn run(
             let name = cargo::selected_package(&meta, &manifest)?["name"]
                 .as_str()
                 .context("Missing package name")?;
-            rust(&project.root, &manifest, Some(name), Some(variant), runner).await?;
+            rust(&project.root, &manifest, &[name], Some(variant), runner).await?;
             if let Some(allowed) = &variant.allowed_local_dependencies {
                 dependency_variant(project, &manifest, name, variant, allowed, runner).await?;
             }
@@ -247,6 +271,7 @@ pub async fn run(
         runner,
         &structural_manifests,
         selected.workspace,
+        &selected.packages,
     )
     .await?;
     for project in &selected.projects {
@@ -276,7 +301,7 @@ pub async fn run(
 async fn rust(
     root: &Path,
     manifest: &Path,
-    package: Option<&str>,
+    packages: &[&str],
     variant: Option<&CheckVariant>,
     runner: &Runner,
 ) -> Result<()> {
@@ -290,7 +315,11 @@ async fn rust(
         }
         eprintln!(
             "Checking {}: cargo {task}{}",
-            package.unwrap_or("workspace"),
+            if packages.is_empty() {
+                "workspace".into()
+            } else {
+                packages.join(", ")
+            },
             variant.map_or(String::new(), |v| format!(
                 " features={:?}, default_features={}",
                 v.features, v.default_features
@@ -303,14 +332,16 @@ async fn rust(
             .arg(task)
             .arg("--manifest-path")
             .arg(manifest);
-        if let Some(package) = package {
-            command.args(["--package", package]);
-        } else {
+        if packages.is_empty() {
             command.arg(if task == "fmt" {
                 "--all"
             } else {
                 "--workspace"
             });
+        } else {
+            for package in packages {
+                command.args(["--package", package]);
+            }
         }
         if let Some(variant) = variant {
             features(&mut command, variant);

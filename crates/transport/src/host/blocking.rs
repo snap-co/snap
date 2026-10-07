@@ -152,7 +152,12 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
         self.store
             .lock()
             .inspect("transport.upgrade", |tx| {
-                self.authority.identify(tx, bearer).map(|_| ())
+                let identity = self.authority.identify(tx, bearer)?;
+                if identity.is_empty() {
+                    Err(snap_store::Error::NotFound)
+                } else {
+                    Ok(())
+                }
             })
             .map_err(storage_error)
     }
@@ -683,44 +688,47 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
     /// slot is the gate, including the gap between admission and execution.
     pub fn step(&mut self) -> bool {
         self.admit_next();
-        let Some(completed) = self.requests.execute(&mut self.store.lock()) else {
+        let Some(mut completed) = self.requests.execute(&mut self.store.lock()) else {
             return false;
         };
-        let work = completed.work;
-        let bearer_change = completed.context.bearer_change;
-        let publication = completed.context.publication;
-        let changes = completed.changes;
-        let outcome = if self.requests.definitions().is_preconnection(work.selection)
-            && let Some(error) = completed.storage_failure
+        let publication = core::mem::take(&mut completed.context.publication);
+        let changes = core::mem::take(&mut completed.changes);
+        if self
+            .requests
+            .definitions()
+            .is_preconnection(completed.work.selection)
+            && let Some(error) = completed.storage_failure.take()
         {
-            Err(match error {
+            completed.outcome = Err(match error {
                 snap_store::Error::Invalid => Error::InvalidInput,
                 snap_store::Error::Constraint => Error::Application(json!({"code":"Conflict"})),
                 other => storage_error(other),
-            })
-        } else {
-            completed.outcome
-        };
+            });
+        }
         let progress = Progress::new(
-            work.output.clone(),
-            work.wire_id,
-            self.requests.definitions().get(work.selection).progress,
+            completed.work.output.clone(),
+            completed.work.wire_id,
+            self.requests
+                .definitions()
+                .get(completed.work.selection)
+                .progress,
         );
         let scope = InvocationScope {
-            peer: work.peer,
-            connection: work.connection,
+            peer: completed.work.peer,
+            connection: completed.work.connection,
             progress: &progress,
         };
         // A failed transaction has no persisted changes and triggers no controllers.
         // Post-commit failures report the committed outcome; they never roll it back.
-        let reconciled = if outcome.is_ok() {
+        let reconciled = if completed.outcome.is_ok() {
+            let data = self.requests.data().clone();
             let mut store = self.store.lock();
             let mut context = CommitContext::new(
                 &mut store,
                 &self.connections,
                 &self.peers,
                 self.authority.as_ref(),
-                self.requests.data(),
+                &data,
                 Some(scope),
                 &mut self.residency,
             );
@@ -731,6 +739,20 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
                 &publication,
                 completed.program.as_ref(),
             )
+            .and_then(|()| {
+                if self.requests.complete(context.store, &mut completed)
+                    && completed.outcome.is_ok()
+                {
+                    complete_commit(
+                        &mut self.participant,
+                        &mut context,
+                        &completed.changes,
+                        &completed.context.publication,
+                        completed.program.as_ref(),
+                    )?;
+                }
+                Ok(())
+            })
         } else {
             Ok(())
         };
@@ -750,7 +772,9 @@ impl<B: Backend, P: Participant<B>> Blocking<B, P> {
             self.participant.release(&mut context)
         };
         let reconciled = reconciled.and(released);
-        let outcome = match (outcome, reconciled) {
+        let work = completed.work;
+        let bearer_change = completed.context.bearer_change;
+        let outcome = match (completed.outcome, reconciled) {
             (Ok(_), Err(error)) => Err(Error::Application(
                 json!({"code":"Blocked", "committed":true, "cause":error.to_string()}),
             )),

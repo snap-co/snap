@@ -1,6 +1,33 @@
 use crate::{Channel, Command, Error, Event, Invocation, Outcome, Response, Value};
 use alloc::{boxed::Box, collections::BTreeMap, string::String};
 
+/// Terminal operation calls shared by module SDKs. This is not connected IO.
+/// Select a declared exception or the active connection before submission.
+/// Failure never selects a second carrier or replays work.
+pub trait Operations {
+    fn call<O: crate::Operation>(
+        &mut self,
+        input: &O::Input,
+    ) -> impl core::future::Future<Output = Result<O::Output, Error>>;
+}
+
+impl<C: Channel> Operations for Client<C> {
+    async fn call<O: crate::Operation>(&mut self, input: &O::Input) -> Result<O::Output, Error> {
+        let input = serde_json::to_value(input).map_err(|_| Error::InvalidInput)?;
+        let value = if let Some((_, read_bearer)) = O::HTTP {
+            let bearer = if read_bearer {
+                self.bearer().map(String::from)
+            } else {
+                None
+            };
+            self.request(bearer.as_deref(), O::NAME, input).await?
+        } else {
+            self.invoke(O::NAME, input).await?
+        };
+        decode(value)
+    }
+}
+
 /// Client-owned correlation IDs shared across module bindings. Keep the allocator
 /// across physical reconnects; IDs grant no authority and imply no retry policy.
 #[derive(Default)]

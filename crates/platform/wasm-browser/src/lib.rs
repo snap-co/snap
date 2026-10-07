@@ -1,37 +1,68 @@
-//! Browser HTTP IO for the Rust Transport SDK. Cookies remain browser-managed.
-//! Each command is sent once; cancellation or IO failure never replays a mutation.
-use snap_transport::{Channel, Command, Error, Event, Response, Value};
-use std::collections::VecDeque;
+//! Browser carrier selection for module SDKs. Ordinary calls use the runtime's
+//! identified WebSocket connection; only declared exceptions use HTTP.
+//! Selection happens before submission. No failure replays work on another carrier.
+use snap_transport::{Error, Event, Invocation, Operation, Outcome, Value};
 
-pub struct Http {
-    routes: Vec<snap_transport::carrier::HttpRoute>,
-    /// Observations already fetched from the wire, waiting to be handed out one
-    /// per `receive`. HTTP answers a request with the whole exchange, so the
-    /// platform reassembles it into the single-event frames Transport carries.
-    buffered: VecDeque<Response>,
+/// Connected invocation handoff supplied by the browser runtime. It uses the
+/// same socket and invocation allocator as the application's replica binding.
+pub type Invoke = js_sys::Function;
+
+#[derive(Default)]
+pub struct Client {
+    http: Http,
+    ids: snap_transport::client::InvocationIds,
+    invoke: Option<Invoke>,
 }
-impl Http {
-    pub fn new(routes: impl IntoIterator<Item = snap_transport::carrier::HttpRoute>) -> Self {
+impl Client {
+    pub fn connected(invoke: Invoke) -> Self {
         Self {
-            routes: routes.into_iter().collect(),
-            buffered: VecDeque::new(),
+            invoke: Some(invoke),
+            ..Self::default()
         }
     }
 }
-
-impl Channel for Http {
-    /// Performs the round trip. Plain HTTP cannot pipeline, so acceptance cannot
-    /// be published before the handler runs: a slow operation is dead air here.
-    /// WebSocket carriers do not have this limit.
-    async fn send(&mut self, command: Command) -> Result<(), Error> {
-        let Command::Request { invocation, .. } = command else {
-            return Err(Error::Protocol);
+impl snap_transport::client::Operations for Client {
+    async fn call<O: Operation>(&mut self, input: &O::Input) -> Result<O::Output, Error> {
+        let input = serde_json::to_value(input).map_err(|_| Error::InvalidInput)?;
+        let value = match O::http_route() {
+            Some(route) => {
+                self.http
+                    .request(
+                        route,
+                        Invocation {
+                            id: self.ids.allocate()?,
+                            operation: O::NAME.into(),
+                            input,
+                        },
+                    )
+                    .await?
+            }
+            None => {
+                connected(
+                    self.invoke.as_ref().ok_or(Error::Unavailable)?,
+                    O::NAME,
+                    input,
+                )
+                .await?
+            }
         };
-        let route = self
-            .routes
-            .iter()
-            .find(|route| route.operation == invocation.operation)
-            .ok_or(Error::UnknownOperation)?;
+        snap_transport::client::decode(value)
+    }
+}
+
+/// Terminal HTTP IO. It has no connection, admission stream or reply buffer,
+/// and does not implement `Channel`. Cookies remain browser-managed.
+#[derive(Default)]
+pub struct Http;
+impl Http {
+    pub async fn request(
+        &mut self,
+        route: snap_transport::carrier::HttpRoute,
+        invocation: Invocation,
+    ) -> Outcome {
+        if route.operation != invocation.operation {
+            return Err(Error::UnknownOperation);
+        }
         let method = match route.method {
             snap_transport::carrier::HttpMethod::Get => "GET",
             snap_transport::carrier::HttpMethod::Post => "POST",
@@ -46,24 +77,38 @@ impl Channel for Http {
         if id != invocation.id {
             return Err(Error::Protocol);
         }
-        // HTTP exposes only completion; a successful terminal result proves that
-        // admission happened. Synthesize the acceptance Transport's ordering
-        // contract requires, then hand out one event per receive.
-        if outcome.is_ok() {
-            self.buffered
-                .push_back(Response::Event(Event::Accepted { id }));
-        }
-        self.buffered
-            .push_back(Response::Event(Event::Completed { id, outcome }));
-        Ok(())
+        outcome
     }
+}
 
-    /// Yields the next buffered observation, or `None` once the exchange is
-    /// exhausted. A connectionless request has no logical connection, so it
-    /// never receives a `Global` push.
-    async fn receive(&mut self) -> Result<Option<Response>, Error> {
-        Ok(self.buffered.pop_front())
-    }
+#[cfg(not(target_arch = "wasm32"))]
+async fn connected(_: &Invoke, _: &str, _: Value) -> Outcome {
+    Err(Error::Unavailable)
+}
+#[cfg(target_arch = "wasm32")]
+async fn connected(invoke: &Invoke, operation: &str, input: Value) -> Outcome {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+    let result = invoke
+        .call2(
+            &JsValue::NULL,
+            &JsValue::from_str(operation),
+            &JsValue::from_str(&input.to_string()),
+        )
+        .map_err(|_| Error::Unavailable)?;
+    let result = JsFuture::from(
+        result
+            .dyn_into::<js_sys::Promise>()
+            .map_err(|_| Error::Protocol)?,
+    )
+    .await
+    .map_err(|error| {
+        error
+            .as_string()
+            .and_then(|value| serde_json::from_str::<Error>(&value).ok())
+            .unwrap_or(Error::Unavailable)
+    })?;
+    serde_json::from_str(&result.as_string().ok_or(Error::Protocol)?).map_err(|_| Error::Protocol)
 }
 pub async fn get_json(path: &str) -> Result<Value, Error> {
     request(path, "GET", None, None).await

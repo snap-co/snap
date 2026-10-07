@@ -184,6 +184,11 @@ impl Host {
         self.start().await;
     }
 
+    pub fn stopped_store(&mut self) -> snap_store::Store<snap_store_sqlite::Sqlite> {
+        drop(self.process.take());
+        snap_store_sqlite::Sqlite::open(&self._directory.path().join("data/authy.sqlite")).unwrap()
+    }
+
     pub fn request(&self, path: &str, cookie: &str) -> RequestBuilder {
         self.client
             .get(format!("{}{path}", self.base))

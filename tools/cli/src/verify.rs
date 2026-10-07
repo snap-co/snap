@@ -1,456 +1,302 @@
-//! Framework verification in a source copy with no application members or files.
+//! Framework verification coordinates planning, execution and semantic reporting.
+mod coverage;
+mod execution;
+mod help;
+mod plan;
+mod report;
+
 use crate::process::Runner;
 use anyhow::{Context, Result, ensure};
 use clap::{Args as ClapArgs, ValueEnum};
+use execution::Run;
+use plan::{Plan, cargo_args, native_features};
+use report::Report;
+use serde_json::Value;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
+    time::{Duration, Instant},
 };
 use tokio::process::Command;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Gate {
-    Check,
-    Test,
-    Properties,
-    Io,
-    Browser,
+    /// Static checks, all implemented native contracts and properties, browser suites, and doctests.
     All,
+    /// Interface contracts: Store, Transport, Crypto, HTTP and native host composition, including properties and ignored cases.
+    Interface,
+    /// Core contracts: Document, Access, Identity and OIDC, including properties and ignored cases.
+    Core,
+    /// Client adapters: native adapter contracts plus Chromium browser-client and React suites.
+    Clients,
+    /// Tooling contracts: CLI and deployment configuration, including ignored cases. Does not run static checks.
+    Tooling,
+    /// Static checks only: formatting, Clippy, dependency direction, portable Wasm compilation, TypeScript and dependency policy.
+    Check,
+    /// Non-ignored native tests and doctests across layers; excludes properties and browser suites.
+    Test,
+    /// Generated property tests across their owning layers; excludes fixed examples and browser suites.
+    Properties,
+    /// Explicitly ignored native integration contracts, including real-IO and cache-reuse checks; excludes properties.
+    Io,
+    /// Chromium browser-client and React suites only.
+    Browser,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum Matrix {
+    /// Representative native setups. Keeps applicable crash-durability and adapter-specific checks.
+    Fast,
+    /// Every implemented applicable configuration, not every intended contract/configuration combination.
+    Full,
 }
 
 #[derive(ClapArgs)]
+#[command(
+    override_usage = "./bin/test [OPTIONS] [GATE]\n       snap verify-framework [OPTIONS] [GATE]",
+    after_help = help::details()
+)]
 pub struct Args {
     #[arg(value_enum, default_value = "all")]
     gate: Gate,
-    /// Framework checkout to verify
+    /// Framework checkout to verify. bin/test sets this to its own checkout; use the direct CLI to select another root.
     #[arg(long, default_value = ".")]
     root: PathBuf,
-    /// Print selected members and commands without building
+    /// Preview target ownership and host selections without building. Exact cases are discovered at runtime.
     #[arg(long)]
     list: bool,
-    /// Retain the isolated source and target after success
+    /// Representative host setups, or every implemented combination of the same contracts.
+    #[arg(long, value_enum, default_value = "fast")]
+    matrix: Matrix,
+    /// Maximum independent test processes, 1..=64. Cargo compilation remains aggregated and sequential.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+    jobs: u16,
+    /// Stream raw command output and show individual configuration results.
     #[arg(long)]
+    verbose: bool,
+    /// Maximum execution time per contract job, in seconds, at least 1. Compilation has no test deadline.
+    #[arg(long, default_value_t = 1200, value_parser = clap::value_parser!(u32).range(1..))]
+    timeout: u32,
+    /// Retain fresh build artifacts after successful verification. Requires --cold.
+    #[arg(long, requires = "cold")]
     keep: bool,
-    /// Use fresh build artifacts without reading or replacing the framework cache
+    /// Use fresh disposable artifacts, without changing the normal Cargo cache.
     #[arg(long)]
     cold: bool,
 }
 
-struct Check {
-    args: Vec<String>,
-    tests: bool,
-}
-fn check(args: &[&str], tests: bool) -> Check {
-    Check {
-        args: args.iter().map(|s| (*s).into()).collect(),
-        tests,
-    }
-}
-fn commands(gate: Gate, root: &Path, target: &Path) -> Vec<Check> {
-    let cli = target.join("debug/snap").to_string_lossy().into_owned();
-    let root = root.to_string_lossy();
-    match gate {
-        Gate::Check => vec![
-            check(&["cargo", "build", "-p", "snap-cli"], false),
-            check(&[&cli, "check", &root, "--workspace"], false),
-            check(
-                &[
-                    "bun",
-                    &format!("{root}/node_modules/typescript/bin/tsc"),
-                    "--project",
-                    &format!("{root}/kits/tsconfig.json"),
-                    "--noEmit",
-                ],
-                false,
-            ),
-            check(&[&cli, "check-deps", &root], false),
-        ],
-        Gate::Test => vec![check(
-            &[
-                "cargo",
-                "test",
-                "--workspace",
-                "--exclude",
-                "snap-core-properties",
-                "--exclude",
-                "snap-browser-tests",
-                "--features",
-                "snap-identity-native/passkey,snap-transport/native-server",
-            ],
-            true,
-        )],
-        Gate::Properties => vec![check(
-            &[
-                "cargo",
-                "test",
-                "-p",
-                "snap-core-properties",
-                "--",
-                "--nocapture",
-            ],
-            true,
-        )],
-        Gate::Io => vec![
-            check(
-                &[
-                    "cargo",
-                    "test",
-                    "-p",
-                    "snap-cli",
-                    "--test",
-                    "check",
-                    "--test",
-                    "check_contract",
-                    "--test",
-                    "application",
-                    "--test",
-                    "verify",
-                    "--",
-                    "--ignored",
-                    "--skip",
-                    "fixture_child",
-                ],
-                true,
-            ),
-            check(
-                &[
-                    "cargo",
-                    "test",
-                    "-p",
-                    "snap-platform-tests",
-                    "--test",
-                    "host_tcp",
-                    "--test",
-                    "document_sync",
-                    "--",
-                    "--ignored",
-                ],
-                true,
-            ),
-            check(
-                &[
-                    "cargo",
-                    "test",
-                    "-p",
-                    "snap-transport",
-                    "--features",
-                    "native-server",
-                    "--test",
-                    "native_tls",
-                    "--",
-                    "--ignored",
-                ],
-                true,
-            ),
-            check(
-                &[
-                    "cargo",
-                    "test",
-                    "-p",
-                    "snap-store-sqlite",
-                    "--test",
-                    "recovery",
-                    "--",
-                    "--ignored",
-                ],
-                true,
-            ),
-            check(
-                &[
-                    "cargo",
-                    "test",
-                    "-p",
-                    "snap-crypto",
-                    "--test",
-                    "native",
-                    "--test",
-                    "token",
-                    "--",
-                    "--ignored",
-                ],
-                true,
-            ),
-        ],
-        Gate::Browser => vec![check(
-            &[
-                "cargo",
-                "run",
-                "-p",
-                "snap-browser-tests",
-                "--",
-                "--prepare",
-                "all",
-            ],
-            false,
-        )],
-        Gate::All => unreachable!("expanded before selection"),
-    }
-}
-
-fn manifest(root: &Path) -> Result<toml::Value> {
-    let mut value: toml::Value = toml::from_str(&fs::read_to_string(root.join("Cargo.toml"))?)?;
-    let workspace = value
-        .get_mut("workspace")
-        .and_then(toml::Value::as_table_mut)
-        .context("Missing workspace")?;
-    let members = workspace
-        .get_mut("members")
-        .and_then(toml::Value::as_array_mut)
-        .context("Missing workspace members")?;
-    members.retain(|member| member.as_str().is_some_and(|p| !p.starts_with("apps/")));
-    ensure!(
-        !members.is_empty(),
-        "No framework workspace members selected"
-    );
-    let defaults = members
-        .iter()
-        .filter(|m| !matches!(m.as_str(), Some("tests/properties" | "tests/browser")))
-        .cloned()
-        .collect();
-    workspace.insert("default-members".into(), toml::Value::Array(defaults));
-    if let Some(dependencies) = workspace
-        .get_mut("dependencies")
-        .and_then(toml::Value::as_table_mut)
-    {
-        dependencies.retain(|_, dep| {
-            !dep.get("path")
-                .and_then(toml::Value::as_str)
-                .is_some_and(|p| p.starts_with("apps/"))
-        });
-    }
-    Ok(value)
-}
-
-fn copy(source: &Path, destination: &Path, original: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(source)?;
-    if metadata.file_type().is_symlink() {
-        // Framework files cannot smuggle app sources in through another path.
-        if let Ok(target) = source.canonicalize() {
-            ensure!(
-                !target.starts_with(original.join("apps")),
-                "Framework symlink reaches apps: {}",
-                source.display()
-            );
-        }
-        std::os::unix::fs::symlink(fs::read_link(source)?, destination)?;
-    } else if metadata.is_dir() {
-        fs::create_dir(destination)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            if [
-                "target",
-                "node_modules",
-                ".git",
-                ".deployment",
-                ".snap",
-                "dist",
-            ]
-            .iter()
-            .any(|name| entry.file_name() == *name)
-            {
-                continue;
-            }
-            copy(
-                &entry.path(),
-                &destination.join(entry.file_name()),
-                original,
-            )?;
-        }
-    } else {
-        fs::copy(source, destination)?;
-    }
-    Ok(())
-}
-
-fn checkout(root: &Path, destination: &Path, manifest: &toml::Value) -> Result<()> {
-    fs::create_dir(destination)?;
-    for name in ["crates", "kits", "tools", "tests", "bin"] {
-        copy(&root.join(name), &destination.join(name), root)?;
-    }
-    for name in [
-        "Cargo.lock",
-        "mise.toml",
-        "deny.toml",
-        "bun.lock",
-        "tsconfig.json",
-    ] {
-        fs::copy(root.join(name), destination.join(name))?;
-    }
-    fs::write(
-        destination.join("Cargo.toml"),
-        toml::to_string_pretty(manifest)?,
-    )?;
-    let mut package: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("package.json"))?)?;
-    package
-        .as_object_mut()
-        .context("Invalid package.json")?
-        .remove("workspaces");
-    fs::write(
-        destination.join("package.json"),
-        serde_json::to_vec_pretty(&package)?,
-    )?;
-    if root.join("node_modules").is_dir() {
-        std::os::unix::fs::symlink(root.join("node_modules"), destination.join("node_modules"))?;
-    }
-    Ok(())
-}
-
-fn command(args: &[String], root: &Path, target: &Path, build: &Path, cache: &Path) -> Command {
-    let mut command = Command::new(&args[0]);
-    command
-        .args(&args[1..])
-        .current_dir(root)
-        .env("CARGO_TARGET_DIR", target)
-        .env("CARGO_BUILD_BUILD_DIR", build)
-        .env("TMPDIR", cache)
-        .env("SNAP_BROWSER_ROOT", root);
-    command
-}
-
 async fn verify(
-    root: &Path,
-    target: &Path,
-    build: &Path,
-    cache: &Path,
-    gates: &[Gate],
-    runner: &Runner,
+    run: &Run<'_>,
+    report: &mut Report,
+    packages: &[&Value],
+    args: &Args,
 ) -> Result<()> {
-    let metadata = runner
-        .run(
-            &mut command(
-                &[
-                    "cargo".into(),
-                    "metadata".into(),
-                    "--format-version=1".into(),
-                    "--all-features".into(),
-                ],
-                root,
-                target,
-                build,
-                cache,
+    println!("\nPreflight");
+    if matches!(args.gate, Gate::All | Gate::Check) {
+        let mut format = cargo_args("fmt", packages, &[]);
+        format.extend(["--".into(), "--check".into()]);
+        run.step(report, "Formatting", format).await?;
+        for (name, features) in [
+            ("Rust linting · default features", Vec::new()),
+            (
+                "Rust linting · native HTTP, crypto and transport",
+                native_features(packages),
             ),
-            true,
+        ] {
+            let mut clippy = cargo_args("clippy", packages, &features);
+            clippy.extend([
+                "--all-targets".into(),
+                "--".into(),
+                "-D".into(),
+                "warnings".into(),
+            ]);
+            run.step(report, name, clippy).await?;
+        }
+        run.step(
+            report,
+            "Dependency direction and portable Wasm compilation",
+            vec![
+                std::env::current_exe()?.to_string_lossy().into_owned(),
+                "check".into(),
+                run.root.to_string_lossy().into_owned(),
+                "--framework".into(),
+                "--structure-only".into(),
+            ],
         )
         .await?;
-    runner.check()?;
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata)?;
-    for package in metadata["packages"]
-        .as_array()
-        .context("Missing Cargo packages")?
-    {
-        if package["source"].is_null() {
-            let path = Path::new(
-                package["manifest_path"]
-                    .as_str()
-                    .context("Missing manifest path")?,
-            )
-            .canonicalize()?;
-            ensure!(
-                path.starts_with(root),
-                "Framework dependency escapes its source copy: {}",
-                path.display()
-            );
-        }
+        run.step(
+            report,
+            "TypeScript",
+            vec![
+                "bun".into(),
+                run.root
+                    .join("node_modules/typescript/bin/tsc")
+                    .to_string_lossy()
+                    .into_owned(),
+                "--project".into(),
+                run.root
+                    .join("kits/tsconfig.json")
+                    .to_string_lossy()
+                    .into_owned(),
+                "--noEmit".into(),
+            ],
+        )
+        .await?;
+        run.step(
+            report,
+            "Dependency policy · unused dependencies, bans and sources",
+            vec![
+                std::env::current_exe()?.to_string_lossy().into_owned(),
+                "check-deps".into(),
+                run.root.to_string_lossy().into_owned(),
+                "--framework".into(),
+            ],
+        )
+        .await?;
     }
-    for gate in gates {
-        println!("[{gate:?}]");
-        for check in commands(*gate, root, target) {
-            println!("+ {}", check.args.join(" "));
-            // Capture only test summaries. Compiler and browser output streams normally.
-            let mut command = command(&check.args, root, target, build, cache);
-            let output = if check.tests {
-                runner.report(&mut command).await
-            } else {
-                runner.run(&mut command, false).await
-            };
-            runner.check()?;
-            let output = String::from_utf8_lossy(&output?).into_owned();
-            if check.tests {
-                let count: usize = output
-                    .lines()
-                    .filter_map(|line| {
-                        line.strip_prefix("test result: ok. ")?
-                            .split_whitespace()
-                            .next()?
-                            .parse::<usize>()
-                            .ok()
-                    })
-                    .sum();
-                ensure!(
-                    count > 0,
-                    "No passing cases selected: {}",
-                    check.args.join(" ")
-                );
-            }
-        }
+    Plan::prepare(run, report, packages, args)
+        .await?
+        .execute(run, report, args.jobs)
+        .await?;
+    if matches!(args.gate, Gate::All | Gate::Test) {
+        let selected: Vec<_> = packages
+            .iter()
+            .copied()
+            .filter(|package| {
+                !matches!(
+                    package["name"].as_str(),
+                    Some("snap-core-properties" | "snap-browser-tests")
+                )
+            })
+            .collect();
+        let mut docs = cargo_args("test", &selected, &native_features(&selected));
+        docs.push("--doc".into());
+        run.step(report, "Documentation examples · framework packages", docs)
+            .await?;
     }
     Ok(())
 }
 
 pub async fn run(args: Args, runner: &Runner) -> Result<()> {
     let root = args.root.canonicalize()?;
-    let manifest = manifest(&root)?;
-    let gates = match args.gate {
-        Gate::All => vec![
-            Gate::Check,
-            Gate::Test,
-            Gate::Properties,
-            Gate::Io,
-            Gate::Browser,
-        ],
-        gate => vec![gate],
-    };
-    println!("Framework members: {}", manifest["workspace"]["members"]);
+    let output = runner
+        .run(
+            Command::new("cargo").current_dir(&root).args([
+                "metadata",
+                "--format-version=1",
+                "--no-deps",
+            ]),
+            true,
+        )
+        .await?;
+    runner.check()?;
+    let metadata: Value = serde_json::from_slice(&output)?;
+    let packages = crate::cargo::workspace_packages(&metadata, true)?;
+    ensure!(
+        !packages.is_empty(),
+        "No framework workspace packages selected"
+    );
     println!(
-        "Shared conformance does not yet cover Wasm execution, browser client carriers, client-side durable recovery or the full Transport/Store matrix."
+        "Framework verification · {} packages · {:?} matrix · {} parallel jobs",
+        packages.len(),
+        args.matrix,
+        args.jobs
     );
     if args.list {
-        for gate in gates {
-            println!("[{gate:?}]");
-            for check in commands(gate, Path::new("<framework>"), Path::new("<target>")) {
-                println!("{}", check.args.join(" "));
-            }
-        }
+        Plan::preview(&packages, &args);
         return Ok(());
     }
-    let cache = PathBuf::from(std::env::var_os("HOME").context("HOME is required")?)
+    let scratch = PathBuf::from(std::env::var_os("HOME").context("HOME is required")?)
         .join(".cache/coding-agents");
-    fs::create_dir_all(&cache)?;
-    let scratch = tempfile::Builder::new()
-        .prefix("snap-framework-")
-        .tempdir_in(&cache)?
-        .keep();
-    println!("Isolated verification: {}", scratch.display());
-    let source = scratch.join("source");
-    let target = scratch.join("target");
-    // Source isolation does not require recompiling registry dependencies. Keep
-    // intermediate artifacts outside the disposable output directory; Cargo owns
-    // fingerprint validation and locking. Cold runs must also override any
-    // inherited build directory so they cannot read or change the warm cache.
-    let build = if args.cold {
-        target.clone()
+    fs::create_dir_all(&scratch)?;
+    let cold_root = if args.cold {
+        let root = tempfile::Builder::new()
+            .prefix("snap-framework-cold-")
+            .tempdir_in(&scratch)?
+            .keep();
+        println!("Cold build artifacts: {}", root.display());
+        Some(root)
     } else {
-        root.join("target/framework-build")
+        None
     };
-    println!("Cargo build directory: {}", build.display());
-    let result = async {
-        checkout(&root, &source, &manifest)?;
-        fs::create_dir_all(&build)?;
-        verify(&source, &target, &build, &cache, &gates, runner).await
+    let cold = cold_root.as_ref().map(|root| root.join("target"));
+    let target = PathBuf::from(
+        metadata["target_directory"]
+            .as_str()
+            .context("Missing Cargo target directory")?,
+    );
+    let log_root = target.join("verification");
+    fs::create_dir_all(&log_root)?;
+    let logs = tempfile::Builder::new()
+        .prefix("run-")
+        .tempdir_in(&log_root)?
+        .keep();
+    println!(
+        "Cargo cache: {}",
+        cold.as_ref().unwrap_or(&target).display()
+    );
+    println!("Logs: {}", logs.display());
+    let mut report = Report::default();
+    report.selection.extend([
+        ("gate", format!("{:?}", args.gate)),
+        ("matrix", format!("{:?}", args.matrix)),
+        ("parallel_jobs", args.jobs.to_string()),
+        ("job_timeout_seconds", args.timeout.to_string()),
+        (
+            "cargo_target",
+            cold.as_ref().unwrap_or(&target).display().to_string(),
+        ),
+    ]);
+    let start = Instant::now();
+    let run = Run {
+        root: &root,
+        cold: cold.as_deref(),
+        scratch: &scratch,
+        logs: &logs,
+        verbose: args.verbose,
+        timeout: Duration::from_secs(u64::from(args.timeout)),
+        runner,
+    };
+    let result = verify(&run, &mut report, &packages, &args)
+        .await
+        .and_then(|()| runner.check());
+    if matches!(args.gate, Gate::All | Gate::Interface) {
+        report.gaps.extend(["Shared Wasm platform conformance is not implemented", "Browser client-carrier conformance and client-side durable recovery are not implemented"]);
     }
-    .await;
-    if let Err(error) = result {
-        eprintln!(
-            "Verification incomplete; retained source and evidence at {}",
-            scratch.display()
-        );
-        return Err(error);
+    if matches!(args.gate, Gate::All | Gate::Core) {
+        report.gaps.push("Core host variation currently covers Document manifest holdings; other core contracts retain their existing setups");
     }
-    runner.check()?;
-    println!("Framework verification passed: {gates:?}");
-    if !args.keep {
-        fs::remove_dir_all(scratch)?;
+    println!(
+        "\n{} · {:.2}s · {} distinct warnings",
+        if result.is_ok() {
+            "Verification passed"
+        } else {
+            "Verification incomplete"
+        },
+        start.elapsed().as_secs_f64(),
+        report.warnings.len()
+    );
+    for warning in &report.warnings {
+        println!("  {warning}");
     }
-    Ok(())
+    for gap in &report.gaps {
+        println!("  Coverage gap: {gap}");
+    }
+    println!("Full logs and coverage results: {}", logs.display());
+    fs::write(
+        logs.join("summary.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    if result.is_ok()
+        && !args.keep
+        && let Some(root) = &cold_root
+    {
+        fs::remove_dir_all(root)?;
+    }
+    if result.is_err()
+        && let Some(root) = cold_root
+    {
+        eprintln!("Retained cold build artifacts: {}", root.display());
+    }
+    result
 }

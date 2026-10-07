@@ -1,14 +1,14 @@
 //! React/Wasm glue over Rust module SDKs. No credential/session behavior lives
 //! in JavaScript; the browser transport handles HTTP and browser-managed cookies.
-use snap_transport::client::Client;
-use snap_wasm_browser::Http;
+use snap_wasm_browser::Client;
+pub use snap_wasm_browser::Invoke;
 use wasm_bindgen::prelude::*;
 fn error(error: snap_transport::Error) -> JsValue {
     JsValue::from_str(snap_identity::client::message(&error))
 }
 
 pub async fn fetch() -> Result<String, JsValue> {
-    let mut transport = Client::new(Http::new(snap_identity::operation::http_routes()));
+    let mut transport = Client::default();
     let value = snap_identity::client::Client::new(&mut transport)
         .fetch()
         .await
@@ -16,7 +16,7 @@ pub async fn fetch() -> Result<String, JsValue> {
     serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid identity output"))
 }
 pub async fn acquire(email: &str, password: &str, enroll: bool) -> Result<String, JsValue> {
-    let mut transport = Client::new(Http::new(snap_identity::operation::http_routes()));
+    let mut transport = Client::default();
     let mut client = snap_identity::client::Client::new(&mut transport);
     let value = if enroll {
         client.enroll(email, password).await
@@ -29,22 +29,22 @@ pub async fn acquire(email: &str, password: &str, enroll: bool) -> Result<String
 pub async fn release(scope: &str) -> Result<(), JsValue> {
     let scope = snap_identity::ReleaseScope::parse(scope)
         .map_err(|_| JsValue::from_str("Invalid release scope"))?;
-    let mut transport = Client::new(Http::new(snap_identity::operation::http_routes()));
+    let mut transport = Client::default();
     snap_identity::client::Client::new(&mut transport)
         .release(scope)
         .await
         .map_err(error)
 }
-pub async fn sessions() -> Result<String, JsValue> {
-    let mut transport = Client::new(Http::new(snap_identity::operation::http_routes()));
+pub async fn sessions(invoke: Invoke) -> Result<String, JsValue> {
+    let mut transport = Client::connected(invoke);
     let value = snap_identity::client::Client::new(&mut transport)
         .sessions()
         .await
         .map_err(error)?;
     serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid identity output"))
 }
-pub async fn credentials() -> Result<String, JsValue> {
-    let mut transport = Client::new(Http::new(snap_identity::operation::http_routes()));
+pub async fn credentials(invoke: Invoke) -> Result<String, JsValue> {
+    let mut transport = Client::connected(invoke);
     let value = snap_identity::client::Client::new(&mut transport)
         .credentials()
         .await
@@ -52,7 +52,7 @@ pub async fn credentials() -> Result<String, JsValue> {
     serde_json::to_string(&value).map_err(|_| JsValue::from_str("Invalid identity output"))
 }
 pub async fn passkey_begin_registration(label: &str, binding: &str) -> Result<String, JsValue> {
-    let mut transport = Client::new(Http::new(snap_identity::operation::passkey_http_routes()));
+    let mut transport = Client::default();
     let value = snap_identity::client::Client::new(&mut transport)
         .begin_passkey_registration(label, binding)
         .await
@@ -64,7 +64,7 @@ pub async fn passkey_begin_authentication(
     name: Option<&str>,
     binding: &str,
 ) -> Result<String, JsValue> {
-    let mut transport = Client::new(Http::new(snap_identity::operation::passkey_http_routes()));
+    let mut transport = Client::default();
     let mut client = snap_identity::client::Client::new(&mut transport);
     let value = match name {
         Some(name) => {
@@ -80,7 +80,7 @@ pub async fn passkey_begin_authentication(
 pub async fn passkey_finish(proof: &str, registration: bool) -> Result<String, JsValue> {
     let proof =
         serde_json::from_str(proof).map_err(|_| JsValue::from_str("Invalid passkey response"))?;
-    let mut transport = Client::new(Http::new(snap_identity::operation::passkey_http_routes()));
+    let mut transport = Client::default();
     let mut client = snap_identity::client::Client::new(&mut transport);
     let value = if registration {
         client.finish_passkey_registration(&proof).await
@@ -127,12 +127,16 @@ macro_rules! export_identity {
             $crate::release(&scope).await
         }
         #[wasm_bindgen::prelude::wasm_bindgen]
-        pub async fn identity_sessions() -> Result<String, wasm_bindgen::JsValue> {
-            $crate::sessions().await
+        pub async fn identity_sessions(
+            invoke: $crate::Invoke,
+        ) -> Result<String, wasm_bindgen::JsValue> {
+            $crate::sessions(invoke).await
         }
         #[wasm_bindgen::prelude::wasm_bindgen]
-        pub async fn identity_credentials() -> Result<String, wasm_bindgen::JsValue> {
-            $crate::credentials().await
+        pub async fn identity_credentials(
+            invoke: $crate::Invoke,
+        ) -> Result<String, wasm_bindgen::JsValue> {
+            $crate::credentials(invoke).await
         }
         #[wasm_bindgen::prelude::wasm_bindgen]
         pub async fn identity_passkey_register(

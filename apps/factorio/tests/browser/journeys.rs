@@ -73,14 +73,14 @@ async fn current_url(ui: &Ui) -> Result<String> {
     Ok(value.as_str().unwrap_or_default().to_owned())
 }
 
-async fn invoke(ui: &Ui, operation: &str, input: Value, bearer: &str) -> Result<Value> {
+async fn invoke(ui: &Ui, operation: &str, input: Value) -> Result<Value> {
     let expression = format!(
         r#"(function(){{return new Promise((resolve,reject)=>{{
-            const operation={op}, input={inp}, bearer={tok};
+            const operation={op}, input={inp};
             const socket=new WebSocket(location.origin.replace(/^http/,"ws")+"/transport");
             let accepted=false;
             const timer=setTimeout(()=>{{socket.close();reject(new Error("WS timeout"));}},10000);
-            socket.onopen=()=>socket.send(JSON.stringify({{Connect:{{bearer,client_id:"fixture-"+Math.random()}}}}));
+            socket.onopen=()=>socket.send(JSON.stringify({{Connect:{{bearer:"",client_id:"fixture-"+Math.random()}}}}));
             socket.onmessage=event=>{{
                 const frame=JSON.parse(String(event.data));
                 if(frame.Attached) socket.send(JSON.stringify({{Invoke:{{id:1,operation,input}}}}));
@@ -95,9 +95,62 @@ async fn invoke(ui: &Ui, operation: &str, input: Value, bearer: &str) -> Result<
         }})}})()"#,
         op = serde_json::to_string(operation)?,
         inp = serde_json::to_string(&input)?,
-        tok = serde_json::to_string(bearer)?,
     );
     ui.eval(&expression).await
+}
+
+/// Agent authority travels over the production TLS carrier. Browser WebSockets
+/// are bound to their upgrade cookie and cannot select a different identity.
+async fn invoke_agent(
+    setup: &FactorioSetup,
+    operation: &str,
+    input: Value,
+    bearer: &str,
+) -> Result<Value> {
+    use snap_transport::{
+        Command, Event, Invocation, Response,
+        native::{TcpClient, tls::ClientTls},
+    };
+    timeout(Duration::from_secs(10), async {
+        let tls = ClientTls::new(Some(&setup.dir.join("ca.pem")), Some("localhost"))?;
+        let mut socket = TcpClient::open(&setup.tcp, &tls).await?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        socket
+            .send(&Command::Connect {
+                bearer: bearer.into(),
+                client_id: format!("fixture-{nonce}"),
+            })
+            .await?;
+        ensure!(
+            matches!(socket.receive().await?.0, Response::Attached { .. }),
+            "agent attachment failed"
+        );
+        socket
+            .send(&Command::Invoke(Invocation {
+                id: 1,
+                operation: operation.into(),
+                input,
+            }))
+            .await?;
+        let mut accepted = false;
+        loop {
+            match socket.receive().await?.0 {
+                Response::Event(Event::Accepted { id: 1 }) => accepted = true,
+                Response::Event(Event::Completed { id: 1, outcome }) => {
+                    let mut result = serde_json::to_value(outcome)?;
+                    result["accepted"] = json!(accepted);
+                    socket.send(&Command::Close).await?;
+                    return Ok(result);
+                }
+                Response::Failed(error) => bail!("agent invocation failed: {error:?}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .context("agent invocation deadline")?
 }
 
 async fn api_session(ui: &Ui) -> Result<Value> {
@@ -1052,7 +1105,7 @@ async fn journey_main(ui: &Ui, setup: &mut FactorioSetup) -> Result<(String, Str
         .unwrap_or("")
         .to_owned();
     let _mutation_headers = json!({"origin": base, "x-snap-csrf": csrf});
-    let workspaces = invoke(ui, "factorio.workspaces", json!({}), "").await?;
+    let workspaces = invoke(ui, "factorio.workspaces", json!({})).await?;
     let workspace = workspaces
         .get("Ok")
         .and_then(|v| v.as_array())
@@ -1066,7 +1119,6 @@ async fn journey_main(ui: &Ui, setup: &mut FactorioSetup) -> Result<(String, Str
             ui,
             "factorio.command",
             json!({"workspace": workspace, "command": {"command":"ticket","ticket":{"id":format!("preceding-{n}"),"title":format!("Earlier ticket {n}"),"description":"Existing work","modules":["a"],"status":"draft","notes":"","parent":Value::Null,"blockers":[]}}}),
-            "",
         )
         .await?;
         ensure!(
@@ -1246,13 +1298,7 @@ async fn journey_model_stranger(
         .unwrap_or_default()
         .to_owned();
     let decoded_intake = urlencoding_decode(&intake_id);
-    let state = invoke(
-        ui,
-        "factorio.workspace",
-        json!({"workspace": workspace}),
-        "",
-    )
-    .await?;
+    let state = invoke(ui, "factorio.workspace", json!({"workspace": workspace})).await?;
     let conversation = state
         .get("Ok")
         .and_then(|v| v.get("intakes"))
@@ -1312,9 +1358,9 @@ async fn journey_model_stranger(
             other.button("Create account").click().await?;
             other.button("Allow").click().await?;
             other.heading("Create your first workspace").visible().await?;
-            let empty = invoke(&other, "factorio.workspaces", json!({}), "").await?;
+            let empty = invoke(&other, "factorio.workspaces", json!({})).await?;
             ensure!(empty.get("Ok").is_some_and(|v| v == &json!([])), "stranger workspaces: {empty}");
-            let forbidden = invoke(&other, "factorio.workspace", json!({"workspace": workspace}), "").await?;
+            let forbidden = invoke(&other, "factorio.workspace", json!({"workspace": workspace})).await?;
             ensure!(forbidden.get("accepted") == Some(&json!(false)) && forbidden.get("Err").is_some(), "stranger workspace should be forbidden before ACK: {forbidden}");
             let events_ok = fetch_ok(&other, "GET", &format!("/api/workspaces/{workspace}/intakes/{decoded_intake}/events"), json!({}), None).await?;
             ensure!(!events_ok, "stranger events should be forbidden");
@@ -1416,7 +1462,7 @@ async fn journey_tickets_cli(
     ui.xpath("//*[@aria-label='Account']").click().await?;
     ui.button("Sign out").visible().await?;
     ui.button("Create agent token").count(0).await?;
-    let token = invoke(ui, "factorio.agent-token", json!({}), "").await?["Ok"]["token"]
+    let token = invoke(ui, "factorio.agent-token", json!({})).await?["Ok"]["token"]
         .as_str()
         .context("agent token")?
         .to_owned();
@@ -1461,8 +1507,8 @@ async fn journey_tickets_cli(
         resumed.get("resumed").and_then(Value::as_str) == Some(conversation.as_str()),
         "intake resume should return the conversation, got {resumed}"
     );
-    let read = invoke(
-        ui,
+    let read = invoke_agent(
+        setup,
         "factorio.intake-read",
         json!({"workspace": workspace, "id": intake_id_cli}),
         &token,
@@ -1504,8 +1550,8 @@ async fn journey_tickets_cli(
             .is_none(),
         "deleted intake should leave status, got {after_delete}"
     );
-    let reread = invoke(
-        ui,
+    let reread = invoke_agent(
+        setup,
         "factorio.intake-read",
         json!({"workspace": workspace, "id": intake_id_cli}),
         &token,
@@ -1519,7 +1565,6 @@ async fn journey_tickets_cli(
         ui,
         "factorio.intake-create",
         json!({"workspace": workspace, "id": intake_id_cli, "description": "Replacement intake"}),
-        "",
     )
     .await?;
     ensure!(
@@ -1544,7 +1589,6 @@ async fn journey_tickets_cli(
         ui,
         "factorio.intake-delete",
         json!({"workspace": workspace, "id": intake_id_cli}),
-        "",
     )
     .await?;
     ensure!(
@@ -1745,8 +1789,8 @@ async fn journey_sessions(
         .to_owned();
     let accept_early = cli_err(setup, token, &["accept", "one"]).await?;
     ensure!(!accept_early.is_empty(), "unapproved accept should fail");
-    let denied = invoke(
-        ui,
+    let denied = invoke_agent(
+        setup,
         "factorio.command",
         json!({"workspace": workspace, "command": {"command":"approve","id":"one","commit":candidate}}),
         token,

@@ -14,7 +14,10 @@ factorio-cli = { path = "../cli" }
 snap-config.workspace = true
 factorio = { path = ".." }
 snap-document.workspace = true
-snap-identity-native = { path = "../../../crates/platform/identity-native", features = ["oauth"] }
+snap-http = { workspace = true, features = ["native"] }
+snap-crypto = { path = "../../../crates/platform/crypto" }
+url = "2"
+base64 = "0.22"
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
 snap-access.workspace = true
 snap-identity.workspace = true

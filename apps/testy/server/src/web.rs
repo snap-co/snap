@@ -13,6 +13,7 @@ use axum::{
     routing::get,
 };
 use snap_transport::execution::Program;
+use snap_transport::native::web::{HttpOperation, ReadCookie};
 use snap_transport::{json, server::Authority};
 use std::{
     sync::{Arc, Mutex},
@@ -94,9 +95,10 @@ pub async fn serve<P: Program + Send + 'static, R: Authority + Send + 'static>(
     listener: tokio::net::TcpListener,
     host: Development<P, R>,
     assets: String,
+    cookie: ReadCookie,
 ) -> std::io::Result<()> {
     let origin = format!("http://{}", listener.local_addr()?);
-    serve_configured(listener, host, assets, origin, true).await
+    serve_configured(listener, host, assets, origin, true, cookie, vec![]).await
 }
 
 /// Production serves transport without publishing trusted debugger controls.
@@ -106,6 +108,8 @@ pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send +
     assets: String,
     origin: String,
     development: bool,
+    cookie: ReadCookie,
+    operations: Vec<HttpOperation>,
 ) -> std::io::Result<()> {
     let address = listener.local_addr()?;
     if development && !address.ip().is_loopback() {
@@ -138,14 +142,17 @@ pub async fn serve_configured<P: Program + Send + 'static, R: Authority + Send +
                 axum::routing::any(|| async { StatusCode::NOT_FOUND }),
             );
     }
-    let transport =
-        snap_transport::native::web::router(Arc::new(snap_transport::native::web::Service {
-            dispatch: carrier::Dispatcher(shared.clone()),
-            origin: shared.authority.clone(),
-            cookie: None,
-            require_cookie: false,
-        }));
-    let app = app.with_state(shared.clone()).merge(transport);
+    let service = Arc::new(snap_transport::native::web::Service {
+        dispatch: carrier::Dispatcher(shared.clone()),
+        origin: shared.authority.clone(),
+        cookie,
+    });
+    let app = app
+        .with_state(shared.clone())
+        .merge(snap_transport::native::web::router(service.clone()))
+        .merge(snap_transport::native::web::http_router(
+            service, operations,
+        ));
     let sweep = async {
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         loop {

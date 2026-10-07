@@ -190,7 +190,7 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
         )
         .await?;
         let server = settings.server(&settings.development_server)?;
-        let executable = build_native(&project, server, &host, production, runner).await?;
+        let executable = build_native(&project, server, &host, &host, production, runner).await?;
         std::fs::copy(executable, stage.path().join("server"))?;
     } else {
         for (name, client) in &settings.clients {
@@ -210,7 +210,8 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
                 ClientBuild::Native(native) => {
                     for target in configured_targets(native)? {
                         let executable =
-                            build_native(&project, native, &target, production, runner).await?;
+                            build_native(&project, native, &target, &host, production, runner)
+                                .await?;
                         let binary = native
                             .binary
                             .as_deref()
@@ -237,7 +238,7 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
             }
             for target in configured_targets(native)? {
                 let executable =
-                    build_native(&project, native, &target, production, runner).await?;
+                    build_native(&project, native, &target, &host, production, runner).await?;
                 let destination = PathBuf::from("servers")
                     .join(name)
                     .join(&target)
@@ -299,7 +300,7 @@ pub async fn run(args: Args, runner: &Runner) -> Result<()> {
         // Cross-built binaries cannot run here. Validate the exact app schema with
         // a host build of the same package/features; target runtime checks remain
         // deployment-specific. A host target is reused by Cargo's build cache.
-        let validator = build_native(&project, native, &host, production, runner).await?;
+        let validator = build_native(&project, native, &host, &host, production, runner).await?;
         runner
             .run(
                 Command::new(validator)
@@ -435,6 +436,7 @@ async fn build_native(
     project: &Project,
     native: &NativeBuild,
     target: &str,
+    host: &str,
     production: bool,
     runner: &Runner,
 ) -> Result<PathBuf> {
@@ -453,15 +455,12 @@ async fn build_native(
         .env_remove("SNAP_MASTER_KEY")
         .args(["build", "--locked", "--manifest-path"])
         .arg(&manifest)
-        .args([
-            "-p",
-            name,
-            "--bin",
-            binary,
-            "--target",
-            target,
-            "--message-format=json",
-        ]);
+        .args(["-p", name, "--bin", binary, "--message-format=json"]);
+    // Explicit --target, even for the host triple, creates a separate set of
+    // dependency artifacts from ordinary cargo build/test in this workspace.
+    if target != host {
+        command.args(["--target", target]);
+    }
     if production {
         command.arg("--release");
     }

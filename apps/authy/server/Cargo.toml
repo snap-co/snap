@@ -10,7 +10,6 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-snap-identity-native = { path = "../../../crates/platform/identity-native", features = ["passkey"] }
 snap-config.workspace = true
 authy.workspace = true
 snap-store.workspace = true
@@ -19,7 +18,7 @@ snap-access.workspace = true
 snap-oidc.workspace = true
 snap-transport = { path = "../../../crates/transport", features = ["native-server"] }
 snap-store-sqlite = { path = "../../../crates/platform/store-sqlite" }
-snap-crypto = { path = "../../../crates/platform/crypto" }
+snap-crypto = { path = "../../../crates/platform/crypto", features = ["passkey"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }

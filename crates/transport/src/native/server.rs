@@ -6,13 +6,12 @@ use crate::{
 use snap_store::{Backend, Host, Transaction};
 use std::{future::IntoFuture, io, sync::Arc};
 
-/// Bootstrap policy for the WebSocket upgrade. Applications own credential
-/// decoding; Transport enforces origin checks and injects the selected bearer.
+/// WebSocket upgrades always require a credential resolving to an identity before
+/// allocating a peer. Applications supply cookie decoding, never an auth bypass.
 #[derive(Clone)]
 pub struct WebSocket {
     pub origin: String,
-    pub cookie: Option<ReadCookie>,
-    pub require_cookie: bool,
+    pub cookie: ReadCookie,
 }
 
 /// Serialized server-side transactions without access to the execution gate,
@@ -75,7 +74,6 @@ impl<B: Backend + Send + 'static, P: Participant<B> + Send + 'static> Server<B, 
             dispatch: driver::Dispatcher::web(self.shared.clone()),
             origin: options.origin,
             cookie: options.cookie,
-            require_cookie: options.require_cookie,
         }))
     }
 
@@ -87,7 +85,6 @@ impl<B: Backend + Send + 'static, P: Participant<B> + Send + 'static> Server<B, 
                 dispatch: driver::Dispatcher::web(self.shared.clone()),
                 origin: options.origin,
                 cookie: options.cookie,
-                require_cookie: options.require_cookie,
             }),
             operations,
         )

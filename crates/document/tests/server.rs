@@ -11,9 +11,16 @@ use snap_transport::json;
 const LIFETIME: &str = "boot:1";
 const OTHER_LIFETIME: &str = "boot:2";
 
-#[test]
-fn manifest_omits_only_snapshots_matching_every_holding_field() {
-    let mut store = store_loaded();
+fn manifest_omits_only_snapshots_matching_every_holding_field<B: snap_store::Backend>(
+    mut store: snap_store::Store<B>,
+) {
+    for table in snap_access::TABLES
+        .iter()
+        .chain(TABLES.iter())
+        .chain(core::iter::once(&snap_store::resource::TABLE))
+    {
+        store.load(table).unwrap();
+    }
     let doc = document();
     let id = uuid(1);
     create_doc(&mut store, &doc, &id, "alice", 5);
@@ -47,6 +54,46 @@ fn manifest_omits_only_snapshots_matching_every_holding_field() {
         .unwrap();
     assert_eq!(stale.documents, vec![current]);
     assert!(stale.unchanged.is_empty());
+}
+
+mod memory {
+    use super::*;
+    #[test]
+    fn manifest_omits_only_snapshots_matching_every_holding_field() {
+        let catalog = migrations()
+            .iter()
+            .try_fold(snap_store::Catalog::default(), |catalog, migration| {
+                migration.apply(&catalog)
+            })
+            .unwrap();
+        let backend = snap_platform_tests::memory::Memory::new(catalog.clone()).unwrap();
+        super::manifest_omits_only_snapshots_matching_every_holding_field(
+            snap_store::Store::new(catalog, backend).unwrap(),
+        );
+    }
+}
+
+mod sqlite_memory {
+    use super::*;
+    #[test]
+    fn manifest_omits_only_snapshots_matching_every_holding_field() {
+        super::manifest_omits_only_snapshots_matching_every_holding_field(
+            snap_store_sqlite::Sqlite::memory(&migrations()).unwrap(),
+        );
+    }
+}
+
+mod sqlite_file {
+    use super::*;
+    #[test]
+    fn manifest_omits_only_snapshots_matching_every_holding_field() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("document.sqlite");
+        snap_store_sqlite::migrate(&path, &migrations()).unwrap();
+        super::manifest_omits_only_snapshots_matching_every_holding_field(
+            snap_store_sqlite::Sqlite::open(&path).unwrap(),
+        );
+    }
 }
 
 fn access_migration() -> snap_store::migration::Migration {
@@ -279,7 +326,13 @@ fn intent(id: u64, document: &str, mutation: &str, args: i64) -> Intent {
     }
 }
 
-fn create_doc(store: &mut Store, doc: &Document, id: &str, owner: &str, value: i64) {
+fn create_doc<B: snap_store::Backend>(
+    store: &mut snap_store::Store<B>,
+    doc: &Document,
+    id: &str,
+    owner: &str,
+    value: i64,
+) {
     store
         .run("create", |tx| {
             doc.create(tx, &snapshot(id, value, 1), Audience::Restricted, owner)

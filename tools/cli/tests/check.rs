@@ -46,6 +46,48 @@ fn passed(output: &Output) {
 
 #[test]
 #[ignore = "static compiler/filesystem gate"]
+fn framework_selection_skips_app_workflows_but_checks_dependency_direction() {
+    let directory = scratch();
+    let root = directory.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers=['crates/core','apps/example']\nresolver='3'\n",
+    )
+    .unwrap();
+    let core = root.join("crates/core");
+    let app = root.join("apps/example");
+    package(&core, "check-core");
+    package(&app, "check-app");
+    let core_manifest = manifest("check-core").replace("role='host'", "role='tool'");
+    fs::write(core.join("Cargo.toml"), &core_manifest).unwrap();
+    fs::write(
+        app.join("src/lib.rs"),
+        "compile_error!(\"framework checks must not compile this app\");\n",
+    )
+    .unwrap();
+    fs::write(app.join("snap.toml"), "invalid application configuration [").unwrap();
+    passed(&check(root, &["--framework"]));
+    assert!(!core.join("test-ran").exists());
+    assert!(!app.join("app-ran").exists());
+
+    fs::write(
+        core.join("Cargo.toml"),
+        format!("{core_manifest}\n[dev-dependencies]\ncheck-app={{path='../../apps/example'}}\n"),
+    )
+    .unwrap();
+    let output = check(root, &["--framework", "--structure-only"]);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("Dependency direction violations")
+            && error.contains("check-app")
+            && error.contains("dev"),
+        "{error}"
+    );
+}
+
+#[test]
+#[ignore = "static compiler/filesystem gate"]
 fn app_checks_are_static_and_root_checks_select_every_workspace_member() {
     let directory = scratch();
     let root = directory.path();

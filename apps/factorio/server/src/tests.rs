@@ -503,7 +503,7 @@ fn retained_login_cannot_receive_new_holdings_until_access_is_valid() {
 #[ignore = "real TLS maintenance and slow controller suite"]
 async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     use crate::Host;
-    use snap_identity_native::oauth::{Cookies, OAuth};
+    use crate::identity_host::{Cookies, OAuth};
     use snap_transport::native::driver::{Dispatcher, Shared};
     use snap_transport::{Command, Event, Invocation, Response, json};
     use std::sync::{
@@ -552,7 +552,7 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
     let oauth = OAuth::new(
         shared.clone(),
         cookies,
-        snap_identity_native::oauth::Config {
+        crate::identity_host::Config {
             origin: "http://localhost".into(),
             issuer: "http://localhost:3846".into(),
             client: "factorio".into(),
@@ -667,8 +667,8 @@ async fn two_maintained_tcp_connections_do_not_deadlock_controller_io() {
 #[ignore = "real OAuth IO suite"]
 async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it() {
     use crate::Host;
+    use crate::identity_host::{Cookies, OAuth};
     use snap_identity::oauth as rp;
-    use snap_identity_native::oauth::{Cookies, OAuth};
     use snap_transport::native::driver::Shared;
     use std::{
         sync::{
@@ -678,6 +678,9 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
         time::Duration,
     };
     let (mut store, _, mut session) = authority_fixture();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    session.issuer = issuer.clone();
     session.tokens.access_expires = 0;
     store
         .run("expire access", |tx| {
@@ -709,9 +712,21 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
         Default::default(),
         "cancelled-refresh".into(),
     );
+    let oauth_config = crate::identity_host::Config {
+        origin: "http://localhost".into(),
+        issuer,
+        client: "factorio".into(),
+        secret: String::from("fixture-secret-with-at-least-32-bytes").into(),
+        dev_origins: vec![],
+    };
+    let controllers = oauth_config.controllers().unwrap();
+    let host = host.map_participant(|mut participant| {
+        for controller in controllers {
+            participant = participant.with_controller(controller);
+        }
+        participant
+    });
     let shared = Shared::new(host);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let issuer = format!("http://{}", listener.local_addr().unwrap());
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -743,18 +758,7 @@ async fn disconnected_refresh_waiter_does_not_cancel_owned_exchange_or_replay_it
     let _server = Stop(tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     }));
-    let oauth = OAuth::new(
-        shared,
-        cookies,
-        snap_identity_native::oauth::Config {
-            origin: "http://localhost".into(),
-            issuer,
-            client: "factorio".into(),
-            secret: String::from("fixture-secret-with-at-least-32-bytes").into(),
-            dev_origins: vec![],
-        },
-    )
-    .unwrap();
+    let oauth = OAuth::new(shared, cookies, oauth_config).unwrap();
     let request = oauth.clone();
     let id = session.id.clone();
     let waiter = tokio::spawn(async move { request.session_id(&id).await });

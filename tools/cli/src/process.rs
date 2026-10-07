@@ -6,6 +6,8 @@ use nix::{
 };
 use std::{
     fmt,
+    io::Write,
+    path::Path,
     process::{ExitStatus, Stdio},
     time::Duration,
 };
@@ -25,6 +27,7 @@ impl fmt::Display for Failed {
 }
 impl std::error::Error for Failed {}
 
+#[derive(Clone)]
 pub struct Runner {
     stopped: watch::Receiver<u8>,
 }
@@ -63,9 +66,7 @@ impl Runner {
     pub fn spawn(&self, command: &mut Command) -> Result<OwnedProcess> {
         self.check()?;
         command.process_group(0).kill_on_drop(true);
-        let child = command
-            .spawn()
-            .context("Could not start development process")?;
+        let child = command.spawn().context("Could not start process")?;
         let group = Group(Pid::from_raw(
             child.id().context("Missing child PID")? as i32
         ));
@@ -81,14 +82,78 @@ impl Runner {
         Ok(output)
     }
 
-    /// Preserve test output on failure as well as success, while retaining it for
-    /// nonempty-selection checks. Process-group ownership is shared with all tools.
-    pub async fn report(&self, command: &mut Command) -> Result<Vec<u8>> {
-        let (status, output) = self.status(command, true).await?;
-        print!("{}", String::from_utf8_lossy(&output));
+    /// Capture both streams to separate evidence files without dumping successful
+    /// child chatter into the parent report. Readers drain concurrently so a full
+    /// stderr pipe cannot deadlock a command producing stdout. The same group
+    /// ownership and cancellation policy applies to builds and parallel tests.
+    /// Deadline expiry retires the entire group, and cannot become success even
+    /// if a child handles termination by exiting with status zero.
+    pub async fn logged(
+        &self,
+        command: &mut Command,
+        log: &Path,
+        verbose: bool,
+        timeout: Option<Duration>,
+    ) -> Result<Logged> {
+        let mut stopped = self.stopped.clone();
         self.check()?;
-        successful(status)?;
-        Ok(output)
+        let stdout_file =
+            std::io::BufWriter::new(std::fs::File::create(log.with_extension("out"))?);
+        let stderr_file =
+            std::io::BufWriter::new(std::fs::File::create(log.with_extension("err"))?);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut process = self.spawn(command)?;
+        let stdout = drain(
+            process.child.stdout.take().unwrap(),
+            stdout_file,
+            verbose,
+            false,
+        );
+        let stderr = drain(
+            process.child.stderr.take().unwrap(),
+            stderr_file,
+            verbose,
+            true,
+        );
+        let status = async move {
+            let deadline = async {
+                if let Some(duration) = timeout {
+                    tokio::time::sleep(duration).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            let (status, timed_out) = tokio::select! {
+                biased;
+                _ = stopped.changed() => {
+                    let signal = if *stopped.borrow() == 130 { Signal::SIGINT } else { Signal::SIGTERM };
+                    (retire(&mut process.child, process._group.0, signal).await, false)
+                },
+                _ = deadline => (retire(&mut process.child, process._group.0, Signal::SIGTERM).await, true),
+                status = process.child.wait() => (status, false),
+            };
+            drop(process);
+            (status, timed_out)
+        };
+        // Retire descendants before waiting for EOF, including children that
+        // inherited these pipes. This also bounds teardown of cancelled jobs.
+        let ((status, timed_out), stdout, stderr) = tokio::try_join!(
+            async {
+                let (status, timed_out) = status.await;
+                Ok::<_, anyhow::Error>((status?, timed_out))
+            },
+            stdout,
+            stderr
+        )?;
+        Ok(Logged {
+            status,
+            stdout,
+            stderr,
+            timed_out,
+        })
     }
 
     async fn status(&self, command: &mut Command, capture: bool) -> Result<(ExitStatus, Vec<u8>)> {
@@ -134,6 +199,58 @@ impl Runner {
         let output = reader.await??;
         Ok((status, output))
     }
+}
+
+pub struct Logged {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub timed_out: bool,
+}
+
+impl Logged {
+    pub fn successful(&self) -> Result<()> {
+        anyhow::ensure!(!self.timed_out, "Command exceeded its execution deadline");
+        successful(self.status)
+    }
+}
+
+async fn retire(child: &mut Child, group: Pid, signal: Signal) -> std::io::Result<ExitStatus> {
+    let _ = killpg(group, signal);
+    match tokio::time::timeout(Duration::from_secs(6), child.wait()).await {
+        Ok(status) => status,
+        Err(_) => {
+            let _ = killpg(group, Signal::SIGKILL);
+            child.wait().await
+        }
+    }
+}
+
+async fn drain(
+    mut input: impl tokio::io::AsyncRead + Unpin,
+    mut file: std::io::BufWriter<std::fs::File>,
+    verbose: bool,
+    stderr: bool,
+) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = input.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        file.write_all(&buffer[..count])?;
+        output.extend_from_slice(&buffer[..count]);
+        if verbose {
+            if stderr {
+                std::io::stderr().write_all(&buffer[..count])?;
+            } else {
+                std::io::stdout().write_all(&buffer[..count])?;
+            }
+        }
+    }
+    file.flush()?;
+    Ok(output)
 }
 
 pub struct OwnedProcess {

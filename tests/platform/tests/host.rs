@@ -242,3 +242,204 @@ fn internal_notification_failure_drains_controller_commits_before_returning() {
         [12; 2]
     );
 }
+
+#[test]
+fn staged_completion_commits_after_controller_work_and_never_publishes_failed_credentials() {
+    use snap_transport::{
+        Operation,
+        bearer::{Change, Receiver, Token},
+        host::Blocking,
+        operation::{Definition, Guard, Registry},
+    };
+    struct Acquire;
+    impl Operation for Acquire {
+        const NAME: &'static str = "probe.acquire";
+        type Input = i64;
+        type Output = i64;
+        type Error = ();
+        type Progress = ();
+    }
+    // Invalid output and rejected persistence are distinct failure boundaries.
+    for failure in ["none", "output", "commit", "controller", "begin"] {
+        let catalog = catalog();
+        let (backend, rejection) = RejectOnce::new(Memory::new(catalog.clone()).unwrap());
+        let mut store = Store::new(catalog, backend).unwrap();
+        store
+            .run("seed", |tx| {
+                for table in cartridge::TABLES {
+                    tx.insert(
+                        table,
+                        Row::from([("id".into(), 1.into()), ("value".into(), 0.into())]),
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        struct Advance {
+            pending: bool,
+            rejection: snap_platform_tests::memory::CommitRejection,
+            failure: &'static str,
+            output: Option<snap_transport::runtime::Output>,
+        }
+        impl<B: Backend> Participant<B> for Advance {
+            fn committed(
+                &mut self,
+                _: &mut CommitContext<'_, B>,
+                changes: &[RowChange],
+                _: &Value,
+            ) -> Result<(), Error> {
+                self.pending |= changes
+                    .iter()
+                    .any(|change| change.table == cartridge::TABLES[0]);
+                Ok(())
+            }
+            fn reconcile(&mut self, ctx: &mut CommitContext<'_, B>) -> Result<bool, Error> {
+                if !core::mem::take(&mut self.pending) {
+                    return Ok(false);
+                }
+                let current = ctx.store.inspect("observe", cartridge::read)?;
+                assert!(
+                    self.output.as_ref().unwrap().is_empty(),
+                    "publication precedes reconciliation"
+                );
+                if current[0] == 1 {
+                    ctx.transact("effect.complete", |tx| {
+                        tx.update(
+                            cartridge::TABLES[0],
+                            &[1.into()],
+                            Row::from([("value".into(), 2.into())]),
+                        )
+                    })?;
+                    if self.failure == "commit" {
+                        self.rejection.arm();
+                    }
+                    if self.failure == "controller" {
+                        return Err(Error::Unavailable);
+                    }
+                }
+                if current[0] == 3 {
+                    ctx.transact("completion.observed", |tx| {
+                        tx.update(
+                            cartridge::TABLES[1],
+                            &[1.into()],
+                            Row::from([("value".into(), 4.into())]),
+                        )
+                    })?;
+                }
+                Ok(true)
+            }
+        }
+        let mut acquire = Definition::staged::<Acquire, i64>(
+            false,
+            vec![Guard::new(|tx, call, _| {
+                if cartridge::read(tx)?[0] != call.input.as_i64().unwrap() {
+                    return Err(Error::Constraint.into());
+                }
+                Ok(())
+            })],
+            snap_store::Data::new(&cartridge::TABLES),
+            &[],
+            move |tx, _, context| {
+                tx.update(
+                    cartridge::TABLES[0],
+                    &[1.into()],
+                    Row::from([("value".into(), 1.into())]),
+                )?;
+                context
+                    .bearer_changed(Change::Set(Token::new("not-yet-issued".into())))
+                    .unwrap();
+                if failure == "begin" {
+                    return Err(Error::Unavailable.into());
+                }
+                Ok(1)
+            },
+            |tx, key, context| {
+                let row = tx.get(cartridge::TABLES[0], &[key.into()])?.unwrap();
+                if row["value"] != 2.into() {
+                    return Err(Error::Unavailable.into());
+                }
+                tx.update(
+                    cartridge::TABLES[0],
+                    &[key.into()],
+                    Row::from([("value".into(), 3.into())]),
+                )?;
+                context
+                    .bearer_changed(Change::Set(Token::new("issued".into())))
+                    .unwrap();
+                Ok(3)
+            },
+        );
+        if failure == "output" {
+            acquire.output = |_| false;
+        }
+        let mut host = Blocking::new(
+            store,
+            Advance {
+                pending: false,
+                rejection,
+                failure,
+                output: None,
+            },
+            Registry::default().with_request(acquire),
+            Arc::new(snap_transport::bearer::Callbacks::new(Arc::new(
+                |_, bearer| Ok(bearer.into()),
+            ))),
+            Default::default(),
+            "staged".into(),
+        );
+        let peer = host.open().unwrap();
+        let output = host.output(peer).unwrap();
+        let mut host = host.map_participant(|mut participant| {
+            participant.output = Some(output);
+            participant
+        });
+        host.submit(
+            peer,
+            Command::Request {
+                bearer: None,
+                invocation: Invocation {
+                    id: 9,
+                    operation: Acquire::NAME.into(),
+                    input: json!(0),
+                },
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(events(&mut host, peer), [Event::Accepted { id: 9 }]);
+        assert!(host.step());
+        let result = events(&mut host, peer);
+        if failure == "none" {
+            assert_eq!(
+                result,
+                [
+                    Event::Bearer {
+                        id: 9,
+                        change: Change::Set(Token::new("issued".into()))
+                    },
+                    Event::Completed {
+                        id: 9,
+                        outcome: Ok(json!(3))
+                    }
+                ]
+            );
+        } else {
+            assert!(matches!(
+                result.as_slice(),
+                [Event::Completed {
+                    id: 9,
+                    outcome: Err(_)
+                }]
+            ));
+        }
+        let expected = match failure {
+            "none" => 3,
+            "begin" => 0,
+            _ => 2,
+        };
+        assert_eq!(
+            host.transact("persisted", cartridge::read).unwrap(),
+            [expected, if failure == "none" { 4 } else { 0 }]
+        );
+    }
+}

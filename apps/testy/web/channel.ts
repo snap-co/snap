@@ -15,9 +15,6 @@ export class WebChannel {
     resolve: (value: string) => void;
     reject: (error: Error) => void;
   };
-  // Request spans acceptance, credential handoff and completion. Correlate the
-  // whole exchange; a frame count would expose its second authentication frame.
-  private authentication = new Set<number>();
   private connecting = false;
   readonly ready: Promise<void>;
   constructor(
@@ -37,7 +34,6 @@ export class WebChannel {
       );
       this.waiter = undefined;
       this.queue.length = 0;
-      this.authentication.clear();
       this.connecting = false;
       this.lost();
     };
@@ -50,12 +46,10 @@ export class WebChannel {
         return;
       }
       const event = decoded?.Event;
-      const id = event?.Accepted?.id ?? event?.Progress?.id ?? event?.Bearer?.id ?? event?.Completed?.id;
       const handshake = this.connecting && typeof decoded === "object" && decoded !== null && ("Attached" in decoded || "Failed" in decoded);
       // Bearer handoffs are always private, including unexpected IDs.
-      const redact = Boolean(event?.Bearer) || this.authentication.has(id) || handshake;
+      const redact = Boolean(event?.Bearer) || handshake;
       this.observe(redact ? "← [authentication response redacted]" : data);
-      if (event?.Completed) this.authentication.delete(event.Completed.id);
       if (handshake) this.connecting = false;
       const waiter = this.waiter;
       if (!waiter) {
@@ -74,10 +68,10 @@ export class WebChannel {
     if (this.socket.readyState !== WebSocket.OPEN)
       throw new Error("Channel unavailable");
     const decoded = JSON.parse(command);
+    if (decoded.Request) throw new Error("Connectionless requests require HTTP");
     if (decoded.Connect) this.connecting = true;
-    if (decoded.Request) this.authentication.add(decoded.Request.invocation.id);
     this.observe(
-      decoded.Connect || decoded.Request ? "→ [authentication request redacted]" : `→ ${command}`,
+      decoded.Connect ? "→ [authentication request redacted]" : `→ ${command}`,
     );
     this.socket.send(command);
   }
