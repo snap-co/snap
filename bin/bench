@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run framework benchmarks without adding a command to the application CLI.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+benchmark=(cargo run --quiet --release --locked \
+  --manifest-path "$root/Cargo.toml" --target-dir "$root/target" \
+  -p snap-platform-tests --example benchmark -- "$@")
+if command -v mise >/dev/null; then
+  # Load this checkout's tools, then restore caller-relative result paths.
+  exec mise -C "$root" exec -- bash -c 'cd -- "$1"; shift; exec "$@"' \
+    bench "$PWD" "${benchmark[@]}"
+fi
+exec "${benchmark[@]}"

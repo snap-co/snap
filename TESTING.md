@@ -330,6 +330,9 @@ Both profiles declare whole-table data. Independent working sets grow with clien
 count, so cross-client curves also include working-set effects. Host implementation
 facts are recorded separately from configured dependencies, allowing server
 execution changes to compare across revisions without changing the input contract.
+`./bin/bench` is the framework-only entrypoint. It launches the release example
+directly without adding a Snap CLI command, forwarding options and exit status.
+Result paths remain relative to the caller's working directory.
 The `benchmark` Cargo example emits versioned result files and compares compatible
 machine/compiler/build, host and input configurations without performance gates.
 Unsupported hosts require an explicit adapter, never substitution. Other apps can
