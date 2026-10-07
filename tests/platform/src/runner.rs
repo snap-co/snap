@@ -52,13 +52,6 @@ pub trait Workload {
     type Action: Serialize;
     fn generate(&mut self, random: &mut Random) -> Self::Action;
     fn execute(&mut self, action: Self::Action) -> impl Future<Output = ()>;
-    /// Application-owned validation after a fully completed concurrent round.
-    /// Not called for partial rounds abandoned at a time horizon.
-    fn check_round(_actors: &mut [Self])
-    where
-        Self: Sized,
-    {
-    }
 }
 
 /// Platform-owned timer. Application workloads need no simulation imports.
@@ -239,18 +232,16 @@ pub struct ActorReport {
 pub struct ConcurrentReport {
     pub campaign: Report,
     pub actors: Vec<ActorReport>,
-    pub rounds: u64,
     pub max_in_flight: u64,
     pub completion_sha256: [u8; 32],
 }
 
-/// Bounded concurrent rounds, one action per actor per round. All selected actors
-/// can wait on SDK IO simultaneously; the host remains free to serialize work.
-/// Operation budgets count actions across ALL actors. Reserve no more than the
-/// remaining budget, so the final round may contain fewer actors. Selection rotates
-/// fairly and poll order is seeded. Each actor has its own generation stream.
-/// Completion order and actor identity are fingerprinted. Checkpoints between
-/// rounds permit independent application checks with O(actor count) memory.
+/// Independently driven actors, each with one action in flight. A ready actor
+/// starts again without waiting for peers. Every completion yields to the host,
+/// even for synchronous workloads, so deadlines and other actors remain visible.
+/// Operation reservations never exceed the global budget. Faster actors may do
+/// more work; seeded initial poll order and per-actor generation streams replay it.
+/// Applications check observations online, including those before a time horizon.
 pub fn run_many<H: Host, W: Workload>(
     host: &mut H,
     actors: &mut [W],
@@ -270,77 +261,74 @@ pub fn run_many<H: Host, W: Workload>(
         .map(|actor| Random::stream(config.seed, &alloc::format!("workload/{actor}")))
         .collect();
     let mut order = Random::stream(config.seed, "actor-order");
-    let mut actions = Fingerprint::new(b"snap-concurrent-actions-v1");
-    let completions = RefCell::new(Fingerprint::new(b"snap-concurrent-completions-v1"));
+    let actions = RefCell::new(Fingerprint::new(b"snap-concurrent-actions-v2"));
+    let completions = RefCell::new(Fingerprint::new(b"snap-concurrent-completions-v2"));
     let reports = RefCell::new(alloc::vec![ActorReport::default(); actors.len()]);
-    let mut started = 0;
-    let mut completed = 0;
-    let mut rounds = 0;
-    let mut cursor = 0;
-    let mut max_in_flight = 0;
-    loop {
-        if match config.budget {
-            Budget::Operations(count) => completed == count,
-            Budget::TimeMs(_) => host.now() >= deadline_ms.unwrap(),
-        } {
-            break;
-        }
-        let count = match config.budget {
-            Budget::Operations(limit) => (limit - completed).min(actors.len() as u64) as usize,
-            Budget::TimeMs(_) => actors.len(),
-        };
-        max_in_flight = max_in_flight.max(count as u64);
-        let mut selected = alloc::vec![false; actors.len()];
-        for offset in 0..count {
-            selected[(cursor + offset) % actors.len()] = true;
-        }
-        cursor = (cursor + count) % actors.len();
+    // started, currently reserved, peak reservations
+    let reservations = RefCell::new((0u64, 0u64, 0u64));
+    if deadline_ms.is_none_or(|deadline| start_ms < deadline) {
         let mut tasks = Vec::new();
-        for (actor, workload) in actors.iter_mut().enumerate() {
-            if !selected[actor] {
-                continue;
-            }
-            let action = workload.generate(&mut random[actor]);
-            actions.record(&(actor, &action));
-            reports.borrow_mut()[actor].started += 1;
-            started += 1;
+        for (actor, (workload, random)) in actors.iter_mut().zip(&mut random).enumerate() {
             let reports = &reports;
+            let actions = &actions;
             let completions = &completions;
+            let reservations = &reservations;
             tasks.push(Box::pin(async move {
-                workload.execute(action).await;
-                reports.borrow_mut()[actor].completed += 1;
-                completions
-                    .borrow_mut()
-                    .record(&(actor, reports.borrow()[actor].completed));
+                loop {
+                    {
+                        let mut reserved = reservations.borrow_mut();
+                        if matches!(config.budget, Budget::Operations(limit) if reserved.0 == limit)
+                        {
+                            break;
+                        }
+                        reserved.0 += 1;
+                        reserved.1 += 1;
+                        reserved.2 = reserved.2.max(reserved.1);
+                    }
+                    let action = workload.generate(random);
+                    actions.borrow_mut().record(&(actor, &action));
+                    reports.borrow_mut()[actor].started += 1;
+                    workload.execute(action).await;
+                    reports.borrow_mut()[actor].completed += 1;
+                    reservations.borrow_mut().1 -= 1;
+                    completions
+                        .borrow_mut()
+                        .record(&(actor, reports.borrow()[actor].completed));
+                    let mut yielded = false;
+                    poll_fn(|context| {
+                        if yielded {
+                            Poll::Ready(())
+                        } else {
+                            yielded = true;
+                            context.waker().wake_by_ref();
+                            Poll::Pending
+                        }
+                    })
+                    .await;
+                }
             }) as Pin<Box<dyn Future<Output = ()>>>);
         }
         for index in (1..tasks.len()).rev() {
             let other = order.below((index + 1) as u64) as usize;
             tasks.swap(index, other);
         }
-        let result = host.drive(join(tasks), deadline_ms)?;
-        completed = reports.borrow().iter().map(|report| report.completed).sum();
-        if matches!(result, Drive::Deadline) {
-            break;
-        }
-        W::check_round(actors);
-        rounds += 1;
+        host.drive(join(tasks), deadline_ms)?;
     }
+    let completed = reports.borrow().iter().map(|report| report.completed).sum();
     let end_ms = host.now();
     Ok(ConcurrentReport {
         campaign: Report {
             seed: config.seed,
-            started,
+            started: reservations.borrow().0,
             completed,
             start_ms,
             end_ms,
             deadline_ms,
             overrun_ms: deadline_ms.map_or(0, |deadline| end_ms.saturating_sub(deadline)),
-            actions_sha256: actions.finish(),
+            actions_sha256: actions.into_inner().finish(),
         },
         actors: reports.into_inner(),
-        rounds,
-        max_in_flight,
+        max_in_flight: reservations.borrow().2,
         completion_sha256: completions.into_inner().finish(),
     })
 }

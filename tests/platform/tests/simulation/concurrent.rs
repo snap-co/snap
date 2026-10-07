@@ -63,10 +63,12 @@ fn concurrent_operation_budget_is_global_exact_and_overlaps_real_sdk_calls() {
                 operations
             );
             let counts: Vec<_> = report.actors.iter().map(|actor| actor.completed).collect();
-            assert!(
-                counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1,
-                "round selection must remain fair"
-            );
+            if operations >= clients as u64 {
+                assert!(
+                    counts.iter().all(|count| *count > 0),
+                    "each initially ready actor must get a reservation"
+                );
+            }
             if clients > 1 && operations >= clients as u64 {
                 let trace = campaign.timeline.trace();
                 let mut outstanding = 0;
@@ -91,6 +93,120 @@ fn concurrent_operation_budget_is_global_exact_and_overlaps_real_sdk_calls() {
                     "independent clients must queue calls before earlier calls complete"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn fast_sdk_actor_keeps_running_while_a_peer_waits_past_the_horizon() {
+    use snap_platform_tests::{
+        cartridge::{Edit, Stop},
+        runner::{Reconnect, Recording, Transcript},
+        simulation::{Channel, Clock, Connector, LossBoundary, NetworkFaults},
+        workload::Action as InputAction,
+    };
+    struct Opening {
+        connector: Connector,
+        clock: Clock,
+        transcript: Transcript,
+        delay_ms: u64,
+    }
+    impl Reconnect<Recording<Channel>> for Opening {
+        async fn open(&self) -> Result<Recording<Channel>, snap_transport::Error> {
+            self.clock.sleep(self.delay_ms).await;
+            Ok(self.transcript.channel(self.connector.open().await?))
+        }
+    }
+    struct Paced {
+        probe: concurrent::Probe<Recording<Channel>, Clock, Opening>,
+        slow: bool,
+        recovery: bool,
+        baseline: i64,
+    }
+    impl Workload for Paced {
+        type Action = concurrent::Input;
+        fn generate(&mut self, random: &mut runner::Random) -> Self::Action {
+            let mut input = self.probe.generate(random);
+            input.delay_ms = if self.slow && !self.recovery {
+                10_000
+            } else {
+                0
+            };
+            if self.slow && self.recovery {
+                input.action = InputAction::Change(Edit {
+                    expected: self.baseline,
+                    amount: 5,
+                    stop: Stop::Commit,
+                });
+            }
+            input
+        }
+        async fn execute(&mut self, action: Self::Action) {
+            self.probe.execute(action).await;
+        }
+    }
+    for recovery in [false, true] {
+        let world = World::generate(42);
+        let mut campaign = campaign_setup::assemble_network(
+            schedule(),
+            &world,
+            2,
+            true,
+            recovery.then(|| NetworkFaults {
+                seed: 42,
+                operation: "probe.change".into(),
+                one_in: 1,
+                boundary: Some(LossBoundary::BeforeAdmission),
+            }),
+        )
+        .unwrap();
+        let mut actors: Vec<_> = campaign
+            .actors
+            .drain(..)
+            .enumerate()
+            .map(|(actor, probe)| Paced {
+                probe: probe.recovering(
+                    Opening {
+                        connector: campaign.simulation.connector(actor),
+                        clock: campaign.simulation.clock(),
+                        transcript: campaign.transcripts[actor].clone(),
+                        delay_ms: if actor == 0 { 10_000 } else { 0 },
+                    },
+                    format!("campaign-client-{actor}"),
+                ),
+                slow: actor == 0,
+                recovery,
+                baseline: world.value,
+            })
+            .collect();
+        let report = runner::run_many(
+            &mut campaign.simulation,
+            &mut actors,
+            Config {
+                seed: 42,
+                budget: Budget::TimeMs(3_000),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.actors[0].started, 1);
+        assert_eq!(report.actors[0].completed, 0);
+        assert!(
+            report.actors[1].completed > 10,
+            "a slow peer must not hold a fast actor at a round barrier"
+        );
+        assert_eq!(report.max_in_flight, 2);
+        assert!(campaign.server_checks.get() > 0);
+        assert!((1..=2).contains(&(report.campaign.started - report.campaign.completed)));
+        assert_eq!(
+            actors[0].probe.diagnostic().unwrap().phase,
+            if recovery {
+                "opening-replacement"
+            } else {
+                "think-time"
+            }
+        );
+        if recovery {
+            assert_eq!(actors[0].probe.unknown_calls(), 1);
         }
     }
 }
@@ -276,31 +392,30 @@ fn contention_oracle_rejects_state_drift_instead_of_adopting_server_results() {
             None,
         )
         .unwrap();
-    campaign
-        .simulation
-        .drive(
-            runner::join(
-                campaign
-                    .actors
-                    .iter_mut()
-                    .enumerate()
-                    .map(|(actor, probe)| {
-                        Box::pin(probe.execute(concurrent::Input {
-                            delay_ms: 0,
-                            action: InputAction::Change(Edit {
-                                expected: world.value,
-                                amount: actor as i64 + 2,
-                                stop: Stop::Commit,
-                            }),
-                        })) as Pin<Box<dyn Future<Output = ()>>>
-                    })
-                    .collect(),
-            ),
-            None,
-        )
-        .unwrap();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        campaign_setup::Actor::check_round(&mut campaign.actors)
+        campaign
+            .simulation
+            .drive(
+                runner::join(
+                    campaign
+                        .actors
+                        .iter_mut()
+                        .enumerate()
+                        .map(|(actor, probe)| {
+                            Box::pin(probe.execute(concurrent::Input {
+                                delay_ms: 0,
+                                action: InputAction::Change(Edit {
+                                    expected: world.value,
+                                    amount: actor as i64 + 2,
+                                    stop: Stop::Commit,
+                                }),
+                            })) as Pin<Box<dyn Future<Output = ()>>>
+                        })
+                        .collect(),
+                ),
+                None,
+            )
+            .unwrap();
     }))
     .unwrap_err();
     let message = panic
@@ -309,11 +424,16 @@ fn contention_oracle_rejects_state_drift_instead_of_adopting_server_results() {
         .or_else(|| panic.downcast_ref::<&str>().copied())
         .unwrap();
     assert!(message.contains("fresh compare refused without another writer"));
-    assert_eq!(campaign.actors[0].expected_value(), world.value);
+    assert!(
+        !campaign.actors[0]
+            .possible_values()
+            .contains(&(world.value + 1)),
+        "the oracle must not adopt the outside writer's value"
+    );
 }
 
 #[test]
-fn contention_oracle_rejects_a_fresh_admission_after_the_winner_finished() {
+fn history_oracle_rejects_late_fresh_admission_and_reads_before_a_completed_winner() {
     use snap_platform_tests::{
         cartridge::{Edit, Stop},
         workload::Action as InputAction,
@@ -326,6 +446,7 @@ fn contention_oracle_rejects_a_fresh_admission_after_the_winner_finished() {
     struct Bypass<C> {
         channel: C,
         poison: bool,
+        old_read: Option<i64>,
         pending: Option<Response>,
     }
     impl<C: Channel> Channel for Bypass<C> {
@@ -336,7 +457,15 @@ fn contention_oracle_rejects_a_fresh_admission_after_the_winner_finished() {
             if let Some(response) = self.pending.take() {
                 return Ok(Some(response));
             }
-            let response = self.channel.receive().await?;
+            let mut response = self.channel.receive().await?;
+            if self.poison
+                && let Some(old) = self.old_read
+                && let Some(Response::Event(Event::Completed {
+                    outcome: Ok(value), ..
+                })) = &mut response
+            {
+                *value = json!([old, old]);
+            }
             if self.poison
                 && let Some(Response::Event(Event::Completed {
                     id,
@@ -353,61 +482,147 @@ fn contention_oracle_rejects_a_fresh_admission_after_the_winner_finished() {
             Ok(response)
         }
     }
-    let (mut simulation, _, _) = setup::setup(schedule());
-    let world = World::generate(42);
-    let mut clients = Vec::new();
-    for actor in 0..2 {
-        let mut client = Client::new(Bypass {
-            channel: simulation.open().unwrap(),
-            poison: actor == 1,
-            pending: None,
-        });
-        simulation
-            .run(client.connect("alice", &format!("causal-{actor}")))
-            .unwrap()
+    for read in [false, true] {
+        let (mut simulation, _, _) = setup::setup(schedule());
+        let world = World::generate(42);
+        let mut clients = Vec::new();
+        for actor in 0..2 {
+            let mut client = Client::new(Bypass {
+                channel: simulation.open().unwrap(),
+                poison: actor == 1,
+                old_read: read.then_some(world.value),
+                pending: None,
+            });
+            simulation
+                .run(client.connect("alice", &format!("causal-{actor}")))
+                .unwrap()
+                .unwrap();
+            clients.push(client);
+        }
+        let mut initializer = snap_platform_tests::workload::Probe::new(clients.remove(0));
+        simulation.run(initializer.initialize(&world)).unwrap();
+        clients.insert(0, initializer.into_client());
+        let mut actors =
+            concurrent::Probe::actors(clients, simulation.clock(), &world, Default::default());
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            simulation
+                .run(runner::join(
+                    actors
+                        .iter_mut()
+                        .enumerate()
+                        .map(|(actor, probe)| {
+                            Box::pin(probe.execute(concurrent::Input {
+                                delay_ms: if actor == 0 { 0 } else { 1_000 },
+                                action: if read && actor == 1 {
+                                    InputAction::Read
+                                } else {
+                                    InputAction::Change(Edit {
+                                        expected: world.value,
+                                        amount: actor as i64 + 2,
+                                        stop: if actor == 0 {
+                                            Stop::Commit
+                                        } else {
+                                            Stop::Application
+                                        },
+                                    })
+                                },
+                            })) as Pin<Box<dyn Future<Output = ()>>>
+                        })
+                        .collect(),
+                ))
+                .unwrap();
+        }))
+        .unwrap_err();
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
             .unwrap();
-        clients.push(client);
+        assert!(
+            message.contains("happens-before"),
+            "must reject causal inconsistency, not ordinary transport failure"
+        );
     }
-    let mut initializer = snap_platform_tests::workload::Probe::new(clients.remove(0));
-    simulation.run(initializer.initialize(&world)).unwrap();
-    clients.insert(0, initializer.into_client());
-    let mut actors =
-        concurrent::Probe::actors(clients, simulation.clock(), &world, Default::default());
-    simulation
-        .run(runner::join(
-            actors
-                .iter_mut()
-                .enumerate()
-                .map(|(actor, probe)| {
-                    Box::pin(probe.execute(concurrent::Input {
-                        delay_ms: if actor == 0 { 0 } else { 1_000 },
-                        action: InputAction::Change(Edit {
-                            expected: world.value,
-                            amount: actor as i64 + 2,
-                            stop: if actor == 0 {
-                                Stop::Commit
+}
+
+#[test]
+fn history_checks_delayed_read_and_rollback_observations_after_a_peer_commits() {
+    use snap_platform_tests::{
+        cartridge::{Edit, Stop},
+        simulation::Clock,
+        workload::Action as InputAction,
+    };
+    use snap_transport::{Channel, Command, Error, Event, Response, client::Client};
+    struct Lag<C> {
+        channel: C,
+        clock: Clock,
+        delay: bool,
+    }
+    impl<C: Channel> Channel for Lag<C> {
+        async fn send(&mut self, command: Command) -> Result<(), Error> {
+            self.channel.send(command).await
+        }
+        async fn receive(&mut self) -> Result<Option<Response>, Error> {
+            let response = self.channel.receive().await?;
+            if self.delay && matches!(response, Some(Response::Event(Event::Accepted { .. }))) {
+                self.clock.sleep(1_000).await;
+            }
+            Ok(response)
+        }
+    }
+    for first in [
+        InputAction::Read,
+        InputAction::Change(Edit {
+            expected: 0,
+            amount: 3,
+            stop: Stop::Application,
+        }),
+    ] {
+        let (mut simulation, _, _) = setup::setup(schedule());
+        let mut clients = Vec::new();
+        for actor in 0..2 {
+            let mut client = Client::new(Lag {
+                channel: simulation.open().unwrap(),
+                clock: simulation.clock(),
+                delay: actor == 0,
+            });
+            simulation
+                .run(client.connect("alice", &format!("lag-{actor}")))
+                .unwrap()
+                .unwrap();
+            clients.push(client);
+        }
+        let world = World { value: 0 };
+        let mut actors =
+            concurrent::Probe::actors(clients, simulation.clock(), &world, Default::default());
+        simulation
+            .run(runner::join(
+                actors
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(actor, probe)| {
+                        Box::pin(probe.execute(concurrent::Input {
+                            delay_ms: if actor == 0 { 0 } else { 100 },
+                            action: if actor == 0 {
+                                first.clone()
                             } else {
-                                Stop::Application
+                                InputAction::Change(Edit {
+                                    expected: 0,
+                                    amount: 5,
+                                    stop: Stop::Commit,
+                                })
                             },
-                        }),
-                    })) as Pin<Box<dyn Future<Output = ()>>>
-                })
-                .collect(),
-        ))
-        .unwrap();
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        <concurrent::Probe<_, _> as Workload>::check_round(&mut actors)
-    }))
-    .unwrap_err();
-    let message = panic
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panic.downcast_ref::<&str>().copied())
-        .unwrap();
-    assert!(
-        message.contains("happens-before"),
-        "must reject causal inconsistency, not ordinary transport failure"
-    );
+                        })) as Pin<Box<dyn Future<Output = ()>>>
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        assert_eq!(
+            actors[0].possible_values(),
+            [5],
+            "late client polling cannot rewrite the server's earlier read or rollback result"
+        );
+    }
 }
 
 #[test]

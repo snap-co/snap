@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match flag.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Usage: campaign [--seed U64] [--clients 1..127] [--ops U64 | --time-ms U64] [--jitter-ms U64] [--faults] [--network-loss]\n\nDefaults: seed 42, two SDK clients, 10000 actions, jitter 20 ms.\nClients overlap calls in bounded contention/verification rounds against one\nsingle-actor production server. Each client uses seeded virtual think time.\n--ops counts workload actions across ALL clients. An action sends one SDK\ninvocation and, on loss, reconnects without replay. Unknown outcomes count as\nfinished actions, not successful operations. Setup and Connect are excluded.\nThe server queues a paired-row check every 1000 virtual ms; --faults arms\nconfirmed commit rejection every 97 virtual ms.\n--network-loss targets 1/4 of mutation sends using a separate seeded stream.\nIt selects loss before admission, at host acceptance publication, or after\nadmitted completion publication but before delivery. Recovery handshakes and\nverification reads are fault-free. Accepted work is not canceled. The model\nkeeps input-derived possible states until fresh reads resolve ambiguity.\nTime starts after setup. Synchronous callbacks can overrun the horizon.\nPending work is not drained and partial rounds are not fully model-checked.\nReports actor-indexed commands/observations, completion order and timed-event\nSHA-256. Failure reports include actor, action, invocation and last fault.\nReplay requires the same code, seed, client count and configuration.\nNo crypto, restart, mid-callback interleaving or arbitrary loss recovery yet."
+                    "Usage: campaign [--seed U64] [--clients 1..127] [--ops U64 | --time-ms U64] [--jitter-ms U64] [--faults] [--network-loss]\n\nDefaults: seed 42, two SDK clients, 10000 actions, jitter 20 ms.\nClients run independently against one single-actor production server. Each\nclient alternates its own mutations and reads using seeded virtual think time.\nNo actor waits for peers at a round barrier.\n--ops counts workload actions across ALL clients. An action sends one SDK\ninvocation and, on loss, reconnects without replay. Unknown outcomes count as\nfinished actions, not successful operations. Setup and Connect are excluded.\nThe server queues a paired-row check every 1000 virtual ms; --faults arms\nconfirmed commit rejection every 97 virtual ms.\n--network-loss targets 1/4 of mutation sends using a separate seeded stream.\nIt selects loss before admission, at host acceptance publication, or after\nadmitted completion publication but before delivery. Recovery handshakes and\nverification reads are fault-free. Accepted work is not canceled. The online\nhistory oracle retains input-derived possibilities across overlapping calls.\nA baseline read does not prove a lost mutation can never execute later.\nOracle capacity exhaustion fails the campaign instead of discarding history.\nTime starts after setup. Synchronous callbacks can overrun the horizon.\nPending work is not drained. Every observed SDK event is checked, including\nincomplete histories at the horizon; possible states are not final Store rows.\nReports actor-indexed commands/observations, completion order and timed-event\nSHA-256. Failure reports include actor, action, invocation and last fault.\nReplay requires the same code, seed, client count and configuration.\nNo crypto, restart, mid-callback interleaving or arbitrary loss recovery yet."
                 );
                 return Ok(());
             }
@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|output| !output.stdout.is_empty());
     println!("Checkout revision: {revision}; dirty: {dirty:?}");
     println!(
-        "Campaign v3: {config:?}; clients={clients}; faults={faults_enabled}; network_loss={network_loss}\nWorld: {world:?}\nHost: {schedule:?}"
+        "Campaign v4: {config:?}; clients={clients}; faults={faults_enabled}; network_loss={network_loss}\nWorld: {world:?}\nHost: {schedule:?}"
     );
     let network_faults = network_loss.then(|| NetworkFaults {
         seed,
@@ -132,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let report = &group.campaign;
             let values = campaign.actors[0].possible_values();
             println!(
-                "Completed {} of {} started actions; last checked round's possible states {values:?}",
+                "Completed {} of {} started actions; history's possible states {values:?}",
                 report.completed, report.started
             );
             println!(
@@ -152,10 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 streams.received
             );
             println!("events       {}", runner::hex(&timeline.events_sha256()));
-            println!(
-                "Completed rounds: {}; max reserved in flight: {}",
-                group.rounds, group.max_in_flight
-            );
+            println!("Max reserved in flight: {}", group.max_in_flight);
             println!(
                 "Per-client completions: {:?}",
                 group

@@ -254,18 +254,20 @@ persisted rows after orderly reopening. This does not make native IO determinist
 Fingerprinting is intended for synthetic workloads, not secret redaction or safe
 publication of real credentials.
 
-`runner::run_many` runs one SDK action per actor in bounded concurrent rounds.
+`runner::run_many` drives actors independently, with one SDK action per actor in
+flight. A ready actor starts again without waiting for peers. Every completed
+action yields to the host, including synchronous workloads.
 Actors have independent generation streams and child wakeups; a parent wake does
 not poll an unrelated sleeping child. Seeded actor order controls initial polling,
 while the host's existing deadline/FIFO rules control delivery. The server remains
 single-actor. Operation budgets count completed workload actions across all clients
-and reserve no more actions than the remaining budget. A final round can use fewer
-clients.
+and reserve no more actions than the remaining budget. Faster clients may complete
+more actions; equal per-client counts are not a fairness promise.
 Started counts are reservations, which may still be waiting on virtual think time.
 Time horizons abandon pending actions without draining or canceling accepted work;
-per-action checks run on completed calls, but round checks only run on complete
-rounds. The reported model is the last checked round, not an assertion about
-unfinished work. Actor-indexed stream summaries and a completion-order fingerprint
+application checks run online rather than at global checkpoints. Reported possible
+states include issued work that may still execute, not a drained final Store state.
+Actor-indexed stream summaries and a completion-order fingerprint
 distinguish identical local invocation IDs on different clients.
 
 The simulation's `Clock` implements the host-neutral `runner::Timer`. Timers and
@@ -277,14 +279,28 @@ catch-up burst. Periodic callbacks must be canceled before `finish` can drain to
 idle. This timer is for workloads; it does not replace application wall-clock
 sources or make arbitrary module timers deterministic.
 
-`workload/concurrent.rs` owns the cartridge's contention model. Mutation rounds
-use one baseline compare and positive, actor-distinct amounts, so at most one
-commit can win. Outcomes identify the possible winner; expected values come from
-its input, never from returned rows. SDK call intervals constrain the possible
-ordering, including a writer that starts after the winner finishes.
-Verification rounds reload both rows through
-each SDK. Fault input credits bound allowed confirmed rejections. This bounded
-oracle does not cover arbitrary histories or same-client parallel awaits.
+`workload/concurrent.rs` owns the cartridge's independently running clients. Each
+alternates its own mutations and reads, using its last validated observation to
+choose subsequent inputs. Peers may mutate while another client reads or reconnects.
+`workload/concurrent/history.rs` checks single-lane admission/execution histories
+against SDK issue, acceptance, completion and loss observations. Its possible values
+come from initial state and issued positive mutations, never from returned rows.
+Acceptance constrains admission to have happened already; completion also bounds
+execution. Value-changing calls retain an admitted lane, preventing another guard
+from seeing uncommitted state. State-neutral admitted calls may finish immediately
+in the model while their responses remain unobserved.
+Pending state-neutral calls retain possible earlier outputs independently before
+each admission. A client may observe an old read or rollback after another peer
+observes a later commit. These alternatives avoid enumerating their permutations.
+Compaction removes histories only when an existing history subsumes their future
+possibilities. It never unions alternatives from different histories.
+Reads reload both rows through each SDK and constrain histories, but need not agree
+when writes overlap. Fault input credits bound allowed confirmed rejections. The
+oracle retains at most 1024 calls, 1024 prior outputs per pending call and 8192
+states, with a 65536-state search/queue limit. Exhaustion is failure, not a reason
+to forget possibilities or impose a barrier. This checker assumes positive scalar
+compare mutations and a single-actor
+server; it is not an oracle for arbitrary applications or same-client parallel awaits.
 `support/campaign.rs` assembles the clients and queues
 server-owned periodic Read operations through real dispatch. Optional periodic
 commit rejection uses the simulation Store's existing dependency fault capability.
@@ -292,7 +308,8 @@ Those server checks and setup are excluded from SDK operation budgets.
 The `campaign` example defaults to two clients, accepts `--clients 1..127`, and
 enables periodic rejection with `--faults`. One production physical peer is reserved
 for scheduled checks. The concurrent contracts in `tests/simulation/concurrent.rs`
-cover overlapping real SDK calls, global budgets, timer cancellation, child wake
+cover overlapping real SDK calls, continued progress during a peer's think time
+or recovery, global budgets, timer cancellation, child wake
 isolation, host-gated callbacks, replay with faults and real TCP/SQLite execution.
 
 `runner::Reconnect` supplies a host-owned physical channel factory; application
@@ -312,12 +329,14 @@ it still cannot be interrupted. Recovery Connect and verification reads are
 fault-free, an explicit fairness assumption for this bounded campaign. No unknown
 mutation is replayed. A lost action counts toward the budget after reconnect, not
 as a successful SDK operation. Connect remains outside action budgets.
-Round checks enumerate no commit or one eligible input-derived winner, constrained
-by known outcomes and SDK call intervals. Loss time is not an upper bound on
-accepted execution. Verification reads must agree on a member of that possible
-state set before another mutation round. An operation budget ending after a
-mutation round may leave several possible states; a time horizon may abandon
-recovery itself. `--network-loss` selects this policy in the example. Bounded
+The online checker preserves unresolved mutations while subsequent calls overlap.
+Loss time is not an upper bound on execution. A baseline read does not prove a
+lost invocation cannot execute later. An unknown call is forgotten only when all
+surviving histories executed it or its positive compare can no longer succeed;
+unadmitted state-neutral lost calls can also disappear. Operation budgets may leave
+several possible states, and a time horizon may abandon recovery itself. Completed
+observations before either boundary are still checked. `--network-loss` selects
+this policy in the example. Bounded
 per-actor diagnostics retain the action/index, invocation and last fault even when
 the recent host trace expires. Failure output supplies a replay command and reports
 the revision and dirty-checkout status; replay still requires the same working

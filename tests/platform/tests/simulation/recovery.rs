@@ -184,7 +184,6 @@ fn recovery_model_keeps_lost_mutations_unknown_until_fresh_reads_constrain_them(
             .simulation
             .drive(campaign.actors[0].execute(change), None)
             .unwrap();
-        campaign_setup::Actor::check_round(&mut campaign.actors);
         assert_eq!(campaign.actors[0].unknown_calls(), 1);
         assert_eq!(
             campaign.actors[0].possible_values(),
@@ -201,14 +200,21 @@ fn recovery_model_keeps_lost_mutations_unknown_until_fresh_reads_constrain_them(
                 None,
             )
             .unwrap();
-        campaign_setup::Actor::check_round(&mut campaign.actors);
         let expected = if boundary == LossBoundary::BeforeAdmission {
             world.value
         } else {
             world.value + 5
         };
-        assert_eq!(campaign.actors[0].possible_values(), [expected]);
-        assert_eq!(campaign.actors[0].expected_value(), expected);
+        if boundary == LossBoundary::BeforeAdmission {
+            assert_eq!(
+                campaign.actors[0].possible_values(),
+                [expected, expected + 5],
+                "a read of the baseline is not proof that a lost invocation can never run later"
+            );
+        } else {
+            assert_eq!(campaign.actors[0].possible_values(), [expected]);
+            assert_eq!(campaign.actors[0].expected_value(), expected);
+        }
     }
 }
 
@@ -237,7 +243,6 @@ fn unknown_outcome_oracle_does_not_adopt_an_unissued_mutation() {
             None,
         )
         .unwrap();
-    campaign_setup::Actor::check_round(&mut campaign.actors);
     // Drift through a real operation on a separate, non-targeted request path.
     let mut outside = Client::new(campaign.simulation.open().unwrap());
     assert_eq!(
@@ -286,72 +291,97 @@ fn unknown_outcome_oracle_does_not_adopt_an_unissued_mutation() {
 
 #[test]
 fn seeded_loss_campaign_replays_under_operation_and_time_budgets() {
-    for clients in [1, 2, 7] {
-        for budget in [Budget::Operations(301), Budget::TimeMs(10_000)] {
-            let run = || {
-                let mut campaign = campaign_setup::assemble_network(
-                    Schedule {
-                        jitter_ms: 20,
-                        trace_capacity: 0,
-                        ..schedule()
-                    },
-                    &World::generate(42),
-                    clients,
-                    true,
-                    Some(policy(None, 4)),
-                )
-                .unwrap();
-                let report = runner::run_many(
-                    &mut campaign.simulation,
-                    &mut campaign.actors,
-                    Config { seed: 42, budget },
-                )
-                .unwrap();
-                let losses = campaign.simulation.network_losses();
-                assert!(
-                    losses.into_iter().all(|count| count > 0),
-                    "exercise every loss boundary"
-                );
-                let unknown = campaign
-                    .actors
-                    .iter()
-                    .map(|actor| actor.unknown_calls())
-                    .sum::<u64>();
-                assert!(unknown > 0);
-                assert!(campaign.timeline.trace().is_empty());
-                let last_losses = campaign.simulation.last_losses();
-                assert!(
-                    !last_losses.is_empty() && last_losses.len() <= clients,
-                    "bounded fault diagnostics must survive trace eviction and old-peer release"
-                );
-                let streams: Vec<_> = campaign
-                    .transcripts
-                    .iter()
-                    .map(|stream| stream.summary())
-                    .collect();
-                if let Budget::Operations(count) = budget {
-                    assert_eq!(report.campaign.completed, count);
-                    assert_eq!(
-                        streams.iter().map(|stream| stream.sent).sum::<u64>(),
-                        count + clients as u64 + 2 + unknown,
-                        "only one extra Connect per lost action; no mutation resends"
-                    );
-                    assert_eq!(unknown, losses.iter().sum::<u64>());
-                } else {
-                    assert!(report.campaign.end_ms >= report.campaign.deadline_ms.unwrap());
+    let cases = [1, 2, 7]
+        .into_iter()
+        .flat_map(|clients| {
+            [Budget::Operations(301), Budget::TimeMs(10_000)]
+                .map(|budget| (42, clients, budget, true))
+        })
+        .chain([(0, 127, Budget::Operations(2_000), false)]);
+    for (seed, clients, budget, faults) in cases {
+        let run = || {
+            let host = if clients == 127 {
+                Schedule {
+                    seed: runner::Random::stream(seed, "schedule").next_u64(),
+                    jitter_ms: 20,
+                    trace_capacity: 0,
+                    max_events: 100_000,
+                    max_polls: 100_000,
+                    max_time_ms: u64::MAX,
+                    ..Default::default()
                 }
-                (
-                    report,
-                    streams,
-                    campaign.timeline.events_sha256(),
-                    losses,
-                    unknown,
-                    campaign.actors[0].possible_values(),
-                    last_losses,
-                )
+            } else {
+                Schedule {
+                    jitter_ms: 20,
+                    trace_capacity: 0,
+                    ..schedule()
+                }
             };
-            assert_eq!(run(), run(), "clients={clients} budget={budget:?}");
-        }
+            let mut campaign = campaign_setup::assemble_network(
+                host,
+                &World::generate(seed),
+                clients,
+                faults,
+                Some(NetworkFaults {
+                    seed,
+                    ..policy(None, 4)
+                }),
+            )
+            .unwrap();
+            let report = runner::run_many(
+                &mut campaign.simulation,
+                &mut campaign.actors,
+                Config { seed, budget },
+            )
+            .unwrap();
+            let losses = campaign.simulation.network_losses();
+            assert!(
+                losses.into_iter().all(|count| count > 0),
+                "exercise every loss boundary"
+            );
+            let unknown = campaign
+                .actors
+                .iter()
+                .map(|actor| actor.unknown_calls())
+                .sum::<u64>();
+            assert!(unknown > 0);
+            assert!(campaign.timeline.trace().is_empty());
+            let last_losses = campaign.simulation.last_losses();
+            assert!(
+                !last_losses.is_empty() && last_losses.len() <= clients,
+                "bounded fault diagnostics must survive trace eviction and old-peer release"
+            );
+            let streams: Vec<_> = campaign
+                .transcripts
+                .iter()
+                .map(|stream| stream.summary())
+                .collect();
+            if let Budget::Operations(count) = budget {
+                assert_eq!(report.campaign.completed, count);
+                assert_eq!(
+                    streams.iter().map(|stream| stream.sent).sum::<u64>(),
+                    count + clients as u64 + 2 + unknown,
+                    "only one extra Connect per lost action; no mutation resends"
+                );
+                assert_eq!(unknown, losses.iter().sum::<u64>());
+            } else {
+                assert!(report.campaign.end_ms >= report.campaign.deadline_ms.unwrap());
+            }
+            (
+                report,
+                streams,
+                campaign.timeline.events_sha256(),
+                losses,
+                unknown,
+                campaign.actors[0].possible_values(),
+                last_losses,
+            )
+        };
+        assert_eq!(
+            run(),
+            run(),
+            "seed={seed} clients={clients} budget={budget:?}"
+        );
     }
 }
 
