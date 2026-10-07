@@ -3,8 +3,8 @@
 use super::setup;
 use snap_platform_tests::{
     cartridge::Read,
-    runner::{self, Recording, Transcript},
-    simulation::{Channel, Clock, Schedule, Simulation, Store, Timeline},
+    runner::{self, Reconnect, Recording, Transcript},
+    simulation::{Channel, Clock, Connector, NetworkFaults, Schedule, Simulation, Store, Timeline},
     workload::{
         Probe, World,
         concurrent::{self, Rejections},
@@ -15,7 +15,16 @@ use snap_transport::{
 };
 use std::{cell::Cell, io, rc::Rc};
 
-pub type Actor = concurrent::Probe<Recording<Channel>, Clock>;
+pub struct Recovery {
+    connector: Connector,
+    transcript: Transcript,
+}
+impl Reconnect<Recording<Channel>> for Recovery {
+    async fn open(&self) -> Result<Recording<Channel>, snap_transport::Error> {
+        Ok(self.transcript.channel(self.connector.open().await?))
+    }
+}
+pub type Actor = concurrent::Probe<Recording<Channel>, Clock, Recovery>;
 pub struct Campaign {
     pub simulation: Simulation<Blocking<Store>>,
     pub timeline: Timeline,
@@ -30,6 +39,15 @@ pub fn assemble(
     clients: usize,
     faults_enabled: bool,
 ) -> io::Result<Campaign> {
+    assemble_network(schedule, world, clients, faults_enabled, None)
+}
+pub fn assemble_network(
+    schedule: Schedule,
+    world: &World,
+    clients: usize,
+    faults_enabled: bool,
+    network_faults: Option<NetworkFaults>,
+) -> io::Result<Campaign> {
     // Production Blocking supports 128 physical peers. Reserve one for the
     // scheduled server request; this is a setup bound, not a runner restriction.
     if !(1..=127).contains(&clients) {
@@ -38,9 +56,9 @@ pub fn assemble(
     let (mut simulation, timeline, faults) = setup::setup(schedule);
     let transcripts: Vec<_> = (0..clients).map(|_| Transcript::default()).collect();
     let mut sdks = Vec::new();
-    for transcript in &transcripts {
+    for (actor, transcript) in transcripts.iter().enumerate() {
         let channel = simulation
-            .open()
+            .open_for(actor)
             .map_err(|error| io::Error::other(format!("open: {error:?}")))?;
         sdks.push(Client::new(transcript.channel(channel)));
     }
@@ -68,7 +86,22 @@ pub fn assemble(
         .map_err(|error| io::Error::other(format!("world setup: {error:?}")))?;
     sdks.insert(0, initializer.into_client());
     let rejections = Rejections::default();
-    let actors = concurrent::Probe::actors(sdks, simulation.clock(), world, rejections.clone());
+    let actors = concurrent::Probe::actors(sdks, simulation.clock(), world, rejections.clone())
+        .into_iter()
+        .enumerate()
+        .map(|(actor, probe)| {
+            probe.recovering(
+                Recovery {
+                    connector: simulation.connector(actor),
+                    transcript: transcripts[actor].clone(),
+                },
+                format!("campaign-client-{actor}"),
+            )
+        })
+        .collect();
+    if let Some(config) = network_faults {
+        simulation.network_faults(config);
+    }
     let server_checks = Rc::new(Cell::new(0u64));
     let checks = server_checks.clone();
     let mut peer = None;

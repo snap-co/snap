@@ -371,6 +371,50 @@ fn ids_are_never_reused_across_a_channel_replacement() {
     );
 }
 
+#[test]
+fn explicit_abandonment_drops_only_its_trace_and_never_replays_the_call() {
+    let (script, old_sent) = Script::new(vec![accepted(1)]);
+    let mut client = Client::new(script);
+    let lost = ready(client.begin("mutation", json!(7))).unwrap();
+    ready(client.pump()).unwrap();
+    let other = ready(client.begin("other", json!(null))).unwrap();
+    assert!(client.abandon(lost));
+    assert!(!client.abandon(lost));
+    assert_eq!(
+        client.outstanding(),
+        1,
+        "abandonment must not erase another trace"
+    );
+    let (replacement, new_sent) = Script::new(vec![
+        accepted(lost),
+        completed(lost, ok()),
+        accepted(other),
+        completed(other, ok()),
+    ]);
+    client.replace_channel(replacement);
+    assert!(
+        new_sent.lock().unwrap().is_empty(),
+        "recovery must not resend anything"
+    );
+    assert_eq!(ready(client.pump()).unwrap(), Pump::Discarded(None));
+    assert_eq!(ready(client.pump()).unwrap(), Pump::Discarded(None));
+    assert_eq!(ready(client.pump()).unwrap(), Pump::Accepted { id: other });
+    assert_eq!(
+        ready(client.pump()).unwrap(),
+        Pump::Completed {
+            id: other,
+            outcome: ok()
+        }
+    );
+    assert_eq!(ready(client.begin("fresh", json!(null))).unwrap(), 3);
+    assert_eq!(old_sent.lock().unwrap().len(), 2);
+    assert_eq!(
+        new_sent.lock().unwrap().len(),
+        1,
+        "only the new call is sent"
+    );
+}
+
 /// A replacement attachment restarts each trace from unaccepted, because frames
 /// already observed went to the old channel. Completion is deliberately retained:
 /// it may already be committed server-side, and refusing its report would strand

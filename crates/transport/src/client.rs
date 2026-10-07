@@ -125,6 +125,14 @@ impl<C: Channel> Client<C> {
         self.calls.len()
     }
 
+    /// Stop tracking an unresolved invocation locally. This sends nothing and
+    /// does not cancel accepted server work or establish whether it committed.
+    /// Late frames for this id are discarded. The allocator is unchanged, so
+    /// abandoning a call never authorizes its automatic replay or reuses its id.
+    pub fn abandon(&mut self, id: u64) -> bool {
+        self.calls.remove(&id).is_some()
+    }
+
     /// Send an invocation on the attached logical connection and await its
     /// outcome, for callers that want a return value rather than a stream.
     pub async fn invoke(&mut self, operation: &str, input: Value) -> Result<Value, Error> {

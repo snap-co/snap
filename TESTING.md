@@ -258,8 +258,9 @@ publication of real credentials.
 Actors have independent generation streams and child wakeups; a parent wake does
 not poll an unrelated sleeping child. Seeded actor order controls initial polling,
 while the host's existing deadline/FIFO rules control delivery. The server remains
-single-actor. Operation budgets count completions across all clients, and reserve
-no more actions than the remaining budget. A final round can use fewer clients.
+single-actor. Operation budgets count completed workload actions across all clients
+and reserve no more actions than the remaining budget. A final round can use fewer
+clients.
 Started counts are reservations, which may still be waiting on virtual think time.
 Time horizons abandon pending actions without draining or canceling accepted work;
 per-action checks run on completed calls, but round checks only run on complete
@@ -283,8 +284,8 @@ its input, never from returned rows. SDK call intervals constrain the possible
 ordering, including a writer that starts after the winner finishes.
 Verification rounds reload both rows through
 each SDK. Fault input credits bound allowed confirmed rejections. This bounded
-oracle does not cover arbitrary histories, same-client parallel awaits or unknown
-outcomes after carrier loss. `support/campaign.rs` assembles the clients and queues
+oracle does not cover arbitrary histories or same-client parallel awaits.
+`support/campaign.rs` assembles the clients and queues
 server-owned periodic Read operations through real dispatch. Optional periodic
 commit rejection uses the simulation Store's existing dependency fault capability.
 Those server checks and setup are excluded from SDK operation budgets.
@@ -293,6 +294,37 @@ enables periodic rejection with `--faults`. One production physical peer is rese
 for scheduled checks. The concurrent contracts in `tests/simulation/concurrent.rs`
 cover overlapping real SDK calls, global budgets, timer cancellation, child wake
 isolation, host-gated callbacks, replay with faults and real TCP/SQLite execution.
+
+`runner::Reconnect` supplies a host-owned physical channel factory; application
+workloads own logical reconnect and uncertain-mutation policy. The simulation's
+`Connector` schedules opens on its existing executor. Canceling an opening removes
+its event or releases an allocated, unclaimed peer. Dropped Channels detach and
+release their carrier bookkeeping without canceling accepted work. Production SDK
+`Client::abandon` removes one correlation trace without sending, changing IDs or
+claiming a server outcome. `replace_channel` still preserves other traces by
+default; callers must choose which uncertain traces to abandon.
+
+The concurrent cartridge's network-loss policy targets mutation Invokes only.
+A separate seeded stream selects calls and cuts at decoded receipt before
+admission, observed host acceptance publication, or admitted completion publication
+before delivery. A synchronous step can publish acceptance and completion together;
+it still cannot be interrupted. Recovery Connect and verification reads are
+fault-free, an explicit fairness assumption for this bounded campaign. No unknown
+mutation is replayed. A lost action counts toward the budget after reconnect, not
+as a successful SDK operation. Connect remains outside action budgets.
+Round checks enumerate no commit or one eligible input-derived winner, constrained
+by known outcomes and SDK call intervals. Loss time is not an upper bound on
+accepted execution. Verification reads must agree on a member of that possible
+state set before another mutation round. An operation budget ending after a
+mutation round may leave several possible states; a time horizon may abandon
+recovery itself. `--network-loss` selects this policy in the example. Bounded
+per-actor diagnostics retain the action/index, invocation and last fault even when
+the recent host trace expires. Failure output supplies a replay command and reports
+the revision and dirty-checkout status; replay still requires the same working
+changes. `tests/simulation/recovery.rs` owns SDK-driven loss/reconnect, no-replay,
+fresh-peer isolation, ambiguity resolution, drift rejection, horizon cancellation
+and seeded network campaign contracts. General network partitions, lost handshakes,
+arbitrary recovery reads and multi-server behavior remain outside this model.
 
 The controlled command tests alone do not prove a socket-to-host path or
 constitute a production memory Transport driver. Wasm execution, browser client

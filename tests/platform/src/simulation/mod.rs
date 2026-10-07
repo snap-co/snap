@@ -5,7 +5,10 @@ mod store;
 mod transport;
 
 pub use store::{CommitFault, Store};
-pub use transport::{CarrierPolicy, Channel, Clock, Failure, Simulation, Sleep};
+pub use transport::{
+    CarrierPolicy, Channel, Clock, Connector, Failure, LossBoundary, NetworkFaults, Simulation,
+    Sleep,
+};
 
 use crate::runner::Fingerprint;
 use alloc::{collections::VecDeque, rc::Rc, string::String, vec::Vec};
@@ -60,6 +63,21 @@ pub struct Record {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Action {
+    PeerOpened {
+        peer: u64,
+        actor: Option<usize>,
+    },
+    LossArmed {
+        peer: u64,
+        id: u64,
+        boundary: LossBoundary,
+    },
+    NetworkLoss {
+        peer: u64,
+        actor: Option<usize>,
+        id: u64,
+        boundary: LossBoundary,
+    },
     TimerScheduled {
         id: u64,
         deadline_ms: u64,

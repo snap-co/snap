@@ -10,6 +10,8 @@ mod host;
 mod lifecycle;
 #[path = "../support/tcp_sqlite.rs"]
 mod native;
+#[path = "simulation/recovery.rs"]
+mod recovery_contracts;
 #[path = "simulation/runner.rs"]
 mod runner_contracts;
 #[path = "../support/simulation.rs"]

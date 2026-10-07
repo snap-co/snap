@@ -66,6 +66,18 @@ pub trait Timer: Clone {
     fn sleep(&self, milliseconds: u64) -> impl Future<Output = ()>;
 }
 
+/// Host-owned physical connection factory. The application owns logical
+/// reconnect and uncertain-operation policy; opening a carrier sends no mutation.
+pub trait Reconnect<C: Channel> {
+    fn open(&self) -> impl Future<Output = Result<C, Error>>;
+}
+pub struct NoReconnect;
+impl<C: Channel> Reconnect<C> for NoReconnect {
+    async fn open(&self) -> Result<C, Error> {
+        Err(Error::Unavailable)
+    }
+}
+
 struct TaskWake {
     ready: AtomicBool,
     parent: Waker,
