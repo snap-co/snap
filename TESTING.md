@@ -312,6 +312,31 @@ cover overlapping real SDK calls, continued progress during a peer's think time
 or recovery, global budgets, timer cancellation, child wake
 isolation, host-gated callbacks, replay with faults and real TCP/SQLite execution.
 
+`tests/platform/src/benchmark.rs` is a separate portable closed-loop measurement
+runner. Workloads own SDK calls and outcome validation; host adapters supply the
+executor and monotonic wall/response clocks. Fixed per-actor input ownership keeps
+the input set independent of completion order, but draining actors can underfill
+load at the end. Setup, warmup, percentile sorting, final checks and teardown are
+outside measurement. Latency includes lightweight workload validation; exact
+sample retention uses memory proportional to invocation count.
+`cartridge/benchmark.rs` owns seeded read/guarded-write plans for independent or
+shared paired records and input-derived quiescent checks. It does not use the
+campaign's bounded history oracle. `support/benchmark.rs` supplies simulation,
+production TCP/TLS with Memory and production TCP/TLS with file SQLite adapters.
+Simulation wall throughput measures simulator cost, including event fingerprints;
+its virtual latency is modeled dependency time, not native response performance.
+Native latency uses wall time and the unchanged production dispatch cadence.
+Both profiles declare whole-table data. Independent working sets grow with client
+count, so cross-client curves also include working-set effects. Host implementation
+facts are recorded separately from configured dependencies, allowing server
+execution changes to compare across revisions without changing the input contract.
+The `benchmark` Cargo example emits versioned result files and compares compatible
+machine/compiler/build, host and input configurations without performance gates.
+Unsupported hosts require an explicit adapter, never substitution. Other apps can
+implement the measurement Workload contract without changing cartridge policy or
+the runner. Accounting, baseline rejection and SDK host portability contracts live
+in `tests/simulation/benchmark.rs` under the existing Interface simulation target.
+
 `runner::Reconnect` supplies a host-owned physical channel factory; application
 workloads own logical reconnect and uncertain-mutation policy. The simulation's
 `Connector` schedules opens on its existing executor. Canceling an opening removes

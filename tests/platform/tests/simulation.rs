@@ -1,5 +1,7 @@
 //! Simulator fidelity and scheduling contracts. The cartridge still supplies the
 //! independent oracle; real and simulated driver agreement alone is insufficient.
+#[path = "simulation/benchmark.rs"]
+mod benchmark_contracts;
 #[path = "../support/campaign.rs"]
 mod campaign_setup;
 #[path = "simulation/concurrent.rs"]

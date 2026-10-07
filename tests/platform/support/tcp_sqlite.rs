@@ -1,60 +1,21 @@
 //! Native paired setup: production TCP/TLS and dispatch, file-backed SQLite,
 //! and the portable cartridge SDK journey. No transport observations are faked.
 use super::host;
+#[path = "tcp_channel.rs"]
+mod tcp_channel;
+pub(crate) use tcp_channel::TcpChannel;
 #[path = "../../../crates/transport/tests/support/mod.rs"]
 pub(crate) mod tls_support;
 
 use snap_platform_tests::{cartridge, journey};
 use snap_store_sqlite::Sqlite;
+use snap_transport::client::Client;
 use snap_transport::host::Blocking as Host;
 use snap_transport::native::driver::{Dispatcher, Shared};
-use snap_transport::{Channel, Command, Error, Response, client::Client};
 use std::{io, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-// Host-level adaptation to Channel. Framing and verified TLS remain in the
-// production driver. A physical failure fences this channel; it never retries.
-pub(crate) struct TcpChannel {
-    driver: snap_transport::native::TcpClient,
-    usable: bool,
-}
-impl TcpChannel {
-    pub(crate) async fn open(
-        address: &str,
-        tls: &snap_transport::native::tls::ClientTls,
-    ) -> Result<Self> {
-        Ok(Self {
-            driver: snap_transport::native::TcpClient::open(address, tls).await?,
-            usable: true,
-        })
-    }
-}
-impl Channel for TcpChannel {
-    async fn send(&mut self, command: Command) -> std::result::Result<(), Error> {
-        if !self.usable {
-            return Err(Error::Unavailable);
-        }
-        self.driver.send(&command).await.map_err(|_| {
-            self.usable = false;
-            Error::Unavailable
-        })
-    }
-    async fn receive(&mut self) -> std::result::Result<Option<Response>, Error> {
-        if !self.usable {
-            return Err(Error::Unavailable);
-        }
-        self.driver
-            .receive()
-            .await
-            .map(|(response, _)| Some(response))
-            .map_err(|_| {
-                self.usable = false;
-                Error::Unavailable
-            })
-    }
-}
 
 struct Server {
     shared: Arc<Shared<Host<Sqlite>>>,

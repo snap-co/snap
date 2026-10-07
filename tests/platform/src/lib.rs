@@ -5,6 +5,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod benchmark;
 pub mod cartridge;
 pub mod dispatch;
 pub mod journey;

@@ -1,5 +1,6 @@
 //! IO-free application behavior for Transport-to-Store conformance. This is not
 //! the reference model: it uses real operation declarations and transactions.
+pub mod benchmark;
 use alloc::{string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use snap_store::{
